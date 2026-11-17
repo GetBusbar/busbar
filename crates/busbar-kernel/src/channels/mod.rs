@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub mod ask_line;
+pub mod authority;
 pub mod budget;
 #[cfg(test)]
 mod budget_tests;
@@ -78,6 +79,8 @@ pub trait UpstreamChannels: Send + Sync + 'static {
 pub struct ChannelReq<'a> {
     /// The actual admitted unit's shared account; never constructed per attachment.
     pub budget: &'a budget::UnitBudget,
+    /// Required for STDIO. HTTP retains its existing actual upstream walk/connector authority.
+    pub command: Option<&'a authority::ChannelAuthority>,
     pub exchange: u32,
     pub carrier: u32,
     pub flags: u32,
@@ -85,6 +88,16 @@ pub struct ChannelReq<'a> {
     pub key: &'a str,
     pub subject: Option<[u8; 32]>,
     pub head: Records<'a>,
+}
+impl ChannelReq<'_> {
+    pub(crate) fn check_command(&self, upstream: &UpstreamDef) -> Result<(), RecordsDenied> {
+        if self.carrier == busbar_plugin_abi::plane::CARRIER_STDIO {
+            self.command
+                .ok_or(RecordsDenied::Invalid)?
+                .check(upstream)?;
+        }
+        Ok(())
+    }
 }
 /// Owned by the session's task. `send` = EX_MSG on the exchange; `ready` = CH_READY (greeting session only);
 /// Drop detaches (and hands a pending greet to the next waiter).
@@ -203,6 +216,17 @@ pub trait SessionSignals: Send + Sync + 'static {
         flags: u32,
         bytes: &[u8],
     ) -> u32;
+    /// Command-channel delivery stays in the exact retained admission partition, with no subject wildcard.
+    fn signal_command(
+        &self,
+        _instance: u64,
+        _authority: &authority::ChannelAuthority,
+        _key: &[u8],
+        _flags: u32,
+        _bytes: &[u8],
+    ) -> u32 {
+        0
+    }
 }
 
 impl Drop for Attachment {

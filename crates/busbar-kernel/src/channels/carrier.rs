@@ -119,6 +119,7 @@ impl Counts {
 /// What the generation tasks share with the driver.
 struct Shared {
     instance: u64,
+    owner: busbar_contract::services::Caller,
     budget: InstanceBudget,
     demuxer: Arc<dyn Demuxer>,
     signals: Arc<dyn SessionSignals>,
@@ -128,6 +129,7 @@ struct Shared {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ChanKey {
+    command: Option<super::authority::ChannelAuthority>,
     upstream: Box<str>,
     key: Box<str>,
     subject: Option<[u8; 32]>,
@@ -155,6 +157,7 @@ struct ChanState {
 
 /// One incarnation of a channel: a child or a request, until it ends.
 struct Generation {
+    command: Option<super::authority::ChannelAuthority>,
     number: u64,
     link: Arc<Link>,
     slots: Mutex<HashMap<u64, mpsc::Sender<ChannelMsg>>>,
@@ -187,6 +190,7 @@ impl ChannelDriver {
     #[must_use]
     pub fn new(
         instance: u64,
+        owner: busbar_contract::services::Caller,
         budget: InstanceBudget,
         wires: Arc<dyn Wires>,
         demuxer: Arc<dyn Demuxer>,
@@ -196,6 +200,7 @@ impl ChannelDriver {
         Self {
             shared: Arc::new(Shared {
                 instance,
+                owner,
                 budget,
                 demuxer,
                 signals,
@@ -211,6 +216,22 @@ impl ChannelDriver {
     #[must_use]
     pub fn counts(&self) -> Arc<Counts> {
         Arc::clone(&self.shared.counts)
+    }
+
+    fn check_command(
+        &self,
+        req: &ChannelReq<'_>,
+        upstream: &UpstreamDef,
+    ) -> Result<(), RecordsDenied> {
+        req.check_command(upstream)?;
+        if req.carrier == CARRIER_STDIO
+            && !req
+                .command
+                .is_some_and(|proof| proof.accepts(&self.shared.owner))
+        {
+            return Err(RecordsDenied::Invalid);
+        }
+        Ok(())
     }
 
     /// `upstream` was declared anew (config reload or admin reconfigure): a tripped channel of it may spawn again and
@@ -236,6 +257,7 @@ impl ChannelDriver {
         policy: JoinPolicy,
     ) -> Result<Arc<Channel>, RecordsDenied> {
         let mut channels = self.channels.lock().unwrap_or_else(PoisonError::into_inner);
+        channels.retain(|key, _| key.command.as_ref().is_none_or(|proof| proof.is_live()));
         if let Some(channel) = channels.get(&key) {
             return if channel.policy == policy {
                 Ok(channel.clone())
@@ -276,6 +298,7 @@ impl ChannelDriver {
     ) -> Result<Arc<Generation>, RecordsDenied> {
         let stdio = req.carrier == CARRIER_STDIO;
         let mut state = channel.state.lock().await;
+        self.check_command(req, upstream)?;
         if let Some(live) = &state.live {
             if live.stopping.load(Ordering::Acquire) {
                 return Err(RecordsDenied::Unavailable);
@@ -294,6 +317,7 @@ impl ChannelDriver {
                 }
             }
         }
+        self.check_command(req, upstream)?;
         let wire = match self.wires.open(upstream, req).await {
             Ok(wire) => wire,
             Err(denied) => {
@@ -303,6 +327,7 @@ impl ChannelDriver {
                 return Err(denied);
             }
         };
+        self.check_command(req, upstream)?;
         let (link, queue) = Link::new(
             req.flags & CH_SERIAL != 0,
             framing,
@@ -313,6 +338,7 @@ impl ChannelDriver {
             .checked_add(1)
             .ok_or(RecordsDenied::Unavailable)?;
         let generation = Arc::new(Generation {
+            command: key.command.clone(),
             number: state.generations,
             link,
             slots: Mutex::new(HashMap::new()),
@@ -366,6 +392,7 @@ impl ChannelDriver {
             )
             .map_err(|_| RecordsDenied::Unavailable)?;
         'generations: loop {
+            self.check_command(req, upstream)?;
             let generation = self
                 .generation(channel, upstream, req, framing, key)
                 .await?;
@@ -376,6 +403,10 @@ impl ChannelDriver {
                 })
                 .map_err(|_| RecordsDenied::Unavailable)?;
             let (greet, ready_tail) = loop {
+                if let Err(denied) = self.check_command(req, upstream) {
+                    generation.link.release_greet(slot);
+                    return Err(denied);
+                }
                 match generation.link.claim_greet(slot) {
                     Claim::Greeter => break (true, Box::<[u8]>::default()),
                     Claim::Ready(tail) => {
@@ -396,6 +427,10 @@ impl ChannelDriver {
                 }
             };
             let (tx, rx) = mpsc::channel(SLOT_QUEUE);
+            if let Err(denied) = self.check_command(req, upstream) {
+                generation.link.release_greet(slot);
+                return Err(denied);
+            }
             {
                 let mut slots = generation.slots();
                 if !generation.alive.load(Ordering::Acquire) {
@@ -438,6 +473,7 @@ impl UpstreamChannels for ChannelDriver {
     ) -> BoxFut<'a, Result<Attachment, RecordsDenied>> {
         let (deadline, instance) = (plane.deadline, plane.instance);
         Box::pin(async move {
+            self.check_command(&req, upstream)?;
             if instance != self.shared.instance || !self.shared.budget.accepts_unit(req.budget) {
                 return Err(RecordsDenied::Invalid);
             }
@@ -451,6 +487,9 @@ impl UpstreamChannels for ChannelDriver {
                 None
             };
             let key = ChanKey {
+                command: (req.carrier == CARRIER_STDIO)
+                    .then(|| req.command.cloned())
+                    .flatten(),
                 upstream: upstream.name.clone(),
                 key: req.key.into(),
                 subject,
@@ -627,13 +666,23 @@ impl Run {
                 }
             }
         } else if demuxed.flags & DX_BROADCAST != 0 {
-            let reached = self.shared.signals.signal(
-                self.shared.instance,
-                &demuxed.tail,
-                generation.subject,
-                P_SIGNAL | P_TEXT,
-                &message,
-            );
+            let reached = if let Some(authority) = &generation.command {
+                self.shared.signals.signal_command(
+                    self.shared.instance,
+                    authority,
+                    &demuxed.tail,
+                    P_SIGNAL | P_TEXT,
+                    &message,
+                )
+            } else {
+                self.shared.signals.signal(
+                    self.shared.instance,
+                    &demuxed.tail,
+                    generation.subject,
+                    P_SIGNAL | P_TEXT,
+                    &message,
+                )
+            };
             tracing::debug!(reached, "a channel message was broadcast");
         } else {
             tracing::debug!(

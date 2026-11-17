@@ -2284,6 +2284,40 @@ pub(crate) async fn auth_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
+    // Remove the one-shot capability before any body, auth or handler suspension.
+    let mut physical_pending = req
+        .extensions_mut()
+        .remove::<crate::inbound::native::AdminPhysicalRequest>()
+        .map(|carrier| carrier.take())
+        .transpose()
+        .map_err(|_| admin_unauthorized_response())?;
+    let mut physical_execution = req
+        .extensions()
+        .get::<std::sync::Arc<crate::inbound::native::PhysicalAdminExecution>>()
+        .cloned();
+    if physical_pending.is_some() && physical_execution.is_some() {
+        return Err(admin_unauthorized_response());
+    }
+    let physical_binding = physical_pending
+        .as_ref()
+        .map(|p| p.binding().clone())
+        .or_else(|| physical_execution.as_ref().map(|p| p.binding().clone()));
+    let app = if let Some(binding) = &physical_binding {
+        if !std::sync::Arc::ptr_eq(binding.handle(), &handle)
+            || binding.check_live().is_err()
+            || req
+                .extensions()
+                .get::<crate::inbound::RequestAdmission>()
+                .is_some()
+        {
+            return Err(admin_unauthorized_response());
+        }
+        let app = binding.app().clone();
+        req.extensions_mut().insert(app.clone());
+        app
+    } else {
+        app
+    };
     let inbound = req
         .extensions()
         .get::<crate::inbound::RequestAdmission>()
@@ -2380,6 +2414,9 @@ pub(crate) async fn auth_middleware(
     if let Some(auth) = core_routes.declared_auth(path, req.method()) {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
+                if physical_binding.is_some() {
+                    return Err(admin_unauthorized_response());
+                }
                 return Ok(next.run(req).await);
             }
             busbar_contract::abi::mechanism::route::RouteAuth::Admin => {
@@ -2396,6 +2433,9 @@ pub(crate) async fn auth_middleware(
     {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
+                if physical_binding.is_some() {
+                    return Err(admin_unauthorized_response());
+                }
                 return Ok(next.run(req).await);
             }
             busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
@@ -2405,6 +2445,9 @@ pub(crate) async fn auth_middleware(
 
     let is_admin = declared_admin
         || (!claimed_at_key && (path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX)));
+    if !is_admin && physical_binding.is_some() {
+        return Err(admin_unauthorized_response());
+    }
     // The request's one wall reading: every limiter, ticket and credential check below uses it.
     let now = busbar_kernel::store::now();
 
@@ -2504,6 +2547,14 @@ pub(crate) async fn auth_middleware(
             .filter(|e| e.native().is_some())
             .cloned();
         let (door, strips, who) = if let Some(execution) = completed {
+            let physical = physical_execution
+                .as_ref()
+                .ok_or_else(admin_unauthorized_response)?;
+            if !std::sync::Arc::ptr_eq(physical.admission(), &execution)
+                || physical.check_executing().is_err()
+            {
+                return Err(admin_unauthorized_response());
+            }
             let original = req
                 .extensions()
                 .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
@@ -2568,7 +2619,7 @@ pub(crate) async fn auth_middleware(
                 req.extensions_mut().insert(execution);
             }
             (verdict.door, Vec::new(), admission.admin_who())
-        } else if app.native_admin.is_none() {
+        } else if app.native_admin.is_none() && physical_pending.is_none() {
             let headers = inbound_headers.unwrap_or_else(|| req.headers());
             let (verdict, cap, replay, no_verdict, strips, denial) =
                 judge_admin_chain(&app, req.method().as_str(), target, headers, false).await;
@@ -2581,6 +2632,11 @@ pub(crate) async fn auth_middleware(
                     .await;
             (door, strips, who)
         } else {
+            let binding = physical_pending
+                .as_ref()
+                .ok_or_else(admin_unavailable_response)?
+                .binding()
+                .clone();
             let original = req
                 .extensions()
                 .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
@@ -2591,7 +2647,12 @@ pub(crate) async fn auth_middleware(
                 .get::<crate::limits::process_admission::RequestLease>()
                 .cloned()
                 .ok_or_else(admin_unavailable_response)?;
-            if !original.request().same_request(&request_lease) {
+            if !original.request().same_request(&request_lease)
+                || !binding.request().same_request(&request_lease)
+                || !binding
+                    .snapshot()
+                    .is_ok_and(|snapshot| std::sync::Arc::ptr_eq(&snapshot, &original))
+            {
                 return Err(admin_unauthorized_response());
             }
             let body = std::mem::replace(req.body_mut(), Body::empty());
@@ -2622,18 +2683,16 @@ pub(crate) async fn auth_middleware(
             }
             *req.body_mut() = Body::from(original.body_bytes());
             drop(bytes);
-            let request_id = inbound
-                .as_ref()
-                .map_or_else(|| app.next_request_id(), |a| a.unit_key().get());
-            let Some(request_id) = std::num::NonZeroU64::new(request_id) else {
-                return Err(admin_unauthorized_response());
-            };
-            let id = crate::state::InvocationId::from_request_id(request_id);
+            let id = binding.invocation();
+            let mut cx = admin_call_context(id);
+            if let Some(deadline) = binding.deadline() {
+                cx.deadline = cx.deadline.min(deadline);
+            }
             let invocation = native_admin::Invocation {
-                handle: std::sync::Arc::clone(&handle),
-                selected: std::sync::Arc::clone(&app),
+                handle: binding.handle().clone(),
+                selected: binding.app().clone(),
                 id,
-                cx: admin_call_context(id),
+                cx,
                 request: original,
             };
             let Ok((verdict, strips, projected)) =
@@ -2647,11 +2706,24 @@ pub(crate) async fn auth_middleware(
                         .complete_admin()
                         .await
                         .map_err(|_| admin_unauthorized_response())?;
-                    req.extensions_mut().insert(std::sync::Arc::new(execution));
+                    let execution = std::sync::Arc::new(execution);
+                    let physical = std::sync::Arc::new(
+                        physical_pending
+                            .take()
+                            .ok_or_else(admin_unauthorized_response)?
+                            .complete_admin(execution.clone())
+                            .map_err(|_| admin_unauthorized_response())?,
+                    );
+                    req.extensions_mut().insert(execution);
+                    req.extensions_mut().insert(physical.clone());
+                    physical_execution = Some(physical);
                 }
             }
             (verdict.door, strips, projected)
         };
+        if physical_pending.is_some() {
+            return Err(admin_unauthorized_response());
+        }
         let mut effect_context = effect::Context::new(
             req.method().as_str(),
             target,
@@ -2667,6 +2739,13 @@ pub(crate) async fn auth_middleware(
             effect_context
                 .attach_execution(execution.clone())
                 .map_err(|_| admin_unauthorized_response())?;
+        }
+        if let Some(physical) = &physical_execution {
+            effect_context
+                .attach_physical(physical.clone())
+                .map_err(|_| admin_unauthorized_response())?;
+        } else if effect_context.native.is_some() {
+            return Err(admin_unauthorized_response());
         }
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
@@ -2762,7 +2841,17 @@ pub(crate) async fn auth_middleware(
 
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
-        return Ok(effect::scope(Some(effect_context), next.run(req)).await);
+        if physical_execution
+            .as_ref()
+            .is_some_and(|physical| physical.check_executing().is_err())
+        {
+            return Err(admin_unauthorized_response());
+        }
+        let response = effect::scope(Some(effect_context), next.run(req)).await;
+        return Ok(match physical_execution {
+            Some(physical) => native_admin::retain_physical_response(response, physical),
+            None => response,
+        });
     }
 
     if app.auth.keys_in_chain && app.upstream_creds() == UpstreamCreds::Passthrough {
