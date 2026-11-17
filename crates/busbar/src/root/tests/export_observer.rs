@@ -331,12 +331,14 @@ fn actual_recorder_distinguishes_lines_occurrences_and_absolute_held() {
 }
 
 #[test]
-fn custody_wire_values_have_only_the_positive_frozen_labels() {
-    assert_eq!(ExportCustodyLevel::from_wire(0), None);
-    assert_eq!(ExportCustodyLevel::from_wire(4), None);
-    assert_eq!(ExportCustodyLevel::from_wire(u32::MAX), None);
-    for (wire, token) in [(1, "accepted"), (2, "durable"), (3, "indexed")] {
-        assert_eq!(ExportCustodyLevel::from_wire(wire).unwrap().as_str(), token);
+fn checked_custody_levels_have_only_the_positive_frozen_labels() {
+    // Canonical wire mapping and rejection live at the loader's observation boundary.
+    for (level, token) in [
+        (ExportCustodyLevel::Accepted, "accepted"),
+        (ExportCustodyLevel::Durable, "durable"),
+        (ExportCustodyLevel::Indexed, "indexed"),
+    ] {
+        assert_eq!(level.as_str(), token);
     }
 }
 

@@ -14,7 +14,7 @@ fn contract_and_direct_count_have_one_type_and_exact_number_wire() {
 
         let wire = json::to_string(&direct).unwrap();
         assert_eq!(wire, direct.to_decimal_string());
-        let decoded: busbar_count::Count = json::from_str(&wire).unwrap();
+        let decoded: busbar_count::Count = json::parse_str(&wire).unwrap();
         assert_eq!(decoded, contract);
     }
 }

@@ -412,18 +412,6 @@ pub enum ExportCustodyLevel {
 }
 
 impl ExportCustodyLevel {
-    /// Validate an existing export wire custody level; zero and unknown levels are refused.
-    #[must_use]
-    pub const fn from_wire(level: u32) -> Option<Self> {
-        use crate::abi::export::{CUSTODY_ACCEPTED, CUSTODY_DURABLE, CUSTODY_INDEXED};
-        match level {
-            CUSTODY_ACCEPTED => Some(Self::Accepted),
-            CUSTODY_DURABLE => Some(Self::Durable),
-            CUSTODY_INDEXED => Some(Self::Indexed),
-            _ => None,
-        }
-    }
-
     /// Stable metric label for this checked positive custody level.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
