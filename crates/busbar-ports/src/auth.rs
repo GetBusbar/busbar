@@ -360,6 +360,83 @@ pub struct IssuedShape {
 mod tests {
     use super::*;
 
+    fn replay_identity() -> Identity {
+        let mut reply = Reply::new();
+        reply
+            .put_text(tag::ID_SUBJECT, "identity-private-canary")
+            .unwrap();
+        reply
+            .put_pair(tag::ID_CLAIM, "claim", b"claim-private-canary")
+            .unwrap();
+        reply
+            .put_pod_tail(t::REPLAY, &U64Rec { value: 10 }, b"replay-private-canary")
+            .unwrap();
+        identity(&reply)
+    }
+
+    #[test]
+    fn native_identity_nested_debug_redacts_records_and_replay() {
+        let answer = VerifyOk::Identity(replay_identity());
+        let debug = format!("{answer:?}");
+        for canary in [
+            "identity-private-canary",
+            "claim-private-canary",
+            "replay-private-canary",
+        ] {
+            assert!(!debug.contains(canary));
+            let bytes = canary
+                .bytes()
+                .map(|byte| byte.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            assert!(
+                !debug.contains(&bytes),
+                "Debug exposed credential-bearing record bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn native_identity_shares_secure_backing_until_last_owner_drops() {
+        let first = replay_identity();
+        let follower = first.clone();
+        assert!(Arc::ptr_eq(&first.recs, &follower.recs));
+        assert_eq!(
+            first.replay().unwrap().0.as_ptr(),
+            follower.replay().unwrap().0.as_ptr()
+        );
+        let before = busbar_contract::secure::wipe_counts().1;
+        drop(first);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before);
+        assert_eq!(follower.subject(), "identity-private-canary");
+        assert_eq!(follower.replay().unwrap().0, b"replay-private-canary");
+        drop(follower);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 2);
+    }
+
+    #[test]
+    fn native_identity_decode_failure_releases_replay_custody() {
+        let mut reply = Reply::new();
+        reply.put_text(tag::ID_SUBJECT, "subject").unwrap();
+        reply
+            .put_pod_tail(t::REPLAY, &U64Rec { value: 10 }, b"failed-replay-canary")
+            .unwrap();
+        reply
+            .put_text(tag::ID_GROUP, "invalid-after-replay")
+            .unwrap();
+        let before = busbar_contract::secure::wipe_counts().1;
+        assert!(decode_verify_ok(Records::new(reply.as_bytes())).is_err());
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 1);
+    }
+
+    #[test]
+    fn native_ticket_identity_releases_secure_records() {
+        let identity = Identity::from_ticket("private-ticket-subject", "scope");
+        let before = busbar_contract::secure::wipe_counts().1;
+        drop(identity);
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 1);
+    }
+
     fn identity(w: &Reply) -> Identity {
         match decode_verify_ok(Records::new(w.as_bytes())).unwrap() {
             VerifyOk::Identity(id) => id,
