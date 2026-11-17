@@ -272,7 +272,11 @@ async fn invoke(
                 rec.flags |= abi::C_HAS_BUDGET;
                 rec.budget_remaining_micros = value;
             }
-            if let Some(value) = facts.error_rate {
+            // Opt-in: encoded only when this Call requested it (DES-NATIVE-HOOKS-PARITY r3 §E).
+            if let Some(value) = facts.error_rate.filter(|_| {
+                call.signals
+                    .wants(busbar_contract::signal::Signal::CandidateErrorRate)
+            }) {
                 rec.flags |= abi::C_HAS_ERROR_RATE;
                 rec.error_rate_ppm = ppm(value);
             }
