@@ -214,14 +214,8 @@ fn test_resolve_model_context_max_none_everywhere() {
 }
 
 #[test]
-fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
-    let absent = open_relay_banner(true, false).expect("empty chain must produce a banner");
-    assert!(
-        absent.contains("OPEN RELAY") && absent.contains("no `auth:` block"),
-        "absent-auth banner must call out the missing block; got: {absent}"
-    );
-
-    let explicit = open_relay_banner(true, true).expect("explicit empty chain must banner");
+fn test_open_relay_banner_names_the_explicit_empty_chain() {
+    let explicit = open_relay_banner(true).expect("explicit empty chain must banner");
     assert!(
         explicit.contains("OPEN RELAY") && explicit.contains("auth.chain is empty"),
         "explicit-empty banner must reference auth.chain is empty; got: {explicit}"
@@ -230,7 +224,7 @@ fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
 
 #[test]
 fn test_open_relay_banner_silent_when_auth_engaged() {
-    assert!(open_relay_banner(false, true).is_none());
+    assert!(open_relay_banner(false).is_none());
 }
 
 #[test]

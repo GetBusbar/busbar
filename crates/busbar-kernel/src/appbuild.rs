@@ -23,15 +23,12 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
 
-pub fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'static str> {
-    if !chain_empty {
-        return None;
-    }
-    Some(if auth_present {
-        "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production"
-    } else {
-        "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [keys]` (and mint virtual keys via the admin API) before exposing it; do not run this in production"
-    })
+/// The explicit open posture (`auth: { chain: [] }`) boots bannered. A configuration with no `auth:`
+/// block never reaches here: validation refuses it (#358).
+pub fn open_relay_banner(chain_empty: bool) -> Option<&'static str> {
+    chain_empty.then_some(
+        "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production",
+    )
 }
 
 pub fn inert_durable_keys_banner(
@@ -2022,7 +2019,7 @@ async fn build_app_native(
         );
     }
 
-    if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty(), cfg.auth.is_some()) {
+    if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty()) {
         eprintln!("[error] {banner}");
         diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }

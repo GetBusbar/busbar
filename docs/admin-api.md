@@ -719,10 +719,11 @@ bypass the trust model:
 
 - The upload goes through the SAME gates as a boot-time load: in-memory structural validation
   (tarball shape, manifest completeness, `sha256` binding, `abi_version`), the SAME trust
-  evaluation (embedded first-party key / `plugins.trust.publishers` / the explicit `allow_unsigned`
-  and `allow_third_party` opt-ins / anti-downgrade floors), and a name/alias conflict check against
-  the already-installed loadable set. An untrusted upload is a `409 conflict` naming the exact
-  reason and flag; a malformed one is a `400`; nothing is written in either case.
+  evaluation (embedded first-party key / `plugins.trust.publishers` and their scoped keys / the
+  explicit `allow_untrusted` opt-in for unverified code / anti-downgrade floors), and a name/alias
+  conflict check against the already-installed loadable set. An untrusted upload is a
+  `409 conflict` naming the exact reason and flag; a malformed one is a `400`; nothing is written in
+  either case.
 - The endpoint is MANIFEST-ONLY: the uploaded code is never executed during install or listing.
   Loading only ever happens through the boot pipeline (restart / config apply), which re-runs the
   identical three-phase validation. Pushing over the API therefore grants nothing that dropping a
@@ -754,8 +755,8 @@ curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
 # An UNSIGNED tarball against the strict default posture is refused, nothing written
 # (the error object is shown trimmed to code and message; see the error contract above):
 # -> 409 {"error":{"code":"conflict","message":"plugin rejected by the trust policy: manifest
-#         carries no signature; refusing to load an unsigned plugin. Set
-#         plugins.trust.allow_unsigned=true to permit unsigned plugins."}}
+#         carries no signature; set plugins.trust.allow_untrusted=true only to permit
+#         unverified code"}}
 
 # Inspect the store-kind catalog (manifest-only; never executes plugin code)
 curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/plugins?type=store'

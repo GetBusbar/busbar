@@ -478,8 +478,10 @@ store:
 #   trust:
 #     publishers:                            # third-party ed25519 signing keys (allowlist)
 #       - name: acme
-#         public_key: "<64-hex ed25519 public key>"
-#     allow_unsigned: false                  # explicit opt-in for unsigned plugins (default false)
-#     allow_third_party: false               # explicit opt-in for non-allowlisted publishers
+#         plugins: [acme-store-dynamo]        # the exact canonical names this publisher may sign
+#         keys:
+#           - { public_key: "<64-hex ed25519 public key>", revoked: false }
+#     allow_untrusted: false                 # explicit opt-in for unsigned or unknown-publisher code,
+#                                            # always labelled unverified (default false)
 #   min_versions:                            # anti-downgrade floors by manifest name (third-party;
 #     acme-store-dynamo: "2.0.0"             # first-party is auto-floored at the binary version)

@@ -47,7 +47,8 @@ pub(crate) fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
-        auth: None,
+        // #358: the open posture is written explicitly; omission is refused.
+        auth: Some(config::AuthCfg::default_none()),
 
         providers: providers
             .into_iter()
@@ -4447,4 +4448,39 @@ fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
     // (a''') the one boot narration advises once.
     let ((), lines) = heterogeneous_warnings(|| advise(&cfg));
     assert_eq!(lines, 1, "the boot narration advises once");
+}
+
+/// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block is refused
+/// with an explained, coded error that names both ways forward. Only the explicit
+/// `auth: { chain: [] }` boots the open posture, and it does so deliberately.
+#[test]
+fn a_config_without_an_auth_block_refuses_rather_than_booting_an_open_relay() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = None;
+    let errors =
+        validate(&cfg).expect_err("no `auth:` block must refuse, never boot an open relay (PRD-5)");
+    let code = busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH
+        .banner()
+        .to_string();
+    assert!(
+        errors.iter().any(|error| error.contains(&code)
+            && error.contains("no `auth:` block")
+            && error.contains("chain: [keys]")
+            && error.contains("add `auth: { chain: [] }` explicitly to run an open relay")
+            && error.contains("or configure a chain")),
+        "the refusal is coded and gives the one-line remedy: the explicit, audited open relay or a \
+         configured chain: {errors:?}"
+    );
+
+    cfg.auth = Some(config::AuthCfg::default_none());
+    let explicit = validate(&cfg);
+    assert!(
+        explicit
+            .as_ref()
+            .err()
+            .is_none_or(|errors| !errors.iter().any(|error| error.contains(&code))),
+        "an explicit empty chain is the operator's deliberate open posture, not a refusal: \
+         {explicit:?}"
+    );
 }
