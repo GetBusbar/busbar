@@ -885,7 +885,8 @@ fn manifest_with_no_host_field_parses_and_loads() {
             "homepage": "",
             "license": ""
         }"#;
-    let m: Manifest = serde_json::from_str(json).expect("manifest with no host field parses");
+    let m: Manifest =
+        busbar_contract::json::parse_str(json).expect("manifest with no host field parses");
     assert_eq!(m.host, None, "absent host deserializes to None");
     let m = sign(&key, m, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)

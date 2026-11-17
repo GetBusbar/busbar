@@ -18,6 +18,10 @@ http = { workspace = true, optional = true }
 [dev-dependencies]
 futures = { workspace = true }
 
+[[test]]
+name = "body"
+required-features = ["axum"]
+
 [features]
 schema = ["dep:jsonschema"]
 axum = ["dep:axum-core", "dep:http"]
