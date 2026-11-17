@@ -77,8 +77,10 @@ pub(crate) async fn walk_stored_chains(
     nodes.dedup();
     for node in nodes {
         walk.chains.push(node);
-        match lane.read_node_records(node, budget).await {
-            Ok(decoded) => verify_native_audits(node, &decoded, keys, &mut walk),
+        // Kept rows first (SEALING-FIX §3.9): after an Ephemeral journal cut the boot's
+        // `Bootstrap` row is below the base; its kept copy sets `keyed` exactly as the row would.
+        match lane.read_node_walk(node, budget).await {
+            Ok(walked) => verify_native_audits(node, &walked.kept, &walked.rows, keys, &mut walk),
             Err(error) => walk.findings.push(format!(
                 "node {node}: native journal was not verified: {error:?}"
             )),
@@ -89,12 +91,16 @@ pub(crate) async fn walk_stored_chains(
 
 fn verify_native_audits(
     node: u64,
+    kept: &[busbar_kernel_wal::JournalRecord],
     decoded: &[busbar_kernel_wal::JournalRecord],
     keys: &AuditKeySet,
     walk: &mut StoredWalk,
 ) {
     let mut audits: Vec<AuditRecord> = Vec::new();
-    let mut keyed = false;
+    // A kept copy is context only, never a chain line.
+    let mut keyed = kept
+        .iter()
+        .any(|record| record.class == busbar_kernel_wal::RecordClass::Bootstrap);
     let mut signed_from = None;
     for record in decoded {
         keyed |= record.class == busbar_kernel_wal::RecordClass::Bootstrap;

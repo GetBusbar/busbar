@@ -6,6 +6,9 @@ pub(crate) fn install_test_seam() {
     INSTALLED.call_once(crate::install::<crate::NoConnections>);
 }
 
+/// The admin origin the default `admin_listen` (`127.0.0.1:8081`, no `admin_tls`) derives.
+pub(crate) const ADMIN_ORIGIN: &str = "http://127.0.0.1:8081";
+
 #[path = "tests/memory_store.rs"]
 mod memory;
 pub(crate) use memory::{lose_next_reply, memory_store, memory_store_on, MemoryBackend};

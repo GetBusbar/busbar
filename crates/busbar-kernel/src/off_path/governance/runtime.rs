@@ -609,28 +609,44 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
     let history = journal.history().map_err(|e| error(&e))?;
-    let mut replay = history.replay().await.map_err(|e| error(&e))?;
-    let mut found = None;
-    while let Some(original) = replay.next().await.map_err(|e| error(&e))? {
-        let record = JournalRecord::decode(&original.body).map_err(|e| error(&e))?;
-        if record.class != RecordClass::Transaction {
-            continue;
-        }
-        if let Some(audit) =
-            busbar_kernel_audit::from_journal_body(&record.body, &crate::Registration::meter_class)
-                .map_err(|e| error(&e))?
-        {
-            if audit.what.unit_key.get() == unit && audit.what.incarnation == incarnation {
-                if found.is_some() {
-                    return Err(RecordStoreError(
-                        "duplicate original audit for recovered unit".into(),
-                    ));
+    // One walk from the replay base (SEALING-FIX §3.9): a cut during it restarts it, with its
+    // duplicate check; the target is above the floor by (b), so a restart still finds it. Kept
+    // copies are context, never audit lines.
+    use crate::persistence::journal::Error as WalkError;
+    type Found = (Option<(u64, busbar_kernel_audit::AuditRecord)>, bool);
+    let walked = history
+        .walk(
+            || (None, false),
+            |(found, duplicate): &mut Found, original, kept| {
+                if kept || *duplicate {
+                    return Ok(());
                 }
-                found = Some((original.node_seq, audit));
-            }
-        }
+                let record =
+                    JournalRecord::decode(&original.body).map_err(|_| WalkError::Corrupt)?;
+                if record.class != RecordClass::Transaction {
+                    return Ok(());
+                }
+                let audit = busbar_kernel_audit::from_journal_body(
+                    &record.body,
+                    &crate::Registration::meter_class,
+                )
+                .map_err(|_| WalkError::Corrupt)?;
+                if let Some(audit) = audit {
+                    if audit.what.unit_key.get() == unit && audit.what.incarnation == incarnation {
+                        *duplicate = found.is_some();
+                        *found = Some((original.node_seq, audit));
+                    }
+                }
+                Ok(())
+            },
+        )
+        .await;
+    let ((found, duplicate), proof) = walked.map_err(|e| error(&e))?;
+    if duplicate {
+        return Err(RecordStoreError(
+            "duplicate original audit for recovered unit".into(),
+        ));
     }
-    let proof = replay.finish().map_err(|e| error(&e))?;
     // The scan ran without the driver; confirm its prefix against the live
     // head so a concurrent append is not mistaken for lost authority.
     journal
