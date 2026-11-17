@@ -381,6 +381,9 @@ where
                 rates,
                 then,
             } => {
+                handle
+                    .check_candidate_generation(&next)
+                    .map_err(swap_error::<E>)?;
                 let expected = handle.load();
                 let worker_handle = Arc::clone(handle);
                 let worker_next = next.clone();
@@ -465,6 +468,9 @@ where
             } => {
                 super::security_policy::admit(&handle.load(), &next, context, authority)
                     .map_err(E::from)?;
+                handle
+                    .check_candidate_generation(&next)
+                    .map_err(swap_error::<E>)?;
                 let expected = handle.load();
                 persist.await.map_err(swap_error::<E>)?;
                 if !Arc::ptr_eq(&expected, &handle.load()) {
