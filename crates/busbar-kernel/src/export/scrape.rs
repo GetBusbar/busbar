@@ -68,11 +68,9 @@ pub(crate) fn read(scope: u32) -> impl std::future::Future<Output = Snapshot> + 
         };
         match scope {
             SNAPSHOT_SCOPE_WHOLE => whole(app.as_deref()).await,
-            SNAPSHOT_SCOPE_HOOKS => Snapshot::Families(
-                app.as_deref()
-                    .map(crate::snapshot::hooks::families)
-                    .unwrap_or_default(),
-            ),
+            SNAPSHOT_SCOPE_HOOKS => {
+                Snapshot::Families(app.as_deref().map(hook_families).unwrap_or_default())
+            }
             _ => Snapshot::Refused(UNKNOWN_SCOPE),
         }
     }
@@ -138,13 +136,13 @@ pub async fn app_families_budgeted(
 }
 
 pub fn hook_families_budgeted(
-    app: &App,
+    _app: &App,
     request: &crate::limits::process_admission::RequestLease,
 ) -> Result<
     crate::limits::output::Captured<Vec<busbar_contract::export_calls::Family>>,
     crate::limits::output::OutputError,
 > {
-    crate::snapshot::hooks::families_budgeted(app, request)
+    Ok(crate::limits::output::CaptureScope::new(request)?.finish(Vec::new()))
 }
 
 /// The whole-registry families for the admin `/metrics` (the same read the snapshot service gives
@@ -155,10 +153,12 @@ pub async fn app_families(
     collect(Some(app)).await
 }
 
-/// The hook-reported families for the admin `/metrics/hooks`.
+/// The hook-reported families for the admin `/metrics/hooks`. The kernel opens no hook (the native
+/// bindings are the only hook path) and no native hook reports status families, so a generation
+/// holds none.
 #[must_use]
-pub fn hook_families(app: &App) -> Vec<busbar_contract::export_calls::Family> {
-    crate::snapshot::hooks::families(app)
+pub fn hook_families(_app: &App) -> Vec<busbar_contract::export_calls::Family> {
+    Vec::new()
 }
 
 async fn whole(app: Option<&App>) -> Snapshot {

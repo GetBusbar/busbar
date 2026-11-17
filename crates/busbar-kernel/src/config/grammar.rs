@@ -236,6 +236,9 @@ pub struct Grammar {
     pub items: Vec<Item>,
     /// What the read's scan did not admit, one capped line per file: appended to a refusal.
     report: Vec<String>,
+    /// The recognized plane instances whose admitted images serve HTTP routes on the data listener
+    /// (the loader's route records): what oauth_as's protected resources are drawn from.
+    http_instances: std::collections::BTreeSet<String>,
 }
 
 impl Grammar {
@@ -313,6 +316,7 @@ impl Grammar {
             owners: BTreeMap::new(),
             items: Vec::new(),
             report: Vec::new(),
+            http_instances: Default::default(),
         }
     }
 
@@ -326,7 +330,21 @@ impl Grammar {
             owners,
             items: Vec::new(),
             report,
+            http_instances: Default::default(),
         }
+    }
+
+    /// This grammar with the plane instances that serve HTTP routes.
+    #[must_use]
+    pub fn with_http_instances(mut self, instances: impl IntoIterator<Item = String>) -> Self {
+        self.http_instances = instances.into_iter().collect();
+        self
+    }
+
+    /// Whether the recognized plane instance `instance` serves HTTP routes.
+    #[must_use]
+    pub fn serves_http(&self, instance: &str) -> bool {
+        self.http_instances.contains(instance)
     }
 
     /// This grammar with its process-lifetime items (§3.6).

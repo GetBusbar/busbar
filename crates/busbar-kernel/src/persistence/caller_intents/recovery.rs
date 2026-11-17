@@ -35,14 +35,11 @@ impl CallerIntents {
         let rows = self
             .scoped
             .prepare_participant(
-                &scoped::Request {
-                    op_id: header.origin.operation,
-                    predicates: vec![
-                        predicate(GUARD, key, Some(pending)),
-                        predicate(INTENT, key, Some(intent)),
-                    ],
-                    mutations: vec![put(GUARD, key, &terminal), put(INTENT, key, &no_effect)],
-                },
+                &[
+                    predicate(GUARD, key, Some(pending)),
+                    predicate(INTENT, key, Some(intent)),
+                ],
+                &[put(GUARD, key, &terminal), put(INTENT, key, &no_effect)],
                 self.store.limits().scan_bytes,
             )
             .map_err(|_| Error::Budget)?;

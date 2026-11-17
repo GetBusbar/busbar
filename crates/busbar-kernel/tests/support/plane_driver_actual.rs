@@ -12,9 +12,6 @@ mod authenticated_route_cases;
 #[path = "plane_driver_cases.rs"]
 mod cases;
 
-#[path = "plane_driver_hook_cases.rs"]
-mod hook_cases;
-
 #[path = "plane_driver_close_cases.rs"]
 mod close_cases;
 
@@ -111,16 +108,7 @@ impl Rig {
     }
 }
 
-pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
-    rig_with_hooks(way, caps, book, None)
-}
-
-pub(crate) fn rig_with_hooks(
-    _way: Way,
-    caps: BufferCaps,
-    book: cases::Book,
-    hooks: Option<busbar_kernel::plane_driver::BoundHooks>,
-) -> Rig {
+pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
     let plane = Arc::new(Double::default());
     let book = Arc::new(book);
     let driver = PlaneDriver::new(
@@ -139,10 +127,6 @@ pub(crate) fn rig_with_hooks(
     .now_or_never()
     .expect("non-persistent fixture admission completes immediately")
     .expect("the instance is admitted");
-    let driver = match hooks {
-        Some(h) => driver.with_hooks(Arc::new(h)),
-        None => driver,
-    };
     Rig {
         plane,
         driver,
@@ -2590,15 +2574,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
         BufferCaps::default(),
         cases::Book::forwarding(money.clone()),
     );
-    let gate = Arc::new(Refuses {
-        abstains: true,
-        ..Refuses::default()
-    });
-    let binder = Arc::new(GateFirst {
-        gate: Arc::clone(&gate),
-        asked: Mutex::new(Vec::new()),
-    });
-    let driver = r.driver.with_hooks(binder.clone());
+    let driver = r.driver;
     let (steps, far, caller) = (
         common::TestUnits::passing(),
         cases::Far::new(&["ok"], &[]),
@@ -2632,8 +2608,6 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
         "nothing metered: {calls:?}"
     );
     assert!(far.sent().is_empty(), "no walk: nothing sent");
-    assert_eq!(gate.calls.load(Ordering::SeqCst), 0, "no hook ran");
-    assert!(binder.asked.lock().unwrap().is_empty(), "no hook was bound");
     let rendered = units
         .take_rendered()
         .expect("the plane's refusal is rendered");
@@ -2773,205 +2747,6 @@ async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_
     );
 }
 
-/// A decision gate that refuses every request at 451 with its own words (or, `abstains`, lets
-/// every request by), counting its calls.
-#[derive(Default)]
-struct Refuses {
-    calls: AtomicU32,
-    abstains: bool,
-}
-
-#[async_trait::async_trait]
-impl busbar_contract::hooks::RoutingPolicy for Refuses {
-    async fn decide(
-        &self,
-        _req: &busbar_contract::hooks::RoutingRequest<'_>,
-        _candidates: &[busbar_contract::hooks::Candidate<'_>],
-        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
-        _budget: Duration,
-    ) -> busbar_contract::hooks::PolicyResult {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        if self.abstains {
-            return Ok(busbar_contract::hooks::RoutingDecision::Abstain);
-        }
-        Ok(busbar_contract::hooks::RoutingDecision::Reject {
-            status: 451,
-            message: "refused at the entry".into(),
-        })
-    }
-
-    fn name(&self) -> &'static str {
-        "entry-gate"
-    }
-}
-
-struct GateFirst {
-    gate: Arc<Refuses>,
-    asked: Mutex<Vec<String>>,
-}
-
-impl busbar_kernel::plane_driver::HookBinder for GateFirst {
-    fn bind(
-        &self,
-        _bind: &busbar_kernel::plane_driver::Bind<'_>,
-    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
-        panic!("a gate-first plane binds no routed hooks")
-    }
-
-    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
-        busbar_kernel::plane_driver::HookOrder::Gated
-    }
-
-    fn bind_gated(
-        &self,
-        container: &str,
-        _principal: Option<&str>,
-    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
-        self.asked.lock().unwrap().push(container.to_string());
-        Some(busbar_kernel::plane_driver::GatedHooks {
-            request_id: 7,
-            gates: vec![(
-                0,
-                busbar_kernel::hooks::ResolvedPolicy::Policy {
-                    policy: Arc::clone(&self.gate)
-                        as Arc<dyn busbar_contract::hooks::RoutingPolicy>,
-                    on_error: busbar_kernel::config::PolicyOnError::Reject,
-                    on_error_chain: Vec::new(),
-                    timeout: Duration::from_secs(5),
-                    send_prompt: false,
-                    send_user: false,
-                    on_empty: busbar_kernel::config::PolicyOnError::Reject,
-                },
-            )],
-            rewrites: Vec::new(),
-            key: None,
-            scan: None,
-            reads: Arc::new(|_: &[&str], _: Option<&str>, _: &str, _: bool| {
-                Box::pin(async { Ok(()) })
-            }),
-        })
-    }
-}
-
-#[tokio::test]
-async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status() {
-    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-    let gate = Arc::new(Refuses::default());
-    let binder = Arc::new(GateFirst {
-        gate: Arc::clone(&gate),
-        asked: Mutex::new(Vec::new()),
-    });
-    let driver = r.driver.with_hooks(binder.clone());
-    let (steps, far, caller) = (
-        common::TestUnits::passing(),
-        cases::Far::new(&["ok"], &[]),
-        cases::Caller::default(),
-    );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-    let outcome = cases::drive(&units).await;
-    assert!(
-        matches!(
-            outcome,
-            busbar_contract::caps::Outcome::Refused(
-                busbar_contract::caps::StepName::Approve,
-                busbar_contract::caps::ReasonCode::HookVeto
-            )
-        ),
-        "{outcome:?}"
-    );
-    assert_eq!(
-        gate.calls.load(Ordering::SeqCst),
-        1,
-        "the gate screened once"
-    );
-    assert!(
-        !steps
-            .calls
-            .lock()
-            .unwrap()
-            .contains(&busbar_contract::caps::StepName::Admit),
-        "a veto admits nothing: the door was never asked"
-    );
-
-    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
-    assert!(far.sent().is_empty(), "nothing reached the far end");
-    let rendered = units.take_rendered().expect("the veto is rendered");
-    assert_eq!(rendered.status, 451);
-}
-
-#[tokio::test]
-async fn a_gate_first_planes_over_budget_caller_gets_the_gates_answer_before_the_budgets() {
-    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-    let gate = Arc::new(Refuses::default());
-    let binder = Arc::new(GateFirst {
-        gate: Arc::clone(&gate),
-        asked: Mutex::new(Vec::new()),
-    });
-    let driver = r.driver.with_hooks(binder);
-    let steps = common::TestUnits {
-        refuse_at: Some((
-            busbar_contract::caps::StepName::Admit,
-            busbar_contract::caps::ReasonCode::OverBudget,
-        )),
-        ..common::TestUnits::passing()
-    };
-    let (far, caller) = (cases::Far::new(&["ok"], &[]), cases::Caller::default());
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-    let outcome = cases::drive(&units).await;
-    assert!(
-        matches!(
-            outcome,
-            busbar_contract::caps::Outcome::Refused(
-                busbar_contract::caps::StepName::Approve,
-                busbar_contract::caps::ReasonCode::HookVeto
-            )
-        ),
-        "the gate's answer, not the budget's: {outcome:?}"
-    );
-    assert_eq!(units.take_rendered().expect("rendered").status, 451);
-    assert!(!steps
-        .calls
-        .lock()
-        .unwrap()
-        .contains(&busbar_contract::caps::StepName::Admit));
-}
-
-#[tokio::test]
-async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_once() {
-    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-    let gate = Arc::new(Refuses {
-        abstains: true,
-        ..Refuses::default()
-    });
-    let binder = Arc::new(GateFirst {
-        gate: Arc::clone(&gate),
-        asked: Mutex::new(Vec::new()),
-    });
-    let driver = r.driver.with_hooks(binder);
-    let (steps, far, caller) = (
-        common::TestUnits::passing(),
-        cases::Far::new(&["ok"], &[]),
-        cases::Caller::default(),
-    );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-    let outcome = cases::drive(&units).await;
-    assert!(
-        !matches!(outcome, busbar_contract::caps::Outcome::Refused(..)),
-        "{outcome:?}"
-    );
-    assert_eq!(
-        gate.calls.load(Ordering::SeqCst),
-        1,
-        "screened once, at the screen"
-    );
-    assert!(steps
-        .calls
-        .lock()
-        .unwrap()
-        .contains(&busbar_contract::caps::StepName::Admit));
-    assert!(!far.sent().is_empty(), "the far end was reached");
-}
-
 #[tokio::test]
 async fn a_scope_local_unit_is_answered_at_its_resolved_entry_with_no_walk() {
     use busbar_contract::caps::{Outcome, ReasonCode, StepName};
@@ -3093,36 +2868,6 @@ async fn a_planes_message_boundaries_and_final_status_reach_the_callers_side() {
             "{member}: the bytes are unchanged"
         );
     }
-}
-
-#[tokio::test]
-async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
-    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-    let rows = Arc::new(AuditRows::default());
-    let binder = Arc::new(GateFirst {
-        gate: Arc::new(Refuses::default()),
-        asked: Mutex::new(Vec::new()),
-    });
-    let driver = r.driver.with_hooks(binder).with_audit(rows.clone());
-    let (steps, far, caller) = (
-        common::TestUnits::passing(),
-        cases::Far::new(&["ok"], &[]),
-        cases::Caller::default(),
-    );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-    let _ = cases::drive(&units).await;
-    let rendered = units.take_rendered().expect("the veto is rendered");
-    let body = String::from_utf8_lossy(&rendered.body).to_string();
-    assert!(body.ends_with(":hook=entry-gate"), "{body}");
-    assert_eq!(
-        *rows.0.lock().unwrap(),
-        vec![(
-            "thing.call".to_string(),
-            "thing:x".to_string(),
-            busbar_contract::vocab::OUTCOME_REJECTED,
-            common::principal().as_str().to_string(),
-        )]
-    );
 }
 
 struct Gone {

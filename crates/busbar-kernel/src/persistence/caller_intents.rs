@@ -279,11 +279,12 @@ impl CallerIntents {
     fn make_candidate(
         &self,
         id: busbar_contract::persistence::AttemptId,
-        request: scoped::Request,
+        predicates: &[scoped::Predicate],
+        mutations: &[scoped::Mutation],
     ) -> Result<PreparedCandidate, Error> {
         let rows = self
             .scoped
-            .prepare_participant(&request, self.store.limits().scan_bytes)
+            .prepare_participant(predicates, mutations, self.store.limits().scan_bytes)
             .map_err(|_| Error::Budget)?;
         let (predicates, mutations) = rows.into_parts(&self.store).map_err(|_| Error::Authority)?;
         PreparedCandidate::new(Candidate {
@@ -489,31 +490,25 @@ impl OperationDraft {
         let applied = codec::seal_terminal(&self.owner, key, &header, codec::Phase::Applied)?;
         let main = self.owner.make_candidate(
             self.operation.origin,
-            scoped::Request {
-                op_id: self.id(),
-                predicates: vec![
-                    predicate(GUARD, key, Some(&pending)),
-                    predicate(GRANT, key, change.previous()),
-                ],
-                mutations: vec![
-                    put(GRANT, key, change.successor()),
-                    put(GUARD, key, &terminal),
-                    put(INTENT, key, &applied),
-                ],
-            },
+            &[
+                predicate(GUARD, key, Some(&pending)),
+                predicate(GRANT, key, change.previous()),
+            ],
+            &[
+                put(GRANT, key, change.successor()),
+                put(GUARD, key, &terminal),
+                put(INTENT, key, &applied),
+            ],
         )?;
         let intent = codec::seal_prepared(&self.owner, key, &header, &main)?;
         let prepare = self.owner.make_candidate(
             self.owner.store.next_id().map_err(|_| Error::Authority)?,
-            scoped::Request {
-                op_id: self.id(),
-                predicates: vec![
-                    predicate(GUARD, key, current.guard.as_ref()),
-                    predicate(INTENT, key, current.intent.as_ref()),
-                    predicate(GRANT, key, change.previous()),
-                ],
-                mutations: vec![put(GUARD, key, &pending), put(INTENT, key, &intent)],
-            },
+            &[
+                predicate(GUARD, key, current.guard.as_ref()),
+                predicate(INTENT, key, current.intent.as_ref()),
+                predicate(GRANT, key, change.previous()),
+            ],
+            &[put(GUARD, key, &pending), put(INTENT, key, &intent)],
         )?;
         self.operation
             .state

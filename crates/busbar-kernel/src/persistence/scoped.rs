@@ -19,6 +19,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 pub use super::claims::{Error as ClaimError, Outcome as ClaimOutcome, PendingClaim};
 pub use super::host_records::{Error, Outcome};
+pub use super::record_ops::{HeldOp, Op};
 
 /// Canonical destination identity for a fenced host-owned migration. The caller
 /// supplies the authenticated legacy instance and unscoped logical suffix; this
@@ -122,7 +123,8 @@ pub enum Mutation {
 }
 #[derive(Debug)]
 pub struct Request {
-    pub op_id: [u8; 16],
+    /// The receipt identity: a held class-M op, or the class-D principal-transition op.
+    pub op: Op,
     pub predicates: Vec<Predicate>,
     pub mutations: Vec<Mutation>,
 }
@@ -270,7 +272,7 @@ impl ScopedStore {
     }
     /// Prepare a guarded deletion before awaiting; retain this request across
     /// cancellation and resubmit it to rediscover the original pending attempt.
-    pub fn prepare_delete_exact(
+    pub async fn prepare_delete_exact(
         &self,
         schema: &str,
         key: &[u8],
@@ -279,7 +281,7 @@ impl ScopedStore {
         // Authorization is checked before returning an operation capability.
         self.owner()?.address(schema, &self.key(key))?;
         Ok(Request {
-            op_id: self.store.next_id()?.operation,
+            op: self.store.record_op().await?.into(),
             predicates: vec![Predicate {
                 schema: schema.into(),
                 key: key.into(),
@@ -290,6 +292,10 @@ impl ScopedStore {
                 key: key.into(),
             }],
         })
+    }
+    /// A class-M receipt identity for one request of this scope (DES-264): the request holds it.
+    pub async fn record_op(&self) -> Result<Op, Error> {
+        Ok(self.store.record_op().await?.into())
     }
     pub async fn page(
         &self,
@@ -343,27 +349,29 @@ impl ScopedStore {
         request: &Request,
         time: Option<busbar_contract::persistence::TimeGuard>,
     ) -> Result<Outcome, Error> {
-        let (predicates, mutations) = self.native_rows(request, None)?;
+        let (predicates, mutations) =
+            self.native_rows(&request.predicates, &request.mutations, None)?;
         self.owner()?
-            .conditional_native_timed(request.op_id, predicates, mutations, time)
+            .conditional_native_timed(&request.op, predicates, mutations, time)
             .await
     }
 
     /// Validate addresses without claiming or submitting an operation. The
     /// composition owner supplies its own exact attempt and durable receipt.
-    /// `request.op_id` is not an idempotency promise for this participant.
+    /// The rows carry no operation identity; the composition owner's attempt is the receipt.
     /// `max_bytes` bounds retained row structs/keys/values incrementally; it is
     /// caller-owned memory backpressure, not a native permanent capacity verdict.
     pub fn prepare_participant(
         &self,
-        request: &Request,
+        predicates: &[Predicate],
+        mutations: &[Mutation],
         max_bytes: usize,
     ) -> Result<PreparedRows, Error> {
         if !self.private || self.domain.is_some() {
             return Err(Error::Unauthorized);
         }
         let authority = self.store.authority()?;
-        let (predicates, mutations) = self.native_rows(request, Some(max_bytes))?;
+        let (predicates, mutations) = self.native_rows(predicates, mutations, Some(max_bytes))?;
         Ok(PreparedRows {
             store: self.store.clone(),
             authority,
@@ -374,7 +382,8 @@ impl ScopedStore {
 
     fn native_rows(
         &self,
-        request: &Request,
+        predicates: &[Predicate],
+        mutations: &[Mutation],
         max_bytes: Option<usize>,
     ) -> Result<(Vec<NativePredicate>, Vec<NativeMutation>), Error> {
         let owner = self.owner()?;
@@ -386,8 +395,7 @@ impl ScopedStore {
             Ok::<(), Error>(())
         };
         let seal = crate::seal::lend();
-        let predicates = request
-            .predicates
+        let predicates = predicates
             .iter()
             .map(|p| {
                 charge(std::mem::size_of::<NativePredicate>())?;
@@ -412,8 +420,7 @@ impl ScopedStore {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        let mutations = request
-            .mutations
+        let mutations = mutations
             .iter()
             .map(|m| {
                 charge(std::mem::size_of::<NativeMutation>())?;

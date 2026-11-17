@@ -5,15 +5,28 @@ use super::*;
 use crate::config::{resolve, ModelCfg, ProviderDeploy};
 use std::collections::HashMap;
 
-const NEUTRAL_SECTION: &str = "neutral_section";
 const RAW_SECTION: &str = "raw_section";
-const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
 
-fn read_with<'de, D: Deserializer<'de>>(
-    de: D,
-    table: &[(&'static str, Dest)],
-    required: &[&'static str],
-) -> Result<DeployCfg, D::Error> {
+/// The recognizer a read gets from its admitted plane instance names.
+fn names_of(instances: &[&str]) -> SectionNames {
+    use crate::config::grammar::{Item, ItemKind, Standing};
+    SectionNames::of(
+        &Grammar::new(Default::default(), Default::default(), Vec::new()).with_items(
+            instances
+                .iter()
+                .map(|name| Item {
+                    kind: ItemKind::Section,
+                    name: (*name).to_owned(),
+                    module: "plane".to_owned(),
+                    image: "linked".to_owned(),
+                    standing: Standing::Counts,
+                })
+                .collect(),
+        ),
+    )
+}
+
+fn read_with<'de, D: Deserializer<'de>>(de: D, instances: &[&str]) -> Result<DeployCfg, D::Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Catalog {
@@ -26,18 +39,16 @@ fn read_with<'de, D: Deserializer<'de>>(
         #[serde(default, rename = "pools")]
         _pools: Option<busbar_contract::yaml::Value>,
     }
-    struct Document<'a> {
-        table: &'a [(&'static str, Dest)],
-        required: &'a [&'static str],
+    struct Document {
+        names: SectionNames,
     }
-    impl<'de> Visitor<'de> for Document<'_> {
+    impl<'de> Visitor<'de> for Document {
         type Value = DeployCfg;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("the section metadata test document")
         }
         fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            let (catalog, lifted) =
-                read_document::<_, Catalog>(map, self.required.to_vec(), self.table)?;
+            let (catalog, lifted) = read_document::<_, Catalog>(map, &self.names)?;
             let mut deploy = crate::config::tests::base_deploy();
             deploy.providers = catalog.providers;
             deploy.models = catalog.models;
@@ -48,164 +59,31 @@ fn read_with<'de, D: Deserializer<'de>>(
             Ok(deploy)
         }
     }
-    de.deserialize_map(Document { table, required })
+    de.deserialize_map(Document {
+        names: names_of(instances),
+    })
 }
 
 #[test]
-fn test_decisions_section_parses() {
-    let table: &[(&'static str, Dest)] = &[(
-        "neutral_section",
-        Dest::Declared(PlaneMetadata {
-            key: "neutral-test-section",
-            noun: "pool",
-        }),
-    )];
-    let required: &[&'static str] = &[];
+fn a_recognized_section_is_lifted_raw_for_its_plane() {
     let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let section = NEUTRAL_SECTION;
-    let deploy: DeployCfg = read(&format!(
-        "{section}:\n  \
-           models:\n    \
-             primary: {{ provider: example-upstream, upstream_model: example-1 }}\n\
-         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
-    ))
-    .expect("a document carrying a section a registered plane declares must parse");
-
-    assert!(
-        deploy
-            .declared
-            .0
-            .get(section)
-            .is_some_and(|c| c.is_present()),
-        "the lifted `decisions:` value must land on its carrier, not be dropped on the floor"
-    );
-
-    let bare: DeployCfg = read("providers: {}\nmodels: {}\npools: {}\n")
-        .expect("a document with no `decisions:` section still parses");
-    assert!(
-        bare.declared.0.is_empty(),
-        "an omitted `decisions:` section leaves the carrier at its Default"
-    );
-}
-
-#[test]
-fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
-    let table: &[(&'static str, Dest)] = &[
-        (
-            "neutral_section",
-            Dest::Declared(PlaneMetadata {
-                key: "neutral-test-section",
-                noun: "pool",
-            }),
-        ),
-        (
-            "second_section",
-            Dest::Declared(PlaneMetadata {
-                key: "neutral-test-second",
-                noun: "pool",
-            }),
-        ),
-    ];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let deploy: DeployCfg = read(
-        "neutral_section:\n  a: 1\nsecond_section:\n  b: 2\n\
-         providers: {}\nmodels: {}\npools: {}\n",
-    )
-    .expect("two owned sections parse");
-    let keys: Vec<&str> = deploy.declared.0.keys().copied().collect();
-    assert_eq!(keys, ["neutral_section", "second_section"]);
-    assert!(deploy.plane_raw.is_empty(), "{:?}", deploy.plane_raw);
-    let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
-    for section in keys {
-        assert!(
-            root.plane_sections.contains(section),
-            "{section} must be a configured plane section"
-        );
-    }
-}
-
-#[test]
-fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
-    let table: &[(&'static str, Dest)] = &[
-        (
-            "neutral_section",
-            Dest::Declared(PlaneMetadata {
-                key: "neutral-test-section",
-                noun: "pool",
-            }),
-        ),
-        (
-            "raw_section",
-            Dest::Raw(PlaneMetadata {
-                key: "neutral-test-raw",
-                noun: "pool",
-            }),
-        ),
-    ];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let deploy: DeployCfg = read(&format!(
-        "neutral_section:\n  a: 1\n  fees: {{ per_request: 3 }}\n{RAW_SECTION}:\n  greeting: hi\n\
-         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
-    ))
-    .expect("both sections parse");
-    let sections = deploy.door_sections();
-    let a: busbar_contract::yaml::Value = busbar_contract::yaml::from_str("a: 1").unwrap();
-    let raw: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str("greeting: hi").unwrap();
-    assert_eq!(
-        sections.get("neutral_section"),
-        Some(&a),
-        "kept as written, fees lifted off"
-    );
-    assert_eq!(
-        sections.get(RAW_SECTION),
-        Some(&raw),
-        "the raw carrier's too"
-    );
-    assert!(
-        !deploy.plane_raw.contains_key("neutral_section"),
-        "never raw-carried"
-    );
-}
-
-#[test]
-fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
-    let table: &[(&'static str, Dest)] = &[(
-        "raw_section",
-        Dest::Raw(PlaneMetadata {
-            key: "neutral-test-raw",
-            noun: "pool",
-        }),
-    )];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[RAW_SECTION]))
     };
 
     let deploy: DeployCfg = read(&format!(
         "{RAW_SECTION}:\n  greeting: hi\n  fees: {{ per_request: 3 }}\n\
          providers: {{}}\nmodels: {{}}\npools: {{}}\n",
     ))
-    .expect("a section a registered plane declares must parse, whichever carrier holds it");
+    .expect("a section an admitted plane is named by must parse");
     let remainder: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("greeting: hi").unwrap();
     assert_eq!(
-        deploy.plane_raw.get(RAW_SECTION),
+        deploy.instance_sections.get(RAW_SECTION),
         Some(&remainder),
         "the section lands raw, its core-owned `fees` lifted off it"
     );
-    assert!(deploy.plane_fees.contains_key("neutral-test-raw"));
+    assert_eq!(deploy.door_sections().get(RAW_SECTION), Some(&remainder));
+    assert!(deploy.plane_fees.contains_key(RAW_SECTION));
 
     let root = crate::config::resolve(&deploy, &Default::default()).expect("resolves");
     assert!(
@@ -217,9 +95,10 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
         .expect("its plane's resource");
     assert_eq!(
         resource.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>(),
-        Some(&(RAW_SECTION, remainder)),
+        Some(&(RAW_SECTION, remainder.clone())),
         "the resource is `(section, value)`"
     );
+    assert_eq!(root.instance_sections().get(RAW_SECTION), Some(&remainder));
 
     let bare = read(&format!(
         "{RAW_SECTION}: ~\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"
@@ -232,11 +111,7 @@ fn a_declared_section_no_carrier_holds_is_lifted_raw_for_its_plane() {
 
 #[test]
 fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
-    let table: &[(&'static str, Dest)] = &[];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
+    let read = |text: &str| busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[]));
 
     let err = read(
         "decisions:\n  \
@@ -244,7 +119,7 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
              verdict: { provider: typesafe }\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect_err("a `decisions:` block no registered plane declares must be refused")
+    .expect_err("a `decisions:` block no admitted plane is named by must be refused")
     .to_string();
     assert!(
         err.contains("unknown field `decisions`"),
@@ -261,52 +136,15 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
 }
 
 #[test]
-fn a_section_a_registered_plane_requires_is_refused_with_the_1_5_5_missing_field_text() {
-    let table: &[(&'static str, Dest)] = &[];
-    let required: &[&'static str] = &["providers", "models"];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
+fn no_section_is_required_and_an_omitted_one_reads_empty() {
+    let read = |text: &str| busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[]));
+    const NO_CATALOG: &str = "listen: \"127.0.0.1:0\"\npools: {}\n";
 
-    let err = read(NO_CATALOG).expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
-    let err = read("listen: \"127.0.0.1:0\"\nproviders: {}\n").expect_err("models required");
-    assert_eq!(err.to_string(), "missing field `models`");
-
-    let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
-    let err = read_with(busbar_contract::yaml::deserializer(value), table, required)
-        .expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
-}
-
-#[test]
-fn a_plane_requiring_one_section_leaves_the_other_omissible() {
-    let table: &[(&'static str, Dest)] = &[];
-    let required: &[&'static str] = &["providers"];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let err = read(NO_CATALOG).expect_err("providers required");
-    assert_eq!(err.to_string(), "missing field `providers`");
-    let deploy = read("providers: {}\n").expect("models is required by no registered plane");
-    assert!(deploy.models.is_empty() && deploy.providers.is_empty());
-}
-
-#[test]
-fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
-    let table: &[(&'static str, Dest)] = &[];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let deploy = read(NO_CATALOG).expect("no registered plane requires a catalog section");
+    let deploy = read(NO_CATALOG).expect("no plane requires a catalog section (r3 section 2.5)");
     assert!(deploy.providers.is_empty(), "{:?}", deploy.providers.keys());
     assert!(deploy.models.is_empty(), "{:?}", deploy.models.keys());
     let value: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(NO_CATALOG).unwrap();
-    read_with(busbar_contract::yaml::deserializer(value), table, required)
-        .expect("the in-memory path agrees");
+    read_with(busbar_contract::yaml::deserializer(value), &[]).expect("the in-memory path agrees");
 
     let carried = read("models:\n  m1: { provider: p1 }\nlisten: \"127.0.0.1:0\"\n")
         .expect("a carried section parses as written");
@@ -326,61 +164,32 @@ fn a_section_no_registered_plane_requires_may_be_omitted_and_reads_empty() {
 }
 
 #[test]
-fn any_section_a_registered_plane_requires_is_refused_when_absent() {
-    let table: &[(&'static str, Dest)] = &[];
-    let required: &[&'static str] = &["pools"];
+fn two_recognized_sections_each_reach_the_door_beside_their_own_pricing() {
     let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
-    };
-
-    let err =
-        read("listen: \"127.0.0.1:0\"\n").expect_err("pools is required by a registered plane");
-    assert_eq!(err.to_string(), "missing field `pools`");
-    read("pools: {}\n").expect("carried, so accepted");
-}
-
-#[test]
-fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
-    let table: &[(&'static str, Dest)] = &[
-        (
-            "beside_declaring",
-            Dest::Raw(PlaneMetadata {
-                key: "neutral-test-owns-beside",
-                noun: "pool",
-            }),
-        ),
-        (
-            "beside_owned",
-            Dest::Raw(PlaneMetadata {
-                key: "beside_owned",
-                noun: "entry",
-            }),
-        ),
-    ];
-    let required: &[&'static str] = &[];
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, table, required))
+        busbar_contract::yaml::with_deserializer(text, |d| {
+            read_with(d, &["beside_declaring", "beside_owned"])
+        })
     };
 
     let deploy: DeployCfg = read(
-        "beside_declaring:\n  a: 1\nbeside_owned:\n  receiver: true\n\
+        "beside_declaring:\n  a: 1\n  fees: { per_request: 3 }\nbeside_owned:\n  receiver: true\n\
          providers: {}\nmodels: {}\npools: {}\n",
     )
-    .expect("a section a registered plane owns must parse");
+    .expect("two sections admitted planes are named by must parse");
     let written: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("receiver: true").unwrap();
-    assert_eq!(deploy.plane_raw.get("beside_owned"), Some(&written));
+    assert_eq!(deploy.instance_sections.get("beside_owned"), Some(&written));
     assert_eq!(deploy.door_sections().get("beside_owned"), Some(&written));
+    assert!(deploy.plane_fees.contains_key("beside_declaring"));
     let bare: DeployCfg = read("beside_declaring:\n  a: 1\nproviders: {}\nmodels: {}\npools: {}\n")
         .expect("the plane's own section alone parses");
-    assert!(!bare.plane_raw.contains_key("beside_owned"));
+    assert!(!bare.instance_sections.contains_key("beside_owned"));
 }
 
 #[test]
 fn data_listener_provenance_distinguishes_omitted_explicit_default_and_empty() {
-    let read = |text: &str| {
-        busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[], &[])).unwrap()
-    };
+    let read =
+        |text: &str| busbar_contract::yaml::with_deserializer(text, |d| read_with(d, &[])).unwrap();
     let omitted = read("providers: {}\nmodels: {}\n");
     assert!(!omitted.listen_explicit);
     let explicit = read(&format!(

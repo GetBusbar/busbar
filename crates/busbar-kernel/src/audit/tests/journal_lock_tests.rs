@@ -199,10 +199,8 @@ async fn concurrent_candidates_for_one_scope_conflict_then_replan_gap_free() {
     let (_, rows) = fixture().await;
     let book_a = ChainBook::default();
     let book_b = ChainBook::default();
-    let mut operation_a = [0; 16];
-    let mut operation_b = [0; 16];
-    busbar_contract::crypto::fill(&mut operation_a).unwrap();
-    busbar_contract::crypto::fill(&mut operation_b).unwrap();
+    let held_a = rows.record_op().await.unwrap();
+    let held_b = rows.record_op().await.unwrap();
     let (request_a, _) = book_a
         .prepare_ordinary_async(
             &rows,
@@ -213,7 +211,7 @@ async fn concurrent_candidates_for_one_scope_conflict_then_replan_gap_free() {
                 content: b"a",
                 framing: FRAMING,
             },
-            operation_a,
+            &held_a,
         )
         .await
         .unwrap();
@@ -227,11 +225,14 @@ async fn concurrent_candidates_for_one_scope_conflict_then_replan_gap_free() {
                 content: b"b",
                 framing: FRAMING,
             },
-            operation_b,
+            &held_b,
         )
         .await
         .unwrap();
-    let (a, b) = tokio::join!(rows.conditional(&request_a), rows.conditional(&request_b));
+    let (a, b) = tokio::join!(
+        rows.conditional(&held_a, &request_a),
+        rows.conditional(&held_b, &request_b)
+    );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert!(matches!(
         (a, b),

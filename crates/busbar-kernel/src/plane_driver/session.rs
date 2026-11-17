@@ -203,12 +203,10 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         });
         let priced = priced && !local;
         let d = self.driver;
-        self.open_hooks(token, ctx).await?;
         if priced {
             d.money.session_opened(ctx)?;
         }
 
-        self.state_stage(token);
         let stream = ctx.key.get();
         let told = Arc::new(Notify::new());
         d.lock_sessions().insert(stream, told.clone());

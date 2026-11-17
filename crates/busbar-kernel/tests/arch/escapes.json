@@ -33,7 +33,6 @@
     "crates/busbar-kernel/src/config_validate/tests/deal.rs": 2,
     "crates/busbar-kernel/src/config/provider_grammar.rs": 2,
     "crates/busbar-kernel/src/governance/state.rs": 1,
-    "crates/busbar-kernel/src/hooks/mod.rs": 3,
     "crates/busbar-kernel/src/lib.rs": 5,
     "crates/busbar-kernel/src/persistence/mod.rs": 4,
     "crates/busbar-kernel/src/plane_driver/door.rs": 1,

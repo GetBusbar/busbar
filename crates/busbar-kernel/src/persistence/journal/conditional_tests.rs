@@ -31,19 +31,16 @@ fn participant(
     record: &Record,
 ) -> std::result::Result<scoped::PreparedRows, scoped::Error> {
     scope.prepare_participant(
-        &scoped::Request {
-            op_id: [5; 16],
-            predicates: vec![scoped::Predicate {
-                schema: "receipts".into(),
-                key: b"publication".to_vec(),
-                expected: scoped::Expected::Absent,
-            }],
-            mutations: vec![scoped::Mutation::Put {
-                schema: "receipts".into(),
-                key: b"publication".to_vec(),
-                value: Secret::new(record.node.to_be_bytes().to_vec()),
-            }],
-        },
+        &[scoped::Predicate {
+            schema: "receipts".into(),
+            key: b"publication".to_vec(),
+            expected: scoped::Expected::Absent,
+        }],
+        &[scoped::Mutation::Put {
+            schema: "receipts".into(),
+            key: b"publication".to_vec(),
+            value: Secret::new(record.node.to_be_bytes().to_vec()),
+        }],
         4096,
     )
 }
@@ -232,24 +229,20 @@ async fn abandoned_unsubmitted_reservation_and_foreign_participant_have_no_effec
 async fn participant_budget_and_scope_refusals_submit_nothing() {
     let backend = Arc::new(Backend::default());
     let store = Arc::new(attach(backend.clone(), 4).await);
-    let request = scoped::Request {
-        op_id: [6; 16],
-        predicates: Vec::new(),
-        mutations: vec![scoped::Mutation::Put {
-            schema: "receipts".into(),
-            key: b"p".to_vec(),
-            value: Secret::new(vec![1]),
-        }],
-    };
+    let mutations = vec![scoped::Mutation::Put {
+        schema: "receipts".into(),
+        key: b"p".to_vec(),
+        value: Secret::new(vec![1]),
+    }];
     assert!(matches!(
-        scope(store.clone()).prepare_participant(&request, 0),
+        scope(store.clone()).prepare_participant(&[], &mutations, 0),
         Err(scoped::Error::Access(
             crate::persistence::facade::AccessError::Overloaded
         ))
     ));
     let untrusted = ScopedStore::authorized(store, "receipt-test", ["receipts".into()]).unwrap();
     assert!(matches!(
-        untrusted.prepare_participant(&request, 4096),
+        untrusted.prepare_participant(&[], &mutations, 4096),
         Err(scoped::Error::Unauthorized)
     ));
     assert!(backend.state.lock().unwrap().sent.is_empty());
