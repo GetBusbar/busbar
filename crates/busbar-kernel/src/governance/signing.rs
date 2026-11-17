@@ -334,18 +334,27 @@ impl VerifiedToken {
         &self.claims
     }
 
-    pub(super) fn valid_with(
+    pub(super) fn check_current(
         &self,
         current: &TokenVerifier,
         now: u64,
         expected_aud: Option<&str>,
-    ) -> bool {
-        self.claims.exp > now
-            && self.claims.aud.as_deref() == expected_aud
-            && current
-                .keys
-                .get(&self.claims.kid)
-                .is_some_and(|key| key.to_bytes() == self.public_key)
+    ) -> Result<(), super::current_credential::CurrentCredentialRefusal> {
+        use super::current_credential::CurrentCredentialRefusal;
+        if self.claims.exp <= now {
+            return Err(CurrentCredentialRefusal::Expired);
+        }
+        if self.claims.aud.as_deref() != expected_aud {
+            return Err(CurrentCredentialRefusal::AudienceMismatch);
+        }
+        if !current
+            .keys
+            .get(&self.claims.kid)
+            .is_some_and(|key| key.to_bytes() == self.public_key)
+        {
+            return Err(CurrentCredentialRefusal::UntrustedSigner);
+        }
+        Ok(())
     }
 }
 
