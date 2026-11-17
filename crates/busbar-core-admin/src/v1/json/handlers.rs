@@ -4897,7 +4897,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "x-busbar-config-schemas": super::config_forms::extension(),
         "x-busbar-exact-numbers": super::contract_metadata::number_profile(),
@@ -4932,7 +4932,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "schemas": schemas
         },
         "paths": paths
-    })
+    });
+    super::evolution::mark_response_enums(&mut doc);
+    doc
 }
 
 /// `components.x-busbar-reasons`: every reason of the closed table with the code and status it

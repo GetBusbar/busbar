@@ -177,7 +177,8 @@
               "applied",
               "not_applied",
               "unknown"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "fingerprint": {
             "description": "SHA256 of exact request bytes",
@@ -204,7 +205,8 @@
             "enum": [
               "receipt",
               "reconcile_ledger_recovery"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "retry": {
             "const": "same_action_only"
@@ -2032,7 +2034,8 @@
               "unreadable",
               "newer_version"
             ],
-            "type": "string"
+            "type": "string",
+            "x-busbar-extensible-enum": true
           },
           "note": {
             "description": "A human note describing the live-vs-reload split (absent on a GET).",
@@ -2094,7 +2097,8 @@
               "base",
               "overlay",
               "merged"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "layers": {
             "additionalProperties": {
@@ -2131,7 +2135,8 @@
             "enum": [
               "effective",
               "declared"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           }
         },
         "required": [
@@ -2577,7 +2582,6 @@
         "type": "object"
       },
       "Describe": {
-        "additionalProperties": false,
         "properties": {
           "actions": {
             "maxItems": 0,
@@ -3631,11 +3635,9 @@
         "type": "object"
       },
       "InstancesPage": {
-        "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "etag": {
                   "type": "string"
@@ -3700,7 +3702,8 @@
                         "failed",
                         "disabled",
                         "starting"
-                      ]
+                      ],
+                      "x-busbar-extensible-enum": true
                     }
                   },
                   "required": [
@@ -4307,14 +4310,13 @@
           "metering",
           "correction"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "KindsPage": {
-        "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "category": {
                   "enum": [
@@ -4326,7 +4328,8 @@
                     "hook",
                     "transport",
                     "core"
-                  ]
+                  ],
+                  "x-busbar-extensible-enum": true
                 },
                 "descriptors_uniform": {
                   "type": "boolean"
@@ -5249,13 +5252,15 @@
               "key.rotate",
               "key.patch",
               "key.delete"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "recovery": {
             "enum": [
               "rotate_with_new_action",
               "reread_resource"
-            ]
+            ],
+            "x-busbar-extensible-enum": true
           },
           "resource": {
             "description": "Non-secret key:<id> identity",
@@ -5329,7 +5334,8 @@
           "__rejected",
           "__in_flight"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "OperationView": {
         "description": "`GET /operations/{key}`: one idempotent operation record.",
@@ -6564,7 +6570,8 @@
           "verdict_not_landed",
           "settled"
         ],
-        "type": "string"
+        "type": "string",
+        "x-busbar-extensible-enum": true
       },
       "StoreRestoreReq": {
         "description": "`POST /store-restore`: the backup to restore. There is no default and no empty one.",
@@ -7421,7 +7428,6 @@
         "type": "object"
       },
       "ViewPage": {
-        "additionalProperties": false,
         "properties": {
           "as_of": {
             "description": "Unix milliseconds",
@@ -8020,7 +8026,6 @@
       "action_in_flight": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8029,7 +8034,6 @@
       "archive_changed": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8038,7 +8042,6 @@
       "at_key_cap": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8047,7 +8050,6 @@
       "base_defined": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8056,7 +8058,6 @@
       "bound_keys": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8065,7 +8066,6 @@
       "config_locked": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8074,7 +8074,6 @@
       "credential_expired": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8083,7 +8082,6 @@
       "credential_invalid": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8092,7 +8090,6 @@
       "credential_revoked": {
         "code": "unauthorized",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 401,
@@ -8101,7 +8098,6 @@
       "currency_change": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8110,7 +8106,6 @@
       "cursor_expired": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "oldest_available": {
               "type": "string"
@@ -8127,7 +8122,6 @@
       "cursor_mismatch": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "cursor_node_id": {
               "type": "string"
@@ -8147,7 +8141,6 @@
         ],
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8156,7 +8149,6 @@
       "grant_change": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8165,7 +8157,6 @@
       "hook_no_ack": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "condition": {
               "type": [
@@ -8198,7 +8189,6 @@
       "idempotency_in_flight": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8207,7 +8197,6 @@
       "idempotency_mismatch": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8216,7 +8205,6 @@
       "if_match_required": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 428,
@@ -8225,7 +8213,6 @@
       "instance_not_configured": {
         "code": "not_found",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 404,
@@ -8234,7 +8221,6 @@
       "invalid_config": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8243,7 +8229,6 @@
       "invalid_filename": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8252,7 +8237,6 @@
       "invalid_labels": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8261,7 +8245,6 @@
       "invalid_query_value": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8270,7 +8253,6 @@
       "invalid_tree": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8279,7 +8261,6 @@
       "key_expiry_fields": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8288,7 +8269,6 @@
       "key_revoked": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8297,7 +8277,6 @@
       "lockout_self": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8306,7 +8285,6 @@
       "malformed_body": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8315,7 +8293,6 @@
       "malformed_cursor": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8324,7 +8301,6 @@
       "malformed_if_match": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8333,7 +8309,6 @@
       "method_not_allowed": {
         "code": "method_not_allowed",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 405,
@@ -8342,7 +8317,6 @@
       "missing_required_query": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8351,7 +8325,6 @@
       "mutation_applied": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8360,7 +8333,6 @@
       "mutation_budget": {
         "code": "rate_limited",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 429,
@@ -8369,7 +8341,6 @@
       "name_collision": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8378,7 +8349,6 @@
       "no_disk_base": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8387,7 +8357,6 @@
       "no_signing_key": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8396,7 +8365,6 @@
       "no_supervisor": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8405,7 +8373,6 @@
       "non_numeric_path": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8420,7 +8387,6 @@
         ],
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8429,7 +8395,6 @@
       "not_restartable": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8438,7 +8403,6 @@
       "operator_file_policy": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8447,7 +8411,6 @@
       "overlong": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8456,7 +8419,6 @@
       "parent_without_group": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8465,7 +8427,6 @@
       "plugin_refused": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "byte": {
               "type": "integer"
@@ -8507,7 +8468,6 @@
       "plugin_rejected": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "condition": {
               "type": [
@@ -8540,7 +8500,6 @@
       "range_too_large": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "max_buckets": {
               "type": "integer"
@@ -8557,7 +8516,6 @@
       "read_budget": {
         "code": "rate_limited",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 429,
@@ -8566,7 +8524,6 @@
       "rebind_target_missing": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8575,7 +8532,6 @@
       "recovery_conflict": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8584,7 +8540,6 @@
       "request_too_large": {
         "code": "request_too_large",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 413,
@@ -8593,7 +8548,6 @@
       "restart_required": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8602,7 +8556,6 @@
       "restart_unreachable": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8611,7 +8564,6 @@
       "scope_insufficient": {
         "code": "forbidden",
         "details_schema": {
-          "additionalProperties": false,
           "properties": {
             "needed_scope": {
               "type": "string"
@@ -8635,7 +8587,6 @@
       "service_unavailable": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
@@ -8644,7 +8595,6 @@
       "settings_push": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8653,7 +8603,6 @@
       "stale_if_match": {
         "code": "version_conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8662,7 +8611,6 @@
       "state_conflict": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8671,7 +8619,6 @@
       "still_parent": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8680,7 +8627,6 @@
       "still_referenced": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8689,7 +8635,6 @@
       "telemetry_disabled": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
@@ -8698,7 +8643,6 @@
       "trust_ceiling_raise": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8707,7 +8651,6 @@
       "unknown_module": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8716,7 +8659,6 @@
       "unknown_resource": {
         "code": "not_found",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 404,
@@ -8725,7 +8667,6 @@
       "unknown_section": {
         "code": "invalid_request",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 400,
@@ -8734,7 +8675,6 @@
       "unpriced": {
         "code": "unpriced_class",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8743,7 +8683,6 @@
       "untrusted_upload": {
         "code": "conflict",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 409,
@@ -8752,7 +8691,6 @@
       "view_unavailable": {
         "code": "unavailable",
         "details_schema": {
-          "additionalProperties": false,
           "type": "object"
         },
         "http": 503,
