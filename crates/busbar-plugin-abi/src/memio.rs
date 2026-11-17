@@ -568,3 +568,7 @@ mod tests {
         assert!(polls.load(Ordering::SeqCst) <= 3);
     }
 }
+
+#[cfg(test)]
+#[path = "memio_provenance_tests.rs"]
+mod provenance_tests;
