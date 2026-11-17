@@ -48,6 +48,14 @@ impl IssuedCredentials for Checks {
     }
 }
 impl ReplayGuard for Checks {
+    fn claim_until<'a>(
+        &'a self,
+        _: &'a Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        panic!("eager chain fixture must use its original relative replay policy")
+    }
     fn claim<'a>(
         &'a self,
         _: &'a Caller<'_>,
@@ -183,6 +191,53 @@ fn caller() -> Caller<'static> {
         out_of_process: false,
         limits: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn preparation_shares_verification_without_policy_or_replay_admission() {
+    let checks = Checks {
+        allow: AtomicBool::new(false),
+        claims: AtomicUsize::new(0),
+        issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
+    };
+    let services = AuthServices {
+        issued: &checks,
+        replay: &checks,
+        policy: &checks,
+    };
+    let port = Port {
+        calls: AtomicUsize::new(0),
+        issued: false,
+        stale: false,
+        plain: true,
+        refreshes: AtomicUsize::new(0),
+    };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance {
+        id: 1,
+        port: &port,
+        caller: &who,
+        keys: &keys,
+        holds: &[],
+    };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let req = super::Request::new(&request());
+    for _ in 0..2 {
+        assert!(matches!(
+            super::prepare_owned(&services, &cache, instance, cx(), &req).await,
+            Ok(Verdict::Identity(_))
+        ));
+    }
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        verify_cached(&services, &cache, instance, cx(), &request()).await,
+        Ok(Verdict::PolicyRejected { .. })
+    ));
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

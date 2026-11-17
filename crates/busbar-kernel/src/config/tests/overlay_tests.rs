@@ -393,6 +393,132 @@ async fn store_round_trip_preserves_every_sibling_and_resets_only_requested_sect
 }
 
 #[tokio::test]
+async fn unrelated_api_write_does_not_capture_base_hooks_or_groups() {
+    let backend = OverlayStore::from_core(crate::real_store::core().await).unwrap();
+    let base = HashSet::from(["file".to_owned()]);
+    persist_async(
+        Some(&backend),
+        &HashMap::from([("file".into(), gate()), ("api".into(), gate())]),
+        &["file".into(), "api".into()],
+        None,
+        Some("api"),
+        &base,
+    )
+    .await
+    .unwrap();
+    persist_groups_async(
+        Some(&backend),
+        &BTreeMap::from([
+            ("file".into(), group_with_budget()),
+            ("api".into(), group_with_budget()),
+        ]),
+        None,
+        Some("api"),
+        &base,
+    )
+    .await
+    .unwrap();
+    let doc = backend.read_required_async().await.unwrap().unwrap();
+    assert!(!doc.hooks.contains_key("file"));
+    assert!(!doc.groups.contains_key("file"));
+    assert_eq!(doc.global_hooks, ["api"]);
+    assert!(doc.hooks.contains_key("api"));
+    assert!(doc.groups.contains_key("api"));
+
+    let mut edited = minimal_cfg();
+    let mut file_hook = gate();
+    file_hook.plugin = "edited-file-hook".into();
+    edited.hooks.insert("file".into(), file_hook);
+    let mut file_group = group_with_budget();
+    file_group.enabled = false;
+    edited.groups.insert("file".into(), file_group);
+    merge_into(&mut edited, doc.clone());
+    assert_eq!(edited.hooks["file"].plugin, "edited-file-hook");
+    assert!(!edited.groups["file"].enabled);
+    let mut removed = minimal_cfg();
+    merge_into(&mut removed, doc);
+    assert!(!removed.hooks.contains_key("file"));
+    assert!(!removed.groups.contains_key("file"));
+}
+
+#[tokio::test]
+async fn unrelated_api_write_preserves_durable_overlap_values_and_global_order() {
+    let backend = OverlayStore::from_core(crate::real_store::core().await).unwrap();
+    let base = HashSet::from(["file-1".into(), "file-2".into(), "new-file".into()]);
+    let old = OverlayDoc {
+        hooks: HashMap::from([
+            ("api-a".into(), gate()),
+            ("file-1".into(), gate()),
+            ("api-b".into(), gate()),
+            ("file-2".into(), gate()),
+        ]),
+        groups: BTreeMap::from([("file-1".into(), group_with_budget())]),
+        global_hooks: vec![
+            "api-a".into(),
+            "file-1".into(),
+            "api-b".into(),
+            "file-2".into(),
+        ],
+        ..Default::default()
+    };
+    let mut installed = old.hooks.clone();
+    installed.get_mut("file-1").unwrap().plugin = "new-file-value".into();
+    installed.insert("new-file".into(), gate());
+    installed.insert("api-c".into(), gate());
+    let mut changed_group = group_with_budget();
+    changed_group.enabled = false;
+
+    for (api, expected) in [
+        (
+            vec!["api-a", "api-b"],
+            vec!["api-a", "file-1", "api-b", "file-2"],
+        ),
+        (
+            vec!["api-a", "api-b", "api-c"],
+            vec!["api-a", "file-1", "api-b", "file-2", "api-c"],
+        ),
+        (
+            vec!["api-b", "api-a"],
+            vec!["api-b", "file-1", "api-a", "file-2"],
+        ),
+        (vec!["api-b"], vec!["file-1", "api-b", "file-2"]),
+        (
+            vec!["api-b", "api-b", "missing"],
+            vec!["file-1", "api-b", "file-2"],
+        ),
+    ] {
+        write_async(&backend, &old).await.unwrap();
+        let globals = ["new-file", "file-2", "file-1"]
+            .into_iter()
+            .chain(api)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        persist_async(Some(&backend), &installed, &globals, None, None, &base)
+            .await
+            .unwrap();
+        persist_groups_async(
+            Some(&backend),
+            &BTreeMap::from([
+                ("file-1".into(), changed_group.clone()),
+                ("new-file".into(), group_with_budget()),
+                ("api".into(), group_with_budget()),
+            ]),
+            None,
+            None,
+            &base,
+        )
+        .await
+        .unwrap();
+        let doc = backend.read_required_async().await.unwrap().unwrap();
+        assert_eq!(doc.hooks["file-1"].plugin, "test-hook");
+        assert!(doc.groups["file-1"].enabled);
+        assert!(!doc.hooks.contains_key("new-file"));
+        assert!(!doc.groups.contains_key("new-file"));
+        assert_eq!(doc.global_hooks, expected);
+    }
+}
+
+#[tokio::test]
 async fn hook_and_group_tombstones_reconcile_readds_and_prune_nonbase_names() {
     let backend = OverlayStore::from_core(crate::real_store::core().await).unwrap();
     write_async(

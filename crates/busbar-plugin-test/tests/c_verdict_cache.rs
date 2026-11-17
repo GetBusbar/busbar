@@ -54,6 +54,14 @@ impl busbar_kernel::issued::IssuedCredentials for Checks {
     }
 }
 impl busbar_kernel::plane_grants::ReplayGuard for Checks {
+    fn claim_until<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, busbar_kernel::plugin_records::RecordsDenied>> {
+        panic!("eager cache fixture must use its original relative replay policy")
+    }
     fn claim<'a>(
         &'a self,
         _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,

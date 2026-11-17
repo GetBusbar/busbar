@@ -736,3 +736,64 @@ fn a_retry_after_the_plane_stated_is_never_overwritten() {
     };
     assert_eq!(fields.len(), 1);
 }
+
+#[test]
+fn a_native_hook_cannot_run_without_its_admitted_invocation() {
+    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
+    struct Required;
+    impl Binder for Required {
+        fn active(&self, _: u32) -> bool {
+            true
+        }
+        fn enforcing(&self, _: u32) -> bool {
+            true
+        }
+        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
+            panic!("unadmitted hook selection must never run")
+        }
+    }
+    struct Hooked(Invocation);
+    impl Effects for Hooked {
+        fn hooks(&self) -> Option<&Invocation> {
+            Some(&self.0)
+        }
+        fn emit(&self, _: u64, _: &[u8]) {
+            panic!("unadmitted hook effects must never escape")
+        }
+    }
+    let effects = Hooked(Invocation {
+        binder: Arc::new(Required),
+        principal: None,
+        now_s: 1,
+        classes: Vec::new(),
+        journal: None,
+        unit: UnitKey::new(1),
+    });
+    let plane = Plane {
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let books = Log::default();
+    let result = run_session(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &books,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::HookPrerequisite)),
+        "{result:?}"
+    );
+}

@@ -144,6 +144,13 @@ pub trait IngressVerifier: Send + Sync + 'static {
 /// sighting (admit); Ok(false) = replay (refuse R_REPLAYED, audit `auth_replay`). Unavailable => refuse
 /// (fail closed). Owner K10.
 pub trait ReplayGuard: Send + Sync + 'static {
+    /// The original replay window's absolute cutoff, unchanged by store waits or retries.
+    fn claim_until<'a>(
+        &'a self,
+        who: &'a Caller<'_>,
+        key: &'a [u8],
+        expires_at_s: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>>;
     fn claim<'a>(
         &'a self,
         who: &'a Caller<'_>,

@@ -20,6 +20,27 @@ const SHORT: Duration = Duration::from_secs(2);
 /// The design's bound on every stalled case: the budget plus one second.
 const SLACK: Duration = Duration::from_secs(1);
 
+/// A control task may still own a capture producer when its join reaches C1. A failed
+/// join is not permission to close the native journal underneath its eventual loss report.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unquiesced_capture_producer_keeps_native_journal_intake_open() {
+    let fixture = Fixture::new(16).await;
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (mut post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    post.control_drain = Box::pin(std::future::pending());
+    let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+
+    let (code, _) = finished(post, &drain).await;
+    assert_eq!(code, 75, "an unquiesced producer prevents clean retirement");
+    seen.journal
+        .stage_run(&[busbar_kernel_wal::Entry::new(
+            busbar_kernel_wal::RecordClass::Load,
+            vec![3; 24],
+        )])
+        .expect("native audit intake must remain open for the outstanding producer");
+    seen.still_admitted().await;
+}
+
 /// Runs `finish` and returns its code and how long it took.
 async fn finished(post: PostServe<'static>, drain: &ShutdownDrain) -> (i32, Duration) {
     let started = std::time::Instant::now();

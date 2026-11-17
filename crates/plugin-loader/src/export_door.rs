@@ -671,11 +671,17 @@ impl ExportCalls for ExportInstance {
         let line = SecureVec::from(line);
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {
+            self.shed(busbar_contract::export_calls::ExportLossKind::Dropped(
+                busbar_contract::export_calls::ExportDropReason::Stopped,
+            ));
             return Delivered::Shed;
         }
         let was_empty = {
             let mut q = sh.lock();
             if q.len() >= MAX_QUEUED_LINES {
+                self.shed(busbar_contract::export_calls::ExportLossKind::Dropped(
+                    busbar_contract::export_calls::ExportDropReason::QueueFull,
+                ));
                 return Delivered::Shed;
             }
             q.push_back(Line {
@@ -807,7 +813,7 @@ impl ExportCalls for ExportInstance {
             .ready(&sh.dispatcher, crate::dispatch::ready::READY_DEADLINE)
     }
 
-    fn shed(&self) {
+    fn shed(&self, _kind: busbar_contract::export_calls::ExportLossKind) {
         // One atomic add per shed line; the flusher folds the total once per
         // pass. The first shed since the last fold wakes an idle flusher.
         if self.shared.shed_pending.fetch_add(1, Ordering::Relaxed) == 0 {

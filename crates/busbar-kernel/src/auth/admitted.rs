@@ -198,6 +198,17 @@ impl AdmittedRefusal {
 }
 
 impl crate::inbound::RequestAdmission {
+    /// Metadata from this same admitted identity, without a second verifier call.
+    pub(crate) fn admin_who(&self) -> Option<super::AdminWho> {
+        let app = self.app();
+        let cap = self
+            .inner
+            .admitted
+            .as_ref()
+            .and_then(|admitted| super::module_admin_scope_cap(&app, &admitted.provider));
+        super::admin_who_of(&app, self.verdict(), cap, None)
+    }
+
     /// Project the first-hand identity through the pinned admin bindings and provider cap.
     /// This never verifies credentials again or spends replay before the admin approve step.
     #[must_use]
