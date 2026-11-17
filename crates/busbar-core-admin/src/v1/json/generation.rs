@@ -40,15 +40,22 @@ const INTENT_LAYOUT: u8 = 3;
 /// Original wire fields, before the shared generation check translates the value for handlers.
 /// Keeping every field prevents a strict consumer from accepting a collapsed duplicate header.
 #[derive(Clone)]
-pub(crate) struct OriginalConfigPrecondition(Vec<HeaderValue>);
+pub(crate) struct OriginalConfigPrecondition {
+    count: usize,
+    first: Option<HeaderValue>,
+}
 
 impl OriginalConfigPrecondition {
     fn capture(headers: &axum::http::HeaderMap) -> Self {
-        Self(headers.get_all(header::IF_MATCH).iter().cloned().collect())
+        let values = headers.get_all(header::IF_MATCH);
+        Self {
+            count: values.iter().count(),
+            first: values.iter().next().cloned(),
+        }
     }
 
     pub(crate) fn require_strong(&self) -> Result<&HeaderValue, Box<Response>> {
-        if self.0.is_empty() {
+        if self.count == 0 {
             return Err(Box::new(refusal(
                 428,
                 "invalid_request",
@@ -56,7 +63,7 @@ impl OriginalConfigPrecondition {
                 "this write needs one strong If-Match config ETag",
             )));
         }
-        if let [value] = self.0.as_slice() {
+        if let Some(value) = self.first.as_ref().filter(|_| self.count == 1) {
             let bytes = value.as_bytes();
             if bytes.len() >= 2
                 && bytes[0] == b'"'
@@ -222,15 +229,15 @@ fn check_new_dispatch(
     check_if_match(req, app, rel)
 }
 
-fn if_none_match(req: &Request, etag: &str) -> bool {
-    req.headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            let weak = |s: &str| s.trim().strip_prefix("W/").unwrap_or(s.trim()).to_string();
-            let ours = weak(etag);
-            v.trim() == "*" || v.split(',').any(|candidate| weak(candidate) == ours)
-        })
+fn if_none_match(value: Option<&HeaderValue>, etag: &str) -> bool {
+    fn weak(value: &str) -> &str {
+        let value = value.trim();
+        value.strip_prefix("W/").unwrap_or(value)
+    }
+    value.and_then(|v| v.to_str().ok()).is_some_and(|v| {
+        let ours = weak(etag);
+        v.trim() == "*" || v.split(',').any(|candidate| weak(candidate) == ours)
+    })
 }
 
 fn not_modified(etag: &str) -> Response {
@@ -252,7 +259,6 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let is_read = matches!(method, Method::GET | Method::HEAD);
     let config = config_resource(&rel);
-    let if_none = req.headers().contains_key(header::IF_NONE_MATCH);
 
     if config && !is_read {
         let original = OriginalConfigPrecondition::capture(req.headers());
@@ -288,11 +294,11 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
     }
     if config && is_read {
         let etag = config_etag(&app);
-        if if_none_match(&req, &etag) {
+        if if_none_match(req.headers().get(header::IF_NONE_MATCH), &etag) {
             return not_modified(&etag);
         }
     }
-    let request_if_none = if_none.then(|| req.headers().clone());
+    let request_if_none = req.headers().get(header::IF_NONE_MATCH).cloned();
     let mut response = next.run(req).await;
     if method != Method::GET || !response.status().is_success() {
         if config && response.status().is_success() {
@@ -321,12 +327,8 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
     if let Ok(value) = HeaderValue::from_str(&etag) {
         parts.headers.insert(header::ETAG, value);
     }
-    if let Some(headers) = request_if_none {
-        let mut probe = Request::new(Body::empty());
-        *probe.headers_mut() = headers;
-        if if_none_match(&probe, &etag) {
-            return not_modified(&etag);
-        }
+    if if_none_match(request_if_none.as_ref(), &etag) {
+        return not_modified(&etag);
     }
     Response::from_parts(parts, Body::from(bytes))
 }
