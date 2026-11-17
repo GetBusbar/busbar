@@ -53,9 +53,14 @@ const fn name_ok(n: &str) -> bool {
 }
 
 const _: () = {
-    assert!(b::API == 3, "busbar-crypto-backend API mismatch");
+    assert!(
+        b::API == 3,
+        "busbar-crypto-backend API mismatch: the 1.6.0 contract is API 3 (VALIDATION and the checked operations); update the backend"
+    );
     // Required, no default (IF §5.2 round 13): a backend that never states it does not build.
     let _: bool = b::EXTERNAL_PLUGINS;
+    // Required, no default (ADMIN-API-1.6-ONE-MODEL §10.1): validated_mode is derived from it alone.
+    let _: Option<&'static str> = b::VALIDATION;
     assert!(
         name_ok(b::NAME),
         "busbar-crypto-backend NAME must be 1..=8 of [a-z0-9-]"

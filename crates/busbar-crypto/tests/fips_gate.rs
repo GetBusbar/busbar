@@ -11,6 +11,9 @@
 //! - the stub as written (`API = 3`, `EXTERNAL_PLUGINS = false`) builds;
 //! - the same stub keeping `API = 1`, or not defining `EXTERNAL_PLUGINS`, fails to compile at the
 //!   facade's contract block, so a backend that never heard of the gate cannot admit by omission;
+//! - the same stub not defining `VALIDATION` fails to compile there too, and linked, the facade's
+//!   `validated_mode` is false because the stub states no validation (ADMIN-API-1.6-ONE-MODEL §10.1:
+//!   derived from `VALIDATION.is_some()` alone, never from the backend's name);
 //! - linked, the facade states the stub's `EXTERNAL_PLUGINS`, `supports("EXTERNAL_PLUGINS")` answers
 //!   from that const (the stub's own `supports` says true for it), and `fill_checked` forwards the
 //!   backend's `SelfTest`/`Rng` while `fill` keeps answering `RngError`.
@@ -56,6 +59,7 @@ test-support = []
 api1 = ["busbar-crypto-backend/api1"]
 api2 = ["busbar-crypto-backend/api2"]
 silent = ["busbar-crypto-backend/silent"]
+unvalidated = ["busbar-crypto-backend/unvalidated"]
 
 [workspace]
 "#,
@@ -80,6 +84,7 @@ path = '{lib}'
 api1 = []
 api2 = []
 silent = []
+unvalidated = []
 "#,
         lib = fixtures.join("backend.rs").display(),
     );
@@ -145,6 +150,13 @@ fn c_fips_gate_and_fill_checked_on_a_stub_backend() {
         shown(&silent)
     );
 
+    let unvalidated = cargo(&dir, &["check", "--features", "unvalidated"], "");
+    assert!(
+        fails_with(&unvalidated, "VALIDATION"),
+        "a backend that does not state VALIDATION must fail to compile:\n{}",
+        shown(&unvalidated)
+    );
+
     for (fill, checked) in [
         ("crngt", r#"Err(SelfTest("crngt"))"#),
         ("rng", "Err(Rng(RngError))"),
@@ -152,7 +164,8 @@ fn c_fips_gate_and_fill_checked_on_a_stub_backend() {
         let run = cargo(&dir, &["run", "--bin", "probe"], fill);
         let want = format!(
             "fill_checked={checked}\nfill=Err(RngError)\nexternal_plugins=false\n\
-             supports_external_plugins=false\nsupports_md5=false\nbackend=stub\nchecked_hash=Err(Provider(ProviderUnavailable))\n"
+             supports_external_plugins=false\nsupports_md5=false\nbackend=stub\nchecked_hash=Err(Provider(ProviderUnavailable))\n\
+             validation=None\nvalidated_mode=false\n"
         );
         assert!(
             run.status.success() && String::from_utf8_lossy(&run.stdout) == want,
