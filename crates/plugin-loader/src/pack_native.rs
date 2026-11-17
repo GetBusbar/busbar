@@ -86,7 +86,8 @@ pub fn complete(
 
 #[cfg(unix)]
 struct Inspection {
-    custody: Option<crate::stage::ImageCustody>,
+    opened: Option<busbar_ffi::image::Opened>,
+    _staged: crate::stage::Staged,
 }
 
 #[cfg(unix)]
@@ -106,27 +107,28 @@ impl Inspection {
 #[cfg(unix)]
 impl Drop for Inspection {
     fn drop(&mut self) {
-        if let Some(custody) = self.custody.take() {
-            crate::stage::close_on_worker(custody);
+        if let Some(opened) = self.opened.take() {
+            crate::stage::close_on_worker(opened);
         }
+        // Field teardown releases staging only after the worker closed the image.
     }
 }
 
 #[cfg(unix)]
 fn inspect_names(bytes: &[u8], name: &str) -> Result<Vec<String>, String> {
-    let custody = crate::stage::open_image(bytes, name).map_err(|error| match error {
+    let (opened, staged) = crate::stage::open_image(bytes, name).map_err(|error| match error {
         crate::stage::Unopened::Stage(why) => format!("native pack staging: {why}"),
         crate::stage::Unopened::Image(why) => format!("native pack header: {why:?}"),
         crate::stage::Unopened::Panicked => "native pack initializer panicked".into(),
     })?;
     let inspection = Inspection {
-        custody: Some(custody),
+        opened: Some(opened),
+        _staged: staged,
     };
     let opened = inspection
-        .custody
+        .opened
         .as_ref()
-        .ok_or("native pack inspection is closed")?
-        .opened();
+        .ok_or("native pack inspection is closed")?;
     // The header's stamp must match the scanned bytes, not merely their identity fields.
     // complete already established exactly one well-formed stamp; retain its original encoding.
     let stamped = bytes
