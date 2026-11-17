@@ -1344,7 +1344,7 @@ async fn run(
             app.role_bindings.clone(),
         ),
         Some(
-            root::min3_boot::hooks::Environment::new(&native_config, &app)
+            root::min3_boot::ServingEnvironment::new(&native_config, &app)
                 .unwrap_or_else(|error| die(error)),
         ),
         &observation_reservation,
@@ -1360,6 +1360,11 @@ async fn run(
     .unwrap_or_else(|error| die_list("config errors", [error]));
     let mut app = Arc::unwrap_or_clone(app);
     app.secret_resolver = Arc::clone(&native.resolver);
+    let auth_epoch = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    root::min3_admin_auth::install(&mut app, Arc::clone(&native.auth), auth_epoch)
+        .unwrap_or_else(|error| die(error));
     let app = Arc::new(
         export::plugin::assemble_routes(app, &export_config, native.seats.clone(), export_registry)
             .unwrap_or_else(|error| die_list("config errors", [error])),

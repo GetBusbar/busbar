@@ -210,9 +210,9 @@ pub(crate) struct Booted {
         busbar_plugin_loader::instance::BootPhase,
         Option<OpenedPort>,
     )>,
-    pub(crate) instances: std::collections::BTreeMap<String, Namespace>,
-    pub(crate) directory: Arc<KernelDirectory>,
-    pub(crate) holds: Arc<busbar_kernel::directory::Holds>,
+    pub(crate) auth: Arc<super::min3_auth::AuthSet>,
+    pub(crate) provisioning: Vec<Arc<super::provisioning_mount::ProvisionMount>>,
+    pub(crate) config_version: u64,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
@@ -1374,13 +1374,32 @@ pub(crate) fn prepare_serving(
     })
 }
 
+pub(crate) struct ServingEnvironment<'a> {
+    cfg: &'a RootCfg,
+    app: &'a busbar_kernel::state::App,
+    hooks: hooks::Environment<'a>,
+}
+
+impl<'a> ServingEnvironment<'a> {
+    pub(crate) fn new(
+        cfg: &'a RootCfg,
+        app: &'a busbar_kernel::state::App,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            cfg,
+            app,
+            hooks: hooks::Environment::new(cfg, app)?,
+        })
+    }
+}
+
 pub(crate) async fn finish(
     ready: ServingReady,
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
-    hooks: Option<hooks::Environment<'_>>,
+    environment: Option<ServingEnvironment<'_>>,
     export_observers: &super::export_observer::ExportReservation,
 ) -> Result<
     (
@@ -1405,7 +1424,8 @@ pub(crate) async fn finish(
         converting,
         normalization_source,
     } = ready;
-    if let Some(hooks) = &hooks {
+    let hooks = environment.as_ref().map(|environment| &environment.hooks);
+    if let Some(hooks) = hooks {
         hooks.check_pools(&instances)?;
     }
     let core = startup
@@ -1448,21 +1468,39 @@ pub(crate) async fn finish(
         probes: Mutex::default(),
     };
     let mut opened = leases.opened;
-    let mut serving_instances = std::collections::BTreeMap::new();
+    let mut opened_auth = Vec::new();
     let mut export_doors = Vec::new();
     let mut opened_hooks = std::collections::BTreeMap::new();
     for (index, prepared) in reserved {
         let instance_id = prepared.id();
-        serving_instances.insert(
-            prepared.name().to_owned(),
-            Namespace {
-                plugin: Arc::from(prepared.identity()),
-                name: Arc::from(prepared.name()),
-                instance: prepared.id(),
-                slot: prepared.slot(),
-            },
-        );
-        let port = if prepared.kind() == KindCode::Hook {
+        let who = Namespace {
+            plugin: Arc::from(prepared.identity()),
+            name: Arc::from(prepared.name()),
+            instance: prepared.id(),
+            slot: prepared.slot(),
+        };
+        let port = if prepared.kind() == KindCode::Auth {
+            let prefix = steps.prefix();
+            let needs = built.needs_for(
+                Arc::clone(&prefix),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            );
+            let opening = built
+                .registry
+                .open_auth_reserved_with_metadata(prepared, &needs, &prefix.refs())
+                .await
+                .map_err(|error| format!("serving auth {index}: {error:?}"))?;
+            let port = Arc::clone(&opening.port);
+            opened_auth.push(super::min3_auth::OpenedAuth {
+                who,
+                port: opening.port,
+                methods: opening.methods,
+                limits: opening.limits,
+                out_of_process: false,
+            });
+            Some(OpenedPort::Auth(port))
+        } else if prepared.kind() == KindCode::Hook {
             let hook = hooks::open(
                 &built,
                 prepared,
@@ -1477,7 +1515,7 @@ pub(crate) async fn finish(
             Some(OpenedPort::Hook(port))
         } else {
             steps
-                .open_reserved(index, prepared, hooks.as_ref(), &opened_hooks)
+                .open_reserved(index, prepared, hooks, &opened_hooks)
                 .await
                 .map_err(|error| format!("serving open {index}: {error:?}"))?
         };
@@ -1634,6 +1672,31 @@ pub(crate) async fn finish(
         Arc::new(move |text| settlement::candidate(text, &plane_checks)),
     )
     .await?;
+    let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let owners = super::min3_admin_auth::owners(
+        environment.app,
+        &environment.cfg.min3,
+        &opened_auth,
+        Arc::clone(&records),
+    )?;
+    let auth = Arc::new(super::min3_auth::AuthSet::new(
+        opened_auth,
+        &holds,
+        owners,
+        Duration::from_secs(environment.cfg.min3.unknown_key_refresh_s),
+    )?);
+    let provisioning = super::provisioning::mounts(
+        &environment.cfg.min3,
+        &auth,
+        environment.app,
+        environment
+            .app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        environment.cfg.limits.request_body_max_bytes,
+        crate::root::dispatch::dispatcher().budgets().call,
+        Arc::clone(&environment.app.request_id_counter),
+    )?;
     let transports = transports::table(transports::opened(&walked.opened, &specs))?;
     let secrets = steps.prefix();
     let core = core_secrets;
@@ -1657,9 +1720,9 @@ pub(crate) async fn finish(
         _transports: transports,
         _native_invocations: invocations,
         _opened: walked.opened,
-        instances: serving_instances,
-        directory,
-        holds,
+        auth,
+        provisioning,
+        config_version: environment.app.config_version,
         seats,
         core,
         secrets,
