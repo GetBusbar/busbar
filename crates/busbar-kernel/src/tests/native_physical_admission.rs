@@ -7,7 +7,7 @@ use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_ports::transport::{ConnIn, TransportEvent, TransportOut, TransportSession};
 use busbar_ports::PortError;
 
-struct Transport;
+pub(crate) struct Transport;
 fn unsupported<T>() -> Result<T, PortError> {
     Err(PortError::Refused {
         code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
@@ -106,7 +106,7 @@ fn head(path: &str) -> Head {
     }
 }
 
-fn app() -> Arc<App> {
+pub(crate) fn app() -> Arc<App> {
     let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
         Arc::new(busbar_plugin_loader::registry::PluginRegistry::empty());
     let resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
@@ -234,7 +234,7 @@ fn fixture() -> Fixture {
         budget: crate::limits::process_admission::ProcessAdmission::with_limits(3, 1024, 128),
     }
 }
-fn accepted() -> AcceptedConnection {
+pub(crate) fn accepted() -> AcceptedConnection {
     AcceptedConnection {
         peer: "192.0.2.1".into(),
         local: "192.0.2.2".into(),
@@ -286,6 +286,7 @@ fn native_physical_head_captures_actual_snapshot_route_and_budget() {
     let conn = f.listener.connect(accepted());
     let (request, _owner) = arrive(&f, &conn, 1);
     let binding = request.binding();
+    assert!(Arc::ptr_eq(binding.handle(), &f.listener.handle));
     assert!(Arc::ptr_eq(binding.app(), &f.app));
     assert!(Arc::ptr_eq(binding.prepared(), &f.prepared));
     assert_eq!(binding.head().target, "/one");
