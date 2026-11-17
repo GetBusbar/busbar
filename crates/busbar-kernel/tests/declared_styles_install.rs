@@ -21,14 +21,17 @@ fn boot_style_data_preserves_config_words_order_flags_and_the_first_inventory() 
     install_declared_styles(styles.clone());
     assert_eq!(declared_styles(), styles);
     for style in &styles {
-        let parsed: ProviderAuth = serde_json::from_value(serde_json::json!(style.name)).unwrap();
+        let parsed: ProviderAuth =
+            busbar_contract::json::from_value(&busbar_contract::json::json!(style.name)).unwrap();
         assert_eq!(parsed.as_str(), style.name);
         assert_eq!(style_flags(&style.name), style.flags);
     }
-    let unknown =
-        serde_json::from_value::<ProviderAuth>(serde_json::json!("unloaded-style")).unwrap_err();
+    let unknown = busbar_contract::json::from_value::<ProviderAuth>(&busbar_contract::json::json!(
+        "unloaded-style"
+    ))
+    .unwrap_err();
     assert_eq!(
-        unknown.to_string(),
+        unknown.message(),
         "unknown variant `unloaded-style`, expected `linked-style` or `dropped-style`"
     );
     assert_eq!(style_flags("unloaded-style"), 0);
@@ -37,5 +40,5 @@ fn boot_style_data_preserves_config_words_order_flags_and_the_first_inventory() 
     copy[0].name = "changed".into();
     install_declared_styles(copy);
     assert_eq!(declared_styles(), styles);
-    assert!(serde_json::from_str::<ProviderAuth>("\"changed\"").is_err());
+    assert!(busbar_contract::json::parse_str::<ProviderAuth>("\"changed\"").is_err());
 }
