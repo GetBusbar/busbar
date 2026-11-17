@@ -158,7 +158,8 @@ async fn instance_settings_survives_a_cold_sqlite_reopen() {
         let opened = crate::root::min3_boot::fixture::open(&config, &plugins, rules.clone())
             .await
             .expect("a new process opens the same actual SQLite database");
-        let core = crate::root::real_store::core_over(opened.backend).await;
+        let (admitted, _serving) = opened.admit_serving().await;
+        let core = admitted.core;
         assert_ne!(
             core.info().durability,
             busbar_contract::persistence::Durability::Ephemeral
@@ -174,7 +175,7 @@ async fn instance_settings_survives_a_cold_sqlite_reopen() {
             None,
             false,
             busbar_kernel::config::EnvSubst::Strict,
-            &*opened.rules,
+            &*admitted.rules,
             Some(overlay),
         )
         .await
