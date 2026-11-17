@@ -1270,6 +1270,11 @@ async fn run(
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
+    // Native DATA audit r2: Node receives original signed pages before any native admission;
+    // without the original notary binding the process refuses readiness before effects.
+    root::plane_node::node()
+        .bind_native_notary()
+        .unwrap_or_else(|error| die(format!("native DATA audit custody: {error}")));
     root::plane_node::node()
         .bind_response_intents(
             store_admission

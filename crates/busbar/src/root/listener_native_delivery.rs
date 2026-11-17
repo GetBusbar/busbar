@@ -155,6 +155,10 @@ impl RegisteredResponse {
         let (plan, finalizer) = connection
             .admit(key, handles, deadline)
             .map_err(InputError::FinalIntent)?;
+        // The finalizer's admitted scope must be the very key this request registered.
+        if finalizer.key() != key {
+            return Err(InputError::Delivery(ResponseStop::Integrity));
+        }
         let watch = finalizer.watch();
         let retirement = RetireInput(finalizer.input());
         Ok(Self {

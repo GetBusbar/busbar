@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::secure::SecureVec;
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
-use busbar_core_connector::framed_stream::session::{Actions, Inbound, Payload, TransportConn};
+use busbar_core_connector::framed_stream::session::{Actions, Inbound, TransportConn};
 use busbar_core_connector::response_delivery::DeliveryLedger;
 use busbar_kernel::inbound::native::{
     AcceptedConnection, ArrivalRefusal, CompletingPhysicalRequest, PhysicalConnection,
@@ -300,12 +300,10 @@ struct InputSlot {
     body_deadline: Instant,
     pending: Option<PhysicalRequest>,
     body: Option<InputBody>,
-    raw_head: Option<Payload>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
     owner: Arc<StreamOwner>,
     node: Option<crate::root::plane_node::NativeNodeHandle>,
     carrier_reported: bool,
-    held: Option<serving::HeldRequest>,
 }
 impl InputSlot {
     fn next_deadline(&self) -> Option<Instant> {
@@ -328,26 +326,6 @@ impl InputSlot {
 pub(crate) struct ReadyInput {
     pub(crate) request: CompletingPhysicalRequest,
     pub(crate) owner: Arc<StreamOwner>,
-    pub(crate) upgrade_head: Option<RetainedNativeHead>,
-}
-
-/// Original native records and charged backing, retained only for a declared upgrade.
-/// No caller can pair arbitrary bytes with a read-only request binding.
-pub(crate) struct RetainedNativeHead {
-    binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
-    owner: Arc<StreamOwner>,
-    bytes: Payload,
-}
-impl RetainedNativeHead {
-    pub(crate) fn binding(&self) -> &Arc<busbar_kernel::inbound::native::RequestBinding> {
-        &self.binding
-    }
-    pub(crate) fn owner(&self) -> &Arc<StreamOwner> {
-        &self.owner
-    }
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        self.bytes.as_slice()
-    }
 }
 
 /// The actual native stream event consumer. EOF completes input only; the physical owner stays
@@ -431,13 +409,6 @@ impl NativeIngress {
                 // PhysicalRequest now holds its own full head backing reservation.
                 drop(credit);
                 let body = InputBody::new(&request)?;
-                let raw_head = pending
-                    .binding()
-                    .route()
-                    .line()
-                    .upgrade
-                    .as_ref()
-                    .map(|_| head);
                 self.slots.push(InputSlot {
                     stream,
                     deadline,
@@ -445,11 +416,9 @@ impl NativeIngress {
                     body_deadline: total_deadline,
                     pending: Some(pending),
                     body: Some(body),
-                    raw_head,
                     owner: Arc::new(owner),
                     node: None,
                     carrier_reported: false,
-                    held: None,
                 });
                 if end_stream {
                     self.end(stream).map(Some)
@@ -528,15 +497,9 @@ impl NativeIngress {
         let pending = slot.pending.take().ok_or(InputError::Invalid)?;
         let InputBody { bytes, credit } = slot.body.take().ok_or(InputError::Invalid)?;
         let request = pending.finish_input(bytes, credit)?.begin_completion()?;
-        let upgrade_head = slot.raw_head.take().map(|bytes| RetainedNativeHead {
-            binding: request.binding().clone(),
-            owner: slot.owner.clone(),
-            bytes,
-        });
         Ok(ReadyInput {
             request,
             owner: Arc::clone(&slot.owner),
-            upgrade_head,
         })
     }
 

@@ -1424,22 +1424,8 @@ impl LateAccrual {
         let completed = outcome.is_some_and(Outcome::is_completed);
         // A report that bills nothing is not sealed as usage, but its attribution still is.
         let reported = late();
-        if matches!(
-            reported,
-            Some(Reported::Selected(_)) | Some(Reported::Partitioned(_))
-        ) {
-            return selected_confirmation(
-                reported.expect("selected branch"),
-                custody,
-                book,
-                line,
-                history,
-                durability_token,
-                principal,
-                arrived,
-                outcome,
-                seal,
-            );
+        if matches!(reported, Some(Reported::Partitioned(_))) {
+            return preview_confirmation(custody, outcome, seal);
         }
         let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
             Some(report)
@@ -2507,67 +2493,18 @@ impl Accruing {
 // task runs the confirmation itself; a confirmation dropped unfinished (never
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the existing late accrual transfers its original owners together"
-)]
-fn selected_confirmation(
-    reported: Reported,
+fn preview_confirmation(
     custody: Arc<crate::root::serve::TicketCustody>,
-    book: Arc<Mutex<crate::root::durability::Durability>>,
-    line: Option<crate::root::durability::LineIdentity>,
-    history: crate::root::kernel::PinnedHistory,
-    token: Grant<busbar_contract::caps::DurableWrite>,
-    principal: PrincipalId,
-    arrived: Arrived,
     outcome: Option<Outcome>,
     seal: Option<Sealing>,
 ) -> Option<TerminalConfirmation> {
-    let (Some(seal), Some(outcome)) = (seal, outcome) else {
+    let (Some(seal), Some(_)) = (seal, outcome) else {
         return None;
     };
-    let key = seal.seal.key;
-    let Reported::Selected(reader) = reported else {
-        custody.terminal(key, false);
-        return Some(TerminalConfirmation {
-            inner: Err("selected audit requires final reader custody, not a usage preview".into()),
-        });
-    };
-    let confirmation_custody = custody.clone();
+    // A partitioned usage preview is never terminal custody: refuse the seal and fail the ticket.
+    custody.terminal(seal.seal.key, false);
     Some(TerminalConfirmation {
-        inner: Ok(Some(TerminalTask::Selected(SelectedConfirm {
-            reader,
-            stage: Some(Box::new(move |snapshot| {
-                let billing = seal.selected_billing(&snapshot, line, &principal, arrived)?;
-                let completed = outcome.is_completed();
-                let audit = seal
-                    .seal_billing(
-                        &book,
-                        line,
-                        &token,
-                        &principal,
-                        arrived,
-                        Some(&history),
-                        outcome,
-                        Vec::new(),
-                        billing.fee_count(),
-                        None,
-                        String::new(),
-                        Some(billing),
-                    )
-                    .map_err(|error| crate::root::cold::terminal_audit_stage_failed(&error))?;
-                Ok(Confirm {
-                    audit,
-                    custody: confirmation_custody,
-                    key,
-                    completed,
-                })
-            })),
-            snapshot: None,
-            confirm: None,
-            custody,
-            key,
-        }))),
+        inner: Err("selected audit requires final reader custody, not a usage preview".into()),
     })
 }
 
@@ -2577,61 +2514,18 @@ struct TerminalConfirmation {
 
 enum TerminalTask {
     Staged(Confirm),
-    Selected(SelectedConfirm),
-}
-
-struct SelectedConfirm {
-    reader: busbar_kernel::plane_driver::SelectedTerminalReceipt,
-    stage: Option<
-        Box<
-            dyn FnOnce(
-                    Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>,
-                ) -> Result<Confirm, String>
-                + Send,
-        >,
-    >,
-    snapshot: Option<Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>>,
-    confirm: Option<Confirm>,
-    custody: Arc<crate::root::serve::TicketCustody>,
-    key: UnitKey,
 }
 
 impl TerminalTask {
     async fn run(&mut self) -> Result<(), String> {
         match self {
             Self::Staged(confirm) => confirm.run().await,
-            Self::Selected(selected) => {
-                if selected.snapshot.is_none() {
-                    selected.snapshot = Some(
-                        selected
-                            .reader
-                            .wait()
-                            .await
-                            .map_err(|error| error.to_string())?,
-                    );
-                }
-                if selected.confirm.is_none() {
-                    let stage = selected
-                        .stage
-                        .take()
-                        .ok_or("selected audit staging already refused")?;
-                    selected.confirm = Some(stage(
-                        selected
-                            .snapshot
-                            .as_ref()
-                            .expect("final snapshot retained")
-                            .clone(),
-                    )?);
-                }
-                selected.confirm.as_mut().expect("audit staged").run().await
-            }
         }
     }
 
     fn failed(&self) {
         match self {
             Self::Staged(confirm) => confirm.custody.terminal(confirm.key, false),
-            Self::Selected(selected) => selected.custody.terminal(selected.key, false),
         }
     }
 }
@@ -2843,53 +2737,6 @@ fn attempts_recorded_on_failover() {
 }
 
 impl Sealing {
-    fn selected_billing(
-        &self,
-        snapshot: &busbar_kernel::governance::unit_checkpoint::UnitCheckpoint,
-        line: Option<crate::root::durability::LineIdentity>,
-        principal: &PrincipalId,
-        arrived: Arrived,
-    ) -> Result<busbar_kernel_audit::record::billing::PartitionedBillingV1, String> {
-        let line = line.ok_or("selected audit lacks original node identity")?;
-        let captured: crate::root::durability::RunningAudit = busbar_contract::json::parse(
-            snapshot
-                .audit
-                .as_deref()
-                .ok_or("selected audit lacks captured facts")?,
-        )
-        .map_err(|error| error.to_string())?;
-        let identity = captured
-            .selected_identity
-            .as_ref()
-            .ok_or("selected audit lacks captured response identity")?;
-        let labels: Vec<_> = self
-            .ran
-            .records
-            .labels
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.clone()))
-            .collect();
-        if snapshot.unit != self.seal.key.get()
-            || snapshot.principal != principal.as_str()
-            || snapshot.arrived != arrived.secs()
-            || captured.principal != principal.as_str()
-            || captured.incarnation != line.incarnation
-            || identity.node != line.node
-            || identity.boot_nonce != busbar_kernel::snapshot::boot_nonce()
-            || captured.wall != arrived.secs()
-            || captured.mono != arrived.mono()
-            || captured.op_class != self.seal.facts.op_class.as_str()
-            || captured.parent != self.seal.parent.map(UnitKey::get)
-            || identity.user != self.ran.records.user
-            || identity.labels != labels
-        {
-            return Err("selected terminal differs from its original audit identity".into());
-        }
-        let view = busbar_kernel::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(snapshot)
-            .map_err(|error| error.to_string())?;
-        crate::root::selected_report::selected_billing(&view)
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "the legacy call retains its established unit ownership"

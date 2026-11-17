@@ -21,7 +21,6 @@ use super::serve::{ChainAuth, Served};
 pub(crate) struct NativeListenerPlan {
     needs: ListenerNeeds,
     suppliers: BTreeMap<String, ServedTransport>,
-    framers: NativeFramers,
 }
 
 impl std::fmt::Debug for NativeListenerPlan {
@@ -58,16 +57,7 @@ impl NativeListenerPlan {
                 entry.insert(framers.for_slot(&bind.at)?);
             }
         }
-        Ok(Self {
-            needs,
-            suppliers,
-            framers: framers.clone(),
-        })
-    }
-
-    /// Upgrade resolution must retain the same immutable registry as the original listener.
-    pub(crate) fn framers(&self) -> &NativeFramers {
-        &self.framers
+        Ok(Self { needs, suppliers })
     }
 
     pub(crate) fn binds(&self) -> &[InboundBind] {

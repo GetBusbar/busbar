@@ -87,15 +87,13 @@ pub mod node {
         Legacy(LegacyReport),
         /// A factual preview; it is never substituted for terminal custody.
         Partitioned(Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>),
-        /// The original response owner's single final-reader lease.
-        Selected(busbar_kernel::plane_driver::SelectedTerminalReceipt),
     }
 
     impl Reported {
         pub(crate) fn legacy(self) -> Option<LegacyReport> {
             match self {
                 Self::Legacy(report) => Some(report),
-                Self::Partitioned(_) | Self::Selected(_) => None,
+                Self::Partitioned(_) => None,
             }
         }
     }

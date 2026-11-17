@@ -17,33 +17,8 @@ use super::{InputError, NativeListener, OpenedConnection, ReadyInput, LIVE_RESPO
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
 
-pub(super) enum HeldRequest {
-    Preunit(busbar_kernel::audit::auditlog::NativeRefusalAudit),
-    Physical(busbar_kernel::inbound::native::PhysicalRefusal),
-}
 enum ResponseFinished {
     Delivered(super::delivery::CompletedResponse),
-    InputRetired(Arc<StreamOwner>),
-}
-
-async fn retire_held(held: HeldRequest, receipt: NativeCarrierRetired) -> ResponseFinished {
-    match held {
-        HeldRequest::Preunit(audit) => {
-            // Existing native audit queue progress confirms this exact queued original.
-            // Cancellation of output is not confirmation and does not discard this owner.
-            audit.wait_original_confirmation().await;
-            debug_assert!(audit.is_confirmed());
-            drop(audit);
-        }
-        HeldRequest::Physical(refusal) => {
-            // No queued audit original exists, and output retirement does not resolve the
-            // failed transfer. Keep the actual decision/owner in this supervised request.
-            // A future typed NoEffect retry must move this owner, never reconstruct a guard.
-            std::future::pending::<()>().await;
-            drop(refusal);
-        }
-    }
-    ResponseFinished::InputRetired(receipt.owner)
 }
 
 /// Observation of this original carrier's completed driver and retired actual writer.
@@ -246,12 +221,6 @@ async fn supervise(
                         slot.carrier_reported = true;
                     }
                 }
-                if let Some(held) = slot.held.take() {
-                    let receipt = NativeCarrierRetired {
-                        owner: slot.owner.clone(),
-                    };
-                    responses.spawn(retire_held(held, receipt));
-                }
             }
         }
         if let Some(ready) = preparing
@@ -322,16 +291,13 @@ async fn supervise(
                     },
                     Some(Ok((owner, Err(error)))) => {
                         ingress.connection.cancel(&owner);
-                        let (error, handle, held) = match error {
-                            super::data::DataPrepareError::Input(error) => (error, None, None),
-                            super::data::DataPrepareError::HeldNode { error, handle } => (error, Some(handle), None),
-                            super::data::DataPrepareError::HeldPreunit { error, audit } => (error, None, Some(HeldRequest::Preunit(audit))),
-                            super::data::DataPrepareError::HeldPhysical { error, refusal } => (error, None, Some(HeldRequest::Physical(refusal))),
+                        let (error, handle) = match error {
+                            super::data::DataPrepareError::Input(error) => (error, None),
+                            super::data::DataPrepareError::HeldNode { error, handle } => (error, Some(handle)),
                         };
                         let slot = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner))
                             .expect("preparing request retains its original input slot");
                         slot.node = handle;
-                        slot.held = held;
                         failure.get_or_insert(error);
                         input_open = false;
                         stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
@@ -353,9 +319,6 @@ async fn supervise(
                             stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                         }
                         if let Err(error) = completed.result { failure.get_or_insert(error); }
-                    },
-                    Some(Ok(ResponseFinished::InputRetired(owner))) => {
-                        if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));

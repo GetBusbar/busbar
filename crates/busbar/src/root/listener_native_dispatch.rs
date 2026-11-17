@@ -33,7 +33,6 @@ pub(super) struct Prepared {
     response: axum::response::Response,
     registered: RegisteredResponse,
     settlement: Option<data::DataSettlement>,
-    _upgrade_head: Option<super::RetainedNativeHead>,
 }
 
 impl Prepared {
@@ -165,7 +164,6 @@ pub(super) async fn prepare(
             response,
             registered,
             settlement,
-            _upgrade_head: ready.upgrade_head,
         })
     };
     if data_request {

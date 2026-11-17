@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER};
 
-use super::min3_boot::transports::{declaring, ServedTransport};
+use super::min3_boot::transports::ServedTransport;
 
 /// The already admitted/opened transport table. Connections retain this immutable generation through
 /// security preparation and any upgrade; publishing a new table cannot change their selected instance.
@@ -49,10 +49,5 @@ impl NativeFramers {
             ));
         }
         Ok(one.clone())
-    }
-
-    /// Upgrade resolution stays within the same immutable table and uses only D_PROTOCOL.
-    pub(crate) fn upgrade(&self, protocol: &str) -> Option<ServedTransport> {
-        declaring(&self.served, protocol).cloned()
     }
 }

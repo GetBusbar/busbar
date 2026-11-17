@@ -12,7 +12,9 @@ use super::boot::workers::{PreparedWorkers, RunningWorkers};
 
 pub(crate) struct NativeGeneration {
     pub(crate) native: Arc<super::min3_boot::Booted>,
-    pub(crate) services: Arc<super::serve::Services>,
+    /// Retained, never read: the services own the invocation registrations and opened ports
+    /// that authorize the slot dispatchers, for exactly this generation's lifetime.
+    _services: Arc<super::serve::Services>,
     prepared: Mutex<Option<PreparedWorkers>>,
 }
 
@@ -77,7 +79,7 @@ fn install(
     }
     config.native_generation = Some(Arc::new(NativeGeneration {
         native,
-        services,
+        _services: services,
         prepared: Mutex::new(workers),
     }));
     app.config_projection = Some(Arc::new(config));

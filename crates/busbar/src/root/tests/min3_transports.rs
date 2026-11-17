@@ -263,14 +263,6 @@ fn native_initial_binding_selects_the_exact_declaring_instance_and_server_offer(
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     );
     assert!(framers.for_slot("Listen").is_err(), "slots are exact");
-    assert_eq!(
-        framers
-            .upgrade("LISTEN")
-            .expect("upgrade namespace")
-            .instance
-            .as_ref(),
-        "upgrade-only"
-    );
 }
 
 #[test]

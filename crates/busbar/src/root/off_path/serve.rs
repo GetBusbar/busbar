@@ -375,6 +375,12 @@ impl LeaseTick {
         // The store settle pass is its own future: a stalled store never blocks the flush.
         let mut settling: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
+        // Native DATA audit r2: the retained process pulse drives installed native entries,
+        // at most the adopted 64 candidates per pass, resuming from the retained cursor.
+        type NativeDrive =
+            std::pin::Pin<Box<dyn std::future::Future<Output = (usize, Option<u64>)> + Send>>;
+        let mut native_cursor: Option<u64> = None;
+        let mut driving: Option<NativeDrive> = None;
         loop {
             tokio::select! {
                 biased;
@@ -401,6 +407,14 @@ impl LeaseTick {
                     if settling.is_none() {
                         let node = Arc::clone(&this.node);
                         settling = Some(Box::pin(async move { node.settle_store().await }));
+                    }
+                    if driving.is_none() && this.node.native_pending() != 0 {
+                        let node = Arc::clone(&this.node);
+                        let mut cursor = native_cursor;
+                        driving = Some(Box::pin(async move {
+                            let retired = node.drive_native(&mut cursor).await;
+                            (retired, cursor)
+                        }));
                     }
                 }
                 result = async {
@@ -433,6 +447,15 @@ impl LeaseTick {
                         None => std::future::pending().await,
                     }
                 } => { settling = None; }
+                (_, cursor) = async {
+                    match driving.as_mut() {
+                        Some(driving) => driving.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    driving = None;
+                    native_cursor = cursor;
+                }
             }
         }
     }

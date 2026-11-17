@@ -37,14 +37,6 @@ pub(super) enum DataPrepareError {
         error: InputError,
         handle: NativeNodeHandle,
     },
-    HeldPreunit {
-        error: InputError,
-        audit: busbar_kernel::audit::auditlog::NativeRefusalAudit,
-    },
-    HeldPhysical {
-        error: InputError,
-        refusal: busbar_kernel::inbound::native::PhysicalRefusal,
-    },
 }
 
 pub(super) enum DataAuthority {
@@ -63,7 +55,6 @@ pub(super) struct DataSettlement {
     billing: PortBilling,
     work: Option<tokio::task::JoinHandle<Result<NativeServed, ServeError>>>,
     retirement: Option<NativeTaskRetirement>,
-    refusal: Option<busbar_kernel::refusal::ClientRefusal>,
     ran: bool,
     status: u16,
     node: NativeNodeHandle,
@@ -152,6 +143,12 @@ impl DataSettlement {
         let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
         let original = delivery.admission().ok_or(InputError::Invalid)?;
         if !original.same_admission(&admitted.request) {
+            return Err(InputError::Invalid);
+        }
+        // r2: the ACK-created loan is authority only when its reader key is its stored key and
+        // that key names this same original unit.
+        if delivery.reader().key() != delivery.key() || delivery.key().unit != Some(original.unit())
+        {
             return Err(InputError::Invalid);
         }
         let mut end = end_of(u32::from(self.status), self.ran);
@@ -686,7 +683,6 @@ pub(super) async fn prepare(
             }
             return Err(InputError::Invalid);
         };
-        let mut refusal = None;
         let mut output_authority = None;
         let (response, status, ran, work, retirement) = match head {
             Ok((status, headers, credit)) => {
@@ -714,7 +710,6 @@ pub(super) async fn prepare(
                         let status = response.status().as_u16();
                         let physical = retirement.refuse().map_err(|_| InputError::Invalid)?;
                         output_authority = Some(DataAuthority::Refused(physical));
-                        refusal = Some(refused.decision);
                         (response, status, false, None, None)
                     }
                     result => {
@@ -743,7 +738,6 @@ pub(super) async fn prepare(
                 billing,
                 work,
                 retirement,
-                refusal,
                 ran,
                 status,
                 node: native_node.clone(),
