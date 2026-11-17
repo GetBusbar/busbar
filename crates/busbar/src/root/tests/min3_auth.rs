@@ -1180,7 +1180,7 @@ async fn physical_admin_effect_keeps_owner_and_rechecks_reset_before_mutation() 
 async fn native_effect_clones_share_original_snapshot_until_the_last_owner() {
     use busbar_kernel::auth::effect::Context;
     let mut f = admin_physical_fixture().await;
-    let proof = complete_physical_admin_auth(&f).await;
+    let proof = complete_physical_admin_auth(physical_admin_invocation(&f)).await;
     let physical = Arc::new(f.pending.take().unwrap().complete_admin(proof).unwrap());
     let snapshot = f.binding.snapshot().unwrap();
     let weak = Arc::downgrade(&snapshot);
