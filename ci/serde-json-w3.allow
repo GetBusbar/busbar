@@ -1,57 +1,415 @@
-# no-serde-json (tools/ci-checks, #162, DEP-3): the paths that may still name serde_json, because
-# wave 3 of MIN-3 deletes or rewrites them (ABI-MIN3-WBS W3-D-*; SERDE-JSON-EXIT §4). One path per
-# line, relative to the repository root; a line ending in `/` covers the directory below it.
-# The list only shrinks: a line under which no file names serde_json any more fails the check, so
-# the deleting MR deletes its lines too. Do not add a path here; move the code to busbar_contract::json.
+# no-serde-json (tools/ci-checks, #162, DEP-3): a ratchet. These are exactly the first-party paths that
+# still name serde_json, each tagged with the slice that removes it:
+#   W3-D-<task>  wave 3 of MIN-3 deletes or rewrites the path (ABI-MIN3-WBS W3-D-*; SERDE-JSON-EXIT §4);
+#   D            the #162 serde_json exit converts it to busbar_contract::json (SERDE-JSON-EXIT r2 MR 6/7/9a,
+#                slices S1-S7 and D; wserde-claude/SLICES.md).
+# Format: one path per line, relative to the repository root, then `# <slice>`. A line ending in `/`
+# covers the directory below it. A path not listed here that names serde_json fails the check, so no new
+# use can land. The list only shrinks: a line under which no file names serde_json any more fails the
+# check, so the converting MR deletes its line. Never add a line: move the code to busbar_contract::json.
 
 # W3-D-CONTRACT: the old ABI, its settings, services and lifecycle codecs, and their old-ABI users.
-crates/busbar-contract/src/abi/
-crates/busbar-contract/src/auth_calls.rs
-crates/busbar-contract/src/persistence/lifecycle/codec/source.rs
-crates/busbar-contract/src/plane_calls.rs
-crates/busbar-contract/src/plugin_settings.rs
-crates/busbar-contract/src/plugin_settings/owned.rs
-crates/busbar-contract/src/services.rs
-crates/busbar-contract/src/services/disk_admission.rs
-crates/busbar-contract/tests/architecture_surface.rs
-crates/busbar-core-admin/src/keys.rs
-crates/busbar-core-admin/src/v1/json/contract_metadata.rs
-crates/busbar-core-admin/src/v1/json/plane_input_schemas.rs
-crates/busbar-core-admin/src/v1/json/tests/plane_input_schemas.rs
-crates/busbar-core-admin/src/v1/tests/service_tests.rs
-crates/busbar-core-oauth2/src/cimd.rs
-crates/busbar-core-oauth2/src/tests/cimd_tests.rs
-crates/busbar-kernel/src/host_services.rs
-crates/busbar-kernel/src/off_path/plane_door.rs
-crates/busbar-kernel/src/tests/trust_verify_tests.rs
-crates/busbar-kernel/tests/support/plane_driver_actual.rs
-crates/busbar/src/main.rs
-crates/busbar/src/root/door_steps.rs
-crates/busbar/src/root/tests/auth_bindings.rs
-crates/busbar/src/root/tests/node_door_cells.rs
-crates/busbar/src/root/tests/node_door_rig.rs
-crates/busbar/src/root/tests/serve.rs
-crates/busbar/src/root/tests/serve_door_far.rs
-crates/busbar/src/root/tests/serve_door_far_caller_secret.rs
-crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs
-crates/busbar/src/root/units_admin/tests/bound_tests.rs
-crates/busbar/src/tests/kernel_application/misc_router_door.rs
-crates/plugin-loader/src/auth_door.rs
-crates/plugin-loader/src/boot.rs
-crates/plugin-loader/src/cold/export_door.rs
-crates/plugin-loader/src/cold/store_v4.rs
-crates/plugin-loader/src/export_door.rs
-crates/plugin-loader/src/integer_token.rs
-crates/plugin-loader/src/observe.rs
-crates/plugin-loader/src/pack.rs
-crates/plugin-loader/src/settings_schema.rs
-crates/plugin-loader/src/sign.rs
-crates/plugin-loader/src/tarball.rs
-crates/plugin-loader/src/tests/auth_door_tests.rs
-crates/plugin-loader/tests/fixtures/hook_door_plugin.rs
-crates/plugin-loader/tests/fixtures/secret_door_plugin.rs
-dist/default/tests/traces_stream_both_doors.rs
-tools/plugin-bench/
+crates/busbar-contract/src/abi/                                                            # W3-D-CONTRACT
+crates/busbar-contract/src/auth_calls.rs                                                   # W3-D-CONTRACT
+crates/busbar-contract/src/persistence/lifecycle/codec/source.rs                           # W3-D-CONTRACT
+crates/busbar-contract/src/plane_calls.rs                                                  # W3-D-CONTRACT
+crates/busbar-contract/src/plugin_settings.rs                                              # W3-D-CONTRACT
+crates/busbar-contract/src/plugin_settings/owned.rs                                        # W3-D-CONTRACT
+crates/busbar-contract/src/services.rs                                                     # W3-D-CONTRACT
+crates/busbar-contract/src/services/disk_admission.rs                                      # W3-D-CONTRACT
+crates/busbar-contract/tests/architecture_surface.rs                                       # W3-D-CONTRACT
+crates/busbar-core-admin/src/keys.rs                                                       # W3-D-CONTRACT
+crates/busbar-core-admin/src/v1/json/contract_metadata.rs                                  # W3-D-CONTRACT
+crates/busbar-core-admin/src/v1/json/plane_input_schemas.rs                                # W3-D-CONTRACT
+crates/busbar-core-admin/src/v1/json/tests/plane_input_schemas.rs                          # W3-D-CONTRACT
+crates/busbar-core-admin/src/v1/tests/service_tests.rs                                     # W3-D-CONTRACT
+crates/busbar-core-oauth2/src/cimd.rs                                                      # W3-D-CONTRACT
+crates/busbar-core-oauth2/src/tests/cimd_tests.rs                                          # W3-D-CONTRACT
+crates/busbar-kernel/src/off_path/plane_door.rs                                            # W3-D-CONTRACT
+crates/busbar-kernel/src/tests/trust_verify_tests.rs                                       # W3-D-CONTRACT
+crates/busbar-kernel/tests/support/plane_driver_actual.rs                                  # W3-D-CONTRACT
+crates/busbar/src/main.rs                                                                  # W3-D-CONTRACT
+crates/busbar/src/root/door_steps.rs                                                       # W3-D-CONTRACT
+crates/busbar/src/root/tests/auth_bindings.rs                                              # W3-D-CONTRACT
+crates/busbar/src/root/tests/node_door_cells.rs                                            # W3-D-CONTRACT
+crates/busbar/src/root/tests/node_door_rig.rs                                              # W3-D-CONTRACT
+crates/busbar/src/root/tests/serve.rs                                                      # W3-D-CONTRACT
+crates/busbar/src/root/tests/serve_door_far.rs                                             # W3-D-CONTRACT
+crates/busbar/src/root/tests/serve_door_far_caller_secret.rs                               # W3-D-CONTRACT
+crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs                  # W3-D-CONTRACT
+crates/busbar/src/tests/kernel_application/misc_router_door.rs                             # W3-D-CONTRACT
+crates/plugin-loader/src/auth_door.rs                                                      # W3-D-CONTRACT
+crates/plugin-loader/src/boot.rs                                                           # W3-D-CONTRACT
+crates/plugin-loader/src/cold/export_door.rs                                               # W3-D-CONTRACT
+crates/plugin-loader/src/cold/store_v4.rs                                                  # W3-D-CONTRACT
+crates/plugin-loader/src/export_door.rs                                                    # W3-D-CONTRACT
+crates/plugin-loader/src/integer_token.rs                                                  # W3-D-CONTRACT
+crates/plugin-loader/src/observe.rs                                                        # W3-D-CONTRACT
+crates/plugin-loader/src/pack.rs                                                           # W3-D-CONTRACT
+crates/plugin-loader/src/settings_schema.rs                                                # W3-D-CONTRACT
+crates/plugin-loader/src/tests/auth_door_tests.rs                                          # W3-D-CONTRACT
+crates/plugin-loader/tests/fixtures/hook_door_plugin.rs                                    # W3-D-CONTRACT
+dist/default/tests/traces_stream_both_doors.rs                                             # W3-D-CONTRACT
+tools/plugin-bench/                                                                        # W3-D-CONTRACT
 
 # W3-D-LOADER: the old dispatch and the loader modules it alone references.
-crates/plugin-loader/src/dispatch/
+crates/plugin-loader/src/dispatch/                                                         # W3-D-LOADER
+
+# D: the #162 slices convert these (and drop the manifests' serde_json rows once no file in the crate names it).
+crates/busbar-contract/Cargo.toml                                                          # D
+crates/busbar-contract/src/auth_calls/domain.rs                                            # D
+crates/busbar-contract/src/conn.rs                                                         # D
+crates/busbar-contract/src/conn/admissions.rs                                              # D
+crates/busbar-contract/src/conn/inbound.rs                                                 # D
+crates/busbar-contract/src/export_calls/opening.rs                                         # D
+crates/busbar-contract/src/hook_wire/reply.rs                                              # D
+crates/busbar-contract/src/hooks.rs                                                        # D
+crates/busbar-contract/src/ir/facts.rs                                                     # D
+crates/busbar-contract/src/ir/invoke.rs                                                    # D
+crates/busbar-contract/src/ir/mod.rs                                                       # D
+crates/busbar-contract/src/ir/subscribe.rs                                                 # D
+crates/busbar-contract/src/ir/tests/neutral_handles.rs                                     # D
+crates/busbar-contract/src/ir/tests/shape_custody_tests.rs                                 # D
+crates/busbar-contract/src/ir/tests/source_scoped_extra_tests.rs                           # D
+crates/busbar-contract/src/json_grammar.rs                                                 # D
+crates/busbar-contract/src/secret_fields.rs                                                # D
+crates/busbar-contract/src/secret_ref.rs                                                   # D
+crates/busbar-contract/src/secret_ref/context.rs                                           # D
+crates/busbar-contract/src/settings_public.rs                                              # D
+crates/busbar-contract/src/tests/conn_tests.rs                                             # D
+crates/busbar-contract/src/tests/inbound_tests.rs                                          # D
+crates/busbar-contract/src/tests/screening_tests.rs                                        # D
+crates/busbar-contract/src/tests/secret_fields_tests.rs                                    # D
+crates/busbar-contract/src/tests/secret_ref_tests.rs                                       # D
+crates/busbar-contract/src/tests/settings_public_tests.rs                                  # D
+crates/busbar-contract/tests/invoke_request_wipe.rs                                        # D
+crates/busbar-contract/tests/source_rules/secrets.rs                                       # D
+crates/busbar-contract/tests/text_cut_parity.rs                                            # D
+crates/busbar-core-admin/Cargo.toml                                                        # D
+crates/busbar-core-admin/src/admin_state.rs                                                # D
+crates/busbar-core-admin/src/test_support.rs                                               # D
+crates/busbar-core-admin/src/tests/admin_pure_contracts.rs                                 # D
+crates/busbar-core-admin/src/tests/idempotency_tests.rs                                    # D
+crates/busbar-core-admin/src/tests/versions_tests.rs                                       # D
+crates/busbar-core-admin/src/v1/contract/tests/tests.rs                                    # D
+crates/busbar-core-admin/src/v1/json/config_document.rs                                    # D
+crates/busbar-core-admin/src/v1/json/config_forms/core.rs                                  # D
+crates/busbar-core-admin/src/v1/json/config_forms/host.rs                                  # D
+crates/busbar-core-admin/src/v1/json/config_forms/integer_token.rs                         # D
+crates/busbar-core-admin/src/v1/json/config_forms/mod.rs                                   # D
+crates/busbar-core-admin/src/v1/json/config_forms/store_secret_tests.rs                    # D
+crates/busbar-core-admin/src/v1/json/config_forms/tables_tests.rs                          # D
+crates/busbar-core-admin/src/v1/json/config_forms/tables.rs                                # D
+crates/busbar-core-admin/src/v1/json/config_forms/tests.rs                                 # D
+crates/busbar-core-admin/src/v1/json/cursor.rs                                             # D
+crates/busbar-core-admin/src/v1/json/envelope.rs                                           # D
+crates/busbar-core-admin/src/v1/json/evolution.rs                                          # D
+crates/busbar-core-admin/src/v1/json/generation.rs                                         # D
+crates/busbar-core-admin/src/v1/json/handlers.rs                                           # D
+crates/busbar-core-admin/src/v1/json/hook_attachments.rs                                   # D
+crates/busbar-core-admin/src/v1/json/instance_settings.rs                                  # D
+crates/busbar-core-admin/src/v1/json/kernel_verbs.rs                                       # D
+crates/busbar-core-admin/src/v1/json/mod.rs                                                # D
+crates/busbar-core-admin/src/v1/json/named_map.rs                                          # D
+crates/busbar-core-admin/src/v1/json/replay_metadata.rs                                    # D
+crates/busbar-core-admin/src/v1/json/tests/admin_grant_tests.rs                            # D
+crates/busbar-core-admin/src/v1/json/tests/envelope_reasons.rs                             # D
+crates/busbar-core-admin/src/v1/json/tests/group_limit_removed_keys.rs                     # D
+crates/busbar-core-admin/src/v1/json/tests/hook_attachment_tests.rs                        # D
+crates/busbar-core-admin/src/v1/json/tests/named_map_tests.rs                              # D
+crates/busbar-core-admin/src/v1/json/tests/operator_file_policy_tests.rs                   # D
+crates/busbar-core-admin/src/v1/json/tests/patch_tests.rs                                  # D
+crates/busbar-core-admin/src/v1/json/tests/schema_fallback.rs                              # D
+crates/busbar-core-admin/src/v1/json/tests/tests.rs                                        # D
+crates/busbar-core-admin/src/v1/schema.rs                                                  # D
+crates/busbar-core-admin/src/v1/service_operations.rs                                      # D
+crates/busbar-core-admin/src/v1/service.rs                                                 # D
+crates/busbar-core-admin/src/v1/tests/read_view_redaction.rs                               # D
+crates/busbar-core-admin/src/versions.rs                                                   # D
+crates/busbar-core-connector/Cargo.toml                                                    # D
+crates/busbar-core-connector/src/tests/connector_tests.rs                                  # D
+crates/busbar-core-connector/src/tests/hostio_tests.rs                                     # D
+crates/busbar-core-connector/src/tests/program_receipt_tests.rs                            # D
+crates/busbar-core-connector/src/tls/tests.rs                                              # D
+crates/busbar-core-oauth2/Cargo.toml                                                       # D
+crates/busbar-core-oauth2/src/config_schema.rs                                             # D
+crates/busbar-core-oauth2/src/config.rs                                                    # D
+crates/busbar-core-oauth2/src/tests/config_tests.rs                                        # D
+crates/busbar-kernel/Cargo.toml                                                            # D
+crates/busbar-kernel/src/admin/gate.rs                                                     # D
+crates/busbar-kernel/src/auth/tests/instances_tests.rs                                     # D
+crates/busbar-kernel/src/auth/tests/login_tests.rs                                         # D
+crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs                                  # D
+crates/busbar-kernel/src/config_validate/deal.rs                                           # D
+crates/busbar-kernel/src/config_validate/mod.rs                                            # D
+crates/busbar-kernel/src/config_validate/tests/credential_echo_tests.rs                    # D
+crates/busbar-kernel/src/config_validate/tests/deal.rs                                     # D
+crates/busbar-kernel/src/config_validate/tests/secret_shorthand_declared_tests.rs          # D
+crates/busbar-kernel/src/config_validate/tests/undeclared_secret_refs_tests.rs             # D
+crates/busbar-kernel/src/config/document_patch.rs                                          # D
+crates/busbar-kernel/src/config/document_source.rs                                         # D
+crates/busbar-kernel/src/config/filled.rs                                                  # D
+crates/busbar-kernel/src/config/named_map.rs                                               # D
+crates/busbar-kernel/src/config/overlay_native.rs                                          # D
+crates/busbar-kernel/src/config/overlay.rs                                                 # D
+crates/busbar-kernel/src/config/plane_sections.rs                                          # D
+crates/busbar-kernel/src/config/provider_grammar.rs                                        # D
+crates/busbar-kernel/src/config/providers.rs                                               # D
+crates/busbar-kernel/src/config/readback.rs                                                # D
+crates/busbar-kernel/src/config/secret.rs                                                  # D
+crates/busbar-kernel/src/config/security_policy.rs                                         # D
+crates/busbar-kernel/src/config/tests/bootstrap_tests.rs                                   # D
+crates/busbar-kernel/src/config/tests/filled_tests.rs                                      # D
+crates/busbar-kernel/src/config/tests/loader_declared_settings.rs                          # D
+crates/busbar-kernel/src/config/tests/min3_tests.rs                                        # D
+crates/busbar-kernel/src/config/tests/named_map_tests.rs                                   # D
+crates/busbar-kernel/src/config/tests/overlay_bytes_tests.rs                               # D
+crates/busbar-kernel/src/config/tests/overlay_native_tests.rs                              # D
+crates/busbar-kernel/src/config/tests/overlay_tests.rs                                     # D
+crates/busbar-kernel/src/config/tests/patch_tests.rs                                       # D
+crates/busbar-kernel/src/config/tests/plane_boot_validation_tests.rs                       # D
+crates/busbar-kernel/src/config/tests/provider_debug_redaction_tests.rs                    # D
+crates/busbar-kernel/src/config/tests/provider_grammar_tests.rs                            # D
+crates/busbar-kernel/src/config/tests/readback_tests.rs                                    # D
+crates/busbar-kernel/src/config/tests/reserved_key_tests.rs                                # D
+crates/busbar-kernel/src/config/tests/resolved_provider_tests.rs                           # D
+crates/busbar-kernel/src/config/tests/secret_tests.rs                                      # D
+crates/busbar-kernel/src/config/tests/security_policy_tests.rs                             # D
+crates/busbar-kernel/src/config/tests/settings_resolution_tests.rs                         # D
+crates/busbar-kernel/src/config/tests/tests.rs                                             # D
+crates/busbar-kernel/src/export/tests/plugin_tests.rs                                      # D
+crates/busbar-kernel/src/governance/tests/principal_transition_tests.rs                    # D
+crates/busbar-kernel/src/host_observations.rs                                              # D
+crates/busbar-kernel/src/host_record_bootstrap.rs                                          # D
+crates/busbar-kernel/src/oauth_as/seam.rs                                                  # D
+crates/busbar-kernel/src/observe.rs                                                        # D
+crates/busbar-kernel/src/off_path/export.rs                                                # D
+crates/busbar-kernel/src/off_path/governance/persistence/prices.rs                         # D
+crates/busbar-kernel/src/off_path/governance/persistence/recovery_tests.rs                 # D
+crates/busbar-kernel/src/off_path/governance/principal_transition.rs                       # D
+crates/busbar-kernel/src/off_path/plane_registry.rs                                        # D
+crates/busbar-kernel/src/persistence/observations.rs                                       # D
+crates/busbar-kernel/src/plane_driver/port_hooks/tests.rs                                  # D
+crates/busbar-kernel/src/plane_driver/provider_catalog.rs                                  # D
+crates/busbar-kernel/src/plane_driver/tests/door_tests.rs                                  # D
+crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs                               # D
+crates/busbar-kernel/src/plugin_config/binder.rs                                           # D
+crates/busbar-kernel/src/plugin_config/pointer.rs                                          # D
+crates/busbar-kernel/src/tests/host_disk_export_tests.rs                                   # D
+crates/busbar-kernel/src/tests/observe_tests.rs                                            # D
+crates/busbar-kernel/src/tests/opened_secrets_tests.rs                                     # D
+crates/busbar-kernel/tests/authoring.rs                                                    # D
+crates/busbar-kernel/tests/declared_styles_install.rs                                      # D
+crates/busbar-kernel/tests/grammar_generation.rs                                           # D
+crates/busbar-kernel/tests/hook_message_cap_1_5_5.rs                                       # D
+crates/busbar-kernel/tests/native_provider_catalog.rs                                      # D
+crates/busbar-kernel/tests/operator_patch_reference.rs                                     # D
+crates/busbar-kernel/tests/removed_w2g_keys.rs                                             # D
+crates/busbar-kernel/tests/resource_ownership.rs                                           # D
+crates/busbar/build.rs                                                                     # D
+crates/busbar/Cargo.toml                                                                   # D
+crates/busbar/src/root/boot.rs                                                             # D
+crates/busbar/src/root/durability/unit_checkpoint_tests.rs                                 # D
+crates/busbar/src/root/min3_boot.rs                                                        # D
+crates/busbar/src/root/min3_provider_plan.rs                                               # D
+crates/busbar/src/root/observe.rs                                                          # D
+crates/busbar/src/root/off_path/dispatch.rs                                                # D
+crates/busbar/src/root/off_path/door_steps.rs                                              # D
+crates/busbar/src/root/off_path/serve.rs                                                   # D
+crates/busbar/src/root/principal_transition.rs                                             # D
+crates/busbar/src/root/tests/admin_plugin_admission.rs                                     # D
+crates/busbar/src/root/tests/boot.rs                                                       # D
+crates/busbar/src/root/tests/connector.rs                                                  # D
+crates/busbar/src/root/tests/door_steps_lease.rs                                           # D
+crates/busbar/src/root/tests/door_steps.rs                                                 # D
+crates/busbar/src/root/tests/fixture_bootstrap.rs                                          # D
+crates/busbar/src/root/tests/inbound_admin_sender_constraint.rs                            # D
+crates/busbar/src/root/tests/linked_auth.rs                                                # D
+crates/busbar/src/root/tests/linked_protocols.rs                                           # D
+crates/busbar/src/root/tests/linked.rs                                                     # D
+crates/busbar/src/root/tests/min3_boot.rs                                                  # D
+crates/busbar/src/root/tests/native_export_lifecycle.rs                                    # D
+crates/busbar/src/root/tests/observe.rs                                                    # D
+crates/busbar/src/root/tests/policy.rs                                                     # D
+crates/busbar/src/root/tests/principal_transition.rs                                       # D
+crates/busbar/src/root/tests/serve_money.rs                                                # D
+crates/busbar/src/root/tests/shutdown.rs                                                   # D
+crates/busbar/src/root/tests/test_plugins.rs                                               # D
+crates/busbar/src/root/tests/userinfo.rs                                                   # D
+crates/busbar/src/root/units_admin/adjust_action.rs                                        # D
+crates/busbar/src/root/userinfo.rs                                                         # D
+crates/busbar/src/test_source_gen.rs                                                       # D
+crates/busbar/src/tests/admin_application/admin_all_reads_guard.rs                         # D
+crates/busbar/src/tests/admin_application/admin_budget_group_contracts.rs                  # D
+crates/busbar/src/tests/admin_application/admin_configuration_contracts.rs                 # D
+crates/busbar/src/tests/admin_application/admin_configuration_health.rs                    # D
+crates/busbar/src/tests/admin_application/admin_corrupt_overlay_refusals.rs                # D
+crates/busbar/src/tests/admin_application/admin_credential_cache.rs                        # D
+crates/busbar/src/tests/admin_application/admin_custody_outcomes.rs                        # D
+crates/busbar/src/tests/admin_application/admin_delegated_authority.rs                     # D
+crates/busbar/src/tests/admin_application/admin_effect_authority.rs                        # D
+crates/busbar/src/tests/admin_application/admin_generation_etags.rs                        # D
+crates/busbar/src/tests/admin_application/admin_governance_api.rs                          # D
+crates/busbar/src/tests/admin_application/admin_group_admission.rs                         # D
+crates/busbar/src/tests/admin_application/admin_hook_attachments.rs                        # D
+crates/busbar/src/tests/admin_application/admin_info_and_validation.rs                     # D
+crates/busbar/src/tests/admin_application/admin_key_custody_surface.rs                     # D
+crates/busbar/src/tests/admin_application/admin_key_delete_contracts.rs                    # D
+crates/busbar/src/tests/admin_application/admin_key_mutation_gates.rs                      # D
+crates/busbar/src/tests/admin_application/admin_key_queries_and_audit.rs                   # D
+crates/busbar/src/tests/admin_application/admin_key_request_contracts.rs                   # D
+crates/busbar/src/tests/admin_application/admin_key_states_and_secrets.rs                  # D
+crates/busbar/src/tests/admin_application/admin_key_store_selection.rs                     # D
+crates/busbar/src/tests/admin_application/admin_locked_configuration.rs                    # D
+crates/busbar/src/tests/admin_application/admin_mint_policy_ceilings.rs                    # D
+crates/busbar/src/tests/admin_application/admin_named_map_scope.rs                         # D
+crates/busbar/src/tests/admin_application/admin_openapi_route_parity.rs                    # D
+crates/busbar/src/tests/admin_application/admin_operation_namespaces.rs                    # D
+crates/busbar/src/tests/admin_application/admin_overlay_boundaries.rs                      # D
+crates/busbar/src/tests/admin_application/admin_overlay_persist_failures.rs                # D
+crates/busbar/src/tests/admin_application/admin_response_consistency.rs                    # D
+crates/busbar/src/tests/admin_application/admin_restart_idempotency.rs                     # D
+crates/busbar/src/tests/admin_application/admin_restart_refusal.rs                         # D
+crates/busbar/src/tests/admin_application/admin_rotate_pool_ceilings.rs                    # D
+crates/busbar/src/tests/admin_application/admin_routing_contracts.rs                       # D
+crates/busbar/src/tests/admin_application/admin_settings_boundaries.rs                     # D
+crates/busbar/src/tests/admin_application/admin_settings_persistence.rs                    # D
+crates/busbar/src/tests/admin_application/admin_signed_key_lifecycle.rs                    # D
+crates/busbar/src/tests/admin_application/admin_stuck_key_sentinel.rs                      # D
+crates/busbar/src/tests/admin_application/admin_token_carriers.rs                          # D
+crates/busbar/src/tests/admin_application/admin_token_ttl_ceiling.rs                       # D
+crates/busbar/src/tests/admin_application/admin_topology_live_status.rs                    # D
+crates/busbar/src/tests/admin_application/admin_usage_model_key.rs                         # D
+crates/busbar/src/tests/admin_application/admin_warning_contracts.rs                       # D
+crates/busbar/src/tests/admin_application/apply_audit_tests.rs                             # D
+crates/busbar/src/tests/admin_application/config_at_rest_recovery.rs                       # D
+crates/busbar/src/tests/admin_application/config_boundaries.rs                             # D
+crates/busbar/src/tests/admin_application/config_document_patch.rs                         # D
+crates/busbar/src/tests/admin_application/config_key_transactions.rs                       # D
+crates/busbar/src/tests/admin_application/config_price_activation.rs                       # D
+crates/busbar/src/tests/admin_application/config_store_overlay.rs                          # D
+crates/busbar/src/tests/admin_application/config_transactions.rs                           # D
+crates/busbar/src/tests/admin_application/custody_provision.rs                             # D
+crates/busbar/src/tests/admin_application/custody_usage_range.rs                           # D
+crates/busbar/src/tests/admin_application/grammar_admin_tests.rs                           # D
+crates/busbar/src/tests/admin_application/installed_schema.rs                              # D
+crates/busbar/src/tests/admin_application/instance_settings.rs                             # D
+crates/busbar/src/tests/admin_application/key_revoke_tombstone_tests.rs                    # D
+crates/busbar/src/tests/admin_application/plugin_artifact_cas.rs                           # D
+crates/busbar/src/tests/admin_application/plugin_inspect_envelope.rs                       # D
+crates/busbar/src/tests/admin_application/service_bootstrap_rollback.rs                    # D
+crates/busbar/src/tests/admin_application/service_cross_usage.rs                           # D
+crates/busbar/src/tests/admin_application/service_group_deletion.rs                        # D
+crates/busbar/src/tests/admin_application/service_group_usage.rs                           # D
+crates/busbar/src/tests/admin_application/service_groups.rs                                # D
+crates/busbar/src/tests/admin_application/service_named_defs.rs                            # D
+crates/busbar/src/tests/admin_application/service_plane_usage.rs                           # D
+crates/busbar/src/tests/admin_application/service_plugin_integration.rs                    # D
+crates/busbar/src/tests/admin_application/service_plugin_policy.rs                         # D
+crates/busbar/src/tests/admin_application/service_store_usage.rs                           # D
+crates/busbar/src/tests/admin_application/service_usage_adjustment.rs                      # D
+crates/busbar/src/tests/admin_application/split_admin_listener.rs                          # D
+crates/busbar/src/tests/admin_application/telemetry.rs                                     # D
+crates/busbar/src/tests/admin_application/usage_reads_the_process_rate_history.rs          # D
+crates/busbar/src/tests/kernel_application/auth_admin_tests.rs                             # D
+crates/busbar/src/tests/kernel_application/auth_admit_tests.rs                             # D
+crates/busbar/src/tests/kernel_application/auth_chain_tests.rs                             # D
+crates/busbar/src/tests/kernel_application/auth_data_gate_tests.rs                         # D
+crates/busbar/src/tests/kernel_application/auth_dpop_tests.rs                              # D
+crates/busbar/src/tests/kernel_application/auth_governance_routes.rs                       # D
+crates/busbar/src/tests/kernel_application/auth_keys_tests.rs                              # D
+crates/busbar/src/tests/kernel_application/auth_linked_contracts.rs                        # D
+crates/busbar/src/tests/kernel_application/auth_preflight_tests.rs                         # D
+crates/busbar/src/tests/kernel_application/auth_scope_tests.rs                             # D
+crates/busbar/src/tests/kernel_application/auth_self_keys_tests.rs                         # D
+crates/busbar/src/tests/kernel_application/central_admin_verbs.rs                          # D
+crates/busbar/src/tests/kernel_application/central_config_recovery_boot.rs                 # D
+crates/busbar/src/tests/kernel_application/central_rebuild.rs                              # D
+crates/busbar/src/tests/kernel_application/central_root_rules.rs                           # D
+crates/busbar/src/tests/kernel_application/central_router_headers.rs                       # D
+crates/busbar/src/tests/kernel_application/central2_config_export.rs                       # D
+crates/busbar/src/tests/kernel_application/central2_generation_limits.rs                   # D
+crates/busbar/src/tests/kernel_application/central2_handler_panic.rs                       # D
+crates/busbar/src/tests/kernel_application/central2_inbound_custody.rs                     # D
+crates/busbar/src/tests/kernel_application/central2_inbound_generations.rs                 # D
+crates/busbar/src/tests/kernel_application/central2_inbound_keys.rs                        # D
+crates/busbar/src/tests/kernel_application/central2_inbound_refusals.rs                    # D
+crates/busbar/src/tests/kernel_application/central2_inbound_signed.rs                      # D
+crates/busbar/src/tests/kernel_application/central2_inbound_tickets.rs                     # D
+crates/busbar/src/tests/kernel_application/central2_provider_boot.rs                       # D
+crates/busbar/src/tests/kernel_application/central2_root_rules.rs                          # D
+crates/busbar/src/tests/kernel_application/central2_router_boundaries.rs                   # D
+crates/busbar/src/tests/kernel_application/central2_validator_order.rs                     # D
+crates/busbar/src/tests/kernel_application/config_parser_deploy.rs                         # D
+crates/busbar/src/tests/kernel_application/config_parser_groups_collision.rs               # D
+crates/busbar/src/tests/kernel_application/config_parser_named_map_replace.rs              # D
+crates/busbar/src/tests/kernel_application/config_validation_application.rs                # D
+crates/busbar/src/tests/kernel_application/config_validation_secrets.rs                    # D
+crates/busbar/src/tests/kernel_application/misc_ingress_terminal.rs                        # D
+crates/busbar/src/tests/kernel_application/misc_snapshot_fields.rs                         # D
+crates/busbar/src/tests/kernel_application/plane_driver_health.rs                          # D
+crates/busbar/src/tests/kernel_application/plane_driver_host.rs                            # D
+crates/busbar/src/tests/kernel_application/plugin_routes_actual.rs                         # D
+crates/busbar/src/tests/kernel_application/recovery_flusher_actual.rs                      # D
+crates/busbar/src/tests/kernel_application/router.rs                                       # D
+crates/busbar/src/tests/kernel_application/state.rs                                        # D
+crates/busbar/src/tests/oauth2_application/consent_tests.rs                                # D
+crates/busbar/src/tests/oauth2_application/hosted_provider_tests.rs                        # D
+crates/busbar/src/tests/oauth2_application/hosted_routes_tests.rs                          # D
+crates/busbar/src/tests/oauth2_application/issuer.rs                                       # D
+crates/busbar/src/tests/oauth2_application/mod.rs                                          # D
+crates/busbar/src/tests/rig.rs                                                             # D
+crates/busbar/src/tests/tests.rs                                                           # D
+crates/plugin-loader/Cargo.toml                                                            # D
+crates/plugin-loader/src/cold/auth_axis.rs                                                 # D
+crates/plugin-loader/src/cold/export_axis.rs                                               # D
+crates/plugin-loader/src/cold/highwater.rs                                                 # D
+crates/plugin-loader/src/export_axis.rs                                                    # D
+crates/plugin-loader/src/tests/auth_axis_tests.rs                                          # D
+crates/plugin-loader/src/tests/auth_carriers_tests.rs                                      # D
+crates/plugin-loader/src/tests/auth_presentation_tests.rs                                  # D
+crates/plugin-loader/src/tests/boot_tests.rs                                               # D
+crates/plugin-loader/src/tests/conformance_auth_unjudged_tests.rs                          # D
+crates/plugin-loader/src/tests/conn_services_tests.rs                                      # D
+crates/plugin-loader/src/tests/export_axis_tests.rs                                        # D
+crates/plugin-loader/src/tests/export_conformance_tests.rs                                 # D
+crates/plugin-loader/src/tests/export_recorder_tests.rs                                    # D
+crates/plugin-loader/src/tests/export_refresh_tests.rs                                     # D
+crates/plugin-loader/src/tests/integer_token_tests.rs                                      # D
+crates/plugin-loader/src/tests/observe_tests.rs                                            # D
+crates/plugin-loader/src/tests/ordinary_auth_short.rs                                      # D
+crates/plugin-loader/src/tests/pack_tests.rs                                               # D
+crates/plugin-loader/src/tests/public_settings_tests.rs                                    # D
+crates/plugin-loader/src/tests/release_seal_tests.rs                                       # D
+crates/plugin-loader/src/tests/tarball_tests.rs                                            # D
+crates/plugin-loader/tests/fixtures/neutral_export_plugin.rs                               # D
+crates/plugin-loader/tests/fixtures/ready_plugins.rs                                       # D
+dist/default/Cargo.toml                                                                    # D
+dist/default/tests/canary/abi.rs                                                           # D
+dist/default/tests/common/chat_spend.rs                                                    # D
+dist/default/tests/common/credentials.rs                                                   # D
+dist/default/tests/common/fresh_namespace.rs                                               # D
+dist/default/tests/common/lines.rs                                                         # D
+dist/default/tests/common/upstream.rs                                                      # D
+dist/default/tests/config_migrate_1_5_5.rs                                                 # D
+dist/default/tests/fixtures/plane_driver_test_plane.rs                                     # D
+dist/default/tests/mcp_stdio_serve.rs                                                      # D
+dist/default/tests/otlp_span_records.rs                                                    # D
+dist/default/tests/plane_blackbox.rs                                                       # D
+dist/default/tests/plane_driver.rs                                                         # D
+dist/default/tests/product/admin_cross_plane/keys.rs                                       # D
+dist/default/tests/product/admin_cross_plane/openapi.rs                                    # D
+dist/default/tests/product/admin_cross_plane/served_surface.rs                             # D
+dist/default/tests/product/admin_planeverbs_cross_plane.rs                                 # D
+dist/default/tests/product/auth_cross_plane.rs                                             # D
+dist/default/tests/product/decisions_hooks.rs                                              # D
+dist/default/tests/product/endpoints_cross_plane.rs                                        # D
+dist/default/tests/product/law7_plane_gating.rs                                            # D
+dist/default/tests/product/ledger_admin_views_legacy_leg.rs                                # D
+dist/default/tests/product/plugin_preflight_scan.rs                                        # D
+dist/default/tests/product/rate_apply_commit.rs                                            # D
+dist/default/tests/product/registry_cross_plane.rs                                         # D
+dist/default/tests/product/residual_envelope_cross_plane.rs                                # D
+dist/default/tests/provider_key_never_surfaces.rs                                          # D
+testing/oracle/Cargo.toml                                                                  # D
+tools/ci-checks/src/no_serde_json_tests.rs                                                 # D
