@@ -161,7 +161,7 @@ pub(crate) fn build_server_config(
         };
         let mut config = builder.with_single_cert(certs, key)?;
         config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
-        Ok(config)
+        select_server_output(config)
     })
     .map_err(|e| match e {
         crypto_tls::TlsError::Rustls(e) => format!(
@@ -171,6 +171,28 @@ pub(crate) fn build_server_config(
         ),
         other => format!("cannot build the TLS server configuration: {other}"),
     })?;
+    Ok(config)
+}
+
+/// Explicit root-selected output profile for a freshly assembled listener configuration.
+pub(crate) fn select_server_output(
+    mut config: ServerConfig,
+) -> Result<ServerConfig, rustls::Error> {
+    config.cert_compressors.clear();
+    config.cert_compression_cache = Arc::new(rustls::compress::CompressionCache::Disabled);
+    let plan = crypto_tls::write_progress::output_plan()?;
+    crypto_tls::write_progress::configure_server(&mut config, plan)?;
+    Ok(config)
+}
+
+/// Explicit root-selected output profile for a freshly assembled dialer configuration.
+pub(crate) fn select_client_output(
+    mut config: rustls::ClientConfig,
+) -> Result<rustls::ClientConfig, rustls::Error> {
+    config.cert_compressors.clear();
+    config.cert_compression_cache = Arc::new(rustls::compress::CompressionCache::Disabled);
+    let plan = crypto_tls::write_progress::output_plan()?;
+    crypto_tls::write_progress::configure_client(&mut config, plan)?;
     Ok(config)
 }
 
@@ -218,9 +240,11 @@ pub(crate) fn build_client_config(
     let refused = |e: crypto_tls::TlsError| BadClientIdentity(e.to_string());
     if trust.is_unset() {
         return crypto_tls::client_config(|builder| {
-            Ok(builder
-                .with_root_certificates(webpki_roots_store())
-                .with_no_client_auth())
+            select_client_output(
+                builder
+                    .with_root_certificates(webpki_roots_store())
+                    .with_no_client_auth(),
+            )
         })
         .map(Arc::unwrap_or_clone)
         .map_err(refused);
@@ -229,7 +253,7 @@ pub(crate) fn build_client_config(
     let verifier = pinned_verifier(trust, &roots)?;
     match &trust.client_identity {
         None => crypto_tls::client_config(|builder| {
-            Ok(wants_client_cert(builder, roots, verifier).with_no_client_auth())
+            select_client_output(wants_client_cert(builder, roots, verifier).with_no_client_auth())
         })
         .map(Arc::unwrap_or_clone)
         .map_err(refused),
@@ -248,7 +272,10 @@ pub(crate) fn build_client_config(
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
             crypto_tls::client_config(|builder| {
-                wants_client_cert(builder, roots, verifier).with_client_auth_cert(chain, key)
+                select_client_output(
+                    wants_client_cert(builder, roots, verifier)
+                        .with_client_auth_cert(chain, key)?,
+                )
             })
             .map(Arc::unwrap_or_clone)
             .map_err(|e| match e {
