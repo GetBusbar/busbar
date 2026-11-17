@@ -851,6 +851,14 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             config.sections.as_ref().map_err(Clone::clone)?;
         }
         if let Some(plan) = &self.native_listeners {
+            let generation = crate::root::min3_candidate::generation(app)?;
+            if generation.native.config_version != app.config_version
+                || !generation.has_prepared_workers()
+            {
+                return Err(
+                    "native candidate has no complete generation with dormant workers".into(),
+                );
+            }
             self.check_native_topology(app, plan)?;
             let config = app
                 .config_projection
