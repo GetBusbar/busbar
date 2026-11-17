@@ -50,6 +50,13 @@ fn metrics_names_resolve_only_for_admin_authorization() {
         .filter(|row| named_rung(row.name).is_some())
         .map(|row| row.name)
         .collect();
+    assert_eq!(
+        grantable,
+        crate::verb::admin_grant_rows()
+            .map(|row| row.name)
+            .collect::<BTreeSet<_>>(),
+        "the authorization projection is the grant resolver's exact vocabulary"
+    );
     assert!(executable.is_subset(&grantable));
     assert_eq!(
         grantable

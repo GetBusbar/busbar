@@ -262,8 +262,23 @@ async fn metrics_named_admin_contract() {
     assert!(busbar_kernel::base_data_core_lines(&app)
         .iter()
         .all(|(path, _, _)| !PATHS.iter().any(|(metrics, _)| path.as_str() == *metrics)));
-    let (_, admin, handle) =
+    let (data, admin, handle) =
         busbar_core_admin::build_split_routers_with_limits(app.clone(), 64 * 1024, 16, false);
+    for (path, _) in PATHS {
+        let (status, _) = ask(
+            &data,
+            Method::GET,
+            path,
+            Some(super::TOKEN),
+            "application/json",
+            None,
+        )
+        .await;
+        assert!(
+            !status.is_success(),
+            "the data listener must not acquire core {path}"
+        );
+    }
     let keys = Keys::mint(&admin).await;
     assert_discovery(&admin, &keys).await;
     assert_access(&admin, &keys, false).await;
