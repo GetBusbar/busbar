@@ -258,33 +258,6 @@ pub(crate) fn spilled_labels<'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
-// dispatch::migrate: cold settings and credential migration refusals.
-
-/// A credential owner that could not migrate the original reference.
-#[cold]
-pub(crate) fn credential_refused() -> String {
-    "credential owner could not migrate the original reference".to_owned()
-}
-
-/// A migrate entry that panicked.
-#[cold]
-pub(crate) fn migrate_panicked() -> String {
-    "its migrate panicked".to_owned()
-}
-
-/// A migrate entry that named an answer outside the host's buffer.
-#[cold]
-pub(crate) fn migrate_outside() -> String {
-    "its migrate named an answer outside the host's buffer".to_owned()
-}
-
-/// A migration library with no door.
-#[cold]
-pub(crate) fn migration_no_door(display: &str, e: &libloading::Error) -> String {
-    format!("{display}: no door: {}", crate::stage::loader_error(e))
-}
-
-// ---------------------------------------------------------------------------------------------
 // dispatch::log_file: config-apply and bind-time words, file names and refusals.
 
 /// A `plugins.logs.level` that names no level.

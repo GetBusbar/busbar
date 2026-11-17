@@ -30,14 +30,14 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::export::{slot, DeliverIn};
-use busbar_contract::export_stream::ExportStream;
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSONL};
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::ExportCalls;
+use busbar_contract::export_stream::ExportStream;
+use busbar_contract::json::{self, json, Map, Value};
 use busbar_plugin_loader::dispatch::kinds::export::Export;
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, InlineTicket, Plugin};
 use busbar_plugin_loader::export_door::ExportInstance;
-use serde_json::{json, Value};
 
 use crate::frames::{input, output};
 use crate::host::SinkConns;
@@ -82,7 +82,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     )?;
     let settings = match &cfg.settings {
         Some(s) => s.clone(),
-        None => serde_json::to_vec(&default_settings()).map_err(|e| e.to_string())?,
+        None => json::to_vec(&default_settings()).map_err(|e| e.to_string())?,
     };
     let instance = ExportInstance::open(plugin, d.clone(), &settings)
         .map_err(|e| format!("export open: {e}"))?;
@@ -107,20 +107,20 @@ fn span_line(
     projected: &[(&str, Value)],
     attributes: &[(&str, Value)],
 ) -> Vec<u8> {
-    let hex = |id: u64| Value::from(format!("{id:016x}"));
+    let hex = |id: u64| Value::from(&format!("{id:016x}"));
     let (trace, own, parent) = ids;
     let start_us: u64 = 1_700_000_000_123_456 + own * 10;
-    let mut line = serde_json::Map::new();
-    line.insert("trace_id".into(), hex(trace));
-    line.insert("span_id".into(), hex(own));
+    let mut line = Map::new();
+    line.insert("trace_id", hex(trace));
+    line.insert("span_id", hex(own));
     if let Some(p) = parent {
-        line.insert("parent_span_id".into(), hex(p));
+        line.insert("parent_span_id", hex(p));
     }
-    line.insert("name".into(), Value::from(name));
-    line.insert("start".into(), Value::from(start_us));
-    line.insert("duration_us".into(), Value::from(1_843u64));
+    line.insert("name", Value::from(name));
+    line.insert("start", Value::from(start_us));
+    line.insert("duration_us", Value::from(1_843u64));
     for (k, v) in projected {
-        line.insert((*k).into(), v.clone());
+        line.insert(*k, v.clone());
     }
     let mut attrs: Vec<Value> = vec![
         json!({"key": "code.file.path", "value": "crates/busbar-kernel/src/plane_driver/route.rs"}),
@@ -137,20 +137,20 @@ fn span_line(
     );
     attrs.push(json!({"key": "busy_ns", "value": 412_337}));
     attrs.push(json!({"key": "idle_ns", "value": 1_430_118}));
-    let mut span = serde_json::Map::new();
-    span.insert("trace_id".into(), hex(trace));
-    span.insert("span_id".into(), hex(own));
+    let mut span = Map::new();
+    span.insert("trace_id", hex(trace));
+    span.insert("span_id", hex(own));
     if let Some(p) = parent {
-        span.insert("parent_span_id".into(), hex(p));
+        span.insert("parent_span_id", hex(p));
     }
-    span.insert("name".into(), Value::from(name));
-    span.insert("start_ns".into(), Value::from(start_us * 1000));
-    span.insert("end_ns".into(), Value::from(start_us * 1000 + 1_843_000));
-    span.insert("attributes".into(), Value::Array(attrs));
-    span.insert("events".into(), Value::Array(Vec::new()));
-    span.insert("status".into(), json!({"code": "unset", "message": ""}));
-    line.insert("span".into(), Value::Object(span));
-    serde_json::to_vec(&Value::Object(line)).expect("json")
+    span.insert("name", Value::from(name));
+    span.insert("start_ns", Value::from(start_us * 1000));
+    span.insert("end_ns", Value::from(start_us * 1000 + 1_843_000));
+    span.insert("attributes", Value::from(attrs));
+    span.insert("events", Value::from(Vec::<Value>::new()));
+    span.insert("status", json!({"code": "unset", "message": ""}));
+    line.insert("span", Value::from(span));
+    json::to_vec(&line).expect("json")
 }
 
 /// One openai→openai request's three span records (closing order: innermost first).

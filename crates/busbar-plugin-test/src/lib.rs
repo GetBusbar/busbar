@@ -60,14 +60,13 @@ pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
 pub use services::Services;
 
-/// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a door's settings
-/// migration, a reference-field read and a rendered Statement's parse.
+/// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a reference-field read
+/// and a rendered Statement's parse.
 pub use busbar_contract::abi::mechanism::extensions::reference_fields;
 pub use busbar_contract::abi::mechanism::rendering::{
     read as read_rendering, Read as RenderedStatement, Unreadable,
 };
 pub use busbar_plugin_loader::boot::{select, Candidate, Selected, Uses};
-pub use busbar_plugin_loader::dispatch::migrate::migrate_door;
 
 #[cfg(feature = "test-seal")]
 pub use busbar_contract::abi::sdk::test_support::chip;

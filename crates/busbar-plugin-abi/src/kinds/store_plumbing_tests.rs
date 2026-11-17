@@ -446,7 +446,7 @@ fn fallible_namespace_plan_keeps_lock_order_and_mutation_only_generations() {
     let plan = try_prelude_order(items).unwrap();
     assert_eq!(plan, prelude_order(items));
     let mut expected = vec![b, wire::SLOT_NS];
-    expected.sort_unstable();
+    expected.sort();
     assert_eq!(
         plan.iter()
             .filter_map(|(ns, exclusive)| exclusive.then_some(*ns))
