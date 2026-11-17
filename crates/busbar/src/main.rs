@@ -101,10 +101,10 @@ fn store_boot_refusal(transition: bool, error: String) -> String {
     }
 }
 
-fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli::Argv) -> bool {
-    argv.words
-        .iter()
-        .any(|a| root::cli::is_plane_flag(planes, a))
+/// Whether this process serves its one plane line route on stdin/stdout instead of binding
+/// listeners: core's own `--stdio`, never a plugin-stated flag (WP1-GAP r3 §1.3, #428).
+fn line_serve_requested(argv: &root::cli::Argv) -> bool {
+    argv.stdio
 }
 
 const MAX_WORKER_THREADS: usize = 128;
@@ -338,6 +338,11 @@ fn main() {
     }
     if let Err(e) = busbar_kernel::observability::init_log_bridge() {
         eprintln!("busbar: the `log` bridge is not installed: {e}");
+    }
+    // The exiting arms that need no plugin state run before anything is scanned, read or
+    // registered (WP1-GAP r3 §1.2, B2): only the crypto self-test above precedes them.
+    if let Some(code) = root::cli::early_cli_flags() {
+        root::exit::exit(code);
     }
 
     let bootstrap_services = root::serve::Services::bootstrap();
@@ -741,7 +746,7 @@ async fn run(
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
-            &plugin_process, file_images, &base_cfg, boot_guard.clone(),
+            &plugin_process, file_images, &base_cfg, boot_guard.clone(), root::cli::argv().stdio,
         ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
@@ -1473,16 +1478,13 @@ async fn run(
     let door_post = served.post.clone();
     let recovery_served = served.clone();
 
-    if let Some(refusal) = root::serve::lines::refusal() {
-        die(refusal);
-    }
-
     let mut served = served;
-    let line_served = line_serve_requested(&root::cli::help_rows(), root::cli::argv())
-        .then(|| std::mem::take(&mut served));
+    let line_served = line_serve_requested(root::cli::argv()).then(|| std::mem::take(&mut served));
 
     drop(served);
-    let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let (admin_trust_decide, admin_trust_read) = root::serve::admin_trust(&services);
+    let app_handle =
+        Arc::new(busbar_kernel::state::AppHandle::new(app).with_trust(admin_trust_read));
     // Publication owns every reserved observer through producer shutdown. Failed construction
     // above drops the uncommitted reservation and returns its unused capacity.
     let _export_generation = observation_reservation.commit();
@@ -1655,7 +1657,7 @@ async fn run(
                 .unwrap_or_else(|error| die(error)),
             book,
             None,
-            &services,
+            admin_trust_decide,
             root::adapters::BreakerPolicy::new(),
         )
         .unwrap_or_else(|error| die(format!("admin persistence admission refused: {error:?}"))),
@@ -1743,7 +1745,6 @@ async fn run(
         lines = Some(Box::pin(root::serve::lines::serve_lines(
             served,
             app_handle.clone(),
-            || root::kernel::ROOT_CARD.pin(),
             Arc::clone(&request_admission),
             stop,
         )));

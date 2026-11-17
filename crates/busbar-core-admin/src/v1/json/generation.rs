@@ -103,6 +103,7 @@ fn check_if_match(req: &mut Request, app: &App, rel: &str) -> Result<(), Box<Res
     };
     let value = raw.to_str().unwrap_or("").trim();
     if value == "*" {
+        busbar_kernel::audit::auditlog::note_unconditional();
         return Ok(());
     }
     let bare = value.strip_prefix("W/").unwrap_or(value);
@@ -243,7 +244,9 @@ fn restamp(response: &mut Response, handle: &Arc<AppHandle>) {
     }
 }
 
-fn valid_key(key: &str) -> bool {
+/// THE ONE `Idempotency-Key` predicate (TRUST-ADMIN-PRODUCER-DESIGN r3 condition B-C4): 1..=128 of
+/// `A-Z a-z 0-9 . _ : -`. The root replay wrapper applies this same rule.
+pub fn valid_idempotency_key(key: &str) -> bool {
     (1..=128).contains(&key.len())
         && key
             .bytes()
@@ -277,7 +280,7 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
     if self_idempotent(&req, &rel) {
         return next.run(req).await;
     }
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return refusal(
             400,
             "invalid_request",
@@ -486,7 +489,7 @@ pub(crate) async fn get_operation(
         );
     }
     let missing = || err_json(&AdminError::not_found("operation"));
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return missing();
     }
     let Some(store) = operation_store(&app) else {

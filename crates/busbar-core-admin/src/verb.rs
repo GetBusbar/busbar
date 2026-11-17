@@ -105,7 +105,6 @@ const fn row(
             verb,
             KernelVerb::PostKeys
                 | KernelVerb::PostKeysIdRotate
-                | KernelVerb::PostSigningKeyRotate
                 | KernelVerb::Adjust
                 | KernelVerb::PlaneRecordWrite
                 | KernelVerb::CommitUpgrade
@@ -186,7 +185,6 @@ pub enum KernelVerb {
     GetPluginsFileSchema,
 
     PostRestart,
-    PostSigningKeyRotate,
 
     Verify,
     PlaneRecordWrite,
@@ -205,7 +203,6 @@ pub enum KernelVerb {
     GetLedgerCheckpoints,
     GetLedgerReconciliation,
     GetLedgerMigration,
-    GetLedgerOpenapiJson,
 
     GetAuditHead,
     GetAuditRange,
@@ -279,7 +276,6 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy DeletePluginsFile "DELETE" "/api/v1/admin/plugins/{file}" "delete_plugins_file";
     Legacy GetPluginsFileSchema "GET" "/api/v1/admin/plugins/{file}/schema" "get_plugins_file_schema";
     Legacy PostRestart "POST" "/api/v1/admin/restart" "post_restart";
-    Legacy PostSigningKeyRotate "POST" "/api/v1/admin/signing-key/rotate" "post_signing_key_rotate";
     Legacy GetUsage "GET" "/api/v1/admin/usage" "get_usage";
     New Verify "GET" "/api/v1/admin/verify" "verify";
     New PlaneRecordWrite "POST" "/api/v1/admin/plane-record-write" "plane_record_write";
@@ -306,7 +302,6 @@ pub const TABLE: &[VerbRow] = table! {
     Ledger GetLedgerCheckpoints "GET" "/api/v1/admin/ledger/checkpoints" "get_ledger_checkpoints";
     Ledger GetLedgerReconciliation "GET" "/api/v1/admin/ledger/reconciliation" "get_ledger_reconciliation";
     Ledger GetLedgerMigration "GET" "/api/v1/admin/ledger/migration" "get_ledger_migration";
-    Ledger GetLedgerOpenapiJson "GET" "/api/v1/admin/ledger/openapi.json" "get_ledger_openapi_json";
     Audit GetAuditHead "GET" "/api/v1/admin/audit/head" "get_audit_head";
     Audit GetAuditRange "GET" "/api/v1/admin/audit/range" "get_audit_range";
     Audit GetAuditKeys "GET" "/api/v1/admin/audit/keys" "get_audit_keys";

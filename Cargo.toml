@@ -29,6 +29,8 @@ members = [
     "crates/busbar-plugin-test",
     # Core's repository checks (no-getrandom, crypto-graph), one CI job line each.
     "tools/ci-checks",
+    # The additive-only gate for the admin OpenAPI document (#309), one CI job line.
+    "tools/openapi-diff",
     # ci/hop: no thread hop around a plugin entry (IF §15 rule 10), one CI job line.
     "ci/hop",
 ]

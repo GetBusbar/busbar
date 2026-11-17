@@ -462,11 +462,7 @@ async fn no_secret_in_any_admin_body() {
         .as_object()
         .expect("documented paths")
         .iter()
-        .filter(|(path, operations)| {
-            !path.contains('{')
-                && operations["get"].is_object()
-                && operations["get"]["x-busbar-plane"].is_null()
-        })
+        .filter(|(path, operations)| !path.contains('{') && operations["get"].is_object())
         .filter_map(|(path, _)| path.strip_prefix("/api/v1/admin").map(str::to_owned))
         .collect();
     for tree in [

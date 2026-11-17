@@ -945,6 +945,7 @@ pub(crate) async fn admin_reply(
         headers: &ctx.headers,
         consumed: ctx.consumed.as_ref(),
         principal: ctx.principal.as_ref(),
+        trust_authority: ctx.trust_authority.as_ref(),
     };
     let served = match ctx.serve.served_at(req, ctx.body).await {
         None => return AdminReply::Refused(PlaneVerbError::NotFound),

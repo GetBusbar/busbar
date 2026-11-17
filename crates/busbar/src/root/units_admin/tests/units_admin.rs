@@ -581,6 +581,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
             &request,
             &request.body,
             None,
+            bound::ReplayContext::None,
             mint,
         )
         .await
@@ -598,7 +599,12 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         ("another node", &sibling),
     ] {
         assert_eq!(replayed.status, first.status, "{who}: the first status");
-        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        let mut marked = first.headers.clone();
+        marked.push(("idempotent-replayed".to_string(), "true".to_string()));
+        assert_eq!(
+            replayed.headers, marked,
+            "{who}: the first headers, marked as replayed (r3 §4.6)"
+        );
         assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
     }
     assert_eq!(
@@ -1572,7 +1578,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 fn a_ledger_request(path: &str) -> AdminRequest {
@@ -1886,9 +1891,6 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
         body("/api/v1/admin/ledger/migration").await,
         json::json!({"migrated": false, "marker": null})
     );
-
-    let document = body("/api/v1/admin/ledger/openapi.json").await;
-    assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 async fn real_admin_dispatch() -> RouterDispatch {
@@ -2641,21 +2643,14 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[tokio::test]
-async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer =
-        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
-    assert_eq!(answer.status, 200);
-    let served = String::from_utf8(answer.body).expect("the document is text");
-    assert_eq!(
-        served,
-        busbar_core_admin::v1::json::openapi_document(),
-        "the ledger's document path must serve the one generated document, byte for byte"
-    );
+async fn the_one_document_describes_the_ledger_views() {
+    // The ledger no longer has a document path of its own (#304): the one document is `GET /openapi.json`.
+    let served = busbar_core_admin::v1::json::openapi_document();
     let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
         paths.contains_key(&"/api/v1/admin/usage"),
-        "the ledger path serves a document that is not the administrative one"
+        "the one document is the administrative one"
     );
 
     for path in LEDGER_PATHS {
@@ -3890,9 +3885,9 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
                 .body,
         )
         .expect("valid JSON");
-        served["keys"]
+        served["items"]
             .as_array()
-            .expect("keys")
+            .expect("items")
             .iter()
             .map(|k| k["public_key"].as_str().expect("public_key").to_string())
             .collect()
@@ -4294,6 +4289,7 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
             request,
             &request.body,
             Some(&journal),
+            bound::ReplayContext::None,
             || async {
                 bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
                     .await
@@ -4312,7 +4308,11 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request).await, accepted);
+    let mut replayed = accepted.clone();
+    replayed
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(ask(&request).await, replayed);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
@@ -4367,6 +4367,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
@@ -4382,11 +4383,19 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
     .expect("the retry answers");
-    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    let mut marked = first.clone();
+    marked
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(
+        retried, marked,
+        "the retry answers the first answer's bytes, marked as replayed"
+    );
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         1,

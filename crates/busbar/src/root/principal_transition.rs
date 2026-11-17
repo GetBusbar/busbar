@@ -93,7 +93,7 @@ pub(crate) fn command(argv: &super::cli::Argv) -> Result<Option<Command>, &'stat
         return Ok(None);
     }
     let [input, action, attestation, record_bootstrap] = argv.transition.clone();
-    if argv.ignore_overlay || !argv.words.is_empty() {
+    if argv.ignore_overlay || argv.stdio || !argv.words.is_empty() {
         return Err(
             "principal transition accepts only --config and --providers alongside its flags",
         );

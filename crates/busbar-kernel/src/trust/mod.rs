@@ -39,6 +39,9 @@ pub mod book;
 pub mod plane_book;
 
 pub(crate) mod demotion;
-pub use demotion::DemotionRecord;
+pub use demotion::{DemotionRecord, DemotionRow};
+
+pub mod readout;
+pub use readout::TrustReadout;
 
 pub mod signed;

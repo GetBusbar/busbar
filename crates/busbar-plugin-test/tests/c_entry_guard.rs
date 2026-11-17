@@ -57,7 +57,7 @@ fn describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answ
     assert_eq!(described[0].level, level::WARN);
 
     let config = format!(
-        r#"{{"tag":"guard-a","password":"the operator's reference","open_log":true,"close_log":true,"settle_pad":{}}}"#,
+        r#"{{"tag":"guard-a","password":{{"env":"OPERATOR_REFERENCE"}},"open_log":true,"close_log":true,"settle_pad":{}}}"#,
         fx::BIG
     );
     let port = h

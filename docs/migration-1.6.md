@@ -50,6 +50,9 @@ removed CLI flags, administrative paths or pre-release configuration aliases.
    writer; they are not a substitute for stopping the old deployment.
 2. Back up the complete Store and configuration directory, including the old file overlay,
    providers catalog and any credential files. Retain the old launch environment for rollback.
+   Take the whole set in the documented order, with the Store backup and the exported audit
+   stream taken at the same point in time: see
+   [backup set and order](operations.md#backup-set-and-order).
 3. Install the intended 1.6.0 executable and compatible external artifacts. A native artifact
    used before Store-backed admission, including an early grammar/check callback, requires
    its complete archive SHA-256 in the operator base `plugins.fetch` entry matching that
@@ -143,7 +146,9 @@ interruption, recovery and rollback evidence before this procedure is qualified.
 
 Stop every 1.6.0 process. Restore the complete pre-upgrade Store backup and configuration
 snapshot together, including the providers catalog, credential files, overlay and old launch
-settings. Then start 1.5.5. Changes made after the upgrade are not carried back.
+settings. Then start 1.5.5. Changes made after the upgrade are not carried back; this
+includes key revocations and trust demotions made under 1.6.0, which must be re-applied (see
+[backup set and order](operations.md#backup-set-and-order)).
 
 Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore the old overlay
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.
@@ -263,7 +268,9 @@ spellings; for example, `at: response` becomes `phase: [response]`. Read `fires_
 stages. An omitted phase list selects the four core phases, not every future phase.
 
 Cloud-metadata exceptions `security.allow_metadata_hosts`, `security.allow_all_metadata` and
-`providers.<name>.allow_metadata_hosts` are removed and reported. No configuration admits
+`providers.<name>.allow_metadata_hosts` (and the same key in a providers catalog) are removed with one
+warning (BUSBAR-3411) that names every removed path and never an entry value, and an audit record
+of the removed paths is written once the upgrade completes. No configuration admits
 cloud-metadata destinations. `security.blocked_metadata_hosts` still extends the denylist;
 entries that name no usable host are removed and reported.
 
@@ -360,6 +367,7 @@ build. Update clients before accepting the upgrade.
 | `/export`, `/export/{name}` | `/kinds/export/instances[/{name}]` |
 | `/identity-providers`, `/identity-providers/{name}` | `/kinds/auth/instances[/{name}]` |
 | Plane-specific `/tools…` and `/agents…` admin paths | The selected plane kind instance's advertised operations under `/kinds/{kind}/instances/{id}/ops/…` |
+| `POST /signing-key/rotate` (it reported the key id and changed nothing) | None. Rotating the signing key is an operator action: replace `auth.signing_key`, restart every node in lockstep, and re-mint every key |
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.
@@ -379,8 +387,23 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+`POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
+
 Instance names must be unique across configuration sections and must not collide with core
 instance IDs. Resolve a reported collision and update clients that select by instance name.
+
+`GET /info` is this node's identity only. Its removed members and their replacements:
+
+| Removed `/info` member | Replacement |
+|---|---|
+| `nodes[]` | The `core/process` view `nodes` (`/kinds/core/instances/process/views/nodes`), times in `*_ms` |
+| `build` (`auth_modules`, `hook_plugins`, `weighted_floor`) | `/plugins` and `/kinds` show what is installed and running |
+| `topology` | `/kinds` (`instance_count`) and the `core/routing` instance |
+| `process_boot_nonce` | `incarnation` (same value) |
+| `started_at`, `uptime_seconds` | `started_at_ms` |
+| `config_version` | `config_generation` |
+| `kinds_revision` | The `/kinds` ETag |
+| `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
 ## Usage and rate cards
 
@@ -410,8 +433,9 @@ to add pre-release keys**. Replace this section with verified final behavior bef
 
 - Exercise the declared upstream registration and private-reach rules below with the selected
   plane artifacts; a schema or source correction does not establish through-boot migration.
-- Confirm `auth.policy.require_if_match` becomes `auth.require_if_match`, and list the removed
-  `auth.policy` keys and fixed engine constants against the final strict schema.
+- `auth.require_if_match` is the 1.6.0 spelling; `auth.policy.require_if_match` is refused as an
+  unknown field (the kernel parser and the admin config form both place it at the auth level). List
+  the removed `auth.policy` keys and fixed engine constants against the final strict schema.
 - Confirm the removals of pool-level legacy fields, browser-login tuning, plugin log settings,
   credential-at-rest configuration and the remaining retired settings; distinguish automatic
   rewrites from required operator edits.

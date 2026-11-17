@@ -129,7 +129,6 @@ impl AdminTransport for JsonV1 {
             .route("/keys/{id}/usage", get(crate::keys::key_usage))
             .route("/keys/{id}/rotate", post(crate::keys::rotate_key))
             .route("/keys/{id}/revoke", post(crate::keys::revoke_key))
-            .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
 
@@ -392,6 +391,10 @@ fn mount_one_admin_spec(
               Path(name): Path<String>,
               principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
               consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
+              // Inserted only by the admin gate, from its own admission verdict (r3 condition B-C1).
+              trust_authority: Option<
+            axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
+        >,
               axum::extract::RawQuery(query): axum::extract::RawQuery,
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
@@ -413,6 +416,7 @@ fn mount_one_admin_spec(
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
                     serve: handle.load().serve_tables.clone(),
+                    trust_authority: trust_authority.map(|axum::Extension(granted)| granted),
                 };
                 finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }
@@ -692,6 +696,7 @@ mod config_document;
 mod config_tree;
 pub(crate) mod kinds;
 mod plane_input_schemas;
+pub mod trust_inventory;
 mod views;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
@@ -699,6 +704,8 @@ mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 pub mod cursor;
+#[cfg(feature = "openapi-schema")]
+mod evolution;
 pub(crate) mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;

@@ -103,6 +103,8 @@ pub mod plugin_settings;
 
 pub mod secret_fields;
 pub mod section;
+/// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11).
+pub mod semver;
 pub mod services;
 pub mod signal;
 

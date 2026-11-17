@@ -6,9 +6,12 @@
 use std::fmt::Write as _;
 
 use crate::heads::SignedHead;
-use crate::recipe::{visit_fields, FieldSink, DIGEST_RECIPE_V7};
+use crate::link::Fingerprint;
+use crate::notary_key::{NotaryKeyRecord, NOTARY_KEY_RECORD_DOMAIN};
+use crate::recipe::{visit_fields, FieldSink, DIGEST_RECIPE_V7, LINK_RECIPE};
 use crate::record::{AuditChain, AuditRecord};
 use crate::sign::{AuditKeySet, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
+use crate::stamp::{BreakNotice, Stamp, STAMP_DOMAIN};
 
 /// Escapes text into a JSON string body as it is written.
 struct JsonEscaped<'a>(&'a mut String);
@@ -184,6 +187,16 @@ impl FieldSink for JsonFields<'_> {
     fn num(&mut self, name: &'static str, value: u64) {
         self.field(name, format_args!("{value}"));
     }
+
+    /// A fingerprint prints as 64 lowercase hex characters; the genesis predecessor (32 zero bytes)
+    /// prints as the empty text, as every recipe publishes it.
+    fn bytes32(&mut self, name: &'static str, value: &[u8; 32]) {
+        if *value == [0; 32] {
+            self.field(name, format_args!(""));
+        } else {
+            self.field(name, format_args!("{}", crate::record::HexBytes(value)));
+        }
+    }
 }
 
 /// One record as the range read prints it: the digest fields, grouped, then the seal.
@@ -246,41 +259,194 @@ pub fn head_body(chain: &AuditChain) -> String {
     out
 }
 
-/// THE RANGE READ: records by position, `from` through `to` inclusive. The envelope names the
-/// recipe this build seals under; every record names its own.
+/// THE RANGE READ over a slice of records: records by position, `from` through `to` inclusive,
+/// under the link recipe's envelope (SEALING-FIX §3.5 "Reads"). With no journal at hand it carries
+/// no evidence: no stamps, no cover, no certificate, no anchor and no seal row, so a verifier
+/// reports every link line unauthenticated. The admin range read over a node's journal fills the
+/// evidence. Every record names its own recipe.
 #[must_use]
-pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
+pub fn range_body(records: &[AuditRecord], from: u64, to: u64) -> String {
+    let mut out = range_envelope(from, to);
+    out.pop();
+    out.push(',');
+    push_json_string(&mut out, "records");
+    out.push(':');
+    push_records(&mut out, records, from, to);
+    out.push_str(r#","stamps":[],"cover":[],"certs":[],"anchor":null,"seal_row":null}"#);
+    out
+}
+
+/// The range read's envelope alone: the link recipe, the stamp signature domain, and the window.
+#[must_use]
+pub fn range_envelope(from: u64, to: u64) -> String {
     let mut out = String::new();
     out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
+    member_str(&mut out, "recipe", LINK_RECIPE);
     out.push(',');
-    member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
+    member_str(&mut out, "signature_domain", STAMP_DOMAIN);
     out.push(',');
     member_str(&mut out, "algorithm", SIGNATURE_ALGORITHM);
     out.push(',');
     member_num(&mut out, "from", from);
     out.push(',');
     member_num(&mut out, "to", to);
-    out.push(',');
-    push_json_string(&mut out, "anchor");
-    out.push(':');
-    match chain.heads().anchor_at(to) {
-        Some(head) => push_head(&mut out, &head),
-        None => out.push_str("null"),
-    }
-    out.push(',');
-    push_json_string(&mut out, "records");
-    out.push(':');
-    push_records(&mut out, records, from, to);
     out.push('}');
     out
 }
 
-/// The records of a bounded range, using the same lossless digest-field wire format.
+/// One unit line as the range read prints it.
 #[must_use]
-pub fn range_records_body(records: &[AuditRecord], from: u64, to: u64) -> String {
+pub fn record_json(record: &AuditRecord) -> String {
     let mut out = String::new();
-    push_records(&mut out, records, from, to);
+    push_record(&mut out, record);
+    out
+}
+
+/// `"node_seq":n,` when the evidence was read from the journal at WAL position `n`; nothing for
+/// evidence read elsewhere (a seal row).
+fn push_node_seq(out: &mut String, node_seq: Option<u64>) {
+    if let Some(at) = node_seq {
+        member_num(out, "node_seq", at);
+        out.push(',');
+    }
+}
+
+/// ONE PAGE STAMP as the range read prints it: every signed field, the numbers bare, the
+/// fingerprint and the signature as lowercase hex, and the WAL `node_seq` it was read at (not
+/// signed: it orders the stamp against certificate lines for the key map, §3.7 rule 3), when it was
+/// read from the journal.
+#[must_use]
+pub fn stamp_json(node_seq: Option<u64>, stamp: &Stamp) -> String {
+    let mut out = String::new();
+    out.push('{');
+    push_node_seq(&mut out, node_seq);
+    member_num(&mut out, "node", stamp.node);
+    out.push(',');
+    member_num(&mut out, "from", stamp.from);
+    out.push(',');
+    member_num(&mut out, "to", stamp.to);
+    out.push(',');
+    member_str(&mut out, "fingerprint", &stamp.fingerprint.to_string());
+    out.push(',');
+    member_str(&mut out, "kind", stamp.kind.as_str());
+    out.push(',');
+    member_num(&mut out, "sealer", stamp.sealer);
+    out.push(',');
+    member_str(&mut out, "host", &stamp.host);
+    out.push(',');
+    member_num(&mut out, "every", stamp.every);
+    out.push(',');
+    member_num(&mut out, "stamped_ms", stamp.stamped_ms);
+    out.push(',');
+    member_num(&mut out, "down_from_ms", stamp.down_from_ms);
+    out.push(',');
+    member_num(&mut out, "down_to_ms", stamp.down_to_ms);
+    out.push(',');
+    member_str(&mut out, "crypto", &stamp.crypto);
+    out.push(',');
+    member_str(&mut out, "sig_alg", &stamp.sig_alg);
+    out.push(',');
+    member_str(&mut out, "key_id", &stamp.key_id);
+    out.push(',');
+    member_num(&mut out, "key_cert", stamp.key_cert);
+    out.push(',');
+    member_str(&mut out, "signature", &hex::encode(&stamp.signature));
+    out.push('}');
+    out
+}
+
+/// ONE BREAK NOTICE as the range read prints it, beside the stamps (`kind` is `break`).
+#[must_use]
+pub fn break_json(node_seq: Option<u64>, notice: &BreakNotice) -> String {
+    let mut out = String::new();
+    out.push('{');
+    push_node_seq(&mut out, node_seq);
+    member_str(&mut out, "kind", "break");
+    out.push(',');
+    member_num(&mut out, "node", notice.node);
+    out.push(',');
+    member_num(&mut out, "sealer", notice.sealer);
+    out.push(',');
+    member_num(&mut out, "last_good", notice.last_good);
+    out.push(',');
+    member_num(&mut out, "unsealed_from", notice.unsealed_from);
+    out.push(',');
+    member_num(&mut out, "unsealed_to", notice.unsealed_to);
+    out.push(',');
+    member_num(&mut out, "journal_from", notice.journal_from);
+    out.push(',');
+    member_num(&mut out, "journal_to", notice.journal_to);
+    out.push(',');
+    member_str(&mut out, "reason", notice.reason.as_str());
+    out.push(',');
+    member_num(&mut out, "detected_ms", notice.detected_ms);
+    out.push(',');
+    member_str(&mut out, "host", &notice.host);
+    out.push(',');
+    member_str(&mut out, "crypto", &notice.crypto);
+    out.push(',');
+    member_str(&mut out, "sig_alg", &notice.sig_alg);
+    out.push(',');
+    member_str(&mut out, "key_id", &notice.key_id);
+    out.push(',');
+    member_str(&mut out, "signature", &hex::encode(&notice.signature));
+    out.push('}');
+    out
+}
+
+/// ONE CERTIFICATE LINE as the range read prints it, in `certs` and wherever it falls among the
+/// walked lines: a chain line (`seq`, `prev_hash`, `hash` and `node` as lines print them, its
+/// recipe the certificate record's domain) plus the certificate and its WAL `node_seq`, which a
+/// stamp's `key_cert` names.
+#[must_use]
+pub fn notary_key_json(node_seq: u64, record: &NotaryKeyRecord) -> String {
+    let prev = if record.prev_link == Fingerprint::ZERO {
+        String::new()
+    } else {
+        record.prev_link.to_string()
+    };
+    let mut out = String::new();
+    out.push('{');
+    member_str(&mut out, "kind", "notary_key");
+    out.push(',');
+    member_str(&mut out, "recipe", NOTARY_KEY_RECORD_DOMAIN);
+    out.push(',');
+    member_num(&mut out, "node_seq", node_seq);
+    out.push(',');
+    push_json_string(&mut out, "node");
+    out.push(':');
+    push_json_fmt(&mut out, format_args!("{}", record.node));
+    out.push(',');
+    push_json_string(&mut out, "seq");
+    out.push(':');
+    push_json_fmt(&mut out, format_args!("{}", record.seq));
+    out.push(',');
+    push_json_string(&mut out, "linked_ms");
+    out.push(':');
+    push_json_fmt(&mut out, format_args!("{}", record.linked_ms));
+    out.push(',');
+    member_str(&mut out, "prev_hash", &prev);
+    out.push(',');
+    member_str(&mut out, "hash", &record.fingerprint.to_string());
+    out.push(',');
+    member_str(&mut out, "key_id", &record.certificate.key_id);
+    out.push(',');
+    member_str(&mut out, "sig_alg", &record.certificate.sig_alg);
+    out.push(',');
+    member_str(
+        &mut out,
+        "public_key",
+        &hex::encode(&record.certificate.public_key),
+    );
+    out.push(',');
+    member_str(&mut out, "signed_by", &record.certificate.signed_by);
+    out.push(',');
+    member_str(
+        &mut out,
+        "signature",
+        &hex::encode(&record.certificate.signature),
+    );
+    out.push('}');
     out
 }
 
@@ -309,7 +475,7 @@ pub fn keys_body(keys: &AuditKeySet) -> String {
     out.push(',');
     member_str(&mut out, "algorithm", SIGNATURE_ALGORITHM);
     out.push(',');
-    push_json_string(&mut out, "keys");
+    push_json_string(&mut out, "items");
     out.push_str(":[");
     for (i, key) in keys.keys().iter().enumerate() {
         if i > 0 {

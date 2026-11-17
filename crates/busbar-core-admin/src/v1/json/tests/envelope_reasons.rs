@@ -71,7 +71,6 @@ const COND_REASONS: &[&str] = &[
     "invalid_filename",
     "not_loadable",
     "overlong",
-    "nothing_to_rotate",
     "no_supervisor",
     "not_restartable",
     "unknown_section",
@@ -119,6 +118,15 @@ const CODE_REASONS: &[&str] = &[
     "idempotency_mismatch",
     "mutation_applied",
     "action_in_flight",
+];
+
+#[cfg(feature = "openapi-schema")]
+/// TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1 and §4.6: the stable trust decision reasons.
+const TRUST_REASONS: &[&str] = &[
+    "reviewed_digest_required",
+    "reviewed_digest_stale",
+    "decision_in_progress",
+    "outcome_not_applied",
 ];
 
 #[cfg(feature = "openapi-schema")]
@@ -279,6 +287,7 @@ fn reason_table_is_closed() {
         .iter()
         .chain(ADDED_REASONS)
         .chain(CODE_REASONS)
+        .chain(TRUST_REASONS)
         .map(|s| s.to_string())
         .collect();
     let have: std::collections::BTreeSet<String> = table.keys().cloned().collect();
@@ -465,4 +474,22 @@ fn unit_reasons_cover_failures() {
         ReasonCode::ALL.len() + 1,
         "only timed_out beside them"
     );
+}
+
+/// #307: every production error the admin surface raises is the one envelope. The provisioning
+/// guard's errors were `{"error":{"message":...}}` alone.
+#[tokio::test]
+async fn provisioning_guard_errors_carry_the_envelope() {
+    use crate::provision::GuardAdminError;
+    use axum::response::IntoResponse;
+    for (error, status, code) in [
+        (GuardAdminError::UnknownInstance, 404, "not_found"),
+        (GuardAdminError::Invalid, 400, "invalid_request"),
+        (GuardAdminError::Unavailable, 503, "unavailable"),
+    ] {
+        let (got, headers, body) = parts(error.into_response()).await;
+        assert_eq!(got.as_u16(), status, "{code}");
+        assert_envelope(got, &headers, &body, code);
+        assert_eq!(body["error"]["code"], code);
+    }
 }

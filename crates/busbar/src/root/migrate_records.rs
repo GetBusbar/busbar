@@ -28,7 +28,7 @@ use busbar_kernel::persistence::facade::CoreStore;
 use busbar_kernel::persistence::import_target::r0::{Access, Commit, Outcome};
 use busbar_kernel::persistence::import_target::records as encode;
 use busbar_migrate::records::{
-    self, attempts, Audit, Candidate, Committed, Native, RecordStore, Report, StoreFail,
+    self, attempts, Audit, Candidate, Committed, Native, Page, RecordStore, Report, StoreFail,
 };
 
 /// Where the records step's audit records live: core's own namespace, beside IMPORT, never a
@@ -140,14 +140,20 @@ impl Store {
 }
 
 impl RecordStore for Store {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
-        self.runtime
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        let page = self
+            .runtime
             .block_on(self.access.scan(ns, after, limit))
+            .map_err(StoreFail)?;
+        Ok(Page {
+            rows: page.rows,
+            next: page.next,
+        })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.runtime
+            .block_on(self.access.read(at(ns, key.to_vec())))
             .map_err(StoreFail)
     }
 
@@ -439,8 +445,9 @@ pub(crate) fn run_blocking(
     stamped: bool,
 ) -> Result<Option<Report>, String> {
     if store
-        .scan(IMPORT_NS, &[], 1)
+        .scan(IMPORT_NS, None, 1)
         .map_err(|fail| format!("STORE: {}", fail.0))?
+        .rows
         .is_empty()
     {
         return Ok(None);
@@ -584,6 +591,33 @@ pub(crate) fn write_with_attempt(
         }
     }
     written
+}
+
+/// Step 4 then step 5 over the opened store: the records conversion and the config.yaml write the
+/// converting boot performs together. A refusal of the step-5 document must leave the store as it
+/// was found (MIGRATE-ON-BOOT r42: nothing has been changed until the document is accepted).
+///
+/// # Errors
+/// The records step's refusal, or the write's refusal text.
+pub(crate) fn convert_and_write(
+    store: &Store,
+    keys: &Keys,
+    plan: &busbar_migrate::Plan,
+    settled: &[busbar_migrate::Settled],
+    check: busbar_migrate::Check<'_>,
+    config: &Path,
+    stamped: bool,
+) -> Result<busbar_migrate::Written, String> {
+    // Every refusal of step 5 is judged first, read-only, so it changes nothing (#328).
+    busbar_migrate::check_settled(plan, settled, check).map_err(|refusal| refusal.to_string())?;
+    if let Some(report) = run_blocking(store, keys, config, stamped)? {
+        tracing::info!(
+            target: "busbar::migrate",
+            "the 1.5.5 records were migrated: {}",
+            report_line(&report)
+        );
+    }
+    write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
 }
 
 #[cfg(test)]

@@ -100,15 +100,11 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
                         .iter()
                         .any(|parameter| matches!(parameter["in"].as_str(), Some("path" | "query")))
                 });
-            let plane_operation = op.get("x-busbar-plane").is_some();
             let responses = op[RESPONSES_KEY]
                 .as_object_mut()
                 .expect("operation responses");
             if extracts_request {
                 responses.entry("400").or_insert_with(|| json!({"description":"Malformed admin request path, query or body (invalid_request). Request values and parser diagnostics are not echoed.","content":error}));
-            }
-            if plane_operation {
-                responses.entry("503").or_insert_with(|| json!({"description":"A plane dependency is temporarily unavailable (unavailable); no backend diagnostic detail is returned.","content":error}));
             }
             responses.entry("413").or_insert_with(||json!({"description":"Admin request exceeds the listener body limit (request_too_large)","content":error}));
             // Ordinary admin write admission is shared by core and kernel verbs.

@@ -296,3 +296,4 @@ BUSBAR-2054	audit-sealed-after-restart	1.6.0
 BUSBAR-2055	audit-chain-broken-at-boot	1.6.0
 BUSBAR-2056	audit-predecessor-refused	1.6.0
 BUSBAR-2057	audit-predecessor-seal-failed	1.6.0
+BUSBAR-3171	config-reserved-key	1.6.0

@@ -102,7 +102,13 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        tracing::info!(target: "busbar::migrate", "{line}");
+        // A line that carries a BUSBAR code is one the operator must act on or know about (the
+        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
+        if line.starts_with("BUSBAR-") {
+            tracing::warn!(target: "busbar::migrate", "{line}");
+        } else {
+            tracing::info!(target: "busbar::migrate", "{line}");
+        }
     }
     for line in plan.warnings() {
         tracing::warn!(target: "busbar::migrate", "{line}");
@@ -266,6 +272,37 @@ pub(crate) async fn finish_settled_checked(
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
     .map(Some)
     .map_err(text_of)
+}
+
+/// Steps 4 and 5 together for a converting boot: step 5's refusals are judged before the store is
+/// converted (#328), then the records are converted and config.yaml is written.
+///
+/// # Errors
+/// The records step's refusal, or CONFIG text for a refused document.
+pub(crate) async fn convert_and_finish_checked(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let config = CONFIG_PATH.get().cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        let store = crate::root::migrate_records::Store::new(core, runtime);
+        crate::root::migrate_records::convert_and_write(
+            &store, &keys, plan, &settled, &check, &config, false,
+        )
+        .map(Some)
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
 }
 
 /// 5W (MIGRATE-ON-BOOT r42 §3): on a stamped boot and on a reload, write what the instances settled back into
@@ -498,6 +535,33 @@ fn read_config(config: &Path) -> Result<Option<String>, String> {
 
 fn text_of(refusal: Refusal) -> String {
     refusal.to_string()
+}
+
+/// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
+/// removed paths and never a value; it is written only for a write this process made, never for a
+/// peer's stamp (#293, via the #291 settled write path).
+pub(crate) fn record_completed_changes(written: &Written) {
+    if !matches!(written, Written::Stamped) {
+        return;
+    }
+    let Some(plan) = PENDING.get() else {
+        return;
+    };
+    for line in plan.report() {
+        if let Some(paths) = line
+            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(paths, _)| paths)
+        {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                "migrate.metadata_carve_out_removed",
+                paths,
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        }
+    }
 }
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with
