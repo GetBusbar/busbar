@@ -4,11 +4,22 @@
 use super::*;
 use busbar_contract::json::{self, json, Value};
 use busbar_core_admin::GovernanceError;
-use busbar_kernel_audit::expose;
+use busbar_kernel::persistence::boot_identity::{read_seal_row, SealOutcome, SealRow};
+use busbar_kernel_audit::journal::head_from_journal_body;
+use busbar_kernel_audit::{
+    break_from_journal_body, expose, notary_key_from_journal_body, stamp_from_journal_body,
+    BreakNotice, NotaryKeyRecord, Stamp,
+};
+use std::collections::BTreeMap;
 
 /// Positions projected into one response after native whole-history verification
 /// within the configured memory budget. The ring holds at most AUDIT_RING records.
 const SCAN_POSITIONS: u64 = 64;
+
+/// At most this many lines after a page's last record are returned as `cover`, the walk from the
+/// page to its covering stamp (SEALING-FIX §3.5 "Reads"). A covering stamp farther away leaves
+/// the page's trailing lines unauthenticated at verify, never sealed.
+const COVER_LINES: u64 = AUDIT_RING as u64;
 
 struct Cursor {
     node: u64,
@@ -75,12 +86,149 @@ impl Cursor {
     }
 }
 
+/// One chain line of a page: a unit line, or a `notary_key` certificate line with its WAL
+/// `node_seq`. Both take a chain `seq`; a range read that dropped certificate lines would show a
+/// hole in the chain.
+#[derive(Clone)]
+enum Line {
+    Unit(AuditRecord),
+    NotaryKey(u64, NotaryKeyRecord),
+}
+
+impl Line {
+    fn seq(&self) -> u64 {
+        match self {
+            Line::Unit(record) => record.seq,
+            Line::NotaryKey(_, record) => record.seq,
+        }
+    }
+
+    fn json(&self) -> Result<Value, GovernanceError> {
+        let text = match self {
+            Line::Unit(record) => expose::record_json(record),
+            Line::NotaryKey(at, record) => expose::notary_key_json(*at, record),
+        };
+        parse(&text)
+    }
+}
+
+fn parse(text: &str) -> Result<Value, GovernanceError> {
+    json::parse_value(text.as_bytes()).map_err(|_| GovernanceError::Store)
+}
+
+/// What the node's journal holds besides its unit lines, read once per page: its stamps, break
+/// notices and certificate lines, each with its WAL `node_seq`.
+#[derive(Default)]
+struct Evidence {
+    stamps: Vec<(u64, Stamp)>,
+    breaks: Vec<(u64, BreakNotice)>,
+    certs: BTreeMap<u64, NotaryKeyRecord>,
+}
+
+impl Evidence {
+    /// Sort every stamp, notice and certificate out of the journal rows. A body that names one of
+    /// their tags but does not decode is left out: it authenticates nothing, so the lines it would
+    /// have vouched for stay unauthenticated at verify.
+    fn read(rows: &[JournalRecord]) -> Self {
+        let mut evidence = Evidence::default();
+        for row in rows {
+            if row.class != RecordClass::Transaction {
+                continue;
+            }
+            if let Ok(Some(stamp)) = stamp_from_journal_body(&row.body) {
+                evidence.stamps.push((row.node_seq, stamp));
+            } else if let Ok(Some(notice)) = break_from_journal_body(&row.body) {
+                evidence.breaks.push((row.node_seq, notice));
+            } else if let Ok(Some(cert)) = notary_key_from_journal_body(&row.body) {
+                evidence.certs.insert(row.node_seq, cert);
+            }
+        }
+        evidence
+    }
+
+    /// The certificate lines whose chain `seq` lies in `from..=to`, as lines.
+    fn cert_lines(&self, from: u64, to: u64) -> impl Iterator<Item = Line> + '_ {
+        self.certs
+            .iter()
+            .filter(move |(_, cert)| cert.seq >= from && cert.seq <= to)
+            .map(|(at, cert)| Line::NotaryKey(*at, cert.clone()))
+    }
+}
+
+/// THE COVER (SEALING-FIX §3.5 "Reads"): the lines `after ..= to`, oldest first, from the journal
+/// rows, stopping at the first position the journal does not hold. Authentication evidence, not
+/// part of the range.
+fn cover_lines(
+    rows: &[JournalRecord],
+    evidence: &Evidence,
+    after: u64,
+    to: u64,
+) -> Result<Vec<Line>, GovernanceError> {
+    let mut lines: BTreeMap<u64, Line> = evidence
+        .cert_lines(after.saturating_add(1), to)
+        .map(|line| (line.seq(), line))
+        .collect();
+    for row in rows {
+        if row.class != RecordClass::Transaction {
+            continue;
+        }
+        let Ok(Some(head)) = head_from_journal_body(&row.body) else {
+            continue;
+        };
+        if head.head.seq <= after || head.head.seq > to {
+            continue;
+        }
+        if let Some(unit) = decode_audit(row).map_err(|_| GovernanceError::Store)? {
+            lines.insert(unit.seq, Line::Unit(unit));
+        }
+    }
+    let mut cover = Vec::new();
+    let mut next = after.saturating_add(1);
+    while next <= to {
+        let Some(line) = lines.remove(&next) else {
+            break;
+        };
+        cover.push(line);
+        next = next.saturating_add(1);
+    }
+    Ok(cover)
+}
+
+/// THE NODE'S SEAL ROW as the range read prints it (§3.5 "Reads", §3.7 rule 4): `null` when there
+/// is none; its sealer and outcome when it decodes, the signed stamp or break notice it holds
+/// printed as the stamps are; `undecodable` when it does not, which verify refuses.
+fn seal_row_json(row: Option<&[u8]>) -> Result<Value, GovernanceError> {
+    let Some(bytes) = row else {
+        return Ok(Value::new());
+    };
+    let Ok(row) = SealRow::parse(bytes) else {
+        return Ok(json!({"outcome": "undecodable"}));
+    };
+    Ok(match row.outcome {
+        SealOutcome::Clean { through } => {
+            json!({"sealer": row.sealer, "outcome": "clean", "through": through})
+        }
+        SealOutcome::Stamp(body) => match stamp_from_journal_body(&body) {
+            Ok(Some(stamp)) => json!({"sealer": row.sealer, "outcome": "stamp",
+                "stamp": parse(&expose::stamp_json(None, &stamp))?}),
+            _ => json!({"sealer": row.sealer, "outcome": "undecodable"}),
+        },
+        SealOutcome::Break(body) => match break_from_journal_body(&body) {
+            Ok(Some(notice)) => json!({"sealer": row.sealer, "outcome": "break",
+                "break": parse(&expose::break_json(None, &notice))?}),
+            _ => json!({"sealer": row.sealer, "outcome": "undecodable"}),
+        },
+    })
+}
+
 /// Captured under the durability lock; all Store calls run after releasing it.
 pub(crate) struct AuditPagePlan {
     body: Value,
     cursor: Cursor,
-    records: Vec<AuditRecord>,
-    stored: Option<ChainAt>,
+    records: Vec<Line>,
+    chain: ChainAt,
+    journal: Arc<RuntimeJournal>,
+    scan: bool,
     scan_end: u64,
     exhausted: bool,
 }
@@ -120,9 +268,7 @@ impl Durability {
                 incomplete: false,
             }
         };
-        let mut body: Value =
-            json::parse_value(expose::range_body(&self.record, &[], from, to).as_bytes())
-                .map_err(|_| GovernanceError::Store)?;
+        let mut body = parse(&expose::range_envelope(from, to))?;
         // The upper bound is fixed by the first page; later appends cannot move it.
         body["snapshot_to"] = json!(cursor.snapshot_to.to_string());
         body["semantics"] = json!("bounded_live_range");
@@ -132,12 +278,6 @@ impl Durability {
             "durable_from": null,
             "durable_from_known": false,
         });
-        // Keep the legacy anchor field, but bind it to the pinned observation.
-        let snapshot_body: Value = json::parse_value(
-            expose::range_body(&self.record, &[], from, cursor.snapshot_to).as_bytes(),
-        )
-        .map_err(|_| GovernanceError::Store)?;
-        body["anchor"] = snapshot_body["anchor"].clone();
         let covered = self
             .audit_records()
             .first()
@@ -147,23 +287,24 @@ impl Durability {
             .next_journal
             .saturating_add(SCAN_POSITIONS)
             .min(cursor.journal_end);
-        let (records, stored) = if exhausted || covered {
-            (
-                self.audit_records()
-                    .iter()
-                    .filter(|r| r.seq >= cursor.next_audit && r.seq <= cursor.snapshot_to)
-                    .cloned()
-                    .collect(),
-                None,
-            )
+        let scan = !(exhausted || covered);
+        let records = if scan {
+            Vec::new()
         } else {
-            (Vec::new(), Some(self.chain_at()))
+            self.audit_records()
+                .iter()
+                .filter(|r| r.seq >= cursor.next_audit && r.seq <= cursor.snapshot_to)
+                .cloned()
+                .map(Line::Unit)
+                .collect()
         };
         Ok(AuditPagePlan {
             body,
             cursor,
             records,
-            stored,
+            chain: self.chain_at(),
+            journal: self.journal.clone(),
+            scan,
             scan_end,
             exhausted,
         })
@@ -172,31 +313,35 @@ impl Durability {
 
 impl AuditPagePlan {
     pub async fn finish(mut self) -> Result<Vec<u8>, GovernanceError> {
-        let journal_page = if let Some(stored) = self.stored.take() {
-            let records = stored
-                .read()
-                .await
-                .map_err(|_| GovernanceError::Store)?
-                .map_err(|_| GovernanceError::Store)?;
-            let records: Vec<_> = records
-                .into_iter()
+        // One read of the node's journal serves the page's scan and its evidence.
+        let rows = self
+            .chain
+            .read()
+            .await
+            .map_err(|_| GovernanceError::Store)?
+            .map_err(|_| GovernanceError::Store)?;
+        let evidence = Evidence::read(&rows);
+        let first_audit = self.cursor.next_audit;
+        let scanned = if self.scan {
+            let window: Vec<_> = rows
+                .iter()
                 .filter(|record| {
                     record.node_seq >= self.cursor.next_journal && record.node_seq < self.scan_end
                 })
                 .collect();
             let incomplete =
-                records.len() as u64 != self.scan_end.saturating_sub(self.cursor.next_journal);
-            Some((records, incomplete))
-        } else {
-            None
-        };
-        let scanned = if let Some((records, incomplete)) = journal_page {
+                window.len() as u64 != self.scan_end.saturating_sub(self.cursor.next_journal);
             let scanned = self.scan_end.saturating_sub(self.cursor.next_journal);
             self.cursor.incomplete |= incomplete;
-            for record in records {
-                if let Some(audit) = decode_audit(&record).map_err(|_| GovernanceError::Store)? {
+            for record in window {
+                if let Some(audit) = decode_audit(record).map_err(|_| GovernanceError::Store)? {
                     if audit.seq >= self.cursor.next_audit && audit.seq <= self.cursor.snapshot_to {
-                        self.records.push(audit);
+                        self.records.push(Line::Unit(audit));
+                    }
+                } else if let Some(cert) = evidence.certs.get(&record.node_seq) {
+                    if cert.seq >= self.cursor.next_audit && cert.seq <= self.cursor.snapshot_to {
+                        self.records
+                            .push(Line::NotaryKey(record.node_seq, cert.clone()));
                     }
                 }
             }
@@ -204,31 +349,50 @@ impl AuditPagePlan {
             self.exhausted |= self.scan_end >= self.cursor.journal_end;
             scanned
         } else {
+            // The ring holds unit lines only: a certificate line in the window comes from the
+            // journal read.
+            let certs: Vec<_> = evidence
+                .cert_lines(first_audit, self.cursor.snapshot_to)
+                .collect();
+            self.records.extend(certs);
+            self.records.sort_by_key(Line::seq);
             self.exhausted = true;
             0
         };
         // Audit positions are monotonic even though the journal also carries non-audit records.
         let mut gaps = Vec::new();
         for record in &self.records {
-            if record.seq < self.cursor.next_audit {
+            let seq = record.seq();
+            if seq < self.cursor.next_audit {
                 return Err(GovernanceError::Store);
             }
-            if record.seq > self.cursor.next_audit {
-                gaps.push(json!({"from": self.cursor.next_audit.to_string(), "to": (record.seq - 1).to_string()}));
+            if seq > self.cursor.next_audit {
+                gaps.push(json!({"from": self.cursor.next_audit.to_string(), "to": (seq - 1).to_string()}));
             }
-            self.cursor.next_audit = record.seq.checked_add(1).ok_or(GovernanceError::Store)?;
+            self.cursor.next_audit = seq.checked_add(1).ok_or(GovernanceError::Store)?;
         }
         self.exhausted |= self.cursor.next_audit > self.cursor.snapshot_to;
         if self.exhausted && self.cursor.next_audit <= self.cursor.to {
             gaps.push(json!({"from": self.cursor.next_audit.to_string(), "to": self.cursor.to.to_string()}));
         }
         self.cursor.incomplete |= !gaps.is_empty();
-        self.body["records"] = json::parse_value(
-            expose::range_records_body(&self.records, self.cursor.from, self.cursor.to).as_bytes(),
+        let records = self
+            .records
+            .iter()
+            .filter(|line| line.seq() >= self.cursor.from && line.seq() <= self.cursor.to)
+            .map(Line::json)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.body["records"] = Value::from(records);
+        page_evidence(
+            &mut self.body,
+            &self.records,
+            &self.journal,
+            &rows,
+            &evidence,
         )
-        .map_err(|_| GovernanceError::Store)?;
-        self.body["returned_from"] = json!(self.records.first().map(|r| r.seq.to_string()));
-        self.body["returned_to"] = json!(self.records.last().map(|r| r.seq.to_string()));
+        .await?;
+        self.body["returned_from"] = json!(self.records.first().map(|r| r.seq().to_string()));
+        self.body["returned_to"] = json!(self.records.last().map(|r| r.seq().to_string()));
         self.body["next_cursor"] = json!((!self.exhausted).then(|| self.cursor.encode()));
         self.body["truncated"] = json!(!self.exhausted);
         self.body["complete"] = json!(self.exhausted && !self.cursor.incomplete);
@@ -238,6 +402,89 @@ impl AuditPagePlan {
         self.body["scan_limit"] = json!(SCAN_POSITIONS.to_string());
         json::to_vec(&self.body).map_err(|_| GovernanceError::Store)
     }
+}
+
+/// THE PAGE'S AUTHENTICATION EVIDENCE (SEALING-FIX §3.5 "Reads", per page): for the page's
+/// returned lines `[first, last]`, every stamp overlapping them plus the covering stamp of
+/// `last` (the first stamp whose `to` is at or after it), as `stamps`; that covering stamp as
+/// `anchor`; the lines `last+1 ..= covering.to` as `cover` (bounded by [`COVER_LINES`]); every
+/// break notice over the walked lines; the certificate line each returned stamp's `key_cert`
+/// names, as `certs`; and the node's seal row. A page with no lines carries no stamps.
+async fn page_evidence(
+    body: &mut Value,
+    records: &[Line],
+    journal: &RuntimeJournal,
+    rows: &[JournalRecord],
+    evidence: &Evidence,
+) -> Result<(), GovernanceError> {
+    let seal_row = read_seal_row(journal)
+        .await
+        .map_err(|_| GovernanceError::Store)?;
+    body["seal_row"] = seal_row_json(seal_row.as_deref())?;
+    let (Some(first), Some(last)) = (
+        records.first().map(Line::seq),
+        records.last().map(Line::seq),
+    ) else {
+        body["stamps"] = json!([]);
+        body["cover"] = json!([]);
+        body["certs"] = json!([]);
+        body["anchor"] = Value::new();
+        return Ok(());
+    };
+    let covering = evidence
+        .stamps
+        .iter()
+        .filter(|(_, stamp)| stamp.to >= last)
+        .min_by_key(|(_, stamp)| stamp.to);
+    let walked_to = covering.map_or(last, |(_, stamp)| {
+        stamp.to.min(last.saturating_add(COVER_LINES))
+    });
+    let cover = cover_lines(rows, evidence, last, walked_to)?;
+    let walked_to = cover.last().map_or(last, Line::seq);
+    let mut stamps = Vec::new();
+    let mut certs = BTreeMap::new();
+    for (at, stamp) in &evidence.stamps {
+        let overlaps = stamp.from <= last && stamp.to >= first;
+        let is_covering = covering.is_some_and(|(covering_at, _)| covering_at == at);
+        if !(overlaps || is_covering) {
+            continue;
+        }
+        if stamp.key_cert != 0 {
+            if let Some(cert) = evidence.certs.get(&stamp.key_cert) {
+                certs.insert(stamp.key_cert, cert);
+            }
+        }
+        stamps.push(parse(&expose::stamp_json(Some(*at), stamp))?);
+    }
+    for (at, notice) in &evidence.breaks {
+        let empty = notice.unsealed_to.checked_add(1) == Some(notice.unsealed_from);
+        let relevant = if empty {
+            notice.unsealed_from >= first && notice.unsealed_from <= walked_to.saturating_add(1)
+        } else {
+            notice.unsealed_from <= walked_to && notice.unsealed_to >= first
+        };
+        if relevant {
+            stamps.push(parse(&expose::break_json(Some(*at), notice))?);
+        }
+    }
+    body["stamps"] = Value::from(stamps);
+    body["cover"] = Value::from(
+        cover
+            .iter()
+            .map(Line::json)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    body["certs"] = Value::from(
+        certs
+            .into_iter()
+            .map(|(at, cert)| parse(&expose::notary_key_json(at, cert)))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    body["anchor"] = match covering {
+        Some((at, stamp)) => parse(&expose::stamp_json(Some(*at), stamp))?,
+        None => Value::new(),
+    };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -613,5 +860,75 @@ mod tests {
         );
         assert!(body["seal_row"].is_null(), "a live node has no seal row");
         assert!(body.get("seal_row").is_some(), "the seal row is reported");
+    }
+
+    /// §3.7 rule 4's input: the seal row as the range read prints it, by outcome.
+    #[test]
+    fn audit_range_seal_row_reports_its_outcome() {
+        use busbar_kernel_audit::{
+            break_body, AuditSigningKey, BootstrapSigner, BreakNotice, BreakReason, LiveSigner,
+        };
+        assert!(seal_row_json(None).unwrap().is_null());
+        let clean = SealRow {
+            sealer: 9,
+            outcome: SealOutcome::Clean { through: 12 },
+        }
+        .bytes();
+        assert_eq!(
+            seal_row_json(Some(&clean)).unwrap(),
+            json!({"sealer": 9u64, "outcome": "clean", "through": 12u64})
+        );
+        let garbled = SealRow {
+            sealer: 9,
+            outcome: SealOutcome::Stamp(b"not a stamp".to_vec()),
+        }
+        .bytes();
+        assert_eq!(
+            seal_row_json(Some(&garbled)).unwrap(),
+            json!({"sealer": 9u64, "outcome": "undecodable"})
+        );
+        assert_eq!(
+            seal_row_json(Some(b"BBSEAL01")).unwrap(),
+            json!({"outcome": "undecodable"})
+        );
+        let (_, bootstrap) = AuditSigningKey::from_seed(&[0x31; 32])
+            .into_grants(LiveSigner::SameAsBootstrap)
+            .unwrap();
+        let notice = BootstrapSigner::new(bootstrap)
+            .sign_break(BreakNotice {
+                node: 47,
+                sealer: 9,
+                last_good: 3,
+                unsealed_from: 4,
+                unsealed_to: 6,
+                journal_from: 11,
+                journal_to: 13,
+                reason: BreakReason::Unsigned,
+                detected_ms: 1_700_000_000_002,
+                host: "range-host".into(),
+                crypto: String::new(),
+                sig_alg: String::new(),
+                key_id: String::new(),
+                signature: Vec::new(),
+            })
+            .unwrap();
+        let row = SealRow {
+            sealer: 9,
+            outcome: SealOutcome::Break(break_body(&notice).unwrap()),
+        }
+        .bytes();
+        let printed = seal_row_json(Some(&row)).unwrap();
+        assert_eq!(printed["sealer"], 9u64);
+        assert_eq!(printed["outcome"], "break");
+        assert_eq!(printed["break"]["kind"], "break");
+        assert_eq!(printed["break"]["unsealed_from"], 4u64);
+        assert_eq!(
+            printed["break"]["signature"],
+            hex::encode(&notice.signature)
+        );
+        assert!(
+            printed["break"].get("node_seq").is_none(),
+            "a seal row is not a journal position"
+        );
     }
 }

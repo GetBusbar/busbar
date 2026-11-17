@@ -1519,8 +1519,8 @@ mod predecessor_seal;
 #[path = "retire_error.rs"]
 mod retire_error;
 pub use predecessor_seal::{
-    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
-    SealState, TailView,
+    read_seal_row, FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome,
+    SealRow, SealState, TailView,
 };
 pub use retire_error::RetireError;
 
