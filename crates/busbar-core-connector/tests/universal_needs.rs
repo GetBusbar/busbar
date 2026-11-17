@@ -326,7 +326,7 @@ type Pieces = Vec<(PieceKind, Option<u32>, Vec<u8>)>;
 
 /// [`pieces_through_the_table`], and the head's reason phrase as the table handed it.
 fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
-    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc};
+    use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
     use busbar_core_connector::registry::{Entry, Transports};
     use busbar_core_connector::{Connector, Judged};
 
@@ -357,6 +357,9 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         std::sync::Arc::new(|_, _| {}),
     );
     let owner = InstanceId(1);
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A): its
+    // plaintext loopback far end is admitted by that acceptance, never by loopback alone.
+    c.accept_plaintext(owner);
     c.declare_over(owner, NeedId(0), scheme)
         .expect("a served scheme declares");
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -769,6 +772,9 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         std::sync::Arc::new(|_, _| {}),
     );
     let owner = InstanceId(1);
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A): its
+    // plaintext loopback far end is admitted by that acceptance, never by loopback alone.
+    c.accept_plaintext(owner);
     c.declare_over(owner, NeedId(1), raw)
         .expect("a served scheme declares");
     assert!(!c.framed(owner, NeedId(1)), "the carrier is a raw stream");
