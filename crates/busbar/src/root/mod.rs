@@ -49,8 +49,8 @@ pub mod credentials;
 pub(crate) mod export_observer;
 pub(crate) mod min3_admin_auth;
 pub(crate) mod min3_auth;
-pub(crate) mod native_refusals;
 pub(crate) mod min3_outbound_auth;
+pub(crate) mod native_refusals;
 pub(crate) mod provisioning;
 pub(crate) mod provisioning_mount;
 // busbar:request-path
