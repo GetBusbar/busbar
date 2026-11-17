@@ -140,3 +140,38 @@ pub(crate) fn prepare(
     }
     Ok(Prepared { rows: completed })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assembly_requires_the_exact_selected_route_and_destination() {
+        let key = SelectedRouteKey {
+            plane: "plane".into(),
+            pool: "pool-a".into(),
+            member: "plane/model".into(),
+        };
+        let destination = DestinationId::new(7);
+        let prepared = Prepared {
+            rows: BTreeMap::from([(key.clone(), (destination, SelectedCredential::None))]),
+        };
+        assert!(prepared.for_route(&key, destination).is_ok());
+        assert!(prepared.for_route(&key, DestinationId::new(8)).is_err());
+        let wrong_pool = SelectedRouteKey {
+            pool: "pool-b".into(),
+            ..key.clone()
+        };
+        assert!(prepared.for_route(&wrong_pool, destination).is_err());
+        let wrong_member = SelectedRouteKey {
+            member: "model".into(),
+            ..key.clone()
+        };
+        assert!(prepared.for_route(&wrong_member, destination).is_err());
+        let wrong_plane = SelectedRouteKey {
+            plane: "other".into(),
+            ..key
+        };
+        assert!(prepared.for_route(&wrong_plane, destination).is_err());
+    }
+}
