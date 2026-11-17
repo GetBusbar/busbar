@@ -126,19 +126,3 @@ pub(crate) fn lossy_owned(bytes: &[u8]) -> String {
 pub(crate) fn refusal_frame(body: &[u8]) -> std::sync::Arc<[u8]> {
     std::sync::Arc::from(body)
 }
-
-/// `plane_driver::route`: the opt-in transparency fields naming the hook policy that ordered the
-/// walk and the member that answered.
-#[cold]
-pub(crate) fn route_policy_fields(
-    fields: &mut crate::plane_driver::HeadFields,
-    policy: &str,
-    member: &[u8],
-) {
-    use crate::plane_driver::{HDR_ROUTE_POLICY, HDR_ROUTE_TARGET};
-    fields.push((
-        HDR_ROUTE_POLICY.as_bytes().to_vec(),
-        policy.as_bytes().to_vec(),
-    ));
-    fields.push((HDR_ROUTE_TARGET.as_bytes().to_vec(), member.to_vec()));
-}

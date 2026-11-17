@@ -1990,10 +1990,6 @@
     "ResponseHeadersCfg": {
       "deny_unknown_fields": true,
       "fields": {
-        "route_policy": {
-          "optional": true,
-          "type": "bool"
-        },
         "server_timing": {
           "optional": true,
           "type": "bool"

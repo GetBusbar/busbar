@@ -200,8 +200,10 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
     );
 }
 
+/// PIN (DES-NATIVE-HOOKS-PARITY r3 §C): Busbar names no routing policy or member in a response
+/// header; the emitter and its config key are deleted.
 #[tokio::test]
-async fn route_policy_headers_absent_by_default_on_the_live_stack() {
+async fn no_response_carries_x_busbar_route_headers() {
     busbar_kernel::snapshot::init_with(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
@@ -285,11 +287,11 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
         .unwrap();
     assert!(
         r.headers().get("x-busbar-route-policy").is_none(),
-        "x-busbar-route-policy must be ABSENT by default"
+        "no response carries x-busbar-route-policy"
     );
     assert!(
         r.headers().get("x-busbar-route-target").is_none(),
-        "x-busbar-route-target must be ABSENT by default"
+        "no response carries x-busbar-route-target"
     );
     server.abort();
 }

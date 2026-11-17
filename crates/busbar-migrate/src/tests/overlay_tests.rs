@@ -751,3 +751,41 @@ fn the_overlay_rollback_restores_1_5_5s_file_from_every_state() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), BASE, "state {at}");
     }
 }
+
+/// RED before §C (#457): `advanced` persists through the settings overlay, so the overlay's
+/// `route_policy: false` migrates away and is reported, and its `route_policy: true` refuses.
+#[test]
+fn route_policy_false_in_the_overlay_migrates_away_and_is_reported() {
+    let scratch = Scratch::new();
+    let path = scratch.deployment(BASE);
+    scratch.file(
+        DEFAULT_OVERLAY_FILENAME,
+        r#"{"version":1,"root":{"advanced":{"response_headers":{"server_timing":false,"route_policy":false}}}}"#,
+    );
+    let plan = planned(&path).unwrap();
+    let planned = tree(plan.planned());
+    let headers = planned.at("advanced").at("response_headers");
+    assert!(headers.get("route_policy").is_none(), "{}", plan.planned());
+    assert!(
+        plan.report()
+            .iter()
+            .any(|line| line.starts_with("advanced.response_headers.route_policy: false removed")),
+        "{:?}",
+        plan.report()
+    );
+
+    let scratch = Scratch::new();
+    let path = scratch.deployment(BASE);
+    scratch.file(
+        DEFAULT_OVERLAY_FILENAME,
+        r#"{"version":1,"root":{"advanced":{"response_headers":{"route_policy":true}}}}"#,
+    );
+    match planned(&path) {
+        Err(Refusal::Config(text)) => assert!(
+            text.starts_with("`advanced.response_headers.route_policy` was removed in 1.6.0"),
+            "{text}"
+        ),
+        Err(other) => panic!("a config refusal, not {other:?}"),
+        Ok(plan) => panic!("route_policy: true must refuse:\n{}", plan.planned()),
+    }
+}

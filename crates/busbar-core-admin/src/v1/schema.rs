@@ -325,8 +325,7 @@ pub struct RevokeView {
 /// `advanced.shutdown.deregister_delay` is captured at boot and requires restart.
 /// Within these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is
 /// baked into router middleware state at boot (same "config apply swaps `Arc<App>`, never the
-/// router" freezing as `max_inbound_concurrent`) and `response_headers.route_policy` seeds a
-/// process-global `OnceLock`; neither is rebuilt by an apply.
+/// router" freezing as `max_inbound_concurrent`) and is not rebuilt by an apply.
 #[derive(Serialize, JsonSchema)]
 pub struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).

@@ -33,6 +33,7 @@ pub(crate) fn run(
     retire_metadata_carve_outs(root, report);
     migrate_plugin_trust(root, resolved, report)?;
     drop_overlay_selector(root, report);
+    retire_route_policy_header(root, resolved, report)?;
     unfold_zero_cache_write(root, resolved, report);
     drop_hostless_metadata_entries(root, resolved, report);
     price_open_units(root, facts, report)?;
@@ -119,6 +120,48 @@ fn drop_overlay_selector(root: &mut Pairs, report: &mut Vec<String>) {
             );
         }
     }
+}
+
+/// The remedy a 1.5.5 config that turned the route-policy headers on is refused with.
+pub(crate) const ROUTE_POLICY_REMOVED: &str =
+    "`advanced.response_headers.route_policy` was removed \
+     in 1.6.0: Busbar no longer names the routing policy or member in response headers. The \
+     deciding policy and the answering member are on the unit record (`GET \
+     /api/v1/admin/records`, `hooks` and the attempt's member). Delete the key.";
+
+/// `advanced.response_headers.route_policy` is removed in 1.6.0 (DES-NATIVE-HOOKS-PARITY r3 §C,
+/// ARC-5). The overlay is already folded in, so this covers config.yaml and the settings overlay
+/// alike. `false` (the 1.5.5 default, no header) is dropped and reported; `true` refuses the boot
+/// with the remedy, since 1.6.0 can no longer emit what the operator turned on. Decided on the
+/// resolved value.
+fn retire_route_policy_header(
+    root: &mut Pairs,
+    resolved: &Value,
+    report: &mut Vec<String>,
+) -> Result<(), Refusal> {
+    let Some(value) = resolved
+        .at("advanced")
+        .at("response_headers")
+        .get("route_policy")
+    else {
+        return Ok(());
+    };
+    if value.as_bool() != Some(false) {
+        return Err(Refusal::Config(ROUTE_POLICY_REMOVED.into()));
+    }
+    let Some(headers) = mapping_mut(root, "advanced")
+        .and_then(|advanced| mapping_mut(advanced, "response_headers"))
+    else {
+        return Ok(());
+    };
+    if remove_kept(headers, "route_policy").is_some() {
+        report.push(
+            "advanced.response_headers.route_policy: false removed; 1.6.0 names no routing policy \
+             or member in a response header"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// A root `rate_card.<model>.cache_write_utok: 0` is the 1.5.5 spelling of "no separate write
