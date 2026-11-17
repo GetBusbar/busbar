@@ -244,11 +244,19 @@ pub(crate) mod fixture {
 
     /// `plugin`, admitted and opened, as the host instance the registry builds from an OK + INSTANCE answer.
     pub fn hosted<K: Kind>(plugin: &'static LinkedPlugin, methods: u64) -> Arc<Instance> {
+        hosted_with_limit::<K>(plugin, methods, MAX_OUT)
+    }
+
+    pub fn hosted_with_limit<K: Kind>(
+        plugin: &'static LinkedPlugin,
+        methods: u64,
+        max_out: usize,
+    ) -> Arc<Instance> {
         let admitted = match Admitted::linked(plugin) {
             Ok(admitted) => admitted,
             Err(e) => panic!("admit: {e:?}"),
         };
-        let mut lease = OutLease::new(vec![0; 4096], MAX_OUT).expect("a free ACTIVE slot");
+        let mut lease = OutLease::new(vec![0; 4096], max_out).expect("a free ACTIVE slot");
         let OpenAnswer::Done(Status::OK, Some(live)) =
             admitted.open::<K>(&HOST, b"{}".to_vec(), 0, &mut lease)
         else {
@@ -265,7 +273,7 @@ pub(crate) mod fixture {
                 cell: Arc::new(SlotCell::new(1, &[0; 64])),
                 epoch: 1,
                 limits: InstanceLimits::default(),
-                max_out: MAX_OUT,
+                max_out,
                 methods,
                 facts: 0,
                 scrub: Arc::new(Scrub::new()),
@@ -600,7 +608,15 @@ mod fixed_piece {
     }
 
     fn opened() -> (PlaneAdapter<FakeNeeds>, plane::SessionHandle) {
-        let inst = fixture::hosted::<plane::Marker>(&fixture::plane_fx::PLUGIN, plane::ALL);
+        opened_limit(fixture::MAX_OUT)
+    }
+
+    fn opened_limit(max_out: usize) -> (PlaneAdapter<FakeNeeds>, plane::SessionHandle) {
+        let inst = fixture::hosted_with_limit::<plane::Marker>(
+            &fixture::plane_fx::PLUGIN,
+            plane::ALL,
+            max_out,
+        );
         let proxy = plane::Proxy::bind(inst).unwrap();
         let mut initial = Pool::global().acquire(fixture::MAX_OUT);
         let (session, answer) = proxy
