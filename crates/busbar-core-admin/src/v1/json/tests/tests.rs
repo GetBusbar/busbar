@@ -1235,3 +1235,17 @@ fn admin_decode_errors_go_through_the_renderer() {
         "json_body must render its decode error through describe_body_error"
     );
 }
+
+/// ADMIN-API-1.6-ONE-MODEL §6.4 (Console M-31): `RestartView.supervisor_detected` is a mechanism
+/// detail the restart answer does not carry; the confirm gate stays.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn restart_answer_does_not_carry_supervisor_detected() {
+    let doc = openapi_doc();
+    let view = &doc["components"]["schemas"]["RestartView"];
+    assert!(view.is_object(), "RestartView is documented");
+    assert!(
+        view["properties"].get("supervisor_detected").is_none(),
+        "RestartView still documents supervisor_detected: {view:?}"
+    );
+}

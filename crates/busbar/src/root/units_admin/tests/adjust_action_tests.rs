@@ -156,3 +156,31 @@ fn adjustment_audit_reads_host_answer_only_and_preserves_known_applied() {
         busbar_kernel::audit_ring::OUTCOME_APPLIED
     );
 }
+
+/// ADMIN-API-1.6-ONE-MODEL §10.2 (Console M-31): the adjust outcome is in the body only. No
+/// `x-busbar-adjust-effect` or `x-busbar-receipt-durable` response header; the body carries
+/// `effect` and `receipt_durable`.
+#[test]
+fn adjust_outcome_is_in_the_body_not_in_headers() {
+    let receipt = Receipt {
+        operation_id: "action".into(),
+        actor: "actor".into(),
+        target: "key".into(),
+        fingerprint: "digest".into(),
+        reason_hash: "digest".into(),
+        effect: "applied".into(),
+        status: 200,
+    };
+    let response = answer(&receipt).unwrap();
+    assert!(
+        !response
+            .headers
+            .iter()
+            .any(|(name, _)| name.starts_with("x-busbar-")),
+        "the outcome rides no x-busbar header: {:?}",
+        response.headers
+    );
+    let doc: json::Value = json::parse_value(&response.body).unwrap();
+    assert_eq!(doc["effect"], "applied");
+    assert_eq!(doc["receipt_durable"], true);
+}
