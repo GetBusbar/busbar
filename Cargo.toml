@@ -35,6 +35,8 @@ members = [
 # Each version is written once here; members inherit with `workspace = true` and may add features.
 # `default-features = false` must be set here: a member cannot turn workspace defaults off.
 [workspace.dependencies]
+# Existing fleet HTTP envelope parser, also used by native test-host subjects.
+httparse = { version = "1", default-features = false }
 busbar-contract = { path = "crates/busbar-contract" }
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }

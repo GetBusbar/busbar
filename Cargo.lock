@@ -733,6 +733,7 @@ dependencies = [
  "busbar-ports",
  "hex",
  "http-body-util",
+ "httparse",
  "hyper",
  "hyper-util",
  "rustls",
