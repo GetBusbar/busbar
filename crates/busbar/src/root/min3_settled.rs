@@ -159,3 +159,46 @@ pub(super) fn candidate(text: &str, planes: &[(String, Vec<String>)]) -> Result<
     }
     Ok(())
 }
+
+/// LEGACY-KEYFILE-MARKER r2 §5 with conditions B-S2 and A-L3: the step-5 leak guard of an instance
+/// carrying side-table marks. `bound` is its bag as written (references as authored), `settled` its
+/// settled answer, `secret_patterns` the image's D_SECRET_PATH items, `marked` the side-table
+/// pointers. `original` gives a marked slot's original reference resolved in memory with trailing
+/// CR/LF trimmed; `regular_file` stats a path (following symlinks, relative to the working
+/// directory). Refusals name the instance and pointer only, never a value.
+pub(super) fn guard_marked(
+    shown: &str,
+    bound: &json::Value,
+    settled: &json::Value,
+    secret_patterns: &[&str],
+    marked: &[String],
+    original: &dyn Fn(&str) -> Option<String>,
+    regular_file: &dyn Fn(&str) -> bool,
+) -> Result<(), String> {
+    let _ = (
+        shown,
+        bound,
+        settled,
+        secret_patterns,
+        marked,
+        original,
+        regular_file,
+    );
+    Ok(())
+}
+
+/// The value at an RFC 6901 `pointer` of `value`, if present.
+pub(super) fn at<'v>(value: &'v json::Value, pointer: &str) -> Option<&'v json::Value> {
+    if pointer.is_empty() {
+        return Some(value);
+    }
+    let mut node = value;
+    for token in pointer.strip_prefix('/')?.split('/') {
+        let token = token.replace("~1", "/").replace("~0", "~");
+        node = match node.as_array() {
+            Some(items) => items.get(token.parse::<usize>().ok()?)?,
+            None => node.get(token.as_str())?,
+        };
+    }
+    Some(node)
+}

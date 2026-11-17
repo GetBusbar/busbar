@@ -66,6 +66,8 @@ pub struct Settled {
 pub enum BagPlacement {
     Settings,
     Block,
+    /// An auth binding's `config:` object `{style, credential, settings}` (LEGACY-KEYFILE-MARKER r2 §6).
+    Config,
 }
 
 /// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.
