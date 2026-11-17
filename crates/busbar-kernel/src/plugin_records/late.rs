@@ -43,6 +43,23 @@ impl<R: PluginRecords> LateRecords<R> {
 }
 
 impl<R: PluginRecords> PluginRecords for LateRecords<R> {
+    async fn claim_until(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> Result<bool, RecordsDenied> {
+        match self.slot.get() {
+            Some(records) => {
+                records
+                    .claim_until(who, scope, key, value, expires_at_s)
+                    .await
+            }
+            None => Err(RecordsDenied::Unavailable),
+        }
+    }
     async fn get(
         &self,
         who: &Caller<'_>,

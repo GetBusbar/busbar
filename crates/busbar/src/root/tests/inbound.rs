@@ -19,6 +19,9 @@ const GEN: u64 = 1;
 #[path = "inbound_admin_sender_constraint.rs"]
 mod admin_sender_constraint;
 
+#[path = "inbound_publication_admission.rs"]
+mod publication_admission;
+
 fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
     let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
         busbar_kernel::plane_driver::dispatch::fallback_key(),
@@ -39,7 +42,7 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
     std::collections::BTreeMap::from([("priced-context".into(), entry)])
 }
 
-async fn app(
+pub(super) async fn app(
     with_llm: bool,
 ) -> (
     Arc<busbar_kernel::state::App>,

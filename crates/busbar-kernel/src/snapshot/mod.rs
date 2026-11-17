@@ -202,6 +202,10 @@ pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
 /// Terminal audit originals refused before native confirmation (no labels).
 pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
+pub const EXPORT_DROPPED_TOTAL: &str = "busbar_export_dropped_total";
+pub const EXPORT_CAPTURE_REFUSALS_TOTAL: &str = "busbar_export_capture_refusals_total";
+pub const EXPORT_INTEGRITY_FAILURES_TOTAL: &str = "busbar_export_audit_integrity_failures_total";
+pub const EXPORT_HELD_LINES: &str = "busbar_export_held_lines";
 
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
 /// terminal backlog, SHUTDOWN-HANG F4a); `governance::drain::MAX_PENDING_CHECKPOINTS` caps it.
@@ -530,6 +534,26 @@ fn describe() {
     describe_counter!(
         AUDIT_STAGE_FAILURES_TOTAL,
         "Terminal audit originals refused before native confirmation"
+    );
+    describe_counter!(
+        EXPORT_DROPPED_TOTAL,
+        "Terminally discarded export lines by instance and bounded reason"
+    );
+    describe_counter!(
+        crate::export::delivery::EXPORT_CUSTODY_TOTAL,
+        "Accepted export lines by instance, stream and checked custody level"
+    );
+    describe_counter!(
+        EXPORT_CAPTURE_REFUSALS_TOTAL,
+        "Export capture admission refusals by instance and bounded reason"
+    );
+    describe_counter!(
+        EXPORT_INTEGRITY_FAILURES_TOTAL,
+        "Export audit integrity failure occurrences by instance"
+    );
+    describe_gauge!(
+        EXPORT_HELD_LINES,
+        "Current retained export ciphertext lines with an unavailable key by instance"
     );
 
     describe_gauge!(

@@ -1485,14 +1485,13 @@ pub(crate) async fn reset_overlay_section(
 
 
                 if let Some(doc) = cleared_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
                     busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc)?;
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
 
 
                 if let Some(doc) = cleared_doc {
@@ -2226,8 +2225,8 @@ pub(crate) async fn rebuild_app_from_disk(
 
     let mut cfg = loaded.disk_candidate().map_err(AdminError::Validation)?;
 
-    let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
+    let base_hook_names = loaded.resource_ownership.hook_names().clone();
+    let base_group_names = loaded.resource_ownership.group_names().clone();
     if let Some(doc) = loaded.overlay_doc {
         busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
     }
@@ -2530,7 +2529,11 @@ pub(crate) async fn apply_config(
                     Ok(deploy) => deploy,
                     Err(refusal) => return Ok(Outcome::Value(Applied::FilePolicy(refusal))),
                 };
+            let resource_ownership = busbar_kernel::config::ResourceOwnership::capture(&deploy);
             if let Some(doc) = overlay_doc.as_ref() {
+                resource_ownership
+                    .validate_named_maps(doc)
+                    .map_err(AdminError::Validation)?;
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc)
                     .map_err(AdminError::Validation)?;
 
@@ -2541,10 +2544,8 @@ pub(crate) async fn apply_config(
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
                 // The body is held to the running generation's disk reference (§3.6.1).
                 cfg.operator_file_defs = Some(Arc::clone(&snapshot.operator_file_defs));
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = resource_ownership.hook_names().clone();
+                let base_group_names = resource_ownership.group_names().clone();
                 if let Some(doc) = overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }
@@ -2957,6 +2958,9 @@ pub(crate) async fn put_config_settings(
             )
             .await?;
             let next = Box::pin(async {
+                if let Some(doc) = loaded.overlay_doc.as_ref() {
+                    loaded.resource_ownership.validate_named_maps(doc)?;
+                }
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
 
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -2967,10 +2971,8 @@ pub(crate) async fn put_config_settings(
                 }
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
                 if let Some(doc) = loaded.overlay_doc {
                     busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 }

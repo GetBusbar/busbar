@@ -844,6 +844,61 @@ fn a_store_that_is_not_applied_is_a_store_failed_piece_naming_the_key() {
 }
 
 #[test]
+fn an_enforcing_hook_holds_a_mutation_before_a_local_response() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"secret".to_vec(),
+            },
+            It::Respond(200),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    let held = task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .unwrap();
+    assert!(
+        host.seen().is_empty(),
+        "a hook refusal must leave the Store untouched"
+    );
+    assert_eq!(
+        held[0].intents.len(),
+        1,
+        "the accepted stage releases the original intent once"
+    );
+}
+
+#[test]
+fn a_hook_prerequisite_never_reads_before_its_held_mutation() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"new".to_vec(),
+            },
+            lookup(b"s"),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    assert!(task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .is_err());
+    assert!(
+        host.seen().is_empty(),
+        "neither mutation nor stale read may escape the barrier"
+    );
+}
+
+#[test]
 fn a_commit_answers_applied_conflict_or_a_refusal_in_committed() {
     let mut ops = Reply::new();
     ops.put_pod_tail(

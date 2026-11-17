@@ -26,6 +26,20 @@ impl<R: PluginRecords> StoreReplay<R> {
 }
 
 impl<R: PluginRecords> ReplayGuard for StoreReplay<R> {
+    fn claim_until<'a>(
+        &'a self,
+        who: &'a Caller<'_>,
+        key: &'a [u8],
+        expires_at_s: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        Box::pin(async move {
+            let name = core_name(who.name, TAG);
+            let ns = core_caller(who, &name);
+            self.records
+                .claim_until(&ns, Scope::default(), key, b"1", expires_at_s)
+                .await
+        })
+    }
     fn claim<'a>(
         &'a self,
         who: &'a Caller<'_>,

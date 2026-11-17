@@ -137,6 +137,44 @@ impl PortBilling {
         })
     }
 
+    /// Open an ordinary child under its live parent's actual admission and rate era. The
+    /// money book checks the complete verified key and parent provenance before sharing its
+    /// fee participation and governor hold. A missing, ended or foreign parent opens nothing.
+    pub fn child(
+        &self,
+        parent: UnitKey,
+        key: &VirtualKey,
+        instance: &str,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, busbar_contract::caps::ReasonCode> {
+        let admitted = self.money.parent_money(parent, key)?;
+        let child = self.keys.mint();
+        self.money.open_child(
+            &admitted,
+            child,
+            format!("{instance}{PLANE_LANE_SEP}"),
+            Arc::clone(&classes),
+            FeeRefund::PlaneFeeUnits(Arc::from([])),
+        )?;
+        Ok(Unit {
+            money: PortMoney::new(
+                Arc::clone(&self.money) as Arc<dyn super::cancel::MoneySeam>,
+                classes,
+                Arc::clone(&self.audit),
+            ),
+            ctx: UnitCtx {
+                call: CallId::UNBOUND,
+                key: child,
+                origin: OriginKind::Nested { parent },
+                session: None,
+                generation: Generation::FIRST,
+                admin_listener: false,
+                kernel_verb_only: false,
+            },
+            journal: self.journal.clone(),
+        })
+    }
+
     /// Closes the unit once its answer is out: what the books left open is billed at `end`, the hold released.
     /// A second settlement of the same unit finds nothing open and does nothing.
     pub fn settle(&self, unit: UnitKey, end: UnitEnd) {

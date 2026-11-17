@@ -59,6 +59,9 @@ pub(crate) mod neutral;
 #[path = "serve_observations.rs"]
 mod observations;
 
+#[path = "native_nests.rs"]
+mod native_nests;
+
 #[cfg(test)]
 #[must_use]
 pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
@@ -1224,6 +1227,9 @@ pub(crate) struct Served {
     pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
     /// Complete native instance ownership of this serving generation.
     pub(crate) native: Option<Arc<crate::root::min3_boot::Booted>>,
+    /// Retain the actual opened fixture and its invocation admission for the serving lifetime.
+    #[cfg(test)]
+    pub(crate) native_fixture: Option<Arc<crate::root::min3_boot::fixture::PlaneFixture>>,
     /// What bills the requests those ports serve (their unit admission and settlement); `None` = no governance
     /// book, so a port request is not a billed unit (audit rows only).
     pub(crate) billing: Option<busbar_kernel::plane_driver::port_billing::PortBilling>,
@@ -1395,13 +1401,31 @@ impl std::ops::Deref for DataRoutes {
 impl DataRoutes {
     pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
         let snapshot = Arc::new(snapshot);
-        let generation = match snapshot.served.planes.first() {
-            Some(plane) => {
+        let native = Arc::new(native_nests::NativeNests::new(&snapshot)?);
+        let kernel = snapshot
+            .served
+            .planes
+            .first()
+            .map(|plane| Arc::clone(&plane.kernel))
+            .or_else(|| {
+                snapshot
+                    .served
+                    .ports
+                    .first()
+                    .map(|seat| Arc::clone(seat.driver.core()))
+            });
+        let generation = match kernel {
+            Some(kernel) => {
                 if snapshot
                     .served
                     .planes
                     .iter()
-                    .any(|other| !Arc::ptr_eq(&plane.kernel, &other.kernel))
+                    .any(|other| !Arc::ptr_eq(&kernel, &other.kernel))
+                    || snapshot
+                        .served
+                        .ports
+                        .iter()
+                        .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
                 {
                     return Err("listener planes do not share the same core services".into());
                 }
@@ -1417,9 +1441,10 @@ impl DataRoutes {
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
                     busbar_kernel::host_services::ServingGeneration::new(
-                        Arc::clone(&plane.kernel),
+                        kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
+                            native,
                             runtime,
                             detached: busbar_kernel::detached::worker_detached(),
                         }),
@@ -1432,6 +1457,59 @@ impl DataRoutes {
             snapshot,
             generation,
         }))
+    }
+
+    /// Register the actual billed native unit against this selected immutable dispatch snapshot.
+    /// The exact driver Caller and checked unit record jointly create execution authority.
+    pub(crate) fn native_unit(
+        self: &Arc<Self>,
+        seat: &busbar_kernel::plane_driver::port::PortSeat,
+        unit: &busbar_kernel::plane_driver::port::Unit,
+        ctx: &PlaneReqCtx,
+    ) -> Result<NativeUnit, &'static str> {
+        let generation = self
+            .generation
+            .as_ref()
+            .ok_or("native route has no complete generation")?;
+        let app = Arc::clone(&ctx.engine)
+            .downcast::<busbar_kernel::state::App>()
+            .map_err(|_| "native invocation needs its selected App snapshot")?;
+        let key = ctx
+            .gov
+            .as_ref()
+            .and_then(|gov| gov.key.clone())
+            .ok_or("native billed invocation has no verified key")?;
+        if !Arc::ptr_eq(generation.core(), seat.driver.core()) {
+            return Err("native invocation belongs to another core services owner");
+        }
+        let id = unit.ctx.key.get();
+        if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
+            return Err("native unit is already registered");
+        }
+        generation.core().units().admitted_for(
+            id,
+            seat.driver.caller(),
+            busbar_kernel::host_units::UnitRecord {
+                principal: Some(key),
+                depth: 0,
+            },
+        );
+        let context = match seat.driver.invocation(Arc::clone(generation), id) {
+            Ok(context) => context,
+            Err(why) => {
+                generation.core().units().ended(id);
+                return Err(why);
+            }
+        };
+        if let Some(credential) = &ctx.caller_credential {
+            generation.core().units().lend(id, credential.clone());
+        }
+        generation.core().units().ticketed(id, ctx.ticket.clone());
+        self.frames_lock().insert(id, app);
+        Ok(NativeUnit {
+            context,
+            routes: Arc::clone(self),
+        })
     }
 
     fn invocation_owner(
@@ -1472,6 +1550,19 @@ pub(crate) struct UnitFrame<'r> {
     pub(crate) unit: u64,
 }
 
+pub(crate) struct NativeUnit {
+    pub(crate) context: busbar_kernel::host_services::InvocationContext,
+    routes: Arc<DataRoutes>,
+}
+
+impl Drop for NativeUnit {
+    fn drop(&mut self) {
+        let id = self.context.unit();
+        self.context.generation().core().units().ended(id);
+        self.routes.frames_lock().remove(&id);
+    }
+}
+
 impl Drop for UnitFrame<'_> {
     fn drop(&mut self) {
         self.routes.frames_lock().remove(&self.unit);
@@ -1488,6 +1579,7 @@ pub(crate) const NEST_UNREAD: &str = "the nested unit's reply could not be read"
 
 pub(crate) struct DoorNests {
     pub(crate) routes: Arc<DispatchSnapshot>,
+    native: Arc<native_nests::NativeNests>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
@@ -1505,14 +1597,21 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
             snapshot: Arc::clone(&self.routes),
             generation: Some(Arc::clone(context.generation())),
         });
-        let Some(bound) = routes.parent_of(&nest) else {
-            done(busbar_kernel::host_services::NestReply::Unserved(
-                NEST_PARENT_GONE,
-            ));
-            return;
-        };
-
+        let native = Arc::clone(&self.native);
         let child = async move {
+            if let Some(answer) = native
+                .dispatch(Arc::clone(&routes.snapshot), &context, &nest)
+                .await
+            {
+                done(answer);
+                return;
+            }
+            let Some(bound) = routes.parent_of(&nest) else {
+                done(busbar_kernel::host_services::NestReply::Unserved(
+                    NEST_PARENT_GONE,
+                ));
+                return;
+            };
             let _parent_context = context;
             let limits = nest.constraints.clone();
             let run = routes.nested(nest, bound);

@@ -130,6 +130,20 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    /// Inspect the same configured walk that will choose the first member.
+    fn hook_candidates(&mut self, _wants: &Wants) -> Option<super::hooks::Candidates> {
+        None
+    }
+    fn hook_scope(&mut self, _wants: &Wants) -> Option<super::RoutedScope> {
+        None
+    }
+    fn hook_lane(&mut self, _wants: &Wants, _index: usize) -> Option<String> {
+        None
+    }
+    /// False means no enforcing constraint was installed; core must not dial.
+    fn hook_constrain(&mut self, _wants: &Wants, _constraint: super::hooks::Constraint) -> bool {
+        false
+    }
     /// The next member to try, `None` when the walk is exhausted. `wants.upstream` pins one member.
     fn next(&mut self, wants: &Wants) -> Option<Candidate>;
     /// The plane will not send to this member; it was never dialled.
@@ -372,6 +386,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             return Ok(Attempted::Exhausted { attempts });
         };
         attempts += 1;
+        effects.routing(attempts, &member.upstream);
         let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
         if answer
             .attempt
