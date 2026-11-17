@@ -554,15 +554,16 @@ impl Node {
 
     /// Freeze a funded copy while the original native entry still owns its facts and pass.
     /// This performs no journal stage, chain advance, receipt transfer or source removal.
-    fn freeze_native_inputs(
+    pub(super) fn freeze_native_inputs(
         &self,
         terminal: &busbar_kernel::teller::native_data_audit::NativeAuditTerminal,
         open: &OpenUnit,
+        // The original money owner's transferred report, never a re-derived bill.
+        report: Option<&Report>,
     ) -> Result<AuditInputs, &'static str> {
         let context = terminal.context();
         let outcome = terminal.outcome();
         let facts = terminal.facts();
-        let report = open.sealing.report.as_ref();
         if terminal.admission().is_some() && report.is_none() {
             return Err("native terminal has no original monetary report");
         }
