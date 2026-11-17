@@ -618,7 +618,10 @@ fn native_physical_admin_carrier_requires_operator_and_admin_route() {
             .unwrap()
             .begin_completion()
             .unwrap();
-        assert!(matches!(completing.into_admin(), Err(ArrivalRefusal::Class)));
+        assert!(matches!(
+            completing.into_admin(),
+            Err(ArrivalRefusal::Class)
+        ));
     }
 }
 

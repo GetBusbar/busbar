@@ -865,15 +865,18 @@ async fn admin_physical_fixture() -> AdminPhysicalFixture {
         Arc::new(move |_, slot| (slot == "operator").then(|| prepared.clone())),
     )
     .unwrap();
-    let connection = listener.connect(AcceptedConnection {
-        peer: "192.0.2.1".into(),
-        local: "192.0.2.2".into(),
-        alpn: "http/1.1".into(),
-        peer_certificate: SecureVec::new(),
-    });
-    let lease = ProcessAdmission::new(4)
-        .try_enter(AdmissionClass::Operator)
-        .unwrap();
+    let budget = ProcessAdmission::new(4);
+    let connection = listener.connect(
+        AcceptedConnection::capture(
+            &budget.connection_storage(AdmissionClass::Operator),
+            "192.0.2.1",
+            "192.0.2.2",
+            "http/1.1",
+            &[],
+        )
+        .unwrap(),
+    );
+    let lease = budget.try_enter(AdmissionClass::Operator).unwrap();
     let credit = lease.try_reserve(b"admin-body".len()).unwrap();
     let mut body = SecureVec::with_capacity(credit.len()).unwrap();
     body.extend(b"admin-body").unwrap();
@@ -976,7 +979,7 @@ async fn physical_admin_join_rejects_foreign_origin_id_and_equal_content_snapsho
 #[tokio::test]
 async fn physical_admin_join_consumes_carrier_once_and_retains_live_execution() {
     let mut f = admin_physical_fixture().await;
-    let carrier = f.pending.take().unwrap().into_admin();
+    let carrier = f.pending.take().unwrap().into_admin().unwrap();
     let clone = carrier.clone();
     let pending = carrier.take().unwrap();
     assert!(clone.take().is_err());

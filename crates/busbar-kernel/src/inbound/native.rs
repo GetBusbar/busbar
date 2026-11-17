@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::request_snapshot::{ChargedRequestSnapshot, SnapshotError, SnapshotInput};
 use super::Head;
+use crate::auth::native_admin::ExecutionAdmission;
 use crate::auth::native_data::{DataAuthorization, DataExecutionAdmission};
 use crate::guest::{Claimant, GuestList, Line, Matched};
 use crate::limits::process_admission::{AdmissionClass, ByteCredit, RequestLease};
@@ -455,7 +456,7 @@ enum Phase {
     Pending,
     Completing,
     Admitted,
-    Executing,
+    Executing { deadline: Option<Instant> },
     Cancelled,
 }
 struct StreamState {
@@ -617,10 +618,10 @@ impl RequestBinding {
             .phase
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if *phase != Phase::Executing {
+        let Phase::Executing { deadline } = *phase else {
             return Err(ArrivalRefusal::Cancelled);
-        }
-        if self.deadline.is_some_and(|at| Instant::now() >= at) {
+        };
+        if deadline.is_some_and(|at| Instant::now() >= at) {
             return Err(ArrivalRefusal::Deadline);
         }
         Ok(())
@@ -719,6 +720,77 @@ impl CompletingPhysicalRequest {
         &self.binding
     }
 
+    fn check_admin_route(&self) -> Result<(), ArrivalRefusal> {
+        if self.binding.request.class() != AdmissionClass::Operator
+            || !matches!(
+                self.binding.route.target(),
+                RouteTarget::Core(RouteAuth::Admin)
+            )
+        {
+            return Err(ArrivalRefusal::Class);
+        }
+        self.binding.check_live()
+    }
+
+    /// HTTP extensions can clone custody, but can extract this completion right only once.
+    pub fn into_admin(self) -> Result<AdminPhysicalRequest, ArrivalRefusal> {
+        self.check_admin_route()?;
+        Ok(AdminPhysicalRequest {
+            binding: self.binding.clone(),
+            pending: Arc::new(Mutex::new(Some(self))),
+        })
+    }
+
+    /// Join the existing final operator proof without another verifier or replay call.
+    pub fn complete_admin(
+        mut self,
+        admission: Arc<ExecutionAdmission>,
+    ) -> Result<PhysicalAdminExecution, ArrivalRefusal> {
+        self.check_admin_route()?;
+        let (lease, prepared) = admission.native().ok_or(ArrivalRefusal::ForeignInput)?;
+        let (handle, cx) = admission
+            .native_origin()
+            .ok_or(ArrivalRefusal::ForeignInput)?;
+        let original = self
+            .binding
+            .snapshot()
+            .map_err(|_| ArrivalRefusal::Capacity)?;
+        if !Arc::ptr_eq(handle, self.binding.handle())
+            || !Arc::ptr_eq(lease.generation(), self.binding.app())
+            || lease.invocation() != self.binding.invocation()
+            || cx.request_id != self.binding.invocation().request_id().get()
+            || !Arc::ptr_eq(&original, prepared.request())
+        {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        let deadline = self
+            .binding
+            .deadline
+            .map_or(cx.deadline, |at| at.min(cx.deadline));
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Executing {
+                deadline: Some(deadline),
+            };
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalAdminExecution {
+            binding: self.binding.clone(),
+            admission,
+        })
+    }
+
     /// Join the real final data policy result to this exact physical arrival once.
     pub fn complete(
         mut self,
@@ -756,6 +828,51 @@ impl Drop for CompletingPhysicalRequest {
         if self.cancel_on_drop {
             self.binding.state.cancel();
         }
+    }
+}
+
+/// Cloneable transport for the single pending operator right in HTTP extensions.
+#[derive(Clone)]
+pub struct AdminPhysicalRequest {
+    binding: Arc<RequestBinding>,
+    pending: Arc<Mutex<Option<CompletingPhysicalRequest>>>,
+}
+impl AdminPhysicalRequest {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+    pub fn take(&self) -> Result<CompletingPhysicalRequest, ArrivalRefusal> {
+        let request = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or(ArrivalRefusal::ForeignInput)?;
+        request.check_admin_route()?;
+        Ok(request)
+    }
+}
+
+/// Actual operator execution custody. Keep an Arc of this owner through handler/response work;
+/// retaining only the projected auth proof does not retain physical execution authority.
+pub struct PhysicalAdminExecution {
+    binding: Arc<RequestBinding>,
+    admission: Arc<ExecutionAdmission>,
+}
+impl PhysicalAdminExecution {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+    pub fn admission(&self) -> &Arc<ExecutionAdmission> {
+        &self.admission
+    }
+    pub fn check_executing(&self) -> Result<(), ArrivalRefusal> {
+        self.binding.check_executing()
+    }
+}
+impl Drop for PhysicalAdminExecution {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
     }
 }
 
@@ -801,7 +918,9 @@ impl PhysicalExecutionOwner {
         if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
             return Err(ArrivalRefusal::Deadline);
         }
-        *phase = Phase::Executing;
+        *phase = Phase::Executing {
+            deadline: self.binding.deadline,
+        };
         Ok(())
     }
 }
