@@ -1321,6 +1321,16 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         let mut rounds = 0u32;
         let mut held_effects = false;
         while let Some(mut answer) = queue.pop_front() {
+            if !screening
+                && self.is_command()
+                && !answer.command_channel
+                && answer
+                    .intents
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::Channel { .. }))
+            {
+                return Err(SessionError::Violation(Violation::BadRecords));
+            }
             let intents = std::mem::take(&mut answer.intents);
             if screening && !intents.is_empty() {
                 let reads = intents.iter().any(prerequisite);

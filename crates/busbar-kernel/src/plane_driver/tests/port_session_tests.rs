@@ -175,7 +175,7 @@ fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
             flags: 0,
             framing: CH_FRAME_NDJSON,
             key: "command",
-            head: &[],
+            head: busbar_plugin_abi::records::Records::new(&[]),
         };
         answer.take(channel(), Origin::Channel, &mut once, &effects);
         assert_eq!(answer.intents.len(), 1);
