@@ -242,3 +242,40 @@ fn the_key_replay_cache_wipes_a_held_answer_on_eviction_and_drop() {
         "an answer still held when the cache drops is wiped"
     );
 }
+
+/// #359 SEC-L6: a replay writes the held answer verbatim, so the retry receives exactly the bytes
+/// the first caller received, as `application/json`, with no re-parse.
+#[tokio::test]
+async fn a_key_replay_answers_the_first_answers_exact_bytes() {
+    use http_body_util::BodyExt as _;
+    let body = serde_json::json!({"id": "vk_1", "token": "bb_live_once_shown", "expires_at": 7});
+    let cache = crate::keys::KeyReplayCache::new();
+    let k = key("alice", "create:verbatim");
+    let reservation = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    let first =
+        crate::keys::commit_key_answer(Some(reservation), axum::http::StatusCode::CREATED, &body);
+    let held = match cache.probe(k, 1_001) {
+        Probe::Replay(held) => held,
+        _ => panic!("a committed answer replays"),
+    };
+    let replay = crate::keys::answer_response(axum::http::StatusCode::CREATED, &held);
+    assert_eq!(replay.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        replay.headers()[axum::http::header::CONTENT_TYPE],
+        busbar_contract::protocol::APPLICATION_JSON
+    );
+    let first = first.into_body().collect().await.unwrap().to_bytes();
+    let replay = replay.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        first, replay,
+        "the replay is the first answer, byte for byte"
+    );
+    assert_eq!(&first[..], held.as_slice());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&first).unwrap(),
+        body
+    );
+}
