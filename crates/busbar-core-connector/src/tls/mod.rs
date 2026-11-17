@@ -12,6 +12,9 @@ pub mod client;
 pub mod explain;
 pub mod store;
 
+#[cfg(test)]
+mod write_progress_tests;
+
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
