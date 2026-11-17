@@ -233,6 +233,7 @@ fn a_covering_stamp_authenticates_the_window_and_a_tampered_one_is_refused() {
     assert!(verdict.all_requested_records_authenticated);
     assert_eq!(verdict.unauthenticated_tail, None);
     assert_eq!(verdict.live_pages, 1);
+    assert_eq!(verdict.last_sealed, 3);
 
     let mut tampered = good;
     tampered.host = "rewritten".into();
@@ -332,6 +333,7 @@ fn an_unsealed_end_is_reported_and_never_complete_through_a_trusted_head() {
     let window = genesis_window(vec![Ev::Page(Some(4), page(&lines, 1, 2))]);
     let verdict = verify::<_, Head>(&keys(), &window, None).unwrap();
     assert_eq!(verdict.unauthenticated_tail, Some(3));
+    assert_eq!(verdict.last_sealed, 2);
     assert!(!verdict.all_requested_records_authenticated);
     assert_eq!(verdict.authenticated_records, 2);
     assert_eq!(verdict.standing, Some(Standing::SignedConsistentWindow));
