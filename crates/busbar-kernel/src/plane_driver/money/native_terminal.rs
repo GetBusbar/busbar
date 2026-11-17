@@ -246,3 +246,7 @@ impl PlaneMoney {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "native_terminal_tests.rs"]
+mod tests;
