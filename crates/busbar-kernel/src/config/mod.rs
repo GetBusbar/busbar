@@ -1648,7 +1648,11 @@ pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
-    resolve_with_provider_planes(deploy, defs, &[]).map(|resolved| resolved.config)
+    let planes = deploy
+        .grammar
+        .prepared()
+        .map_or(&[][..], |read| read.provider_planes());
+    resolve_with_provider_planes(deploy, defs, planes).map(|resolved| resolved.config)
 }
 
 /// Configuration and immutable provider projections validated against this read's admitted images.
@@ -2051,6 +2055,7 @@ pub fn resolve_with_provider_planes(
 
     if errors.is_empty() {
         let security = deploy.security.clone().unwrap_or_default();
+        let retained_catalogs = std::sync::Arc::new(catalogs.clone());
         Ok(ResolvedConfig {
             catalogs,
             config: RootCfg {
@@ -2110,7 +2115,10 @@ pub fn resolve_with_provider_planes(
                 operator_file_defs: None,
                 export_defs: deploy.export.clone(),
                 plane_sections,
-                grammar: deploy.grammar.clone(),
+                grammar: deploy
+                    .grammar
+                    .clone()
+                    .with_provider_catalogs(retained_catalogs),
                 min3,
             },
         })

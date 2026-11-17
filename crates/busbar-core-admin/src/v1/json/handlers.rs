@@ -2453,7 +2453,10 @@ async fn read_apply_body(
         "config.apply",
     )
     .await?;
-    let deploy = typed_body(config, &grammar, parse)?;
+    let mut deploy = typed_body(config, grammar.grammar(), parse)?;
+    grammar
+        .attach(&mut deploy)
+        .map_err(AdminError::Validation)?;
     if let Some(refusal) =
         config_body_refusal(&deploy, &snapshot.operator_file_defs, "config.apply")
     {

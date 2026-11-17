@@ -226,7 +226,7 @@ fn resolution_retains_the_catalog_from_this_reads_descriptors() {
     let plan = &catalogs["chat"];
     let walk = plan.select("logical").unwrap();
     let target = plan.target(walk, "chat\u{1f}logical").unwrap();
-    assert_eq!(target.wire_model, "actual-wire");
+    assert_eq!(target.wire_model.as_ref(), "actual-wire");
     let retained = cfg.grammar.clone();
     assert!(Arc::ptr_eq(catalogs, retained.provider_catalogs().unwrap()));
 }
