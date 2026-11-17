@@ -793,6 +793,7 @@ impl PortEgress {
     #[must_use]
     pub fn probes(&self, members: Vec<ProbeTarget>) -> EgressProbes {
         EgressProbes {
+            pool: self.pool.clone(),
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
@@ -835,6 +836,7 @@ impl PortUpstream for PortEgress {
 /// The probe service's far end: one probe exchange to one member, judged like any other dial, and the finding
 /// handed to the breaker.
 pub struct EgressProbes {
+    pool: String,
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
     handle: Handle,

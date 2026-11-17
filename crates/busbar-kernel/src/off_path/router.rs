@@ -190,6 +190,7 @@ impl PreparedListener {
         .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
         let core_routes = core_routes.with_door_refusals(refusals.clone());
         Ok(Self {
+            physical: None,
             data: None,
             router,
             core_routes,

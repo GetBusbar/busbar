@@ -156,7 +156,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
         scope: scope_of(door),
         verbs,
         verbs_all: matches!(door, AdminDoor::Open | AdminDoor::Identified(..)),
-        require_if_match: false,
+        require_if_match: app.require_if_match,
     }
 }
 

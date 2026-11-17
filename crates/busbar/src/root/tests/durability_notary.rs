@@ -55,6 +55,7 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
         journal,
         feed,
         signers.live,
+        None,
     );
     (fixture, book, task)
 }
@@ -252,4 +253,101 @@ fn the_book_holds_no_signing_capability() {
         no_signer(head);
         no_signer(resumed_head_node_seq);
     }
+}
+
+/// Test 6, `clean_shutdown_stamps_final_page` (notary half, §3.6.3 step 3): lines left unstamped at
+/// stop get one `final` page from `committed_through + 1` to the head, made by the notary task
+/// itself on the notary signer thread, staged before the journal's final flush; pages stay
+/// contiguous and never overlap. A notary stopped with nothing unstamped makes no final page.
+#[tokio::test]
+async fn clean_stop_stamps_a_final_page() {
+    let fixture = NativeFixture::new(43).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    seal_n(&book, 1, 12).await;
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let signers = signer::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let (journal, feed) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), Arc::clone(&held.head))
+    };
+    // Spawned and stopped before its first poll (current-thread runtime): no live page is ever
+    // signed, so the whole tail is the final page.
+    let task = spawn(
+        NotaryConfig {
+            node: journal.node(),
+            host: "notary-test-host".into(),
+            every_ms: 1,
+            key_cert: 0,
+        },
+        crate::root::durability::notary::NotaryStart::default(),
+        journal,
+        feed,
+        signers.live,
+        None,
+    );
+    let end = task.stop().await.unwrap();
+    assert_eq!(end.committed_through, 12);
+    let pages = stamps(&book).await;
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    let last = &pages[0];
+    assert_eq!(last.kind, StampKind::Final);
+    assert_eq!((last.from, last.to), (1, 12));
+    last.verify(&verifying_key())
+        .expect("the final page verifies under the bound key");
+    let held = book.lock().unwrap();
+    assert_eq!(
+        Fingerprint::from_hex(&held.audit_records().last().unwrap().hash),
+        Some(last.fingerprint)
+    );
+    drop(held);
+
+    // Nothing unstamped: no final page.
+    let (_fixture, quiet, task) = notarised(1).await;
+    seal_n(&quiet, 1, 3).await;
+    stamped_through(&task, 3).await;
+    let end = task.stop().await.unwrap();
+    assert_eq!(end.committed_through, 3);
+    assert!(stamps(&quiet)
+        .await
+        .iter()
+        .all(|page| page.kind == StampKind::Live));
+}
+
+#[tokio::test]
+async fn final_page_is_not_staged_after_the_seal_cut() {
+    let fixture = NativeFixture::new(43).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    seal_n(&book, 1, 3).await;
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let (journal, feed) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), Arc::clone(&held.head))
+    };
+    let (services, _checkpoint) = crate::root::durability::audit_services::AuditServices::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        journal.node(),
+        journal,
+        feed,
+        Default::default(),
+    )
+    .unwrap();
+    let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
+    clock.arm(tokio::time::Instant::now());
+    assert!(services.start_notary(1, clock));
+    let end = services.take_notary().unwrap().stop().await.unwrap();
+    assert_eq!(end.final_staged, Some(false));
+    assert!(
+        stamps(&book).await.is_empty(),
+        "a detached notary cannot stage a page after C3"
+    );
 }

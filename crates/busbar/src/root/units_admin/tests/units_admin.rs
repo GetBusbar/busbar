@@ -4,6 +4,80 @@
 use super::*;
 use busbar_contract::json::{self, JsonValueTrait};
 
+#[test]
+fn cloned_admin_carrier_keeps_original_empty_request_and_exact_query_presence() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let fields = [
+        ("x-original", b"\xff".as_slice()),
+        ("x-original", b"second"),
+    ];
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            query_present: true,
+            authority: "node.example",
+            headers: fields.iter().copied(),
+            peer: "192.0.2.1:42",
+            tls_peer_cert: b"certificate",
+            body: &[],
+            now_s: 42,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot.clone(), 7);
+    let retained = request.clone();
+    assert!(Arc::ptr_eq(request.snapshot(), retained.snapshot()));
+    assert!(retained.snapshot().request().same_request(&lease));
+    assert_eq!(retained.path(), "/api/v1/admin/audit?");
+    assert_eq!(retained.headers().collect::<Vec<_>>(), fields);
+    assert_eq!(retained.snapshot().peer(), "192.0.2.1:42");
+    assert_eq!(retained.snapshot().tls_peer_cert(), b"certificate");
+    drop((request, snapshot, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    drop(retained);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn admin_http_body_projection_retains_same_snapshot_without_copying() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "POST",
+            path: "/api/v1/admin/config/apply",
+            query: "",
+            query_present: false,
+            authority: "node",
+            headers: std::iter::empty(),
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"original body",
+            now_s: 1,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot, 8);
+    let projected = request.snapshot().body_bytes();
+    assert_eq!(projected.as_ptr(), request.body().as_ptr());
+    drop((request, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(projected.as_ref(), b"original body");
+    drop(projected);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -331,7 +405,11 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 }
 
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
+    Arc::new(move |_: &AdminRequest| {
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            door.clone(),
+        )))
+    })
 }
 
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
@@ -357,7 +435,15 @@ fn approved_under(
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    authenticate(&binding, &bindings, &mut walk)?;
+    {
+        let mut future = std::pin::pin!(authenticate(&binding, &bindings, &mut walk));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(answer) = std::future::Future::poll(future.as_mut(), &mut cx)
+        else {
+            panic!("this fixture is a ready door")
+        };
+        answer?;
+    }
     approve(&walk)
 }
 
@@ -681,6 +767,44 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await
+}
+
+#[tokio::test]
+async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let door: AdminDoorFn = Arc::new(move |_: &AdminRequest| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(Scope::Full),
+            )
+            .into()
+        })
+    });
+    assert_eq!(
+        answer_at_the_closed_door(door.clone(), Some("credential"))
+            .await
+            .status,
+        200
+    );
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(true),
+        )));
+    let mut request = a_request();
+    request.credential = Some("credential".into());
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
+    assert_eq!(answer.status, 401);
+    assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

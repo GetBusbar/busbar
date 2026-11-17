@@ -110,19 +110,38 @@ pub(crate) trait AdminDispatch: Send + Sync {
     ) -> AdminAnswer {
         self.execute(verb, request).await
     }
+
+    async fn execute_authorized(
+        &self,
+        verb: KernelVerb,
+        request: &AdminRequest,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        _execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    ) -> AdminAnswer {
+        match admission {
+            Some(admission) => self.execute_admitted(verb, request, admission).await,
+            None => self.execute(verb, request).await,
+        }
+    }
 }
 
 /// Host-owned request context, never part of the serialized administrative request.
 struct AdmittedDispatch {
     inner: Arc<dyn AdminDispatch>,
-    admission: busbar_kernel::inbound::RequestAdmission,
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
 }
 
 #[async_trait::async_trait]
 impl AdminDispatch for AdmittedDispatch {
     async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
         self.inner
-            .execute_admitted(verb, request, &self.admission)
+            .execute_authorized(
+                verb,
+                request,
+                self.admission.as_ref(),
+                self.execution.as_ref(),
+            )
             .await
     }
 }
@@ -1565,6 +1584,7 @@ pub(crate) struct AdminWalk {
     /// The replay claim the door's identity asks for, UNWON until every step that may still refuse
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1580,18 +1600,22 @@ impl AdminWalk {
             listed: None,
             principal: None,
             claim: None,
+            execution: None,
             answer: None,
         }
     }
 }
 
-pub(crate) type AdminDoorFn =
-    Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminVerdict + Send + Sync>;
+pub(crate) type AdminDoorFuture =
+    busbar_plugin_abi::host_side::caller::BoxFut<'static, busbar_kernel::auth::AdminVerdict>;
+pub(crate) type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> AdminDoorFuture + Send + Sync>;
 
 #[cfg(test)]
 pub(crate) fn open_door() -> AdminDoorFn {
     Arc::new(|_: &AdminRequest| {
-        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Open)
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            busbar_kernel::auth::AdminDoor::Open,
+        )))
     })
 }
 
@@ -1600,11 +1624,9 @@ pub(crate) fn open_door() -> AdminDoorFn {
 pub(crate) fn door_of(
     f: impl Fn(Option<&str>) -> busbar_kernel::auth::AdminDoor + Send + Sync + 'static,
 ) -> AdminDoorFn {
-    Arc::new(
-        move |request: &AdminRequest| -> busbar_kernel::auth::AdminVerdict {
-            f(request.credential.as_deref()).into()
-        },
-    )
+    Arc::new(move |request: &AdminRequest| {
+        Box::pin(std::future::ready(f(request.credential.as_deref()).into()))
+    })
 }
 
 /// A test door that identifies exactly one credential as `id` and denies everything else; the
@@ -1736,15 +1758,15 @@ pub(crate) async fn decide(
 ) -> Outcome {
     use busbar_contract::caps::StepName;
     let at = |step: StepName| move |reason: ReasonCode| Outcome::Refused(step, reason);
-    let ran = decode(walk)
-        .map_err(at(StepName::Decode))
-        .and_then(|()| {
-            authenticate(&units.admin, &units.auth_bindings, walk)
-                .map_err(at(StepName::Authenticate))
-        })
-        .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
-        .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
-        .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    let ran = match decode(walk).map_err(at(StepName::Decode)) {
+        Ok(()) => authenticate(&units.admin, &units.auth_bindings, walk)
+            .await
+            .map_err(at(StepName::Authenticate)),
+        Err(ended) => Err(ended),
+    }
+    .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
+    .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
+    .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
     let ran = match ran {
         Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
         Err(ended) => Err(ended),
@@ -1771,7 +1793,7 @@ pub(crate) fn decode(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     }
 }
 
-pub(crate) fn authenticate(
+pub(crate) async fn authenticate(
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     walk: &mut AdminWalk,
@@ -1783,10 +1805,10 @@ pub(crate) fn authenticate(
             .zip(request.credential.as_deref())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
-    let verdict = walk.admission.as_ref().map_or_else(
-        || (binding.door)(request),
-        busbar_kernel::inbound::RequestAdmission::admin_verdict,
-    );
+    let verdict = match &walk.admission {
+        Some(admission) => admission.admin_verdict(),
+        None => (binding.door)(request).await,
+    };
     walk.effect_context = Some(walk.admission.as_ref().map_or_else(
         || {
             let headers = request
@@ -1851,16 +1873,34 @@ pub(crate) fn authenticate(
 
 pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     if let Some(admission) = &walk.admission {
-        return admission
-            .claim_admin_replay()
-            .await
-            .then_some(())
-            .ok_or(ReasonCode::Unauthenticated);
+        if !admission.claim_admin_replay().await {
+            return Err(ReasonCode::Unauthenticated);
+        }
+        if let Some(execution) = admission.admin_execution() {
+            if let Some(context) = &mut walk.effect_context {
+                context
+                    .attach_execution(execution.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?;
+            }
+            walk.execution = Some(execution);
+        }
+        return Ok(());
     }
-    match walk.claim.take() {
-        Some(pending) if !pending.win().await => Err(ReasonCode::Unauthenticated),
-        _ => Ok(()),
+    if let Some(pending) = walk.claim.take() {
+        let execution = Arc::new(
+            pending
+                .complete_admin()
+                .await
+                .map_err(|_| ReasonCode::Unauthenticated)?,
+        );
+        if let Some(context) = &mut walk.effect_context {
+            context
+                .attach_execution(execution.clone())
+                .map_err(|_| ReasonCode::Unauthenticated)?;
+        }
+        walk.execution = Some(execution);
     }
+    Ok(())
 }
 
 pub(crate) fn verify(walk: &mut AdminWalk, principal: &PrincipalId) -> Result<(), ReasonCode> {
@@ -1920,15 +1960,15 @@ pub(crate) async fn route(
     let granted = walk.granted.ok_or(ReasonCode::ScopeDenied)?;
     let request = &walk.request;
 
-    let dispatch: Arc<dyn AdminDispatch> = walk.admission.as_ref().map_or_else(
-        || Arc::clone(&binding.dispatch),
-        |admission| {
-            Arc::new(AdmittedDispatch {
-                inner: Arc::clone(&binding.dispatch),
-                admission: admission.clone(),
-            }) as Arc<dyn AdminDispatch>
-        },
-    );
+    let dispatch: Arc<dyn AdminDispatch> = if walk.admission.is_some() || walk.execution.is_some() {
+        Arc::new(AdmittedDispatch {
+            inner: Arc::clone(&binding.dispatch),
+            admission: walk.admission.clone(),
+            execution: walk.execution.clone(),
+        })
+    } else {
+        Arc::clone(&binding.dispatch)
+    };
 
     if mints_its_own_identity(verb) {
         walk.answer = Some(dispatch.execute(verb, request).await);

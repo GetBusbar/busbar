@@ -341,11 +341,10 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     let (app, _scratch) = application().await;
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 1 << 20, 16, false);
-    let (shutdown, mut receiver) = tokio::sync::broadcast::channel(4);
-    busbar_core_admin::restart::publish_shutdown(
-        shutdown,
-        std::sync::Arc::new(busbar_kernel::endpoints::ProbeState::new(None)),
-    );
+    use busbar_kernel::governance::drain::{ShutdownIntent, ShutdownRequest};
+    let shutdown = ShutdownRequest::default();
+    let mut receiver = shutdown.subscribe();
+    busbar_core_admin::restart::publish_shutdown(shutdown);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -392,10 +391,8 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     writer.await.unwrap();
     let stale = body(request.await.unwrap(), 409).await;
     assert_eq!(stale["error"]["code"], "version_conflict");
-    assert!(matches!(
-        receiver.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Serving);
+    assert!(!receiver.has_changed().unwrap());
     body(
         client
             .post(&url)
@@ -408,10 +405,8 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         400,
     )
     .await;
-    assert!(matches!(
-        receiver.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Serving);
+    assert!(!receiver.has_changed().unwrap());
     body(
         client
             .post(&url)
@@ -424,10 +419,11 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         202,
     )
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.changed())
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(*receiver.borrow_and_update(), ShutdownIntent::Operator);
     body(
         client
             .post(&url)
@@ -439,10 +435,11 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         202,
     )
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Operator);
+    assert!(
+        !receiver.has_changed().unwrap(),
+        "repeated operator requests do not restart deregistration"
+    );
     server.abort();
     let _ = server.await;
 }

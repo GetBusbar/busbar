@@ -1487,6 +1487,11 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             });
         }
         let max_out = self.live()?.min(byte_limit);
+        let max_out = if mode == p::RESOURCE_SELECT {
+            max_out.min(resources::MAX_SELECTION_BYTES)
+        } else {
+            max_out
+        };
         let req = plane_req(req);
         sync_bufs(max_out, |_, out| {
             let answer = self

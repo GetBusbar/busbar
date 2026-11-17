@@ -13,6 +13,16 @@ use busbar_plugin_abi::host_side::needs::{DirNeed, NeedErr, NeedOut};
 pub(crate) struct BootstrapRecords;
 
 impl PluginRecords for BootstrapRecords {
+    fn claim_until(
+        &self,
+        _who: &Caller<'_>,
+        _scope: Scope,
+        _key: &[u8],
+        _value: &[u8],
+        _expires_at_s: u64,
+    ) -> impl core::future::Future<Output = Result<bool, RecordsDenied>> + Send {
+        std::future::ready(Err(RecordsDenied::Unavailable))
+    }
     fn get(
         &self,
         _who: &Caller<'_>,

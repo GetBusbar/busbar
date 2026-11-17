@@ -180,3 +180,82 @@ fn the_unit_end_the_owner_settles_says_whether_anything_ran() {
         "a refusal nothing ran under releases the request count"
     );
 }
+
+#[test]
+fn a_native_child_uses_the_live_parent_admission_and_cannot_change_its_key() {
+    let r = rig(BTreeMap::new());
+    let parent = r.billing.open(admit(&r, None)).unwrap();
+    let child = r
+        .billing
+        .child(
+            parent.ctx.key,
+            &key(None),
+            "other",
+            Arc::from(["tokens".into()]),
+        )
+        .unwrap();
+    assert_ne!(parent.ctx.key, child.ctx.key);
+    assert_eq!(
+        child.ctx.origin,
+        busbar_contract::caps::OriginKind::Nested {
+            parent: parent.ctx.key
+        }
+    );
+    assert_eq!(r.money.open_units(), 2);
+    let foreign = VirtualKey {
+        id: "foreign".into(),
+        ..(*key(None)).clone()
+    };
+    assert!(r
+        .billing
+        .child(parent.ctx.key, &foreign, "other", Arc::from([]))
+        .is_err());
+    assert_eq!(r.money.open_units(), 2, "refusal must open nothing");
+    r.billing.settle(parent.ctx.key, super::end_of(200, true));
+    assert!(r
+        .billing
+        .child(parent.ctx.key, &key(None), "other", Arc::from([]))
+        .is_err());
+    child
+        .money
+        .ended(&child.ctx, Ending::End, &five_tokens(), None);
+    r.billing.settle(child.ctx.key, super::end_of(200, true));
+    assert_eq!(
+        r.money.open_units(),
+        0,
+        "the child owns settlement after its parent ends"
+    );
+}
+
+#[test]
+fn a_native_child_does_not_take_a_second_concurrency_hold() {
+    use crate::config::groups::{LimitCfg, LimitMetric};
+    let r = rig(BTreeMap::from([(
+        "g".into(),
+        GroupCfg {
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Concurrent,
+                amount: 1,
+                per: None,
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..GroupCfg::default()
+        },
+    )]));
+    let parent = r.billing.open(admit(&r, Some("g"))).unwrap();
+    assert!(r.billing.open(admit(&r, Some("g"))).is_err());
+    let child = r
+        .billing
+        .child(parent.ctx.key, &key(Some("g")), "other", Arc::from([]))
+        .unwrap();
+    r.billing.settle(parent.ctx.key, super::end_of(200, true));
+    assert!(
+        r.billing.open(admit(&r, Some("g"))).is_err(),
+        "child retains the original hold"
+    );
+    r.billing.settle(child.ctx.key, super::end_of(200, true));
+    let next = r.billing.open(admit(&r, Some("g"))).unwrap();
+    r.billing.settle(next.ctx.key, super::end_of(200, true));
+}
