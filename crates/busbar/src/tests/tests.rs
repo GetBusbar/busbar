@@ -1077,3 +1077,22 @@ fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
         "a principal transition summary carries no inner detail"
     );
 }
+
+/// #428: on dev no plane states a CLI row, so the stdio trigger was unreachable. Core's own
+/// `--stdio` selects line serving through `main`'s CLI path on every build, and nothing else does
+/// (WP1-GAP r3 §1.3).
+#[test]
+fn stdio_selects_line_serving_through_mains_cli_path() {
+    assert!(line_serve_requested(
+        &root::cli::help_rows(),
+        &Argv::parse(["--stdio"])
+    ));
+    assert!(!line_serve_requested(
+        &root::cli::help_rows(),
+        &Argv::parse(Vec::<String>::new())
+    ));
+    assert!(!line_serve_requested(
+        &root::cli::help_rows(),
+        &Argv::parse(["--mcp-stdio"])
+    ));
+}

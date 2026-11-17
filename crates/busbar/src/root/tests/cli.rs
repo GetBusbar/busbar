@@ -144,7 +144,6 @@ fn the_list_plugins_header_heads_the_row_formats_columns() {
     );
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn the_default_distributions_help_is_byte_identical() {
     assert_eq!(
