@@ -24,6 +24,7 @@ pub struct Declaration<'a> {
 /// Host lifecycle facts. This validator does not mint the selected/prepared/committed seal.
 #[derive(Clone, Copy)]
 pub struct AttemptState {
+    /// The preparation ordinal bound by the host's current active attempt seal.
     pub attempt: u32,
     pub exchange: u32,
     pub sealed: bool,
