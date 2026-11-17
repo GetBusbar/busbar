@@ -658,6 +658,23 @@ mod fixed_piece {
     }
 
     #[test]
+    fn fixed_piece_refuses_a_foreign_instance_session_before_entry() {
+        let (adapter, _own_session) = opened();
+        let (_other_adapter, mut foreign) = opened();
+        let mut backing = [0xa5; 256];
+        assert!(matches!(
+            adapter.piece_fixed(&mut foreign, plane::FROM_CORE, 7, 0, b"reply", &mut backing),
+            Err(busbar_ports::PortError::Call(
+                busbar_plugin_abi::fail::CallError::Fault(
+                    busbar_plugin_abi::fail::FaultReason::BadInstance
+                )
+            ))
+        ));
+        assert_eq!(fixture::pieces(), 0);
+        assert_eq!(backing, [0xa5; 256]);
+    }
+
+    #[test]
     fn fixed_piece_rejects_the_whole_malformed_answer() {
         let (adapter, mut session) = opened();
         let mut backing = [0; 256];
