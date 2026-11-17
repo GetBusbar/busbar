@@ -55,3 +55,61 @@ pub trait CarrierProgressReader: Send + Sync {
     /// the writer. A fault must be checked even when that outer poll reports success.
     fn snapshot(&self) -> CarrierProgress;
 }
+
+/// The root-admitted identity of one response; constructing these facts grants no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseKey {
+    /// Original durability node identity.
+    pub node: u64,
+    /// Original journal incarnation, retained across the response lifetime.
+    pub incarnation: u64,
+    /// Original governed unit, or an explicitly admitted pre-unit/unmetered response.
+    pub unit: Option<crate::ids::UnitKey>,
+    /// Non-reused native connection generation.
+    pub connection_generation: u64,
+    /// Monotonically admitted host stream, distinct from a protocol wire stream ID.
+    pub stream: u64,
+}
+
+/// A bounded, content-free reason that response delivery stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseStop {
+    /// The response's owner requested cancellation.
+    Cancelled,
+    /// The response's absolute deadline expired.
+    Deadline,
+    /// The protocol producer aborted the response.
+    Protocol,
+    /// The actual carrier or its accounting failed.
+    Carrier(CarrierFault),
+    /// Identity, lifecycle or offset validation failed.
+    Integrity,
+    /// The admitted descriptor or response capacity was exhausted.
+    Capacity,
+    /// The actual carrier has been retired and cannot produce further writes.
+    CarrierRetired,
+}
+
+/// One frozen response-delivery outcome, separate from work outcome and billing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryTerminal {
+    /// Required carrier completion, producer end and reader EOF have all joined.
+    Complete,
+    /// Publication stopped and all possible later writes have been settled or retired.
+    Failed(ResponseStop),
+}
+
+/// Immutable host-produced facts about one admitted response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliverySnapshot {
+    /// At least one attributed payload byte reached the actual raw carrier.
+    pub first_payload_written: bool,
+    /// Frozen only after the corresponding successful or failed terminal join.
+    pub terminal: Option<DeliveryTerminal>,
+}
+
+/// Read-only response facts usable without depending on the connector implementation.
+pub trait DeliveryReader: Send + Sync {
+    /// Read the response's coherent monotone snapshot.
+    fn snapshot(&self) -> DeliverySnapshot;
+}
