@@ -23,6 +23,7 @@ use crate::state::App;
 
 mod derived;
 mod handin;
+pub mod native;
 pub mod request_snapshot;
 mod tables;
 #[cfg(test)]

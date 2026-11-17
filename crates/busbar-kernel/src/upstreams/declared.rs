@@ -17,6 +17,7 @@ const CORE_KEYS: &[&str] = &[
     "auth",
     "upstream_credentials",
     "allow_private",
+    "resource",
 ];
 const MAX_PATHS: usize = 4;
 

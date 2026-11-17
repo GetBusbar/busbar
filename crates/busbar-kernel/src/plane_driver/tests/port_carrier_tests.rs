@@ -41,6 +41,7 @@ const INSTANCE: u64 = 7;
 
 fn def(name: &str) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        resource: None,
         allow_private: false,
         name: name.into(),
         url: None,
@@ -79,6 +80,7 @@ fn candidate(name: &str) -> Candidate {
         pool: "pool".into(),
         qualified_member: "fixture-member".into(),
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: name.into(),
         provider: "{}".into(),
         base_path: "".into(),

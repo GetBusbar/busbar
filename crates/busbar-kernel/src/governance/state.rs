@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 
 use crate::store::now_ms as wall_ms;
 
+#[path = "admitted_view.rs"]
+pub(super) mod admitted_view;
+
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
 };
@@ -944,19 +947,26 @@ impl GovState {
         now: u64,
     ) -> Option<f64> {
         let chain = cost.chain_for(key).ok()?;
+        self.rate_headroom_on(
+            chain.iter().copied().filter(|bucket| match pool {
+                Some(pool) => bucket.applies_to_pool(pool),
+                None => bucket.scope.is_none(),
+            }),
+            now,
+        )
+    }
+
+    fn rate_headroom_on<'a>(
+        &self,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Option<f64> {
         let mut headroom: Option<f64> = None;
-        for bucket in chain.iter() {
+        for bucket in buckets {
             if bucket.requests_cap.is_none() && bucket.tokens_cap.is_none() {
                 continue;
             }
 
-            let applies = match pool {
-                Some(p) => bucket.applies_to_pool(p),
-                None => bucket.scope.is_none(),
-            };
-            if !applies {
-                continue;
-            }
             let window = budget_window(bucket.window, now);
 
             let (requests, tokens) = match self.budget.read(bucket.bucket_id).get(bucket.bucket_id)
@@ -1298,11 +1308,19 @@ impl GovState {
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let mut states = self.ordinary_budget_state(cost, key, now);
+        self.apply_observation_liability(&mut states);
+        states
+    }
+
+    fn apply_observation_liability(
+        &self,
+        states: &mut [busbar_contract::hooks::BudgetBucketState],
+    ) {
         let observed = self
             .observation_view
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        for state in &mut states {
+        for state in states {
             let total = observed
                 .get(state.bucket_id.as_str())
                 .and_then(|windows| windows.get(&state.window_start));
@@ -1321,7 +1339,6 @@ impl GovState {
                     .map(|n| n.saturating_sub(liability).max(0));
             }
         }
-        states
     }
 
     pub(crate) fn ordinary_budget_state(
@@ -1351,8 +1368,17 @@ impl GovState {
         chain: &crate::cost::Chain<'_>,
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        let mut out = Vec::with_capacity(chain.len());
-        for bucket in chain.iter() {
+        self.ordinary_budget_state_buckets(cost, chain.iter().copied(), now)
+    }
+
+    fn ordinary_budget_state_buckets<'a>(
+        &self,
+        cost: &crate::cost::CostModel,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        let mut out = Vec::with_capacity(buckets.size_hint().0);
+        for bucket in buckets {
             let window = budget_window(bucket.window, now);
             let spend = {
                 let map = self.budget.read(bucket.bucket_id);

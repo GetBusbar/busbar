@@ -5,13 +5,14 @@
 //! Root supplies opened ports and frozen policy; no prepared identity is accepted as input.
 
 use super::chain_run::{
-    prepare_owned, run_owned_chain, AuthServices, ChainEnd, ChainInstance, IdentityPolicy, Request,
-    Verdict,
+    prepare_snapshot as verify_snapshot, run_owned_chain, AuthServices, ChainEnd, ChainInstance,
+    IdentityPolicy, Request, Verdict,
 };
 use super::native_admin::{PreparedAnswer, PreparedIdentity};
 use super::native_policy::ChainPolicy;
 use super::verdicts::VerdictCache;
 use crate::directory::HoldSet;
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::issued::IssuedCredentials;
 use crate::plane_driver::port_intents::Namespace;
 use crate::plane_grants::{KeyRefresh, ReplayGuard};
@@ -43,11 +44,21 @@ pub struct AuthInstance {
     pub holds: Box<[Arc<HoldSet>]>,
 }
 
+/// Concrete verification result. Arbitrary admin trait implementations cannot create
+/// the private identity value carried here or enter DATA completion.
+pub enum NativePreparedAnswer {
+    Identity(Arc<PreparedNativeIdentity>),
+    NotMine,
+    Rejected,
+    Held,
+}
+
 /// A retained chain cannot acquire a newer application's authority while verifying a request.
 pub struct NativeChain {
     instances: Vec<Arc<AuthInstance>>,
     policy: ChainPolicy,
     owners: Arc<AuthOwners>,
+    data: bool,
 }
 
 impl NativeChain {
@@ -61,14 +72,90 @@ impl NativeChain {
             instances,
             policy,
             owners,
+            data: false,
         }
     }
 
+    /// Assemble one explicit DATA chain from the actual opened reservations. This is
+    /// preparation ownership, never a final route/resource authorization decision.
+    pub fn data(
+        epoch: u64,
+        instances: Vec<Arc<AuthInstance>>,
+        owners: Arc<AuthOwners>,
+    ) -> Result<Self, &'static str> {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        if instances.is_empty() {
+            return Err("native principal data requires an explicit auth chain");
+        }
+        for instance in &instances {
+            let opened = &instance.opened;
+            if opened.who.instance == 0
+                || opened.who.name.as_ref() == crate::config::KEYS_MODULE
+                || !ids.insert(opened.who.instance)
+                || !names.insert(opened.who.name.as_ref())
+                || opened.methods
+                    & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+                    == 0
+            {
+                return Err("native data chain has an unsupported or duplicate reservation");
+            }
+        }
+        Ok(Self {
+            instances,
+            policy: ChainPolicy::new(epoch, Vec::new()),
+            owners,
+            data: true,
+        })
+    }
+
+    pub fn is_data(&self) -> bool {
+        self.data
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.policy.epoch()
+    }
+
+    pub fn matches_names(&self, names: &[Box<str>]) -> bool {
+        self.instances.len() == names.len()
+            && self
+                .instances
+                .iter()
+                .zip(names)
+                .all(|(instance, name)| instance.opened.who.name.as_ref() == name.as_ref())
+    }
+
+    /// Existing admin projection over the same concrete preparation loop.
     pub async fn prepare(
         self: &Arc<Self>,
         cx: CallCx,
-        request: Request,
+        request: Arc<ChargedRequestSnapshot>,
     ) -> Result<PreparedAnswer, busbar_ports::PortError> {
+        Ok(match self.prepare_snapshot(cx, request).await? {
+            NativePreparedAnswer::Identity(value) => PreparedAnswer::Identity(value),
+            NativePreparedAnswer::NotMine => PreparedAnswer::NotMine,
+            NativePreparedAnswer::Rejected => PreparedAnswer::Rejected,
+            NativePreparedAnswer::Held => PreparedAnswer::Held,
+        })
+    }
+
+    pub fn reads_header(&self, name: &str) -> bool {
+        self.instances.iter().any(|instance| {
+            instance
+                .opened
+                .port
+                .cred_headers()
+                .iter()
+                .any(|header| header.eq_ignore_ascii_case(name))
+        })
+    }
+
+    pub async fn prepare_snapshot(
+        self: &Arc<Self>,
+        cx: CallCx,
+        request: Arc<ChargedRequestSnapshot>,
+    ) -> Result<NativePreparedAnswer, busbar_ports::PortError> {
         for instance in &self.instances {
             let caller = caller(instance, cx);
             let services = AuthServices {
@@ -76,7 +163,7 @@ impl NativeChain {
                 replay: self.owners.replay.as_ref(),
                 policy: &self.policy,
             };
-            let verdict = prepare_owned(
+            let verdict = verify_snapshot(
                 &services,
                 self.owners.cache.as_ref(),
                 ChainInstance {
@@ -95,31 +182,32 @@ impl NativeChain {
                 Verdict::Identity(identity) => {
                     let cutoff = match identity.replay() {
                         Some((_, ttl)) => {
-                            let Some(until) =
-                                request.view(|req| req.now_s.checked_add(ttl.clamp(1, 86_400)))
+                            let Some(until) = request.now_s().checked_add(ttl.clamp(1, 86_400))
                             else {
-                                return Ok(PreparedAnswer::Rejected);
+                                return Ok(NativePreparedAnswer::Rejected);
                             };
                             Some(until)
                         }
                         None => None,
                     };
-                    return Ok(PreparedAnswer::Identity(Arc::new(Prepared {
-                        chain: Arc::clone(self),
-                        instance: Arc::clone(instance),
-                        request,
-                        identity,
-                        cx,
-                        cutoff,
-                    })));
+                    return Ok(NativePreparedAnswer::Identity(Arc::new(
+                        PreparedNativeIdentity {
+                            chain: Arc::clone(self),
+                            instance: Arc::clone(instance),
+                            request,
+                            identity,
+                            cx,
+                            cutoff,
+                        },
+                    )));
                 }
-                Verdict::Held => return Ok(PreparedAnswer::Held),
+                Verdict::Held => return Ok(NativePreparedAnswer::Held),
                 Verdict::Rejected { .. } | Verdict::PolicyRejected { .. } => {
-                    return Ok(PreparedAnswer::Rejected)
+                    return Ok(NativePreparedAnswer::Rejected)
                 }
             }
         }
-        Ok(PreparedAnswer::NotMine)
+        Ok(NativePreparedAnswer::NotMine)
     }
 
     #[doc(hidden)]
@@ -187,16 +275,16 @@ fn caller(instance: &AuthInstance, cx: CallCx) -> Caller<'_> {
     }
 }
 
-struct Prepared {
+pub struct PreparedNativeIdentity {
     chain: Arc<NativeChain>,
     instance: Arc<AuthInstance>,
-    request: Request,
+    request: Arc<ChargedRequestSnapshot>,
     identity: busbar_ports::auth::Identity,
     cx: CallCx,
     cutoff: Option<u64>,
 }
 
-impl PreparedIdentity for Prepared {
+impl PreparedIdentity for PreparedNativeIdentity {
     fn provider(&self) -> &str {
         &self.instance.opened.who.name
     }
@@ -206,22 +294,19 @@ impl PreparedIdentity for Prepared {
     fn identity(&self) -> &busbar_ports::auth::Identity {
         &self.identity
     }
-    fn request(&self) -> &Request {
+    fn request(&self) -> &Arc<ChargedRequestSnapshot> {
         &self.request
     }
     fn authorize(&self, now_s: u64) -> Result<(), u32> {
-        use busbar_plugin_abi::fail::refused::R_POLICY;
-        if self.cutoff.is_some_and(|until| now_s >= until)
-            || crate::holds::held_by(Some(&self.instance.holds), self.identity.subject()).is_some()
-        {
-            return Err(R_POLICY);
-        }
-        self.request.view(|req| {
-            let now = AuthIn { now_s, ..*req };
-            self.chain
-                .policy
-                .authorize(self.instance.opened.who.instance, &self.identity, &now)
-        })
+        self.fresh(now_s)?;
+        self.request
+            .with_auth_input(|req| {
+                let now = AuthIn { now_s, ..*req };
+                self.chain
+                    .policy
+                    .authorize(self.instance.opened.who.instance, &self.identity, &now)
+            })
+            .map_err(|_| busbar_plugin_abi::fail::refused::R_POLICY)?
     }
     fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
         Box::pin(async move {
@@ -239,5 +324,38 @@ impl PreparedIdentity for Prepared {
                 _ => false,
             }
         })
+    }
+}
+
+impl PreparedNativeIdentity {
+    pub fn snapshot(&self) -> &Arc<ChargedRequestSnapshot> {
+        &self.request
+    }
+    pub fn provider(&self) -> &str {
+        &self.instance.opened.who.name
+    }
+    pub fn identity(&self) -> &busbar_ports::auth::Identity {
+        &self.identity
+    }
+    pub(crate) fn belongs_to(&self, chain: &Arc<NativeChain>) -> bool {
+        Arc::ptr_eq(&self.chain, chain)
+    }
+    /// Refreshes expiry/hold facts without resolving or discarding a governed key.
+    pub(crate) fn fresh(&self, now_s: u64) -> Result<(), u32> {
+        if self.identity.subject().is_empty()
+            || self
+                .identity
+                .expires_at_s()
+                .is_some_and(|until| now_s >= until)
+            || self.cutoff.is_some_and(|until| now_s >= until)
+            || std::time::Instant::now() >= self.cx.deadline
+            || crate::holds::held_by(Some(&self.instance.holds), self.identity.subject()).is_some()
+        {
+            return Err(busbar_plugin_abi::fail::refused::R_POLICY);
+        }
+        Ok(())
+    }
+    pub(crate) fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
+        <Self as PreparedIdentity>::claim(self)
     }
 }

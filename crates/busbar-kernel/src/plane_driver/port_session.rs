@@ -18,6 +18,8 @@
 //! `spawn_blocking`. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi handle, so a core
 //! test cannot build one.
 
+use std::sync::Arc;
+
 use busbar_plugin_abi::plane::{
     UsageRec, ATT_DECLINE, ATT_OK, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_DEGRADED,
     AUDIT_REJECTED, FROM_CORE, FROM_UPSTREAM, JUDGE_REFUSE_PRIVATE, JUDGE_RESOLVE, MSG_FIN,
@@ -36,6 +38,11 @@ use super::{CallerEnd, HeadFields};
 /// script.
 pub trait Calls {
     type Session: Send + 'static;
+
+    /// Declared resource kinds require the separate completed resource admission producer.
+    fn resource_scoped(&self, _route: u32) -> bool {
+        false
+    }
 
     fn request(
         &self,
@@ -87,6 +94,10 @@ pub trait Calls {
 
 impl Calls for dyn PlanePort {
     type Session = PlaneSession;
+
+    fn resource_scoped(&self, route: u32) -> bool {
+        !self.resource_kinds(route).is_empty()
+    }
 
     fn request(
         &self,
@@ -205,6 +216,8 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    /// The original request's one monetary admission refused before effects.
+    AdmissionRefused(crate::refusal::ClientRefusal),
     /// Enforcement cannot discover its scope without first performing an effect.
     HookPrerequisite,
     /// A completed native hook stage refused this unit before any provider effect.
@@ -360,6 +373,9 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        None
+    }
     fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
         None
     }
@@ -429,6 +445,9 @@ impl<'a> Buffered<'a> {
 }
 
 impl Effects for Buffered<'_> {
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        self.inner.admission()
+    }
     fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
         self.inner.invocation()
     }
@@ -1059,6 +1078,10 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    admitted: Option<(
+        super::request_admission::AdmittedRequest,
+        Arc<super::request_admission::RequestRoutes>,
+    )>,
     invocation: Option<crate::host_services::InvocationContext>,
     calls: &'k K,
     session: Option<K::Session>,
@@ -1076,6 +1099,11 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        // Factual scope selection is not completed execution admission. Until the root
+        // supplies that opaque receipt, every session entrypoint refuses before request.
+        if calls.resource_scoped(req.route) {
+            return Err(SessionError::NotDriven);
+        }
         let buffered = Buffered::new(effects);
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
@@ -1086,6 +1114,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            admitted: None,
             invocation,
             calls,
             session: Some(session),
@@ -1115,6 +1144,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            admitted: None,
             invocation,
             calls,
             session: Some(session),
@@ -1130,6 +1160,23 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     /// The admitted generation remains owned through asynchronous and detached work.
     pub fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
         self.invocation.as_ref()
+    }
+
+    pub(crate) fn bind_admission(
+        &mut self,
+        pending: &super::port_admission::Pending,
+    ) -> Result<(), SessionError> {
+        let admitted = pending.admitted().ok_or(SessionError::NotDriven)?;
+        if self.admitted.is_some()
+            || !self
+                .invocation
+                .as_ref()
+                .is_some_and(|context| context.same_unit(admitted.request.context()))
+        {
+            return Err(SessionError::NotDriven);
+        }
+        self.admitted = Some((admitted.request.clone(), pending.routes()));
+        Ok(())
     }
 
     /// One `piece`.
@@ -1263,6 +1310,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     /// A violation drops the session, which cancels it; the plane is told nothing.
     fn checked(&mut self, answer: Answer) -> Result<Answer, SessionError> {
         let answer = answer.seal();
+        if let (Some(forward), Some((admitted, routes))) = (&answer.forward, &self.admitted) {
+            let wants = super::port_upstream::Wants::from_facts(&forward.wants);
+            if !admitted.accepts_route(routes, wants.model.as_deref()) {
+                self.session = None;
+                return Err(SessionError::NotDriven);
+            }
+        }
         if let Some(v) = answer.violation {
             self.session = None;
             return Err(SessionError::Violation(v));

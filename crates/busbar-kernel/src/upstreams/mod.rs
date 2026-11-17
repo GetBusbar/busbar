@@ -28,6 +28,8 @@ pub use table::ConfiguredUpstreams;
 #[derive(Clone)]
 pub struct UpstreamDef {
     pub name: Box<str>,
+    /// Core-owned selected-rate label, retained independently of plane normalization.
+    pub resource: Option<Box<str>>,
     /// Private-address authority for this registration only; metadata and TLS policy still apply.
     pub allow_private: bool,
     pub url: Option<Box<str>>,

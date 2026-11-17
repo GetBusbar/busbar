@@ -311,6 +311,7 @@ async fn governed_full(
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
         .map(|amount| {
             let limit = busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Total),
@@ -1714,6 +1715,7 @@ struct ReservedSource {
 async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
     let limit = |metric, per| LimitCfg {
+        selected: None,
         metric,
         amount: 1,
         per,
@@ -1872,6 +1874,7 @@ async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 1,
                 per: None,

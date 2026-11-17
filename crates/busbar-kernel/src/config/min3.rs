@@ -59,6 +59,8 @@ pub type InsecureTransportMap = BTreeMap<(Box<str>, Box<str>), InsecureTransport
 /// The MIN-3 keys of one `upstreams.<name>` entry (the rest of the entry is W1-K1's `UpstreamDef`).
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct UpstreamCfg {
+    /// Opaque configured rate identity; omitted/null means no selected resource.
+    pub resource: Option<Box<str>>,
     /// `upstreams.<name>.auth`: the operator form or one core-vocabulary form (IF §12.18 upstream bindings).
     pub auth: Option<UpstreamAuthCfg>,
     /// `upstreams.<name>.upstream_credentials`; None = derived from the binding (IF §12.18 round 22).
@@ -280,6 +282,19 @@ pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, 
     let Some(map) = entry.as_object() else {
         return Err(vec![format!("{at}: a registration must be an object")]);
     };
+    let resource = match map.get(&"resource").filter(|value| !value.is_null()) {
+        None => None,
+        Some(value) => match value
+            .as_str()
+            .filter(|text| super::groups::valid_selected_identifier(text))
+        {
+            Some(text) => Some(text.into()),
+            None => {
+                refused.push(format!("{at}.resource must be a nonempty string of at most 128 UTF-8 bytes without controls"));
+                None
+            }
+        },
+    };
     let auth = match map.get(&"auth").filter(|v| !v.is_null()) {
         None => None,
         Some(value) => match upstream_auth(at, value) {
@@ -304,6 +319,7 @@ pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, 
     };
     if refused.is_empty() {
         Ok(UpstreamCfg {
+            resource,
             auth,
             upstream_credentials,
         })

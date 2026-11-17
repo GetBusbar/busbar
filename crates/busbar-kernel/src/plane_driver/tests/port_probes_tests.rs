@@ -152,6 +152,7 @@ impl ProbeFar for Members {
             pool: "pool".into(),
             qualified_member: "fixture-member".into(),
             identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+            resource: None,
             upstream: format!("m{member}").into(),
             provider: "{}".into(),
             base_path: "/v1".into(),
