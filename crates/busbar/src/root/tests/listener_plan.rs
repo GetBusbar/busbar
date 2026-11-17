@@ -53,12 +53,6 @@ impl busbar_contract::plugin_rows::PluginRows for ListenerRows {
     fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
         self.0.skipped()
     }
-    fn store_door(
-        &self,
-        name: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        self.0.store_door(name)
-    }
     fn secret_refusal(&self, name: &str) -> String {
         self.0.secret_refusal(name)
     }

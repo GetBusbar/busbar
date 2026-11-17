@@ -580,6 +580,7 @@ async fn run(
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
     );
+    root::admission::install_process(&plugin_process);
     let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so

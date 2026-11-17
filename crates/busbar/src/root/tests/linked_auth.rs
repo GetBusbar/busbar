@@ -456,20 +456,14 @@ fn cfg_with_credentials(
 ) -> busbar_kernel::config::RootCfg {
     let directory = token_path.parent().expect("fixture secret directory");
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("actual native Store rendering")
-        .expect("Store statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("native Store declaration")
-        .name;
+    let module = crate::root::test_plugins::native_image(&library_path).name;
     let archive = directory.join("store.tar.gz");
     if !archive.exists() {
-        let mut manifest = crate::root::test_plugins::manifest(
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let bytes = std::fs::read(library_path).expect("actual native Store image");
         let archive_bytes = crate::root::test_plugins::signed(
             &crate::dist_root_install::release_key(),

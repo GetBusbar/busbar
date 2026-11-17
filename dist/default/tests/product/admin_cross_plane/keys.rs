@@ -199,15 +199,12 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -371,15 +368,12 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -518,15 +512,12 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -718,15 +709,12 @@ async fn drive_key_cap_and_delegation_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -945,15 +933,12 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -1069,18 +1054,12 @@ async fn serve_keys_fixture(
                     busbar_kernel::door::op_id().counter()
                 ));
                 let library_path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                    .expect("the actual Store statement reads")
-                    .expect("the actual Store states itself");
-                let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual Store statement parses");
-                let mut manifest = super::plugins::manifest(
+                let facts = crate::root::test_plugins::native_image(&library_path);
+                let manifest = crate::root::test_plugins::native_manifest(
                     "store",
-                    &facts.name,
+                    &library_path,
                     super::plugins::FIXTURE_PUBLISHER,
                 );
-                manifest.version = facts.version;
-                manifest.statement = Some(hex::encode(statement));
                 let archive = super::plugins::signed(
                     &crate::dist_root_install::release_key(),
                     manifest,
@@ -1157,18 +1136,12 @@ async fn serve_keys_fixture(
                     busbar_kernel::door::op_id().counter()
                 ));
                 let library_path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                    .expect("the actual Store statement reads")
-                    .expect("the actual Store states itself");
-                let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual Store statement parses");
-                let mut manifest = super::plugins::manifest(
+                let facts = crate::root::test_plugins::native_image(&library_path);
+                let manifest = crate::root::test_plugins::native_manifest(
                     "store",
-                    &facts.name,
+                    &library_path,
                     super::plugins::FIXTURE_PUBLISHER,
                 );
-                manifest.version = facts.version;
-                manifest.statement = Some(hex::encode(statement));
                 let archive = super::plugins::signed(
                     &crate::dist_root_install::release_key(),
                     manifest,
@@ -1240,15 +1213,12 @@ async fn serve_keys_fixture(
                 busbar_kernel::door::op_id().counter()
             ));
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual Store statement reads")
-                .expect("the actual Store states itself");
-            let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual Store statement parses");
-            let mut manifest =
-                super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-            manifest.version = facts.version;
-            manifest.statement = Some(hex::encode(statement));
+            let facts = crate::root::test_plugins::native_image(&library_path);
+            let manifest = crate::root::test_plugins::native_manifest(
+                "store",
+                &library_path,
+                super::plugins::FIXTURE_PUBLISHER,
+            );
             let archive = super::plugins::signed(
                 &crate::dist_root_install::release_key(),
                 manifest,
@@ -1828,15 +1798,12 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -2795,15 +2762,12 @@ async fn drive_plugin_reload_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -2921,15 +2885,12 @@ async fn drive_plugin_rollback_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -3165,15 +3126,12 @@ async fn drive_plugin_inspect_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -3589,15 +3547,12 @@ async fn named_map_app_opts(
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store states itself");
-    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement parses");
-    let mut manifest =
-        super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-    manifest.version = facts.version;
-    manifest.statement = Some(hex::encode(statement));
+    let facts = crate::root::test_plugins::native_image(&library_path);
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        super::plugins::FIXTURE_PUBLISHER,
+    );
     let archive = super::plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -4264,15 +4219,12 @@ async fn drive_named_map_errors() {
                 busbar_kernel::door::op_id().counter()
             ));
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual Store statement reads")
-                .expect("the actual Store states itself");
-            let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual Store statement parses");
-            let mut manifest =
-                super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-            manifest.version = facts.version;
-            manifest.statement = Some(hex::encode(statement));
+            let facts = crate::root::test_plugins::native_image(&library_path);
+            let manifest = crate::root::test_plugins::native_manifest(
+                "store",
+                &library_path,
+                super::plugins::FIXTURE_PUBLISHER,
+            );
             let archive = super::plugins::signed(
                 &crate::dist_root_install::release_key(),
                 manifest,

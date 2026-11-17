@@ -238,22 +238,31 @@ async fn governed_full(
         } else {
             std::path::PathBuf::from(std::env::var_os(variable).expect(variable))
         };
-        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-            .unwrap()
-            .expect("the actual product states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
-        let mut manifest = crate::root::test_plugins::manifest(
-            kind,
-            &facts.name,
-            crate::root::test_plugins::FIXTURE_PUBLISHER,
-        );
-        manifest.statement = Some(hex::encode(statement));
+        // The application Store is a native MIN-3 image (its stamp names it); the hook is a door image.
+        let mut manifest = if kind == "store" {
+            store_module = Some(crate::root::test_plugins::native_image(&path).name);
+            crate::root::test_plugins::native_manifest(
+                kind,
+                &path,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
+            )
+        } else {
+            let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+                .unwrap()
+                .expect("the actual product states itself");
+            let facts = busbar_contract::abi::mechanism::rendering::read(&statement).unwrap();
+            let mut manifest = crate::root::test_plugins::manifest(
+                kind,
+                &facts.name,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            hook_module = Some(facts.name);
+            manifest
+        };
         if kind == "hook" {
             manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
             manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
-            hook_module = Some(facts.name);
-        } else {
-            store_module = Some(facts.name);
         }
         let archive = crate::root::test_plugins::signed(
             &crate::root::test_plugins::key(0x5a),
