@@ -82,9 +82,6 @@ impl DataSettlement {
         delivery: &RegisteredDelivery,
         snapshot: &DeliverySnapshot,
     ) -> Result<(), InputError> {
-        if snapshot.terminal.is_none() || delivery.reader().snapshot() != *snapshot {
-            return Err(InputError::Invalid);
-        }
         let work_failed = if let Some(work) = self.work.take() {
             match work.await {
                 Ok(ran) => {
@@ -99,6 +96,9 @@ impl DataSettlement {
         } else {
             false
         };
+        if snapshot.terminal.is_none() || delivery.reader().snapshot() != *snapshot {
+            return Err(InputError::Invalid);
+        }
         let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
         let original = delivery.admission().ok_or(InputError::Invalid)?;
         if !original.same_admission(&admitted.request) {
@@ -188,20 +188,35 @@ struct Sink {
 }
 
 fn fields(source: &StorageSource, fields: HeadFields) -> Result<(HeaderMap, StorageCredit), ()> {
-    let extent = fields
-        .iter()
-        .try_fold(0usize, |sum, (name, value)| {
-            sum.checked_add(name.len())?.checked_add(value.len())
-        })
-        .ok_or(())?;
-    let credit = source.try_reserve(extent).map_err(|_| ())?;
-    let mut map = HeaderMap::new();
-    for (name, value) in fields {
-        map.append(
-            HeaderName::from_bytes(&name).map_err(|_| ())?,
-            HeaderValue::from_bytes(&value).map_err(|_| ())?,
-        );
-    }
+    use axum::http::header::{HeaderMapPlan, ProjectionError};
+    let plan = HeaderMapPlan::for_values(fields.len()).map_err(|_| ())?;
+    let credit = source
+        .try_reserve(plan.allocation_bytes())
+        .map_err(|_| ())?;
+    let map = HeaderMap::try_from_plan(
+        plan,
+        fields.into_iter().map(|(mut name, value)| {
+            let name_credit = source
+                .try_reserve(name.capacity())
+                .map_err(|_| ProjectionError::Capacity)?;
+            let value_credit = source
+                .try_reserve(value.capacity())
+                .map_err(|_| ProjectionError::Capacity)?;
+            name.make_ascii_lowercase();
+            let name = HeaderName::from_lowercase_shared(Bytes::from_owner(ChargedBytes {
+                bytes: name,
+                _credit: name_credit,
+            }))
+            .map_err(|_| ProjectionError::InvalidField)?;
+            let value = HeaderValue::from_maybe_shared(Bytes::from_owner(ChargedBytes {
+                bytes: value,
+                _credit: value_credit,
+            }))
+            .map_err(|_| ProjectionError::InvalidField)?;
+            Ok((name, value))
+        }),
+    )
+    .map_err(|_| ())?;
     Ok((map, credit))
 }
 
