@@ -104,3 +104,447 @@ fn native_callback_budget_counts_empty_records_before_copying() {
     batch.capture(TransportOut::Write(b""), 2, 32);
     assert_eq!(batch.failure, Some(Failure::Limit));
 }
+
+fn limits() -> StreamLimits {
+    StreamLimits {
+        header_bytes: 4096,
+        header_fields: 16,
+        streams: 4,
+        messages: 4,
+        message_bytes: 4096,
+        assembly_bytes: 4096,
+        queued_bytes: 4096,
+        output_records: 32,
+        output_bytes: 4096,
+        wire_records: 32,
+        wire_bytes: 8192,
+        connections: 2,
+        io_timeout: Duration::from_secs(2),
+        run_timeout: Duration::from_secs(10),
+    }
+}
+
+#[test]
+fn native_close_and_backpressure_enforce_call_origin() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    for (call, out) in [
+        (Call::Begin, TransportOut::StreamFull(1)),
+        (Call::Ingest, TransportOut::StreamFull(1)),
+        (Call::Timer, TransportOut::StreamFull(1)),
+        (Call::Emit(1), TransportOut::StreamFull(2)),
+        (Call::Emit(1), TransportOut::StreamWritable(1)),
+        (Call::Close, TransportOut::WakeAt(0)),
+    ] {
+        let mut driver = Driver::new(&limits);
+        let mut batch = Batch::default();
+        batch.capture(out, 32, 4096);
+        assert_eq!(driver.batch(batch, call, &limits, end), Err(Failure::Shape));
+    }
+    let mut driver = Driver::new(&limits);
+    let mut batch = Batch::default();
+    batch.capture(TransportOut::Write(b"bye"), 32, 4096);
+    batch.capture(TransportOut::Close { abort: false }, 32, 4096);
+    batch.capture(TransportOut::Write(b"after close"), 32, 4096);
+    assert_eq!(
+        driver.batch(batch, Call::Close, &limits, end),
+        Err(Failure::Shape)
+    );
+}
+
+#[test]
+fn native_callback_bytes_and_pending_empty_writes_are_bounded() {
+    let mut batch = Batch::default();
+    batch.capture(TransportOut::Write(b"123"), 8, 2);
+    assert_eq!(batch.failure, Some(Failure::Limit));
+    assert!(batch.records.is_empty());
+    let mut limits = limits();
+    limits.wire_records = 2;
+    let mut driver = Driver::new(&limits);
+    let end = Instant::now() + limits.run_timeout;
+    let mut batch = Batch::default();
+    for _ in 0..3 {
+        batch.capture(TransportOut::Write(b""), 8, 2);
+    }
+    assert_eq!(
+        driver.batch(batch, Call::Ingest, &limits, end),
+        Err(Failure::Limit)
+    );
+    assert_eq!(driver.wire.len(), 2);
+}
+
+// This fixture is deliberately not a WS implementation. Its native session reports the adopted
+// leftover and each subsequent input as a complete binary message. Wire bytes expose native calls.
+mod fixture {
+    use super::*;
+    use busbar_plugin_abi::fail::{failed, Fail};
+    use busbar_plugin_abi::host::Host;
+    use busbar_plugin_abi::need::ChainBytes;
+    use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
+    use busbar_plugin_abi::records::{Out, Records};
+    use busbar_plugin_abi::transport::{
+        self as tp, tag as tt, CloseRec, ConnInfo, StreamBody, StreamFlow, WakeAt,
+    };
+    use busbar_plugin_abi::types::Bytes;
+    use busbar_plugin_abi::Transport;
+    use std::sync::atomic::AtomicUsize;
+
+    pub static LOCK: Mutex<()> = Mutex::new(());
+    pub static BEGINS: AtomicUsize = AtomicUsize::new(0);
+    pub static CLOSES: AtomicUsize = AtomicUsize::new(0);
+    pub static EOFS: AtomicUsize = AtomicUsize::new(0);
+    pub static DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static TIMERS: AtomicUsize = AtomicUsize::new(0);
+    pub struct Framer {
+        mode: u8,
+    }
+    pub struct Session {
+        mode: u8,
+        terminal: bool,
+        ticks: u8,
+    }
+    impl Drop for Session {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn full<T>(_: T) -> Fail {
+        Fail::failed(failed::F_LIMIT)
+    }
+    fn body(out: &mut Out<'_>, bytes: &[u8]) -> Result<(), Fail> {
+        out.put_pod_tail(
+            tt::STREAM_BODY,
+            &StreamBody {
+                stream: 1,
+                flags: MSG_BINARY | MSG_FIN,
+                _r: 0,
+            },
+            bytes,
+        )
+        .map_err(full)
+    }
+    fn wake(out: &mut Out<'_>, h: &Host) -> Result<(), Fail> {
+        out.put_pod(
+            tt::WAKE_AT,
+            &WakeAt {
+                mono_ns: h.mono_ns(),
+            },
+        )
+        .map_err(full)
+    }
+    impl Open for Framer {
+        async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let mode = config.with(|b| match b {
+                b"{\"mode\":1}" => 1,
+                b"{\"mode\":2}" => 2,
+                b"{\"mode\":3}" => 3,
+                b"{\"mode\":4}" => 4,
+                _ => 0,
+            });
+            Ok(Self { mode })
+        }
+        fn check(_h: &Host, _config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn describe(d: &mut Describe<'_>) {
+            d.methods(tp::M_BEGIN | tp::M_INGEST | tp::M_EMIT | tp::M_TIMER | tp::M_OFFER)
+                .facts(tp::FB_SERVER)
+                .schema(r#"{"type":"object"}"#)
+                .item_text(tt::D_PROTOCOL, "native-fixture");
+        }
+    }
+    impl Transport for Framer {
+        type Session = Session;
+        fn begin(&self, h: &Host, conn: &ConnInfo<'_>, out: &mut Out<'_>) -> Result<Session, Fail> {
+            BEGINS.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(conn.role, ROLE_SERVER);
+            assert_eq!(conn.flags, CONN_UPGRADED);
+            assert!(conn.mono_ns <= h.mono_ns());
+            let status = Records::new(conn.head.get()).find_map(|r| {
+                let r = r.ok()?;
+                (r.tag == tag::H_STATUS).then(|| r.pod::<U32Rec>().unwrap().value)
+            });
+            assert_eq!(status, Some(101));
+            out.put(tt::WRITE, b"ready\n").map_err(full)?;
+            if !conn.leftover.get().is_empty() {
+                body(out, conn.leftover.get())?;
+            }
+            if self.mode == 1 || self.mode == 2 {
+                wake(out, h)?;
+            }
+            Ok(Session {
+                mode: self.mode,
+                terminal: false,
+                ticks: 0,
+            })
+        }
+        fn ingest(
+            &self,
+            _h: &Host,
+            s: &mut Session,
+            bytes: Bytes<'_>,
+            out: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            assert!(!s.terminal);
+            if bytes.get().is_empty() {
+                EOFS.fetch_add(1, Ordering::SeqCst);
+                s.terminal = true;
+                return out
+                    .put_pod(tt::STREAM_END, &StreamFlow { stream: 1 })
+                    .map_err(full);
+            }
+            if s.mode == 3 {
+                s.terminal = true;
+                return out
+                    .put_pod(
+                        tt::CLOSE,
+                        &CloseRec {
+                            how: tp::CLOSE_GRACEFUL,
+                            _r: 0,
+                        },
+                    )
+                    .map_err(full);
+            }
+            if s.mode == 4 {
+                s.terminal = true;
+                return Err(Fail::failed(failed::F_LIMIT));
+            }
+            body(out, bytes.get())
+        }
+        fn emit(
+            &self,
+            _h: &Host,
+            s: &mut Session,
+            stream: u64,
+            piece: u32,
+            arg: u32,
+            bytes: Bytes<'_>,
+            out: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            assert!(!s.terminal);
+            if piece == E_CLOSE {
+                assert_eq!((stream, arg, bytes.get()), (0, CR_DRAIN, &[][..]));
+                CLOSES.fetch_add(1, Ordering::SeqCst);
+                s.terminal = true;
+                out.put(tt::WRITE, b"drain\n").map_err(full)
+            } else {
+                assert_eq!(piece, E_BODY);
+                assert_eq!(stream, 1);
+                assert_eq!(arg, MSG_BINARY | MSG_FIN);
+                out.put(tt::WRITE, bytes.get()).map_err(full)
+            }
+        }
+        fn timer(&self, h: &Host, s: &mut Session, out: &mut Out<'_>) -> Result<(), Fail> {
+            assert!(!s.terminal);
+            TIMERS.fetch_add(1, Ordering::SeqCst);
+            if s.mode == 2 {
+                return wake(out, h);
+            }
+            if s.ticks < 2 {
+                s.ticks += 1;
+                out.put(tt::WRITE, b"tick\n").map_err(full)?;
+                wake(out, h)?;
+            }
+            Ok(())
+        }
+        fn offer(&self, _h: &Host, _role: u32, _out: &mut Out<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+    }
+    busbar_plugin_abi::plugin!(Transport, Framer, name: "fixture-native-stream");
+    pub fn reset() {
+        for count in [&BEGINS, &CLOSES, &EOFS, &DROPS, &TIMERS] {
+            count.store(0, Ordering::SeqCst);
+        }
+    }
+}
+
+fn start(mode: u8, mutant: bool) -> Served {
+    let config = format!("{{\"mode\":{mode}}}");
+    let target =
+        MessageStreamSubject::http_upgrade(&fixture::PLUGIN, config.as_bytes(), limits()).unwrap();
+    if mutant { target.mutant() } else { target }
+        .serve_linked()
+        .unwrap()
+}
+fn connect(target: &Served, leftover: &[u8]) -> TcpStream {
+    let mut socket = TcpStream::connect(target.addr()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut input = b"GET / HTTP/1.1\r\nHost: peer.test\r\nContent-Length: 0\r\n\r\n".to_vec();
+    input.extend_from_slice(leftover);
+    socket.write_all(&input).unwrap();
+    let mut ready = [0u8; 6];
+    socket.read_exact(&mut ready).unwrap();
+    assert_eq!(&ready, b"ready\n");
+    socket
+}
+
+#[test]
+fn native_linked_subject_uses_real_session_and_preserves_leftover() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let target = start(0, false);
+    let mut socket = connect(&target, b"coalesced");
+    let mut echoed = [0u8; 9];
+    socket.read_exact(&mut echoed).unwrap();
+    assert_eq!(&echoed, b"coalesced");
+    let report = target.finish().unwrap();
+    let mut goodbye = Vec::new();
+    socket.read_to_end(&mut goodbye).unwrap();
+    assert_eq!(goodbye, b"drain\n");
+    assert_eq!(report.subject, "host target; kernel not present");
+    assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture::DROPS.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn native_linked_eof_and_transport_close_never_emit_another_close() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    for mode in [0, 3, 4] {
+        fixture::reset();
+        let target = start(mode, false);
+        let mut socket = connect(&target, b"");
+        if mode == 0 {
+            socket.shutdown(Shutdown::Write).unwrap();
+        } else {
+            socket.write_all(b"end").unwrap();
+        }
+        let mut rest = Vec::new();
+        socket.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty());
+        let report = target.finish();
+        assert_eq!(report.is_err(), mode == 4);
+        assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture::EOFS.load(Ordering::SeqCst), usize::from(mode == 0));
+        assert_eq!(fixture::DROPS.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn native_host_wakes_progress_and_nonprogress_is_bounded() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let target = start(1, false);
+    let mut socket = connect(&target, b"");
+    let mut ticks = [0u8; 10];
+    socket.read_exact(&mut ticks).unwrap();
+    assert_eq!(&ticks, b"tick\ntick\n");
+    target.finish().unwrap();
+    fixture::reset();
+    let target = start(2, false);
+    let mut socket = connect(&target, b"");
+    let mut rest = Vec::new();
+    socket.read_to_end(&mut rest).unwrap();
+    assert_eq!(
+        target.finish().unwrap_err().first_failure,
+        Some(Failure::TimerNoProgress)
+    );
+    assert_eq!(fixture::TIMERS.load(Ordering::SeqCst), 64);
+    assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_subject_mutates_only_one_byte_and_records_actual_mutation() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let target = start(0, true);
+    let mut socket = connect(&target, b"abc");
+    let mut first = [0u8; 3];
+    socket.read_exact(&mut first).unwrap();
+    assert_eq!(first, [b'a' ^ 1, b'b', b'c']);
+    socket.write_all(b"xyz").unwrap();
+    let mut second = [0u8; 3];
+    socket.read_exact(&mut second).unwrap();
+    assert_eq!(&second, b"xyz");
+    assert_eq!(target.finish().unwrap().mutations, 1);
+}
+
+#[test]
+fn native_invalid_split_framing_never_calls_begin() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let target = start(0, false);
+    let mut socket = TcpStream::connect(target.addr()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    socket
+        .write_all(b"GET / HTTP/1.1\r\nHost: peer.test\r\nContent-Length: 1\r\n")
+        .unwrap();
+    socket.write_all(b"\r\n").unwrap();
+    let mut rest = Vec::new();
+    socket.read_to_end(&mut rest).unwrap();
+    assert_eq!(
+        target.finish().unwrap_err().first_failure,
+        Some(Failure::Framing)
+    );
+    assert_eq!(fixture::BEGINS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_slow_header_cannot_renew_its_collection_deadline() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let mut bound = limits();
+    bound.io_timeout = Duration::from_millis(60);
+    let target = MessageStreamSubject::http_upgrade(&fixture::PLUGIN, b"{}", bound)
+        .unwrap()
+        .serve_linked()
+        .unwrap();
+    let mut socket = TcpStream::connect(target.addr()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut writer = socket.try_clone().unwrap();
+    let sender = std::thread::spawn(move || {
+        for byte in b"GET /a-very-slow-head HTTP/1.1\r\nHost: peer.test\r\n\r\n" {
+            if writer.write_all(&[*byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let mut rest = Vec::new();
+    let _ = socket.read_to_end(&mut rest);
+    sender.join().unwrap();
+    assert_eq!(
+        target.finish().unwrap_err().first_failure,
+        Some(Failure::Deadline)
+    );
+    assert_eq!(fixture::BEGINS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_finished_connection_handles_are_reclaimed_before_slot_reuse() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let mut bound = limits();
+    bound.connections = 1;
+    let target = MessageStreamSubject::http_upgrade(&fixture::PLUGIN, b"{}", bound)
+        .unwrap()
+        .serve_linked()
+        .unwrap();
+    for _ in 0..4 {
+        let mut socket = connect(&target, b"");
+        socket.shutdown(Shutdown::Write).unwrap();
+        let mut rest = Vec::new();
+        socket.read_to_end(&mut rest).unwrap();
+    }
+    assert_eq!(target.finish().unwrap().connections, 4);
+    assert_eq!(fixture::DROPS.load(Ordering::SeqCst), 4);
+    assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_mutant_without_a_payload_is_not_success() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    fixture::reset();
+    let target = start(0, true);
+    let _socket = connect(&target, b"");
+    assert_eq!(
+        target.finish().unwrap_err().first_failure,
+        Some(Failure::MutationMissing)
+    );
+}
