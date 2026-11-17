@@ -65,6 +65,20 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block would serve
+/// every caller unauthenticated and spend the configured provider credentials. It is refused; the
+/// open posture boots only when the operator writes it, as `auth: { chain: [] }`.
+#[must_use]
+fn open_relay_by_omission(listen: &str) -> String {
+    let code = crate::diagnostics::OPEN_RELAY_NO_AUTH.banner();
+    format!(
+        "no `auth:` block ({code}): busbar refuses to boot as an open relay that anyone who can \
+         reach {listen} may use to spend the configured provider credentials. Add `auth:` with \
+         `chain: [keys]` and mint virtual keys through the admin API, or, to run unauthenticated \
+         deliberately, write `auth: {{ chain: [] }}`"
+    )
+}
+
 /// BUSBAR-3136: a retired 1.5.5 cloud-metadata carve-out key (`security.allow_metadata_hosts`,
 /// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) is refused: cloud
 /// metadata is refused for every outbound connection and no configuration admits it.
@@ -191,6 +205,9 @@ fn judge_with_plugins(
 
     if let Err(security_errors) = validate_bootstrap_security(cfg) {
         errors.extend(security_errors);
+    }
+    if cfg.auth.is_none() {
+        errors.push(open_relay_by_omission(&cfg.listen));
     }
 
     {

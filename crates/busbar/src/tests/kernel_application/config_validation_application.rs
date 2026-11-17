@@ -47,7 +47,8 @@ pub(crate) fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
-        auth: None,
+        // #358: the open posture is written explicitly; omission is refused.
+        auth: Some(config::AuthCfg::default_none()),
 
         providers: providers
             .into_iter()

@@ -2083,8 +2083,16 @@ impl BookPreparation {
             node,
             deployment_id,
         );
-        // ADMIN-API-1.6 17: the node announces itself in the audit feed.
-        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(&[]));
+        // ADMIN-API-1.6 17: the node announces itself in the audit feed, naming the explicit open
+        // posture (`auth: { chain: [] }`) it booted in (#358).
+        let posture: &[&str] = if app.auth.is_open() {
+            &["open_relay"]
+        } else {
+            &[]
+        };
+        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(
+            posture,
+        ));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
         if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
