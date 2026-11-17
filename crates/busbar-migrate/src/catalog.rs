@@ -166,6 +166,18 @@ fn strip(catalog: &mut Value, keys: &[String], shown: &str) -> Result<Vec<String
                      again"
                 )));
             }
+            if key == "allow_metadata_hosts" {
+                // The retired cloud-metadata carve-out (BUSBAR-3136): removed with a warning that
+                // names the path and never a value (#293).
+                let code = busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+                changes.push(format!(
+                    "{code}: {shown}: removed the retired cloud-metadata carve-out key {}.allow_metadata_hosts; \
+                     1.6.0 refuses cloud metadata for every outbound connection and no configuration \
+                     admits it",
+                    crate::migrate_1_6::escape_control(name)
+                ));
+                continue;
+            }
             changes.push(format!(
                 "{shown}: {name}.{key}: removed (1.5.5 ignored this catalog key; removing it \
                  preserves the legacy behavior)"

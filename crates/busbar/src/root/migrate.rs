@@ -102,7 +102,13 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        tracing::info!(target: "busbar::migrate", "{line}");
+        // A line that carries a BUSBAR code is one the operator must act on or know about (the
+        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
+        if line.starts_with("BUSBAR-") {
+            tracing::warn!(target: "busbar::migrate", "{line}");
+        } else {
+            tracing::info!(target: "busbar::migrate", "{line}");
+        }
     }
     for line in plan.warnings() {
         tracing::warn!(target: "busbar::migrate", "{line}");
@@ -529,6 +535,33 @@ fn read_config(config: &Path) -> Result<Option<String>, String> {
 
 fn text_of(refusal: Refusal) -> String {
     refusal.to_string()
+}
+
+/// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
+/// removed paths and never a value; it is written only for a write this process made, never for a
+/// peer's stamp (#293, via the #291 settled write path).
+pub(crate) fn record_completed_changes(written: &Written) {
+    if !matches!(written, Written::Stamped) {
+        return;
+    }
+    let Some(plan) = PENDING.get() else {
+        return;
+    };
+    for line in plan.report() {
+        if let Some(paths) = line
+            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(paths, _)| paths)
+        {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                "migrate.metadata_carve_out_removed",
+                paths,
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        }
+    }
 }
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with
