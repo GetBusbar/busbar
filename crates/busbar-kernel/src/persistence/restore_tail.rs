@@ -145,6 +145,68 @@ pub fn digest(canonical: &[u8]) -> [u8; 32] {
     busbar_contract::abi::sdk::digest::sha256(&data)
 }
 
+/// Why a decoded tail does not verify (§B3.1, §B10.2): each a 422 reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    /// `tail_chain_broken`: the node's chain does not continue from its restored head (or, for a node born
+    /// after the backup, from genesis), or does not link record to record.
+    ChainBroken {
+        /// The node whose chain breaks.
+        node: u64,
+    },
+}
+
+impl VerifyError {
+    /// The refusal's reason.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::ChainBroken { .. } => "tail_chain_broken",
+        }
+    }
+}
+
+/// Continuity (§B3.1): every chain continues from `heads[node]`, the node's head in the restored Store
+/// as `(node_seq, hash)`, or from genesis (`node_seq` 1, a zero predecessor) for a node with no head
+/// there (born after the backup), and links record to record by the journal's own rules (a
+/// quarantine `ChainBreak`'s named hole included).
+pub fn verify_continuity(
+    tail: &Tail,
+    heads: &std::collections::BTreeMap<u64, (u64, [u8; 32])>,
+) -> Result<(), VerifyError> {
+    for chain in &tail.chains {
+        let broken = VerifyError::ChainBroken { node: chain.node };
+        let first = chain.records.first().ok_or(broken)?;
+        let (sequence, hash) = heads.get(&chain.node).copied().unwrap_or((0, [0u8; 32]));
+        if sequence.checked_add(1) != Some(first.node_seq) || first.prev_hash != hash {
+            return Err(broken);
+        }
+        busbar_kernel_wal::journal::verify(&chain.records).map_err(|_| broken)?;
+    }
+    Ok(())
+}
+
+/// The restored Store's head of each node in `nodes` (absent for a node with no records there), read
+/// from each node's journal head row.
+pub async fn restored_heads(
+    core: &super::facade::CoreStore,
+    nodes: impl IntoIterator<Item = u64>,
+) -> Result<std::collections::BTreeMap<u64, (u64, [u8; 32])>, String> {
+    let mut heads = std::collections::BTreeMap::new();
+    for node in nodes {
+        let journal = super::journal::StoreJournal::new(core, node)
+            .map_err(|error| format!("node {node}: {error:?}"))?;
+        if let Some(head) = journal
+            .selected_head()
+            .await
+            .map_err(|error| format!("node {node}: {error:?}"))?
+        {
+            heads.insert(node, head);
+        }
+    }
+    Ok(heads)
+}
+
 #[cfg(test)]
 #[path = "tests/restore_tail_tests.rs"]
 mod tests;

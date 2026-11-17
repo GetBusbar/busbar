@@ -109,3 +109,48 @@ fn a_tail_over_the_limit_is_too_large() {
     assert_eq!(TailError::TooLarge.reason(), "restore_tail_too_large");
     assert_eq!(TailError::Encoding.reason(), "tail_encoding_invalid");
 }
+
+fn chain_from(node: u64, first: u64, mut prev: [u8; 32], len: u64) -> NodeChain {
+    let records = (first..first + len)
+        .map(|seq| {
+            let record = sealed(node, seq, prev);
+            prev = record.hash;
+            record
+        })
+        .collect();
+    NodeChain { node, records }
+}
+
+/// DES-331 §B3.1: node 3 existed at the backup (its restored head is record 4); node 9 was born after it.
+#[test]
+fn each_chain_continues_from_its_restored_head_or_from_genesis() {
+    let restored = sealed(3, 4, [7u8; 32]).hash;
+    let heads = std::collections::BTreeMap::from([(3, (4, restored))]);
+    let good = Tail {
+        chains: vec![
+            chain_from(3, 5, restored, 2),
+            chain_from(9, 1, [0u8; 32], 3),
+        ],
+    };
+    assert_eq!(verify_continuity(&good, &heads), Ok(()));
+
+    let broken = |chains: Vec<NodeChain>, node: u64| {
+        assert_eq!(
+            verify_continuity(&Tail { chains }, &heads),
+            Err(VerifyError::ChainBroken { node })
+        );
+    };
+    // A gap after the restored head, the wrong predecessor, a post-backup node not from genesis.
+    broken(vec![chain_from(3, 6, restored, 1)], 3);
+    broken(vec![chain_from(3, 5, [1u8; 32], 1)], 3);
+    broken(vec![chain_from(9, 2, [0u8; 32], 1)], 9);
+    // A link broken inside the chain.
+    let mut cut = chain_from(3, 5, restored, 3);
+    cut.records[2].prev_hash = [2u8; 32];
+    cut.records[2].hash = cut.records[2].digest_of_chain();
+    broken(vec![cut], 3);
+    assert_eq!(
+        VerifyError::ChainBroken { node: 3 }.reason(),
+        "tail_chain_broken"
+    );
+}
