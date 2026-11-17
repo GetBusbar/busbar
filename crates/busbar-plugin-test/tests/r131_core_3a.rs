@@ -64,10 +64,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "abi/** (W3-D-CONTRACT deletes it)",
     ),
     (
-        "busbar-contract/tests/exchange_request_wipe.rs",
-        "abi/** (W3-D-CONTRACT deletes it); also needs Watch::block (!2305)",
-    ),
-    (
         "busbar-contract/tests/fixtures/sdk_door_plugin.rs",
         "abi/** (W3-D-CONTRACT deletes it)",
     ),
@@ -103,26 +99,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
     (
         "busbar-contract/tests/bounded_allocations.rs",
         "needs Watch::armed_here (!2305)",
-    ),
-    (
-        "busbar-contract/tests/invoke_request_wipe.rs",
-        "needs Watch::armed_here and ::block (!2305)",
-    ),
-    (
-        "busbar-contract/tests/owned_auth_and_service_wipe.rs",
-        "needs Watch::armed_here and ::block (!2305)",
-    ),
-    (
-        "busbar-contract/tests/protocol_producer_custody.rs",
-        "needs Watch::armed_here and ::block (!2305)",
-    ),
-    (
-        "busbar-contract/tests/verify_request_wipe.rs",
-        "needs Watch::armed_here and ::block (!2305)",
-    ),
-    (
-        "busbar-kernel/tests/host_projection_wipe.rs",
-        "needs Watch::armed_here and ::block (!2305)",
     ),
 ];
 

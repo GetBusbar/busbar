@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::CountingJemalloc;
+use crate::ThreadAllocated;
 use busbar_contract::caps::{step::Meter, Admittance, CallId, Grant, KernelSeal, Pass};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +32,7 @@ fn per_call_binding_allocates_nothing_on_the_hot_path() {
     let mut accepted = 0u64;
     let mut rejected = 0u64;
 
-    CountingJemalloc::reset();
+    ThreadAllocated::reset();
     let start = Instant::now();
     for i in 0..BATCH {
         let pass: Pass<Meter> = Pass::mint_bound(&seal, call_a);
@@ -50,11 +50,11 @@ fn per_call_binding_allocates_nothing_on_the_hot_path() {
         }
     }
     let elapsed = start.elapsed();
-    let allocs = CountingJemalloc::count();
+    let allocs = ThreadAllocated::bytes();
     let per_op_ns = elapsed.as_nanos() as f64 / (BATCH as f64 * 2.0);
     println!(
         "capability-binding zero-cost bench: {BATCH} iters, size_of Pass/Grant = {} bytes, \
-         allocations in the measured region = {allocs}, {per_op_ns:.3} ns per mint+check",
+         bytes allocated in the measured region = {allocs}, {per_op_ns:.3} ns per mint+check",
         std::mem::size_of::<Pass<Meter>>()
     );
     assert_eq!(accepted, BATCH as u64, "every proof matches its own call");
@@ -72,13 +72,14 @@ fn per_call_binding_allocates_nothing_on_the_hot_path() {
 
 #[test]
 fn an_allocation_on_the_measured_thread_is_counted() {
-    CountingJemalloc::reset();
+    ThreadAllocated::reset();
     let v: Vec<u8> = Vec::with_capacity(32);
     black_box(&v);
-    let allocs = CountingJemalloc::count();
+    let allocs = ThreadAllocated::bytes();
     drop(v);
+    // 32 bytes is one jemalloc size class: the planted block, counted once (two would read 64).
     assert_eq!(
-        allocs, 1,
+        allocs, 32,
         "the planted allocation must be counted exactly once"
     );
 }
@@ -99,13 +100,13 @@ fn another_threads_allocation_inside_the_window_is_not_counted() {
             done.store(true, Ordering::Release);
         })
     };
-    CountingJemalloc::reset();
+    ThreadAllocated::reset();
 
     go.store(true, Ordering::Release);
     while !done.load(Ordering::Acquire) {
         std::hint::spin_loop();
     }
-    let allocs = CountingJemalloc::count();
+    let allocs = ThreadAllocated::bytes();
     neighbour.join().expect("neighbour thread");
     assert_eq!(
         allocs, 0,

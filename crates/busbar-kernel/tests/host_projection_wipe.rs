@@ -3,92 +3,58 @@
 
 //! A host projection borrows the arena the plane projected into (whose custody the kernel's
 //! arena tests pin); the only bytes it owns are a lossy copy of text that was not UTF-8. Those
-//! are wiped wherever the projection ends.
+//! are wiped wherever the projection ends (Q24, UNSAFE-MIN §4.4): each owned string in turn carries
+//! a fresh canary, the projection ends by return, failure, cancellation, a clone's drop, replacement
+//! or a transfer, and a scan of this process's memory must not find the canary. Wherever an owner is
+//! still alive part-way, the canary must still be found. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
 use busbar_kernel::plane_driver::Projection;
 
-thread_local! {
-    static WATCH: Cell<Option<(*mut u8, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::WipeProof;
 
-// SAFETY: allocations are forwarded unchanged to System. Only the initialized payload prefix
-// registered by this thread is observed, while its matching allocation still belongs to it.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = WATCH.try_with(|watch| {
-            if let Some((watched, len)) = watch.get().filter(|(watched, _)| *watched == pointer) {
-                watch.set(None);
-                let wiped = len <= layout.size()
-                    && (0..len).all(|index| {
-                        // SAFETY: these bytes were initialized String/Vec contents when
-                        // registered. The matching live allocation has not reached dealloc.
-                        // No spare capacity, allocation padding, or freed memory is read.
-                        unsafe { watched.add(index).read_volatile() == 0 }
-                    });
-                let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-            }
-        });
-        // SAFETY: pointer and layout match the allocator caller's live allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn watch(bytes: &[u8]) {
-    assert!(!bytes.is_empty());
-    WATCH.with(|watched| watched.set(Some((bytes.as_ptr().cast_mut(), bytes.len()))));
-    WIPED.with(|result| result.set(None));
-}
-
-fn owned(text: &str) -> Cow<'static, str> {
-    Cow::Owned(text.to_string())
-}
-
-fn projection() -> Projection<'static> {
+/// A projection whose owned string `field` holds `secret` (its only copy); every other owned string
+/// is plain. `field` "none" plants nothing.
+fn projection(field: &str, secret: &str) -> Projection<'static> {
+    let owned = |name: &str, plain: &str| -> Cow<'static, str> {
+        if field == name {
+            Cow::Owned(secret.to_owned())
+        } else {
+            Cow::Owned(plain.to_owned())
+        }
+    };
     Projection {
-        pool: owned("private-pool"),
-        dialect: owned("private-dialect"),
+        pool: owned("pool", "private-pool"),
+        dialect: owned("dialect", "private-dialect"),
         message_count: 1,
         total_chars: 12,
         max_tokens: Some(7),
         has_tools: true,
         stream: false,
         text_complete: true,
-        system: Some(owned("private-system")),
-        turns: vec![(owned("private-author"), owned("private-text"))],
-        end_user: Some(owned("private-user")),
+        system: Some(owned("system", "private-system")),
+        turns: vec![(
+            owned("author", "private-author"),
+            owned("text", "private-text"),
+        )],
+        end_user: Some(owned("end-user", "private-user")),
         rewritten: Some(b"private-rewrite".as_slice()),
         session: Some(b"private-session".as_slice()),
         projected: Some(b"private-projection".as_slice()),
         rewrite_not_applicable: false,
-    }
-}
-
-fn field<'a>(view: &'a Projection<'_>, name: &str) -> &'a [u8] {
-    match name {
-        "pool" => view.pool.as_bytes(),
-        "dialect" => view.dialect.as_bytes(),
-        "system" => view.system.as_ref().unwrap().as_bytes(),
-        "author" => view.turns[0].0.as_bytes(),
-        "text" => view.turns[0].1.as_bytes(),
-        "end-user" => view.end_user.as_ref().unwrap().as_bytes(),
-        _ => unreachable!(),
     }
 }
 
@@ -101,17 +67,20 @@ fn returned(_view: Projection<'_>, fail: bool) -> Result<(), ()> {
 }
 
 #[test]
-fn the_projection_witness_distinguishes_plain_and_wiped_payloads() {
-    let plain = b"plain-initialized-control".to_vec();
-    watch(&plain);
+fn the_scan_distinguishes_plain_and_wiped_payloads() {
+    let proof = WipeProof::new();
+    let plain = proof.payload().to_vec();
     drop(plain);
-    assert_eq!(WIPED.with(Cell::get), Some(false));
+    assert!(
+        proof.canary_copies("a plain payload") >= 1,
+        "a plain payload's freed bytes must be found"
+    );
 
-    let mut wiped = b"wiped-initialized-control".to_vec();
-    watch(&wiped);
+    let proof = WipeProof::new();
+    let mut wiped = proof.payload().to_vec();
     zeroize::Zeroize::zeroize(&mut wiped);
     drop(wiped);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a zeroized payload");
 }
 
 #[test]
@@ -120,13 +89,16 @@ fn host_projection_payloads_wipe_on_return_error_cancel_clone_replacement_and_tr
         for exit in [
             "return", "failure", "cancel", "clone", "replace", "transfer",
         ] {
-            let mut view = projection();
+            let what = format!("{name} on {exit}");
+            let mut proof = WipeProof::text();
+            let staging = proof.text_payload();
+            let mut view = projection(name, &staging);
+            drop(staging);
             if exit == "clone" {
                 let clone = view.clone();
                 drop(view);
                 view = clone;
             }
-            watch(field(&view, name));
             match exit {
                 "cancel" => {
                     let mut pending = Box::pin(async move {
@@ -140,19 +112,18 @@ fn host_projection_payloads_wipe_on_return_error_cancel_clone_replacement_and_tr
                             .poll(&mut Context::from_waker(Waker::noop())),
                         Poll::Pending
                     );
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the pending future still owns the projection");
                     drop(pending);
                 }
                 "replace" => {
-                    view = projection();
-                    assert_eq!(WIPED.with(Cell::get), Some(true));
+                    view = projection("none", "");
                     assert_eq!(view.projected, Some(b"private-projection".as_slice()));
                     drop(view);
                 }
                 "transfer" => {
-                    let final_owner = std::mem::replace(&mut view, projection());
+                    let final_owner = std::mem::replace(&mut view, projection("none", ""));
                     drop(view);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the final owner still holds the projection");
                     drop(final_owner);
                 }
                 _ => {
@@ -162,7 +133,7 @@ fn host_projection_payloads_wipe_on_return_error_cancel_clone_replacement_and_tr
                     );
                 }
             }
-            assert_eq!(WIPED.with(Cell::get), Some(true), "{name} on {exit}");
+            proof.assert_absent(&what);
         }
     }
 }
