@@ -112,6 +112,104 @@ fn migration_suite_accepts_semantically_identical_canonical_echo() {
     );
 }
 
+fn suite_case(
+    mode: &str,
+    purpose: busbar_plugin_test::suites::harness::OpenPurpose,
+    config_expected: bool,
+) {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    let bag = format!(r#"{{"mode":"{mode}","v":2}}"#);
+    migrate_case(
+        suite_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: bag.as_bytes(),
+            purpose,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: config_expected.then_some(bag.as_bytes()),
+            core_cfg: &[],
+        },
+    );
+}
+
+#[test]
+fn migration_suite_canonical_case_allows_absent_config() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+        false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "open CONFIG or CORE_CFG violates its purpose")]
+fn migration_suite_conversion_still_requires_config() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+        false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "open answered no CONFIG; expected the converted settings")]
+fn migration_suite_explicit_config_expectation_requires_emission() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+        true,
+    );
+}
+
+fn converted_case(mode: &str) {
+    let bag = format!(r#"{{"mode":"{mode}","phase":0,"v":2}}"#);
+    let converted = format!(r#"{{"mode":"{mode}","phase":1,"v":2}}"#);
+    busbar_plugin_test::suites::migrate(
+        suite_fixture::PLUGIN.plugin(),
+        bag.as_bytes(),
+        busbar_plugin_test::FakeNeeds::new(),
+        busbar_plugin_test::suites::MigrateExpect::Settled {
+            config: Some(converted.as_bytes()),
+            core_cfg: &[],
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "canonical settings are not a fixed point")]
+fn migration_suite_refuses_changed_fixed_point_config() {
+    converted_case("change");
+}
+
+#[test]
+#[should_panic(expected = "open CONFIG or CORE_CFG violates its purpose")]
+fn migration_suite_refuses_canonical_core_cfg() {
+    converted_case("core");
+}
+
+#[test]
+#[should_panic(expected = "opening current settings wrote records")]
+fn migration_suite_refuses_fixed_point_record_writes() {
+    converted_case("write");
+}
+
+#[test]
+fn migration_suite_refused_case_keeps_explicit_canonical_purpose() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    migrate_case(
+        suite_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: br#"{"mode":"none","v":3}"#,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Refused(refused::R_VERSION),
+    );
+}
+
 busbar_plugin_abi::kind! {
     /// A secret-shaped kind for this case.
     pub trait Source: kind = 2, abi = 2 {
