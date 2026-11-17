@@ -153,23 +153,80 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
         linked_ms: 0,
         seq: 1,
         prev_hash: String::new(),
-        recipe: Recipe::V5,
+        recipe: Recipe::V8,
         hash: String::new(),
         signature: None,
         key_id: None,
     };
+    record.linked_ms = 1_700_000_000_123;
     record.hash = AuditChain::digest_of(&record);
-    record.signature = Some(signer().sign_digest(&record.hash));
-    record.key_id = Some(signer().key_id().into());
     let records = vec![record];
     let chain = AuditChain::resume(&records);
-    let range = json::parse_value(
+    let mut range: Value = json::parse_value(
         busbar_kernel_audit::expose::range_body(&chain, &records, 1, 1).as_bytes(),
     )
     .unwrap();
-    let head =
-        json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes()).unwrap();
-    assert!(verify(&keys(), &range, Some(&head)).is_ok());
+    assert_eq!(
+        range["recipe"], LINK_RECIPE,
+        "the range names the link recipe"
+    );
+    assert_eq!(range["signature_domain"], busbar_kernel_audit::STAMP_DOMAIN);
+    assert_eq!(range["records"][0]["recipe"], LINK_RECIPE);
+    assert_eq!(
+        range["records"][0]["prev_hash"], "",
+        "genesis is the empty text"
+    );
+    let report = verify(&keys(), &range, None).unwrap();
+    assert!(
+        report["result"].is_null(),
+        "no page stamp, no authentication"
+    );
+    assert_eq!(
+        report["unauthenticated_tail"],
+        json::json!({"from": 1, "to": 1})
+    );
+
+    // The covering stamp verifies, and an edit breaks it.
+    let (notary, _) = signer()
+        .into_grants(busbar_kernel_audit::LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let stamp = busbar_kernel_audit::Notary::new(notary)
+        .sign_stamp(busbar_kernel_audit::Stamp {
+            node: u64::MAX,
+            from: 1,
+            to: 1,
+            fingerprint: busbar_kernel_audit::Fingerprint::from_hex(&records[0].hash).unwrap(),
+            kind: busbar_kernel_audit::StampKind::Live,
+            sealer: u64::MAX,
+            host: "host-a".into(),
+            every: 1000,
+            stamped_ms: 1_700_000_000_124,
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: String::new(),
+            sig_alg: String::new(),
+            key_id: String::new(),
+            key_cert: 0,
+            signature: Vec::new(),
+        })
+        .unwrap();
+    range["stamps"] = json::json!([json::parse_value(
+        busbar_kernel_audit::expose::stamp_json(Some(2), &stamp).as_bytes()
+    )
+    .unwrap()]);
+    let report = verify(&keys(), &range, None).unwrap();
+    assert_eq!(report["result"], "signed-consistent-window");
+    assert_eq!(report["authenticated_records"], 1);
+    assert_eq!(report["all_requested_records_authenticated"], true);
+    for (member, value) in [
+        ("destination", json::json!("μ|é")),
+        ("incarnation", json::json!("0")),
+        ("linked_ms", json::json!("1700000000122")),
+    ] {
+        let mut edited = range.clone();
+        edited["records"][0][member] = value;
+        assert!(verify(&keys(), &edited, None).is_err(), "{member}");
+    }
 }
 
 #[test]
