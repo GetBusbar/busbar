@@ -124,7 +124,9 @@ fn empty_group_inputs() -> AuditInputs {
 
 #[test]
 fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
-    let mut chain = AuditChain::new();
+    // The record recipe is sealed only by a legacy-signing chain since the link line (SEALING-FIX
+    // §3.2); a production chain links, and link_tests proves the link recipe (test 25(b)).
+    let mut chain = AuditChain::new().signing_with(signer());
     for record in [
         chain.seal(inputs(1), &Pass::<AuditStep>::mint(&crate::seal::acquire())),
         chain.seal(
