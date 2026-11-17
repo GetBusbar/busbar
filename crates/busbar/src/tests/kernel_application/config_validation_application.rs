@@ -4455,3 +4455,36 @@ fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
     let ((), lines) = heterogeneous_warnings(|| advise(&cfg));
     assert_eq!(lines, 1, "the boot narration advises once");
 }
+
+/// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block is refused
+/// with an explained, coded error that names both ways forward. Only the explicit
+/// `auth: { chain: [] }` boots the open posture, and it does so deliberately.
+#[test]
+fn a_config_without_an_auth_block_refuses_rather_than_booting_an_open_relay() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = None;
+    let errors =
+        validate(&cfg).expect_err("no `auth:` block must refuse, never boot an open relay (PRD-5)");
+    let code = busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH
+        .banner()
+        .to_string();
+    assert!(
+        errors.iter().any(|error| error.contains(&code)
+            && error.contains("no `auth:` block")
+            && error.contains("chain: [keys]")
+            && error.contains("auth: { chain: [] }")),
+        "the refusal is coded and names the authenticated fix and the explicit opt-out: {errors:?}"
+    );
+
+    cfg.auth = Some(config::AuthCfg::default_none());
+    let explicit = validate(&cfg);
+    assert!(
+        explicit
+            .as_ref()
+            .err()
+            .is_none_or(|errors| !errors.iter().any(|error| error.contains(&code))),
+        "an explicit empty chain is the operator's deliberate open posture, not a refusal: \
+         {explicit:?}"
+    );
+}
