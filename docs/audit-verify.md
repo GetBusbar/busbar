@@ -5,9 +5,9 @@ loading plugins, contacting a node, or reading any signing secret. It uses the p
 [v2](audit-chain-digest-v2.md), [v4](audit-chain-digest-v4.md), [v5](audit-chain-digest-v5.md),
 [v6](audit-chain-digest-v6.md), [v7](audit-chain-digest-v7.md), and
 [link-v1](audit-link-v1.md) digest contracts, SHA-256 and strict Ed25519 verification.
-The recipe pages are embedded in the executable. Linked windows support direct
-Bootstrap-signed page stamps and break notices. Delegated certificate/authority proofs
-are not supported; this is not the complete SF4 verification protocol.
+The recipe pages are embedded in the executable. Linked windows support page stamps signed by
+the Bootstrap key, `live` and `final` pages signed by a per-boot notary key the Bootstrap key
+certified, break notices, and the node's seal row.
 
 ```sh
 busbar-audit-verify --keys trusted-keys.json --range range.json
@@ -64,7 +64,8 @@ and one of these results:
   records and cover is counted in `unchecked_stamps` and grants no coverage.
 
 Linked reports set `authority_mode` to `caller-trusted-deployment-bootstrap-for-node` and
-`delegated_authority_supported` to false. A page authenticates only the suffix actually walked
+`delegated_authority_supported` to true, and report `certified_pages` (pages a certified notary
+key signed) and `seal_row` (the seal row's outcome, or null). A page authenticates only the suffix actually walked
 through its endpoint, never an unwalked prefix. `pages`, `final_pages`, and `restart_sealed` count
 checked pages intersecting the requested window. A signed break explains an unsealed interval;
 it does not repair missing authentication. Empty signed break intervals report an observation
@@ -88,8 +89,19 @@ signature algorithm. Its `records` contain the exact requested window; `cover` c
 consecutive authentication suffix immediately afterward; `stamps` contains complete signed pages
 and break notices (`kind:"break"`). Page and break integers are JSON integers; record integers
 remain canonical decimal strings. Missing or rewritten signed fields fail verification.
-Certificate chain records and stamps with nonzero `key_cert` are refused. Sparse `certs`, supplied
-WAL positions, or a claimed `authority_complete` flag never establish delegated authority.
+Which key may sign which page is checked in journal order (each stamp, break notice and
+certificate carries the WAL `node_seq` it was read at). An `after_restart` page and every break
+notice verify under the Bootstrap key with `key_cert:0`. A `live` or `final` page verifies under the
+Bootstrap key with `key_cert:0`, or under the notary key certified by the `notary_key` line whose
+WAL position its `key_cert` names. That line must be in `certs` or among the walked lines, carry a
+valid Bootstrap signature over its node, chain position, predecessor and key, sit at or before the
+page's `to`, precede the page in the journal, and still be current: a later valid certificate, or
+a valid `final` or `after_restart` page between them, ends the key. Otherwise the result is
+"stamp key not certified". A certificate line among the walked lines is digested by its own
+record recipe and linked like any line. Supersession outside the downloaded evidence cannot be
+seen; verify the whole retained chain to apply the key map completely. A non-null `seal_row` must
+decode; a `stamp` outcome must be an `after_restart` page naming the row's sealer and is checked
+like a journal page, a `break` outcome like a break notice, and `clean` authenticates nothing.
 V2 records may inherit
 their recipe from a v2 envelope, as in the original published API. V4 to V7 and mixed windows require
 each record's recipe. Recipe numbers must be canonical decimal strings, preserving full u64
