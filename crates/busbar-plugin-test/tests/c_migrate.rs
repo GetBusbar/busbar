@@ -393,9 +393,9 @@ fn migration_suite_canonical_case_allows_absent_config() {
     );
 }
 
+/// #432: a converting open with no CONFIG answer means "unchanged"; the suite's unchanged expectation holds.
 #[test]
-#[should_panic(expected = "open CONFIG or CORE_CFG violates its purpose")]
-fn migration_suite_conversion_still_requires_config() {
+fn migration_suite_conversion_without_config_is_unchanged() {
     suite_case(
         "none",
         busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,

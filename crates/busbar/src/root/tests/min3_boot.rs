@@ -461,6 +461,7 @@ fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"token":"literal","display":"public"}"#[..]),
         core_cfg: Vec::new(),
+        answered: true,
     };
     let answer = settlement::answer(7, &instance, &described, raw).unwrap();
     assert_eq!(answer.index, 7);
@@ -507,10 +508,201 @@ fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"members":{"x":{"url":"https://public","opaque":"plugin-secret","auth":{"bearer":"core-secret"}}}}"#[..]),
         core_cfg: Vec::new(),
+        answered: true,
     };
     let answer = settlement::answer(7, &instance, &described, raw).unwrap();
     assert_eq!(
         answer.allowed_lifts.into_iter().collect::<Vec<_>>(),
         ["/members/x/auth/bearer", "/members/x/opaque"]
     );
+}
+
+/// LEGACY-KEYFILE-MARKER r2 §6: an auth binding's settled answer is filed as its `config:` object
+/// at `auth.<name>`, the path core authors, never chosen by the plugin.
+#[test]
+fn an_auth_settlement_files_the_bindings_config_object() {
+    let instance = Configured {
+        kind: KindCode::Auth,
+        identity: "busbar-auth-oauth".to_owned(),
+        name: "p-outbound".to_owned(),
+        config: br#"{"style":"jwt-bearer","credential":{"env":"SA"},"settings":{}}"#.to_vec(),
+        limits: Default::default(),
+    };
+    let described = busbar_plugin_loader::instance::Described {
+        kind: KindCode::Auth,
+        methods: 0,
+        facts: 0,
+        items: vec![(
+            busbar_plugin_abi::records::tag::D_SECRET_PATH,
+            b"/credential".to_vec(),
+        )],
+        schema: None,
+        metrics: Vec::new(),
+        error_codes_refused: None,
+    };
+    let raw = busbar_plugin_loader::instance::Settled {
+        config_json: SecureVec::from(
+            &br#"{"style":"jwt-bearer","credential":{"file":"sa.json"},"settings":{}}"#[..],
+        ),
+        core_cfg: Vec::new(),
+        answered: true,
+    };
+    let answer = settlement::answer(3, &instance, &described, raw).expect("auth settles");
+    assert_eq!(answer.path, ["auth", "p-outbound"]);
+    assert_eq!(answer.placement, busbar_migrate::BagPlacement::Config);
+}
+
+/// The step-5 writer files a Config placement under the binding's `config:` key, beside its
+/// `module:`, and writes no `settings:` at the instance level.
+#[test]
+fn a_config_placement_writes_the_bindings_config_key() {
+    let text = "config_version: 2\nauth:\n  p-outbound:\n    module: auth-oauth\n    config:\n      style: jwt-bearer\n      credential: {env: SA}\n";
+    let settled = [busbar_migrate::Settled {
+        index: 0,
+        path: vec!["auth".into(), "p-outbound".into()],
+        settings: Some(busbar_contract::secure::SecureString::from(
+            r#"{"style":"jwt-bearer","credential":{"file":"sa.json"},"settings":{}}"#,
+        )),
+        core_cfg: Vec::new(),
+        allowed_lifts: Default::default(),
+        placement: busbar_migrate::BagPlacement::Config,
+    }];
+    let applied = busbar_migrate::apply_settled(
+        text,
+        std::path::Path::new("config.yaml"),
+        &settled,
+        false,
+        |_| None,
+    )
+    .expect("the binding's config is filed");
+    let doc: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str(applied.text()).unwrap();
+    let binding = busbar_contract::json::to_value(&doc).unwrap();
+    assert_eq!(
+        settlement::at(&binding, "/auth/p-outbound/config/credential/file")
+            .and_then(|v| busbar_contract::json::JsonValueTrait::as_str(v)),
+        Some("sa.json")
+    );
+    assert!(settlement::at(&binding, "/auth/p-outbound/settings").is_none());
+    assert_eq!(
+        settlement::at(&binding, "/auth/p-outbound/module")
+            .and_then(|v| busbar_contract::json::JsonValueTrait::as_str(v)),
+        Some("auth-oauth")
+    );
+}
+
+fn keyfile_bound() -> busbar_contract::json::Value {
+    busbar_contract::json::json!({
+        "style": "jwt-bearer",
+        "credential": {"env": "SA_KEY"},
+        "settings": {"scope": "s", "client_secret": {"env": "CS"}}
+    })
+}
+
+fn keyfile_guard(
+    settled: &busbar_contract::json::Value,
+    original: Option<&str>,
+) -> Result<(), String> {
+    let marked = ["/credential".to_owned()];
+    settlement::guard_marked(
+        "auth.p-outbound",
+        &keyfile_bound(),
+        settled,
+        &["/credential", "/settings/client_secret"],
+        &marked,
+        &|pointer| {
+            (pointer == "/credential")
+                .then(|| original.map(str::to_owned))
+                .flatten()
+        },
+        &|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file()),
+    )
+}
+
+/// LEGACY-KEYFILE-MARKER r2 §5 with A-L3 and A-M2: a marked slot settles unchanged, or to
+/// `{file: F}` naming the existing regular file its original reference resolved to. Anything else
+/// is refused naming the instance and pointer, never a value.
+#[test]
+fn a_marked_credential_settles_only_to_its_own_existing_key_file() {
+    use busbar_contract::json::json;
+    let dir = crate::root::test_plugins::scratch("keyfile-marker-guard");
+    let key = dir.join("sa.json");
+    std::fs::write(&key, b"{}").unwrap();
+    let other = dir.join("other.json");
+    std::fs::write(&other, b"{}").unwrap();
+    let key = key.to_str().unwrap();
+    let other = other.to_str().unwrap();
+    let with = |credential: busbar_contract::json::Value| {
+        let mut bag = keyfile_bound();
+        if let Some(object) = busbar_contract::json::JsonValueMutTrait::as_object_mut(&mut bag) {
+            object.insert("credential", credential);
+        }
+        bag
+    };
+    assert_eq!(
+        keyfile_guard(&keyfile_bound(), Some(key)),
+        Ok(()),
+        "unchanged"
+    );
+    assert_eq!(
+        keyfile_guard(&with(json!({"file": key})), Some(key)),
+        Ok(())
+    );
+    let dir_text = dir.to_str().unwrap();
+    for (settled, original) in [
+        (with(json!({"file": other})), Some(key)),
+        (with(json!({"file": key})), None),
+        (
+            with(json!({"file": format!("{key}.missing")})),
+            Some(&*format!("{key}.missing")),
+        ),
+        (with(json!({"file": dir_text})), Some(dir_text)),
+        (with(json!({"file": "a\u{7}b"})), Some("a\u{7}b")),
+        (with(json!({"file": key, "extra": 1})), Some(key)),
+        (with(json!("-----BEGIN PRIVATE KEY-----")), Some(key)),
+    ] {
+        let refused = keyfile_guard(&settled, original).expect_err("refused");
+        assert!(
+            refused.contains("`auth.p-outbound`")
+                && refused.contains("`/credential` was not converted to an existing key file"),
+            "{refused}"
+        );
+        assert!(
+            !refused.contains(key) && !refused.contains("BEGIN"),
+            "{refused}"
+        );
+    }
+}
+
+/// §5 (B-B3) and B-S2: on a marked instance, an unmarked secret slot and every non-marked field
+/// settle unchanged.
+#[test]
+fn a_marked_instance_changes_nothing_outside_its_marked_slots() {
+    use busbar_contract::json::json;
+    let mut secret = keyfile_bound();
+    let mut field = keyfile_bound();
+    let mut extra = keyfile_bound();
+    if let Some(object) = busbar_contract::json::JsonValueMutTrait::as_object_mut(&mut secret) {
+        object.insert(
+            "settings",
+            json!({"scope": "s", "client_secret": {"file": "/etc/hosts"}}),
+        );
+    }
+    if let Some(object) = busbar_contract::json::JsonValueMutTrait::as_object_mut(&mut field) {
+        object.insert(
+            "settings",
+            json!({"scope": "other", "client_secret": {"env": "CS"}}),
+        );
+    }
+    if let Some(object) = busbar_contract::json::JsonValueMutTrait::as_object_mut(&mut extra) {
+        object.insert("token_url", json!("https://elsewhere"));
+    }
+    for settled in [secret, field, extra] {
+        let refused = keyfile_guard(&settled, None).expect_err("refused");
+        assert!(refused.contains("`auth.p-outbound`"), "{refused}");
+        assert!(
+            !refused.contains("elsewhere") && !refused.contains("/etc/hosts"),
+            "{refused}"
+        );
+    }
 }
