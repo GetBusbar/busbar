@@ -134,3 +134,22 @@ fn a_backend_only_crate_reached_from_the_facade_is_named_with_its_path() {
     let clean = FACADE.replace("2curve25519-dalek v4.1.3\n", "");
     assert!(backend_only_reached(&clean).is_empty());
 }
+
+/// Postgres SCRAM (#289): `postgres-protocol` builds `sha2`, `hmac` and `md-5` itself, so a graph
+/// that reaches `hmac` or `md-5` outside the seam is a seam bypass exactly as `sha2` is. The
+/// backend is pruned from the listing, so its own `md-5` (the Q9a legacy exception) never shows.
+#[test]
+fn rustcrypto_macs_and_md5_built_outside_the_seam_are_named_with_their_paths() {
+    const SHIPPED: &str = "0busbar-default v1.6.0 (/r/dist/default)\n\
+                           1busbar-store-postgres v0.1.0\n\
+                           2postgres-protocol v0.6.12\n\
+                           3hmac v0.12.1\n3md-5 v0.10.6\n3sha2 v0.10.9\n";
+    assert_eq!(
+        seam_only_reached(SHIPPED),
+        [
+            "hmac v0.12.1 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> hmac",
+            "md-5 v0.10.6 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> md-5",
+            "sha2 v0.10.9 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> sha2",
+        ]
+    );
+}
