@@ -38,11 +38,31 @@ pub struct CatalogPool {
     pub config: PoolCfg,
 }
 
+/// The source form chooses the binding interpretation; matching a name against a live registry
+/// cannot recover whether the operator wrote a deployment instance or inherited a catalog style.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderAuthSelection {
+    Implicit,
+    Style(String),
+    Instance(String),
+}
+
+impl ProviderAuthSelection {
+    pub fn as_view(&self) -> crate::auth_bindings::ProviderAuth<'_> {
+        match self {
+            Self::Implicit => crate::auth_bindings::ProviderAuth::None,
+            Self::Style(name) => crate::auth_bindings::ProviderAuth::Style(name),
+            Self::Instance(name) => crate::auth_bindings::ProviderAuth::Instance(name),
+        }
+    }
+}
+
 /// One pool/member's exact native target. No secret, rate or host-origin data crosses to the plane.
 #[derive(Clone, Debug)]
 pub struct ResolvedMember {
     pub model: String,
     pub provider: String,
+    pub auth_selection: ProviderAuthSelection,
     pub dialect: String,
     pub wire_model: String,
     pub projection: Arc<str>,
@@ -53,6 +73,7 @@ pub struct ResolvedMember {
     pub max_requests: i64,
     pub attempt_timeout_ms: Option<u64>,
     pub context_max: Option<usize>,
+    pub resource: Option<Box<str>>,
 }
 
 /// Only root can join these facts to actual routes, NativeBindings and admission owners.
@@ -296,6 +317,13 @@ pub fn resolve(
         }
     }
     for (name, model) in &deploy.models {
+        if model
+            .resource
+            .as_deref()
+            .is_some_and(|resource| !crate::config::groups::valid_selected_identifier(resource))
+        {
+            errors.push(format!("models.{name}.resource must be a nonempty string of at most 128 UTF-8 bytes without controls"));
+        }
         if !name_ok(name) || deploy.pools.pools.contains_key(name) {
             errors.push(format!(
                 "models.{name}: invalid or ambiguous model/pool name"
@@ -497,6 +525,16 @@ fn add_pool(
     for member in &pool.members {
         let model = &deploy.models[member.name()];
         let provider = &providers[&model.provider];
+        let deployed = &deploy.providers[&model.provider];
+        let auth_selection = if deployed.authored.unset.contains("auth") {
+            ProviderAuthSelection::Implicit
+        } else if let Some(auth) = &deployed.auth {
+            ProviderAuthSelection::Instance(auth.as_str().to_owned())
+        } else if let Some(auth) = &provider.auth {
+            ProviderAuthSelection::Style(auth.as_str().to_owned())
+        } else {
+            ProviderAuthSelection::Implicit
+        };
         let mut params = Vec::<(Box<str>, Box<str>)>::new();
         if let Some(path) = &provider.path {
             params.push(("path".into(), path.clone().into()));
@@ -521,6 +559,7 @@ fn add_pool(
             ResolvedMember {
                 model: member.model.clone(),
                 provider: model.provider.clone(),
+                auth_selection,
                 dialect: model
                     .protocol
                     .clone()
@@ -543,6 +582,7 @@ fn add_pool(
                     .or(pool.attempt_timeout_ms)
                     .or(model.attempt_timeout_ms),
                 context_max: member.context_max,
+                resource: model.resource.clone(),
             },
         );
     }

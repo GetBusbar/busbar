@@ -746,7 +746,8 @@ async fn run(
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
             let conversion = root::min3_boot::prepare_serving(
-                bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
+                bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
+                &Default::default(), boot_guard,
             ).unwrap_or_else(|error| die(error));
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
@@ -888,8 +889,11 @@ async fn run(
             .unwrap_or_else(|error| die(error));
             // This branch precedes governors, usage recovery, correction tasks and listeners.
             // Reconstruct the same effective config that normal application boot consumes.
-            let mut effective = config::resolve(&deploy, &defs)
-                .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+            let provider_planes = root::min3_provider_plan::descriptors(&effective_images)
+                .unwrap_or_else(|error| die(error));
+            let mut effective = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+                .unwrap_or_else(|_| die("principal transition effective configuration refused"))
+                .config;
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
@@ -1052,8 +1056,12 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg =
-        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
+    let provider_planes =
+        root::min3_provider_plan::descriptors(&effective_images).unwrap_or_else(|error| die(error));
+    let resolved = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+        .unwrap_or_else(|errs| die_list("config errors", errs));
+    let mut cfg = resolved.config;
+    let provider_catalogs = resolved.catalogs;
     boot_instances
         .check(&cfg)
         .unwrap_or_else(|error| die(error));
@@ -1109,6 +1117,8 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    let request_admission =
+        busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1180,10 +1190,10 @@ async fn run(
         &plugin_process,
         effective_images,
         &cfg,
+        &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));
-    let native_config = cfg.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver,
         startup: store_admission,
@@ -1343,10 +1353,7 @@ async fn run(
             app.governance.clone(),
             app.role_bindings.clone(),
         ),
-        Some(
-            root::min3_boot::hooks::Environment::new(&native_config, &app)
-                .unwrap_or_else(|error| die(error)),
-        ),
+        Some(root::min3_boot::ServingEnvironment::new(&app)),
         &observation_reservation,
     )
     .await
@@ -1360,6 +1367,11 @@ async fn run(
     .unwrap_or_else(|error| die_list("config errors", [error]));
     let mut app = Arc::unwrap_or_clone(app);
     app.secret_resolver = Arc::clone(&native.resolver);
+    let auth_epoch = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    root::min3_admin_auth::install(&mut app, Arc::clone(&native.auth), auth_epoch)
+        .unwrap_or_else(|error| die(error));
     let app = Arc::new(
         export::plugin::assemble_routes(app, &export_config, native.seats.clone(), export_registry)
             .unwrap_or_else(|error| die_list("config errors", [error])),
@@ -1710,7 +1722,11 @@ async fn run(
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    let predecessor = spawn_predecessor_task(
+        governance.as_ref(),
+        book.as_ref(),
+        control_work.shutdown_rx.clone(),
+    );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
     if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
         audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
@@ -1725,6 +1741,7 @@ async fn run(
             served,
             app_handle.clone(),
             || root::kernel::ROOT_CARD.pin(),
+            Arc::clone(&request_admission),
             stop,
         )));
     } else {
@@ -1895,6 +1912,7 @@ async fn run(
 /// boundary; the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    book: Option<&root::durability::NodeBook>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Option<(
     tokio::task::JoinHandle<()>,
@@ -1910,9 +1928,13 @@ fn spawn_predecessor_task(
             return None;
         }
     };
+    let sealing = book
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_predecessor());
+    let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
     let handle = tokio::spawn(root::measurements::maintenance(async move {
-        task.run(stop).await;
+        root::durability::predecessor::run(task, sealing, book, stop).await;
     }));
     Some((handle, fence))
 }
