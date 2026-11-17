@@ -38,7 +38,19 @@ const SHUTDOWN_TICK: Duration = Duration::from_millis(100);
 fn unpack_package(
     archive: &[u8],
 ) -> Result<busbar_plugin_loader::tarball::UnpackedPlugin, Failure> {
-    busbar_plugin_loader::tarball::unpack(archive).map_err(|_| Failure::Admission)
+    use busbar_plugin_loader::{sign, supported_abi, tarball};
+
+    let package = tarball::unpack(archive).map_err(|_| Failure::Admission)?;
+    // Match Registry's package boundary before invoking native admission. Its lower-level
+    // stamp/signature checks do not authorize manifest host, alias or operational metadata.
+    sign::validate_structure(
+        &package.manifest,
+        &package.lib_bytes,
+        &supported_abi,
+        sign::HOST_IDENTITY,
+    )
+    .map_err(|_| Failure::Admission)?;
+    Ok(package)
 }
 
 #[cfg(any(target_os = "linux", test))]
