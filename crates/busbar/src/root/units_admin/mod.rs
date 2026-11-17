@@ -20,6 +20,7 @@ pub(crate) struct AdminRequest {
     snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
     binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
     physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+    refusal_carrier: Option<busbar_kernel::inbound::native::AdminPhysicalRequest>,
     projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
@@ -37,6 +38,7 @@ impl AdminRequest {
             unit,
             binding: None,
             physical: None,
+            refusal_carrier: None,
             projection: Arc::new(Mutex::new(None)),
         }
     }
@@ -49,6 +51,7 @@ impl AdminRequest {
             unit: binding.invocation().request_id().get(),
             binding: Some(binding),
             physical: None,
+            refusal_carrier: None,
             projection: Arc::new(Mutex::new(None)),
         })
     }
@@ -1032,6 +1035,7 @@ async fn audit_keys_page(
     body.insert(
         "next_cursor",
         page.next_cursor
+            .as_deref()
             .map_or_else(json::Value::new_null, json::Value::from),
     );
     json::to_vec(&json::Value::from(body))
@@ -1815,6 +1819,9 @@ pub(crate) struct AdminWalk {
     claim: Option<busbar_kernel::auth::PendingClaim>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     physical_pending: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    /// A real pre-claim denial or request-bound confirmed duplicate, never an uncertain claim.
+    expected_refusal: Option<Outcome>,
+    claim_failure: Option<busbar_kernel::auth::native_admin::AdminCompletionRefused>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1832,6 +1839,8 @@ impl AdminWalk {
             claim: None,
             execution: None,
             physical_pending: None,
+            expected_refusal: None,
+            claim_failure: None,
             answer: None,
         }
     }
@@ -1998,8 +2007,19 @@ pub(crate) async fn decide(
     .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
     .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
     .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    walk.expected_refusal = ran
+        .as_ref()
+        .err()
+        .copied()
+        .filter(|ended| !matches!(ended, Outcome::Refused(_, ReasonCode::Internal)));
     let ran = match ran {
-        Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
+        Ok(()) => claim(walk).await.map_err(|reason| {
+            if walk.claim_failure.is_some() && walk.expected_refusal.is_none() {
+                Outcome::Failed(StepName::Authenticate, reason)
+            } else {
+                Outcome::Refused(StepName::Authenticate, reason)
+            }
+        }),
         Err(ended) => Err(ended),
     };
     let ran = match ran {
@@ -2119,12 +2139,33 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
         return complete_physical(walk);
     }
     if let Some(pending) = walk.claim.take() {
-        let execution = Arc::new(
-            pending
-                .complete_admin()
-                .await
-                .map_err(|_| ReasonCode::Unauthenticated)?,
-        );
+        let execution = match pending.complete_admin_classified().await {
+            Ok(execution) => Arc::new(execution),
+            Err(error) => {
+                if let busbar_kernel::auth::native_admin::AdminCompletionRefused::ReplayDenied(
+                    denial,
+                ) = &error
+                {
+                    if walk
+                        .physical_pending
+                        .as_ref()
+                        .is_some_and(|pending| denial.matches(pending.binding()))
+                    {
+                        walk.expected_refusal = Some(Outcome::Refused(
+                            busbar_contract::caps::StepName::Authenticate,
+                            ReasonCode::Unauthenticated,
+                        ));
+                    }
+                }
+                walk.claim_failure = Some(error);
+                return if walk.expected_refusal.is_some() {
+                    Err(ReasonCode::Unauthenticated)
+                } else {
+                    walk.answer = Some(authentication_unavailable_answer());
+                    Err(ReasonCode::Internal)
+                };
+            }
+        };
         if let Some(context) = &mut walk.effect_context {
             context
                 .attach_execution(execution.clone())
