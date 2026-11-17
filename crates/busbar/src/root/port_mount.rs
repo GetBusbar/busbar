@@ -438,7 +438,9 @@ pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
     response
 }
 
-fn blocked_client(blocked: &LimitBlocked) -> (busbar_kernel::refusal::ClientRefusal, Option<u64>) {
+pub(crate) fn blocked_client(
+    blocked: &LimitBlocked,
+) -> (busbar_kernel::refusal::ClientRefusal, Option<u64>) {
     use busbar_contract::caps::ReasonCode;
     let (status, _, message, retry_after) = busbar_kernel::ingress::limit_refusal("", blocked);
     let reason = match blocked {
