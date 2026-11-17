@@ -33,7 +33,8 @@ pub mod tls;
 pub mod verification;
 
 pub use signer::{
-    approve_signer, verify, Boundary, LocalSigner, PublicKey, SigAlg, SignError, Signer,
+    approve_signer, verify, Boundary, DelegatedSigner, LocalSigner, PublicKey, SigAlg, SignError,
+    Signer,
 };
 
 /// The crypto backend this binary was built with (`"software"` in core).
