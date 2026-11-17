@@ -1,6 +1,96 @@
 use super::*;
 
 #[test]
+fn target_compatibility_compares_retained_destination_policy_across_reopen() {
+    use crate::config::min3::UpstreamCfg;
+    use crate::upstreams::{UpstreamAuth, UpstreamDef};
+    let original = UpstreamDef::from_config(
+        "catalog-1",
+        &busbar_contract::json::json!({"url": "https://example.com"}),
+        &UpstreamCfg {
+            resource: Some("r".into()),
+            ..Default::default()
+        },
+        &crate::plugin_config::upstream_anchor,
+    )
+    .unwrap();
+    let mut current = original.clone();
+    current.name = "catalog-4".into();
+    assert!(
+        compatible_definition(&original, &current),
+        "an unrelated allocation shift does not change the selected destination"
+    );
+    for changed in [
+        {
+            let mut value = current.clone();
+            value.url = Some("https://other.example".into());
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.allow_private = !value.allow_private;
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.resource = Some("new".into());
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.tls.pin_spki.push([1; 32]);
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.tls.client_identity = Some(busbar_contract::secret_ref::SecretRef::None);
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.tls.trust = Some(Arc::new(crate::plugin_config::TrustAnchor {
+                der: vec![vec![1]],
+                sha256: [2; 32],
+            }));
+            value
+        },
+        {
+            let mut value = current.clone();
+            value.auth = Some(UpstreamAuth {
+                instance: "auth".into(),
+                cache_max_s: None,
+                connect_callback: None,
+                caller: true,
+                scoped: false,
+                per_request: false,
+            });
+            value
+        },
+    ] {
+        assert!(!compatible_definition(&original, &changed));
+    }
+    let mut anchored = original.clone();
+    anchored.tls.trust = Some(Arc::new(crate::plugin_config::TrustAnchor {
+        der: vec![vec![1]],
+        sha256: [2; 32],
+    }));
+    let mut same = anchored.clone();
+    same.tls.trust = Some(Arc::new(crate::plugin_config::TrustAnchor {
+        der: vec![vec![1]],
+        sha256: [2; 32],
+    }));
+    assert!(compatible_definition(&anchored, &same));
+    same.tls.trust = Some(Arc::new(crate::plugin_config::TrustAnchor {
+        der: vec![vec![3]],
+        sha256: [2; 32],
+    }));
+    assert!(
+        !compatible_definition(&anchored, &same),
+        "trust bytes cannot be replaced by a claimed digest"
+    );
+}
+
+#[test]
 fn current_rows_follow_current_ancestors_and_keep_per_rule_coverage() {
     let groups: BTreeMap<String, GroupCfg> = busbar_contract::yaml::from_str(
         "parent:\n  limits:\n    - {id: shared, upstream_resource: p/r, requests: 2, per: minute, per_key: true, enforcement: process}\nchild:\n  parent: parent\n  limits:\n    - {id: shared, upstream_resource: p/r, tokens: 8, per: minute, per_key: true, enforcement: process}",
