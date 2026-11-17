@@ -82,13 +82,7 @@ fn dropped_signed(
         },
     );
     let first_party = manifest.publisher == crate::sign::FIRST_PARTY_PUBLISHER;
-    // A first-party artifact carries a release seal (sign.rs first_party_signer_evidence); a
-    // third-party one is signed by its publisher key.
-    let signed = if first_party {
-        crate::sign::seal_test_artifact(&release, manifest, lib)
-    } else {
-        sign(signer, manifest, lib)
-    };
+    let signed = sign(signer, manifest, lib);
     let tarball = crate::tarball::package(&signed, "libplugin.so", lib).expect("package");
     std::fs::write(dir.join(format!("{tag}.tar.gz")), tarball).expect("write the tarball");
     let policy = TrustPolicy {
