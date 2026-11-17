@@ -3827,6 +3827,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
         );
         let (usage, _fee_count, lane, _attribution) = reached
             .reported
+            .and_then(Reported::legacy)
             .unwrap_or_else(|| panic!("{label}: the tap reported nothing at all"));
         assert_eq!(
             lane, LANE,

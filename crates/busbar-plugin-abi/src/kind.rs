@@ -895,6 +895,10 @@ mod tests {
                 let _ = (h, mode, req, body, out);
                 Err(crate::fail::Fail::unsupported())
             }
+            sync fn channel(&self, h: &Host, s: &mut Session, target: &Target<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let _ = (h, s, target, out);
+                Err(crate::fail::Fail::unsupported())
+            }
         }
     }
 

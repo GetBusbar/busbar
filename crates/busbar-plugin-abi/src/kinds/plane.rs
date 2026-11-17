@@ -908,6 +908,7 @@ crate::kind! {
         /// describe fact bits: FB_PROBES = core may call `probe` per member (today's TAIL_PROBES).
             FB_PROBES: u64 = 1;
             FB_RESOURCE_ADMISSION: u64 = 1 << 3;
+            FB_CHANNEL_OPEN: u64 = 1 << 4;
             RESOURCE_INVENTORY: u32 = 1;
             RESOURCE_SELECT: u32 = 2;
             /// Opt-in cumulative attempt accounting. Attempt classes cannot also use USAGE/OBS_COUNT in forwarded sessions.
@@ -1011,6 +1012,7 @@ crate::kind! {
             M_PROBE: u64 = 1 << 7;
             M_DEMUX: u64 = 1 << 8;
             M_SELECT_RESOURCES: u64 = 1 << 9;
+            M_CHANNEL: u64 = 1 << 10;
         }
         /// Start one request. Answer (after the shim's TOKEN) is one of: RESPOND+PAIR*+(BODY*|MSG*)+(TRAILERS+PAIR*)?+END
         /// (answered locally); FORWARD + wants (core picks candidates, then calls `upstream`); intents alone
@@ -1097,6 +1099,11 @@ crate::kind! {
         /// SELECT reads the exact frozen request. Host services are unavailable except output growth.
         /// Answer only RESOURCE_ENTRY* or RESOURCE_SELECTED* respectively. No Needs or intents.
         sync fn select_resources(&self, h: &Host, mode: u32, req: &PlaneReq<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, mode, req, body, out); Err(crate::fail::Fail::unsupported()) }
+
+        /// Pure preparation of one already admitted command registration after hooks. Exactly one CHANNEL
+        /// and non-effectful FACT/FACT_TEXT records; no Needs, host services, TOKEN or other effects.
+        /// The retained host admission, not Target or the returned CHANNEL, grants command authority.
+        sync fn channel(&self, h: &Host, s: &mut Session, target: &Target<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, target, out); Err(crate::fail::Fail::unsupported()) }
 
         extras {
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
@@ -1276,6 +1283,27 @@ crate::kind! {
             impl SessionHandle {
                 pub fn instance(&self) -> &std::sync::Arc<crate::host_side::driver::Instance> {
                     &self.inst
+                }
+
+                pub fn channel<'o>(
+                    &mut self,
+                    buf: &'o mut crate::host_side::pool::PooledOut,
+                    target: &Target<'_>,
+                ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
+                    use crate::plugin::__rt::Arg;
+                    use crate::fail::{CallError, FaultReason};
+                    use crate::records::{Records, RecErr, tag};
+                    if !self.inst.is_live() { return Err(CallError::Quarantined); }
+                    let pure = crate::host_side::entry::Pure::enter();
+                    let status = crate::host_side::driver::step(self.inst.slot,
+                        crate::host_side::proxy::entry(M_CHANNEL), buf, |lease| {
+                            self.session.call1(|vt| &vt.channel, Arg::view(target), lease)
+                        }).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+                    if pure.violated() || Records::new(buf.bytes()).any(|r| r.is_ok_and(|r| r.tag == tag::TOKEN)) {
+                        return Err(self.inst.charge(FaultReason::BadRecords(RecErr::Reserved)));
+                    }
+                    crate::host_side::answer::Answer::parse(status, buf.bytes())
+                        .map_err(|r| self.inst.charge(r))
                 }
 
                 pub fn upstream<'o>(

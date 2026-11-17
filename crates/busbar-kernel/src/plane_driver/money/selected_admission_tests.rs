@@ -13,11 +13,18 @@ struct Declared(Vec<UsageClass>, Vec<Box<str>>);
 impl Declared {
     fn new() -> Self {
         Self(
-            vec![UsageClass {
-                class: "tokens.custom".into(),
-                unit: busbar_plugin_abi::plane::UNIT_TOKENS,
-                expected_units: None,
-            }],
+            vec![
+                UsageClass {
+                    class: "tokens.custom".into(),
+                    unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+                    expected_units: None,
+                },
+                UsageClass {
+                    class: "calls.custom".into(),
+                    unit: busbar_plugin_abi::plane::UNIT_COUNT,
+                    expected_units: None,
+                },
+            ],
             vec!["tokens.custom".into()],
         )
     }
@@ -335,4 +342,201 @@ async fn callback_rollback_owns_only_original_admission_until_handoff_commits() 
     money.admission_rollback(&admitted).unwrap().commit();
     assert_eq!(money.open_units(), 1);
     assert!(context.is_live());
+}
+
+#[tokio::test]
+async fn selected_session_reports_keep_source_precedence_and_reject_attempt_classes_atomically() {
+    use crate::plane_driver::usage::SessionUsage;
+    use busbar_plugin_abi::plane::{UsageRec, SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED};
+    let (money, _, context, _lease, request) = selected_fixture(98, true).await;
+    let descriptor = declaration(&context);
+    let selected = money
+        .admit_existing_selected(
+            request,
+            descriptor.clone(),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let mut usage = SessionUsage::new();
+    for (amount, source) in [(20, SRC_ESTIMATED), (16, SRC_FLOOR), (8, SRC_REPORTED)] {
+        usage
+            .answer(
+                "calls.custom",
+                UsageRec {
+                    amount,
+                    scale: 0,
+                    source,
+                },
+            )
+            .unwrap();
+    }
+    assert!(!selected.observe_session(&descriptor, &usage).unwrap());
+    assert_eq!(
+        selected.checkpoint().unwrap(),
+        crate::plane_driver::cancel::Checkpoint::Continue
+    );
+    let before = money.usage_view(selected.request().unit()).unwrap();
+    let UsageView::Partitioned(before) = before.as_ref() else {
+        panic!("selected view")
+    };
+    let projected =
+        crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(
+            before.as_ref(),
+        )
+        .unwrap()
+        .project()
+        .unwrap();
+    let class = &projected.partitions[0].classes["calls.custom"];
+    assert_eq!(
+        class.billed.unwrap().count,
+        busbar_contract::Count::from_micros(8_000_000)
+    );
+    usage
+        .answer(
+            "tokens.custom",
+            UsageRec {
+                amount: 100,
+                scale: 0,
+                source: SRC_REPORTED,
+            },
+        )
+        .unwrap();
+    assert!(selected.observe_session(&descriptor, &usage).is_err());
+    let after = money.usage_view(selected.request().unit()).unwrap();
+    let UsageView::Partitioned(after) = after.as_ref() else {
+        panic!("selected view")
+    };
+    assert_eq!(
+        before, after,
+        "malformed session answer must publish nothing"
+    );
+}
+
+#[tokio::test]
+async fn selected_callback_rollback_transfers_fee_finality_before_releasing_open() {
+    use crate::governance::unit_checkpoint::partitions::{CapturedFee, Disposition, FeeResult};
+    let (money, gov, context, _lease, request) = selected_fixture(99, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    assert!(
+        selected.terminal_receipt().is_err(),
+        "one actual terminal reader"
+    );
+    let guard = money.admission_rollback(selected.request()).unwrap();
+    assert!(guard.accepts(selected.request()));
+    drop(guard);
+    assert_eq!(money.open_units(), 0);
+    assert!(!context.is_live());
+    let final_snapshot = terminal.wait().await.unwrap();
+    let parts = final_snapshot.partitions.as_ref().unwrap();
+    assert_eq!(parts.disposition, Disposition::Failed);
+    assert!(parts.attempts.is_empty());
+    assert!(matches!(
+        parts.fee,
+        CapturedFee::ResolvedOwner {
+            result: FeeResult::Refunded,
+            ..
+        }
+    ));
+    assert!(!final_snapshot.metered);
+    assert!(final_snapshot.ended);
+    let usage = gov
+        .derived_bucket_usage_async(
+            selected.request().cost(),
+            &selected.request().key().id,
+            crate::governance::WINDOW_TOTAL,
+            true,
+            100,
+        )
+        .await
+        .unwrap();
+    assert_eq!(usage.requests, 0);
+    assert_eq!(usage.spend_cents, 0);
+    drop(terminal);
+    let mut retry = selected.terminal_receipt().unwrap();
+    assert!(
+        Arc::ptr_eq(&final_snapshot, &retry.wait().await.unwrap()),
+        "retry retains final Arc"
+    );
+}
+
+#[tokio::test]
+async fn selected_work_end_survives_late_cancel_and_legacy_settlement_cannot_remove_it() {
+    use crate::plane_driver::usage::Ending;
+    let (money, _, context, _lease, request) = selected_fixture(100, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    selected.work_ended(Ending::End).unwrap();
+    selected
+        .work_ended(Ending::Cancel {
+            cause: busbar_contract::caps::ReasonCode::ClientGone,
+            far_end_answered: false,
+            streamed: true,
+        })
+        .unwrap();
+    money.settle_end_as(
+        selected.request().unit(),
+        crate::plane_driver::UnitEnd {
+            caller_status: 500,
+            cut: true,
+            refused_unspent: false,
+        },
+    );
+    assert_eq!(
+        money.open_units(),
+        1,
+        "selected finality requires its actual delivery join"
+    );
+    assert_eq!(selected.work_ending().unwrap(), Some(Ending::End));
+}
+
+#[tokio::test]
+async fn terminal_admission_equality_retains_exact_owner_after_retirement() {
+    let (money, _, context, _lease, request) = selected_fixture(101, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let clone = selected.request().clone();
+    let (other_money, _, other_context, _other_lease, other_request) =
+        selected_fixture(101, true).await;
+    let other = other_money
+        .admit_existing_selected(
+            other_request,
+            declaration(&other_context),
+            other_context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    context.retire();
+    assert!(selected.request().same_admission(&clone));
+    assert!(!selected.request().same_admission(other.request()));
 }

@@ -86,6 +86,9 @@ struct ServeEffects<'a> {
 }
 
 impl Effects for ServeEffects<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.admission.as_ref()
+    }
     fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.data.as_ref()
     }
@@ -1231,6 +1234,10 @@ fn drive_blocking(
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::CoreRefused(code)) => {
+            let refusal = refusals.for_core(req.route, code);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
         Err(SessionError::HookRefused(refusal) | SessionError::AdmissionRefused(refusal)) => {
             Ok(Served::Refused(refuse(port, req, &refusal, effects)))
         }

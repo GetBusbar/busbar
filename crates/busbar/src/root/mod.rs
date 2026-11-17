@@ -371,3 +371,7 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(root_stdio);
 #[cfg(test)]
 owner_test_sources!(root_http);
+
+pub(crate) mod selected_report;
+#[cfg(test)]
+mod selected_report_tests;
