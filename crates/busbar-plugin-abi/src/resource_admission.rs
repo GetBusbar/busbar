@@ -5,7 +5,7 @@
 //! These records are claims to validate against the retained host inventory, never capabilities.
 
 use crate::plane::{ResourceEchoRec, tag as t};
-use crate::records::{Full, Records, U32Rec, Writer};
+use crate::records::{Full, Rec, Records, U32Rec, Writer};
 
 pub const MAX_SELECTION_BYTES: usize = 16 * 1024;
 pub const MAX_SELECTED: usize = 32;
@@ -95,6 +95,15 @@ pub fn decode_echo(bytes: &[u8]) -> Result<DescriptorEcho<'_>, Invalid> {
     let mut records = Records::new(bytes);
     let rec = records.next().ok_or(Invalid)?.map_err(|_| Invalid)?;
     if rec.tag != t::RESOURCE_ECHO || records.next().is_some() {
+        return Err(Invalid);
+    }
+    echo_record(rec)
+}
+
+/// Decode one echo record embedded in an upstream answer. The surrounding decoder
+/// enforces placement and rejects duplicates before delivering any output.
+pub fn echo_record(rec: Rec<'_>) -> Result<DescriptorEcho<'_>, Invalid> {
+    if rec.tag != t::RESOURCE_ECHO {
         return Err(Invalid);
     }
     let (r, tail) = rec.pod_tail::<ResourceEchoRec>().map_err(|_| Invalid)?;

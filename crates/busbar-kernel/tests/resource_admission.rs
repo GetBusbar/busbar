@@ -91,6 +91,16 @@ fn request(n: u64) -> FrozenRequest {
     )
 }
 
+fn echo(
+    bound: &busbar_kernel::resource_admission::BoundForward,
+) -> busbar_kernel::resource_admission::ForwardEcho {
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    bound.write_admission(&mut out).unwrap();
+    bound
+        .resolve_echo(busbar_plugin_abi::resource_admission::decode_echo(out.as_bytes()).unwrap())
+        .unwrap()
+}
+
 fn exchange() -> UpExchange {
     UpExchange {
         carrier: CARRIER_HTTP,
@@ -204,7 +214,7 @@ fn valid_chat_reference_cannot_authorize_secret_at_the_same_endpoint() {
     let candidate = secret.candidate();
     assert!(matches!(
         chat.validate(
-            chat.echo(),
+            echo(&chat),
             &candidate,
             secret.dialect(),
             secret.model(),
@@ -227,7 +237,7 @@ fn permitted_descriptor_moves_exact_exchange_into_validated_custody() {
     let candidate = descriptor.candidate();
     let validated = forward
         .validate(
-            forward.echo(),
+            echo(&forward),
             &candidate,
             descriptor.dialect(),
             descriptor.model(),
@@ -253,7 +263,7 @@ fn echo_is_bound_to_invocation_and_inventory_not_just_numeric_descriptor() {
     let descriptor = forward.descriptor();
     assert!(matches!(
         forward.validate(
-            other.forward(1).unwrap().echo(),
+            echo(&other.forward(1).unwrap()),
             &descriptor.candidate(),
             descriptor.dialect(),
             descriptor.model(),
@@ -293,7 +303,7 @@ fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor(
     ] {
         assert!(matches!(
             forward.validate(
-                forward.echo(),
+                echo(&forward),
                 &descriptor.candidate(),
                 descriptor.dialect(),
                 descriptor.model(),
@@ -306,7 +316,7 @@ fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor(
     assert!(
         matches!(
             forward.validate(
-                forward.echo(),
+                echo(&forward),
                 &descriptor.candidate(),
                 descriptor.dialect(),
                 descriptor.model(),

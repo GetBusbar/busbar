@@ -287,6 +287,7 @@ struct Seen {
     /// Render grammar: 0 = before RESPOND, 1 = head, 2 = after BODY, 3 = trailers, 4 = after END.
     render: u8,
     demux: bool,
+    resource_echo: bool,
 }
 
 /// A misplaced record: FAULT BadRecords naming the tag.
@@ -383,6 +384,9 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::RESPOND | t::BODY | t::MSG | t::END | t::TRAILERS => flow,
         t::FORWARD | t::EXPECT => call == Call::Request || call == Call::Piece(p::FROM_CORE),
         t::UP_CARRIER => upstream,
+        t::RESOURCE_ECHO => {
+            call == Call::Upstream && !core::mem::replace(&mut s.resource_echo, true)
+        }
         g::H_METHOD | g::H_PATH | t::UP_SCOPE => s.head && (upstream || flow),
         g::PAIR => upstream || flow,
         t::UP_BODY | t::UP_MSG | t::UP_END | t::UP_NEW | t::EX_MSG | t::UP_CUT => upstream || flow,
@@ -420,9 +424,13 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
             s.head = true;
             s.up = true;
         }
-        t::UP_CARRIER | g::H_METHOD | g::H_PATH | t::UP_SCOPE | t::UP_BODY | t::UP_MSG => {
-            s.up = true
-        }
+        t::RESOURCE_ECHO
+        | t::UP_CARRIER
+        | g::H_METHOD
+        | g::H_PATH
+        | t::UP_SCOPE
+        | t::UP_BODY
+        | t::UP_MSG => s.up = true,
         t::UP_END | t::UP_CUT | t::EX_MSG => s.up = true,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => {
             s.intent = true
@@ -467,6 +475,9 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
         }
     };
     Ok(match rec.tag {
+        t::RESOURCE_ECHO => PlaneOut::ResourceEcho(
+            busbar_plugin_abi::resource_admission::echo_record(*rec).map_err(|_| RecErr::Size)?,
+        ),
         t::RESPOND => {
             let r: p::Respond = rec.pod()?;
             let status = u16::try_from(r.status).map_err(|_| RecErr::Size)?;
