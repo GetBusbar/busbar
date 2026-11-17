@@ -1266,6 +1266,17 @@ async fn run(
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
+    root::plane_node::node()
+        .bind_response_intents(
+            store_admission
+                .store()
+                .unwrap_or_else(|| die("response intent has no admitted Store")),
+            book.response_intents
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| die("response intent service was not constructed")),
+        )
+        .unwrap_or_else(|error| die(error));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();

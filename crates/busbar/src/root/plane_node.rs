@@ -38,6 +38,11 @@ struct LaneNames {
     consulted: u64,
 }
 
+struct ResponseIntentOwner {
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
+}
+
 /// WHEN ONE UNIT ARRIVED — one reading of the wall clock, spelled in both the units this loop asks
 /// for.
 ///
@@ -135,6 +140,7 @@ pub(crate) struct Node {
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
+    response_intent: std::sync::OnceLock<ResponseIntentOwner>,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
@@ -168,6 +174,7 @@ impl Node {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            response_intent: std::sync::OnceLock::new(),
             sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
@@ -271,6 +278,65 @@ impl Node {
         let _ = self.lane.set(journal);
         let _ = self.sealing.set(sealing);
         let _ = self.book.set(book);
+    }
+
+    pub(crate) fn bind_response_intents(
+        &self,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
+    ) -> Result<(), &'static str> {
+        let book = self
+            .book
+            .get()
+            .ok_or("response intent node book unavailable")?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self
+            .lane
+            .get()
+            .is_some_and(|journal| Arc::ptr_eq(journal, service.journal()))
+            || !service.journal().is_bound_to(&store)
+            || book.incarnation != service.incarnation()
+            || book.record.node() != service.journal().node()
+        {
+            return Err("response intent owner differs from the admitted node journal");
+        }
+        self.response_intent
+            .set(ResponseIntentOwner { store, service })
+            .map_err(|_| "response intent owner already installed")
+    }
+
+    pub(crate) fn response_intents(
+        &self,
+    ) -> Option<Arc<crate::root::durability::response_intent::ResponseIntentService>> {
+        self.response_intent
+            .get()
+            .map(|owner| Arc::clone(&owner.service))
+    }
+
+    pub(crate) fn response_intent_stamp(
+        &self,
+        journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    ) -> Result<busbar_kernel_audit::response_intent::ResponseIntentStamp, String> {
+        let owner = self
+            .response_intent
+            .get()
+            .ok_or("response intent owner unavailable")?;
+        if !Arc::ptr_eq(journal, owner.service.journal()) || !journal.is_bound_to(&owner.store) {
+            return Err("response intent journal differs from the retained attachment".into());
+        }
+        let authority = owner
+            .store
+            .authority()
+            .map_err(|error| format!("response intent writer: {error:?}"))?;
+        let history = crate::root::kernel::ROOT_CARD.pin();
+        let captured = self.checked_arrived()?;
+        Ok(busbar_kernel_audit::response_intent::ResponseIntentStamp {
+            lease_epoch: authority.writer_epoch,
+            policy_epoch: policy_in_force(history.as_ref(), captured.ms()),
+            wall: captured.secs(),
+            mono: captured.mono(),
+        })
     }
 
     /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
