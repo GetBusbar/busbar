@@ -18,11 +18,11 @@ use busbar_kernel::audit::auditlog::{
 use tokio::sync::{watch, Notify};
 
 /// The five families all producers share. No producer chooses a label vocabulary.
-pub(crate) const DROPPED: &str = "busbar_export_dropped_total";
-pub(crate) const CUSTODY: &str = "busbar_export_custody_total";
-pub(crate) const CAPTURE_REFUSALS: &str = "busbar_export_capture_refusals_total";
-pub(crate) const INTEGRITY_FAILURES: &str = "busbar_export_audit_integrity_failures_total";
-pub(crate) const HELD: &str = "busbar_export_held_lines";
+use busbar_kernel::export::delivery::EXPORT_CUSTODY_TOTAL as CUSTODY;
+use busbar_kernel::snapshot::{
+    EXPORT_CAPTURE_REFUSALS_TOTAL as CAPTURE_REFUSALS, EXPORT_DROPPED_TOTAL as DROPPED,
+    EXPORT_HELD_LINES as HELD, EXPORT_INTEGRITY_FAILURES_TOTAL as INTEGRITY_FAILURES,
+};
 
 #[derive(Default)]
 struct FirstLoss<R> {
@@ -34,9 +34,11 @@ struct FirstLoss<R> {
 
 impl<R> FirstLoss<R> {
     fn record(&mut self, facts: ExportLossFacts) -> bool {
-        // The regression-first seam has no retained first-loss state yet.
-        let _ = facts;
-        false
+        if self.facts.is_some() {
+            return false;
+        }
+        self.facts = Some(facts);
+        true
     }
 
     fn step(
@@ -80,7 +82,7 @@ struct CellState {
 struct State {
     cells: BTreeMap<String, Arc<Cell>>,
     intake: bool,
-    late: bool,
+    late: u64,
 }
 
 /// One root owner, constructed before any export pump; no global observer slot.
@@ -111,7 +113,7 @@ impl ExportObservers {
             state: Mutex::new(State {
                 cells: BTreeMap::new(),
                 intake: true,
-                late: false,
+                late: 0,
             }),
             wake: Notify::new(),
         })
@@ -136,7 +138,15 @@ impl ExportObservers {
                 ));
             }
         }
-        // Capacity across retained historical names is added after its regression.
+        let new = unique
+            .iter()
+            .filter(|name| !state.cells.contains_key(*name))
+            .count();
+        if state.cells.len().saturating_add(new) > MAX_PENDING_AUDIT {
+            return Err(capacity_refusal(
+                "export observer reservation capacity exhausted",
+            ));
+        }
         let mut observers = BTreeMap::new();
         for name in unique {
             let cell = state.cells.entry(name.clone()).or_insert_with(|| {
@@ -223,7 +233,7 @@ impl ExportObservers {
     pub(crate) fn is_settled(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         !state.intake
-            && !state.late
+            && state.late == 0
             && state.cells.values().all(|cell| {
                 cell.state
                     .lock()
@@ -246,6 +256,14 @@ impl ExportObservers {
                     .flatten()
             })
             .collect()
+    }
+
+    /// Exact saturated count for the root's incomplete-shutdown evidence.
+    pub(crate) fn late_callbacks(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .late
     }
 }
 
@@ -307,10 +325,25 @@ impl Drop for ExportReservation {
 }
 
 impl ExportGeneration {
+    #[cfg(test)]
     pub(crate) fn observer(&self, name: &str) -> Option<Arc<dyn ExportObserver>> {
         self.observers
             .get(name)
             .map(|observer| Arc::clone(observer) as Arc<dyn ExportObserver>)
+    }
+}
+
+impl Drop for ExportGeneration {
+    fn drop(&mut self) {
+        let owner = self
+            .observers
+            .values()
+            .next()
+            .map(|observer| Arc::clone(&observer.owner));
+        self.observers.clear();
+        if let Some(owner) = owner {
+            owner.wake.notify_one();
+        }
     }
 }
 
@@ -328,9 +361,10 @@ impl BoundObserver {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if !state.intake {
-            if !std::mem::replace(&mut state.late, true) {
+            if state.late == 0 {
                 notice(false, &self.cell.instance);
             }
+            state.late = state.late.saturating_add(1);
             return;
         }
         let instance = &self.cell.instance;

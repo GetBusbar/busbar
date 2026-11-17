@@ -186,6 +186,7 @@ fn shutdown_requires_closed_intake_settled_evidence_and_no_late_callback() {
         !owner.is_settled(),
         "even a non-loss callback violates quiescence"
     );
+    assert_eq!(owner.late_callbacks(), 1);
     assert!(owner.reserve(["late-config".into()]).is_err());
 }
 
