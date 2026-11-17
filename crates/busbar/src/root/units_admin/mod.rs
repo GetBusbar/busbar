@@ -131,6 +131,21 @@ impl AdminRequest {
     ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
         self.projection.lock().ok()?.as_ref().cloned()
     }
+
+    pub(crate) fn attach_projection(
+        &self,
+        projection: busbar_kernel::inbound::http_projection::HttpProjection,
+    ) -> Result<(), AdminHeadersInvalid> {
+        if !Arc::ptr_eq(projection.snapshot(), &self.snapshot) {
+            return Err(AdminHeadersInvalid);
+        }
+        let mut slot = self.projection.lock().map_err(|_| AdminHeadersInvalid)?;
+        if slot.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
+        *slot = Some(Arc::new(projection));
+        Ok(())
+    }
 }
 
 impl PartialEq for AdminRequest {

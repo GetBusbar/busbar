@@ -138,6 +138,10 @@ impl HttpProjection {
         &self.parts.headers
     }
 
+    pub fn snapshot(&self) -> &Arc<ChargedRequestSnapshot> {
+        &self.carrier.0.snapshot
+    }
+
     pub fn into_request<B>(mut self, body: B) -> Request<B> {
         self.parts.extensions.insert(self.carrier);
         Request::from_parts(self.parts, body)
@@ -148,6 +152,81 @@ impl HttpProjection {
 pub struct AdminHeaders {
     headers: HeaderMap,
     _carrier: Option<Carrier>,
+}
+
+/// Form parsing consumes the original Method, URI, body and all Extensions. Its small
+/// second map has its own reservation; the original owning headers outlive parsing.
+pub struct ProjectedForm<T> {
+    pub headers: AdminHeaders,
+    pub value: T,
+}
+
+impl<T, S> axum::extract::FromRequest<S> for ProjectedForm<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        use axum::extract::{FromRequest, FromRequestParts};
+        use axum::http::header::{HeaderMapPlan, ProjectionError};
+
+        let (mut parts, body) = request.into_parts();
+        let content_type = parts.headers.get(header::CONTENT_TYPE).cloned();
+        let plan = HeaderMapPlan::for_values(usize::from(content_type.is_some()))
+            .map_err(|_| ProjectionRefused.into_response())?;
+        let carrier = parts.extensions.get::<Carrier>();
+        let proxy_carrier = if let Some(carrier) = carrier {
+            if !carrier.matches(&parts.extensions) {
+                return Err(ProjectionRefused.into_response());
+            }
+            let credit = carrier
+                .0
+                .snapshot
+                .request()
+                .try_reserve(plan.allocation_bytes())
+                .map_err(|_| ProjectionRefused.into_response())?;
+            Some(Carrier(Arc::new(MapCredit {
+                snapshot: Arc::clone(&carrier.0.snapshot),
+                _credit: credit,
+            })))
+        } else {
+            if parts
+                .extensions
+                .get::<Arc<ChargedRequestSnapshot>>()
+                .is_some()
+            {
+                return Err(ProjectionRefused.into_response());
+            }
+            // Existing explicit legacy requests have no native map custody to claim.
+            None
+        };
+        let proxy_headers = HeaderMap::try_from_plan(
+            plan,
+            content_type
+                .into_iter()
+                .map(|value| Ok::<_, ProjectionError>((header::CONTENT_TYPE, value))),
+        )
+        .map_err(|_| ProjectionRefused.into_response())?;
+        let headers = AdminHeaders::from_request_parts(&mut parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        parts.headers = proxy_headers;
+        if let Some(carrier) = proxy_carrier {
+            parts.extensions.insert(carrier);
+        }
+        // Moving the original Parts preserves DefaultBodyLimit's private extension and
+        // every auth/replay extension without reconstructing or cloning their payloads.
+        let axum::Form(value) =
+            axum::Form::<T>::from_request(Request::from_parts(parts, body), state)
+                .await
+                .map_err(IntoResponse::into_response)?;
+        Ok(Self { headers, value })
+    }
 }
 
 impl std::ops::Deref for AdminHeaders {

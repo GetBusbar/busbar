@@ -282,6 +282,10 @@ impl ChargedRequestSnapshot {
     pub fn target_bytes(self: &Arc<Self>) -> bytes::Bytes {
         self.owned_bytes(self.target.clone())
     }
+    /// Share long HTTP methods through the maintained parser and its independent clones.
+    pub fn method_bytes(self: &Arc<Self>) -> bytes::Bytes {
+        self.owned_bytes(self.method.clone())
+    }
     fn owned_bytes(self: &Arc<Self>, range: Range<usize>) -> bytes::Bytes {
         bytes::Bytes::from_owner(SnapshotSpan {
             snapshot: Arc::clone(self),
@@ -300,6 +304,21 @@ impl ChargedRequestSnapshot {
             let start = offset + 16 + name.len();
             offset = start + value.len();
             (name, self.owned_bytes(start..offset))
+        })
+    }
+    /// Original name/value spans for the maintained HTTP projection, with no field-array copy.
+    pub fn header_fields(
+        self: &Arc<Self>,
+    ) -> impl Clone + ExactSizeIterator<Item = (bytes::Bytes, bytes::Bytes)> {
+        let mut offset = self.headers.start;
+        self.headers().map(move |(name, value)| {
+            let name_start = offset + 16;
+            let value_start = name_start + name.len();
+            offset = value_start + value.len();
+            (
+                self.owned_bytes(name_start..value_start),
+                self.owned_bytes(value_start..offset),
+            )
         })
     }
     pub fn now_s(&self) -> u64 {

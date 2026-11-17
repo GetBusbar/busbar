@@ -399,16 +399,14 @@ async fn call(
         if request.binding.is_some() {
             return unavailable_answer();
         }
-        let mut builder = axum::http::Request::builder()
-            .method(request.method())
-            .uri(request.path());
-        for (name, value) in request.headers() {
-            builder = builder.header(name, value);
-        }
-        let Ok(http) = builder.body(axum::body::Body::from(request.snapshot().body_bytes())) else {
-            return error_answer(400, "invalid_request");
+        // The explicit legacy path still obtains its own funded projection from the
+        // actual retained request. It cannot enter native dispatch without its carrier.
+        let Ok(projection) = busbar_kernel::inbound::http_projection::HttpProjection::from_snapshot(
+            Arc::clone(request.snapshot()),
+        ) else {
+            return unavailable_answer();
         };
-        http
+        projection.into_request(axum::body::Body::from(request.snapshot().body_bytes()))
     };
     http.extensions_mut().insert(Arc::clone(replays));
     http.extensions_mut().insert(Arc::clone(request.snapshot()));
@@ -740,10 +738,9 @@ pub(crate) fn mount(
                             Ok(projection) => projection,
                             Err(_) => return http_response(unavailable_answer()),
                         };
-                    let Ok(mut slot) = request.projection.lock() else {
+                    if request.attach_projection(projection).is_err() {
                         return http_response(unavailable_answer());
-                    };
-                    *slot = Some(Arc::new(projection));
+                    }
                 }
                 let unit = request.unit;
 
