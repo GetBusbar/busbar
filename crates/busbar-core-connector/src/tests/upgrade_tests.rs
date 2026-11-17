@@ -622,3 +622,32 @@ fn a_refused_verify_off_is_flagged_once_per_instance() {
         assert_eq!(c.abi_flags(), vec![(OWNER, 6015)]);
     });
 }
+
+/// #245, DES-245 r3 C8 and C8b: a far end that resets (C8) or closes (C8b) the stream during the
+/// in-Open upgrade's handshake failed the transport, so the cause stage is `CAUSE_CONNECT`, not
+/// `CAUSE_SECURITY`.
+#[test]
+fn an_upgrade_handshake_the_far_end_resets_or_closes_is_a_connect_failure() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    worker().block_on(async move {
+        for reset in [true, false] {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let far = l.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let (mut s, _) = l.accept().await.unwrap();
+                let mut header = [0_u8; 5];
+                let _ = s.read_exact(&mut header).await;
+                if reset {
+                    s.set_zero_linger().unwrap();
+                }
+                drop(s);
+            });
+            let c = raw_connector();
+            declare(&c, "", None);
+            let id = open(&c, &far);
+            assert!(upgrade(&c, id, None).await.is_err(), "reset {reset}");
+            let cause = c.cause(OWNER, id).expect("a cause");
+            assert_eq!(cause.stage, CAUSE_CONNECT, "reset {reset}: {}", cause.text);
+        }
+    });
+}
