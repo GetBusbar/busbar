@@ -102,16 +102,13 @@ fn close_with<L, B>(
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY: loading an operator-placed library runs its init code, which is the same trust as
     // compiling it in. Callers apply the trust gate first.
-    match busbar_ffi::lifecycle::run(|| {
-        debug_assert!(busbar_ffi::lifecycle::is_worker());
+    match crate::ffi_thread::on_plugin_thread(|| {
+        crate::ffi_thread::debug_assert_permanent("dlopen");
         unsafe { Library::new(path) }
     }) {
         Ok(r) => r.map_err(|e| loader_error(&e)),
 
-        Err(payload) => {
-            std::mem::forget(payload);
-            Err("the library's initializer panicked while loading".to_string())
-        }
+        Err(_) => Err("the library's initializer panicked while loading".to_string()),
     }
 }
 
@@ -166,12 +163,10 @@ pub(crate) fn loader_reason(text: &str) -> String {
 pub(crate) fn dlclose_on_worker(lib: Library) {
     #[cfg(test)]
     crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    if let Err(payload) = busbar_ffi::lifecycle::run(move || {
-        debug_assert!(busbar_ffi::lifecycle::is_worker());
+    let _ = crate::ffi_thread::on_plugin_thread(move || {
+        crate::ffi_thread::debug_assert_permanent("dlclose");
         drop(lib);
-    }) {
-        std::mem::forget(payload);
-    }
+    });
 }
 
 /// Why admit step 8 opened no image.
