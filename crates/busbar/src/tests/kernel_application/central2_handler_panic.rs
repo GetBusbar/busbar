@@ -42,7 +42,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module.clone(), "settings": settings },
             "advanced": {  },
         }),

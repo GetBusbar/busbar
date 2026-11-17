@@ -28,6 +28,7 @@ async fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
         Vec::new(),
         None,
         crate::testkit::memory_store().await,
+        crate::testkit::ADMIN_ORIGIN.to_string(),
     )
     .await
     .expect("builds")

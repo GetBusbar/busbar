@@ -6,8 +6,7 @@ use crate::admin_state::AppAdmin as _;
 use crate::v1::service::manifest_schema;
 
 use busbar_kernel::diagnostics::{
-    diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
-    PLUGIN_ROLLBACK_REVERT_FAILED,
+    diag_error, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, PLUGIN_ROLLBACK_REVERT_FAILED,
 };
 use tracing::instrument::WithSubscriber as _;
 
@@ -1893,7 +1892,7 @@ pub(crate) async fn config_diff(
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PutAuthBody {
-    /// The ordered admin auth module chain. Empty is the explicit open dev posture.
+    /// The ordered admin auth module chain. An empty chain is refused.
     admin_auth: Vec<String>,
 }
 
@@ -2028,7 +2027,6 @@ pub(crate) async fn put_auth(
 
 
 
-        let operator = busbar_kernel::config::operator_provider();
         let in_process = busbar_kernel::preflight::root_rows().in_process_auth;
         for name in &req.admin_auth {
             let known = name == busbar_kernel::config::KEYS_MODULE
@@ -2041,25 +2039,9 @@ pub(crate) async fn put_auth(
                 )));
             }
         }
+        // An empty chain is refused by the kernel's one admission policy (409 conflict) at commit:
+        // 1.6.0 has no open admin posture (ADMIN-API-1.6-ONE-MODEL §8.1).
         let empty = req.admin_auth.is_empty();
-        // A protected deployment clearing its chain is judged first, by the kernel's one
-        // admission policy (409 conflict) at commit; the open-posture refusal below applies
-        // only where no protected admin authority is in force.
-        if empty && current.admin_chain.is_empty() {
-
-
-
-            if EMPTY_CHAIN_REFUSED_LIVE {
-                return Err(empty_chain_refusal(operator));
-            }
-            diag_warn!(
-                ADMIN_AUTH_CHAIN_EMPTY,
-                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
-                 now the open (anonymous, full-authority) dev posture"
-            );
-        }
-
-
 
         let mut next = (**current).clone();
         next.config_version = current.config_version.wrapping_add(1);
@@ -3510,9 +3492,6 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 ];
 
 #[cfg(feature = "openapi-schema")]
-const OPENAPI_ADMIN_TOKEN_HEADER: &str = "x-admin-token";
-
-#[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_doc() -> serde_json::Value {
     let mut paths = serde_json::Map::new();
     for (path, summary) in V1_GET_PATHS {
@@ -3521,7 +3500,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             json!({
                 "get": {
                     "summary": summary,
-                    "security": [{"adminToken": []}],
+                    "security": [{"bearerAuth": []}],
                     RESPONSES_KEY: {
                         "200": {"description": "OK"},
                     }
@@ -3542,7 +3521,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post".to_string(),
             json!({
                 "summary": "Register (or replace) a hook at runtime, live immediately",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "201": {"description": "Registered: the name is NEW (body is the hook definition)"},
                     "200": {"description": "Replaced: the name existed (same-grant re-register; body is the hook definition)"},
@@ -3559,7 +3538,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post".to_string(),
             json!({
                 "summary": "Create (or replace) a group at runtime, live immediately (upsert)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "201": {"description": "Created: the name is NEW (body is the group definition)"},
                     "200": {"description": "Replaced: the name existed (body is the group definition)"},
@@ -3576,7 +3555,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "post".to_string(),
             json!({
                 "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "201": {"description": "Installed: `{file, name, interface_version, trust, version?, publisher?, note}`"},
                 }
@@ -3589,7 +3568,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{plugins, note}`: the current dynamic-library inventory"}
                 }
@@ -3601,7 +3580,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version; a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{plugin, version, config_version, plugins}`: rolled back and hot-swapped"},
                 }
@@ -3613,7 +3592,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "delete": {
                 "summary": "Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3633,7 +3612,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "The plugin settings JSON Schema for every kind. source=installed_archive reads the named disk artifact, optionally fenced by expected_archive_sha256; it never substitutes a loaded generation. source=linked_statement reads a linked plane/transport declaration cached during startup. Without source, resolve the loaded module by name or alias, then the linked declaration cache. Canonical Statement first, legacy manifest field only when the Statement carries no schema. Dropped plugins are read from the signed manifest without opening the library; linked plugins publish their Statement. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3658,7 +3637,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "One hook definition",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3669,7 +3648,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "put": {
                 "summary": "Replace an overlay hook definition, live immediately (grants immutable)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3680,7 +3659,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "delete": {
                 "summary": "Remove a hook at runtime, live immediately",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3696,7 +3675,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "One group definition (parent, enabled, limits, child_default)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3707,7 +3686,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "put": {
                 "summary": "Replace an overlay group definition, live immediately (limits rebuilt)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3718,7 +3697,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "patch": {
                 "summary": "Partial update: change only the fields present (e.g. raise a budget, freeze a group)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3729,7 +3708,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "delete": {
                 "summary": "Remove an overlay group at runtime, live immediately",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3745,7 +3724,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "The group's derived current-window usage per (window, pool) enforcement bucket vs its caps: the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3771,7 +3750,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "Best-effort hook transport reachability",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3787,7 +3766,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "Structured hook-surface diff between two retained versions",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [
                     {"name": "from", "in": "query", "required": true, "schema": {"type": "integer"}},
                     {"name": "to", "in": "query", "required": true, "schema": {"type": "integer"}}
@@ -3803,7 +3782,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "One retained config version, with its hook-surface snapshot",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "v", "in": "path", "required": true,
                     "schema": {"type": "integer"}
@@ -3819,7 +3798,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "patch": {
                 "summary": "Push an opaque settings map to the running hook; COMMIT ON ACK",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3835,7 +3814,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "The hook's self-described settings JSON Schema (describe proxy)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3851,7 +3830,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "The hook's OBSERVED state, live-queried: running settings + version (vs busbar's desired copy, with a drift verdict) and self-reported metrics. reported=null when the hook doesn't answer (fail-open)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{
                     "name": "name", "in": "path", "required": true,
                     "schema": {"type": "string"}
@@ -3867,7 +3846,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Apply a full config from the request body, atomically (live until next reload/restart; health preserved by lane identity)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{applied, config_version, note}`"},
                 }
@@ -3879,7 +3858,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Re-read config.yaml/providers.yaml from disk and apply atomically (health state preserved by lane identity)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{reloaded, config_version}`"},
                 }
@@ -3891,7 +3870,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "202": {"description": "`{restarting, note}`: draining; in-flight requests finish first"},
                 }
@@ -3903,14 +3882,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…), only the operator's overrides; base config.yaml stands for the rest",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
                 }
             },
             "put": {
                 "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_require_mtls/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
                 }
@@ -3920,7 +3899,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     if let Some(auth_path) = paths.get_mut(&ap(PATH_ADMIN_AUTH)) {
         auth_path["put"] = json!({
             "summary": "Replace the admin_auth chain at runtime, dry-run guarded (the calling credentials must still pass under the NEW chain, else 409). Live until the next reload/restart",
-            "security": [{"adminToken": []}],
+            "security": [{"bearerAuth": []}],
             RESPONSES_KEY: {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
             }
@@ -3931,7 +3910,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Flush the credential cache: one module's partition (`{module}`) or everything (empty body). Instant revocation of the cached-allow window",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{flushed}`: entries dropped"},
                 }
@@ -3943,7 +3922,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Restore a retained version's hook surface (re-validated; a NEW version)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{restored_version, config_version}`"},
                 }
@@ -3961,7 +3940,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "delete": {
                 "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)", overlay_section_names.join("|")),
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": overlay_section_names}}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{reset, config_version, changed}`: changed:false when the section had no overlay state"},
@@ -3974,7 +3953,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Dry-run validate a proposed config",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "Verdict `{ok, errors}` (even for an invalid config)"},
                 }
@@ -3986,7 +3965,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Stateless read-only preview of a candidate plugin tarball: verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}`: the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"},
                 }
@@ -3999,14 +3978,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group; a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{items, next_cursor}`: the cursor page envelope (next_cursor null at end)"},
                 }
             },
             "post": {
                 "summary": "Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 RESPONSES_KEY: {
                     "201": {"description": "Created (body includes the once-shown secret)"},
                 }
@@ -4018,7 +3997,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "One key's metadata + `ETag` (never the secret/hash)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "Key metadata (+ `ETag` header)"},
@@ -4026,7 +4005,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "patch": {
                 "summary": "Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "Updated metadata"},
@@ -4034,7 +4013,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             },
             "delete": {
                 "summary": "Revoke a key: it stops resolving immediately. Optional `If-Match` (the key's ETag)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "204": {"description": "Revoked: No Content"},
@@ -4047,7 +4026,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "get": {
                 "summary": "Current-window usage for one key (spend / tokens / requests)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"},
@@ -4060,7 +4039,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "Mint a fresh secret in place (same id, budgets, usage). The new secret is shown once; the old stops resolving. Honors an `Idempotency-Key` header (per-principal, op+id-scoped, ~10min replay)",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
@@ -4073,7 +4052,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         json!({
             "post": {
                 "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent: revoking an already-revoked key is 200. DELETE /keys/{id} tombstones the binding while retaining usage and audit attribution",
-                "security": [{"adminToken": []}],
+                "security": [{"bearerAuth": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{revoked}`: the id, now denylisted"},
@@ -4123,10 +4102,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                         op.insert("x-busbar-verb".to_string(), json!(verb));
                     }
 
-                    op.insert(
-                        "security".to_string(),
-                        json!([{"adminToken": []}, {"bearerAuth": []}]),
-                    );
+                    op.insert("security".to_string(), json!([{"bearerAuth": []}]));
 
                     if let Some(resps) = op.get_mut(RESPONSES_KEY).and_then(|r| r.as_object_mut()) {
                         resps.entry("401").or_insert(json!(
@@ -4928,9 +4904,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "x-busbar-unit-reasons": unit_reasons_component(),
             "x-busbar-audit-actions": audit_actions_component(),
             "securitySchemes": {
-                "adminToken": {"type": "apiKey", "in": "header", "name": OPENAPI_ADMIN_TOKEN_HEADER},
                 "bearerAuth": {"type": "http", "scheme": "bearer",
-                               "description": "The same operator credential via Authorization: Bearer"}
+                               "description": "The admin credential via Authorization: Bearer, the only scheme"}
             },
             "schemas": schemas
         },
@@ -5135,29 +5110,6 @@ pub(crate) fn config_body_refusal(
     );
     Some(AdminError::Conflict(
         operator_file::refusal_text(name) + CONFIG_BODY_REMEDY,
-    ))
-}
-
-const EMPTY_CHAIN_REFUSED_LIVE: bool = true;
-
-/// With no operator word bound the remedy names no example module, never an empty one
-/// (OPERATOR-FROM-ADMITTED-AUTH §3.9).
-fn empty_chain_refusal(operator: &str) -> AdminError {
-    diag_warn!(
-        ADMIN_AUTH_CHAIN_EMPTY,
-        "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
-         (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
-         restart, not through the live admin API"
-    );
-    AdminError::Validation(format!(
-        "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
-         cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
-         and restart to opt in. Otherwise name at least one admin module{}",
-        if operator.is_empty() {
-            String::new()
-        } else {
-            format!(" (e.g. `{operator}`)")
-        }
     ))
 }
 

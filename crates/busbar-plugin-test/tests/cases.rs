@@ -353,6 +353,10 @@ mod c_zeroize_grow;
 mod c_zeroize_sync;
 #[path = "fu3-check-crypto-failed.rs"]
 mod fu3_check_crypto_failed;
+// W1-K10: the shared rig of its arms (C-ENTITLE, C-MINT, C-SIGN, C-CONNECT, C-MCP-CONNECT, C-LOGIN-PKCE,
+// C-REPLAY, C-TRUST-VERIFY).
+#[path = "k10_rig.rs"]
+mod k10_rig;
 #[path = "fixtures/min3_endpoints.rs"]
 mod min3_endpoints;
 #[path = "fixtures/min3_export.rs"]

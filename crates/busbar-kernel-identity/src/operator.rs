@@ -53,9 +53,9 @@ static NO_OPERATOR: Judged = Judged {
 pub use crate::off_path::operator::{
     bind_deferred, choose, compare, deferred_refusal, inert_operator, install_linked,
     install_operator, misplaced_definition_token, misplaced_token, no_default_admin_chain,
-    no_mint_path, operator_admission_path, operator_changed, operator_file_policy,
-    operator_install_remedy, operator_token, operator_token_entry, third_party_operator,
-    two_operators, unreadable_statement, Judged, OperatorBinding,
+    no_mint_path, open_admin_posture_removed, operator_admission_path, operator_changed,
+    operator_file_policy, operator_install_remedy, operator_token, operator_token_entry,
+    third_party_operator, two_operators, unreadable_statement, Judged, OperatorBinding,
 };
 
 #[cfg(any(test, feature = "test-support"))]

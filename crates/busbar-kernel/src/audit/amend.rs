@@ -79,5 +79,5 @@ pub async fn record_test_hook_read(
     op: &str,
     identity: bool,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    hook_read(amendments, name, principal, op, identity).await
+    hook_reads(amendments, &[name], principal, op, identity).await
 }

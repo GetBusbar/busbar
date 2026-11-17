@@ -110,7 +110,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let mint = |tok: &str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", tok)
+            .header("authorization", format!("Bearer {}", tok))
             .header("content-type", "application/json")
             .header("idempotency-key", "shared-value")
             .body(json::json!({"name": "k"}).to_string())
@@ -238,7 +238,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let put = |tok: &str, body: json::Value| {
         client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
-            .header("x-admin-token", tok)
+            .header("authorization", format!("Bearer {}", tok))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -255,7 +255,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let r = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .header("if-match", "\"999\"")
         .body(json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]}).to_string())
@@ -279,7 +279,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     assert_eq!(body["error"]["code"], "conflict");
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -301,7 +301,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -313,7 +313,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .send()
         .await
         .unwrap();
@@ -321,7 +321,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let body = client
         .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .send()
         .await
         .unwrap()
@@ -379,7 +379,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     let put = |chain: json::Value| {
         client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .body(json::json!({ "admin_auth": chain }).to_string())
             .send()
@@ -393,7 +393,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     );
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -519,8 +519,8 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     // These are separately configured instances of the actual loaded OIDC module.
     let identify = |token: &str| {
         let headers = axum::http::HeaderMap::from_iter([(
-            axum::http::HeaderName::from_static("x-admin-token"),
-            token.parse().unwrap(),
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
         )]);
         let door =
             busbar_kernel::auth::admin_verdict(&app, "POST", "/api/v1/admin/keys", &headers).door;
@@ -544,7 +544,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     let mint = |tok: &str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", tok)
+            .header("authorization", format!("Bearer {}", tok))
             .header("content-type", "application/json")
             .header("idempotency-key", "shared-value")
             .body(json::json!({"name": "k"}).to_string())
@@ -769,7 +769,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     // A and B above and below always present separately issued OIDC JWTs.
     let revoked = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"admin_auth":["second-issuer",operator]}))
         .send()
         .await
@@ -822,7 +822,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     }
     let configured = client
         .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
