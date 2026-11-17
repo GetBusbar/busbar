@@ -13,7 +13,7 @@
 
 use std::future::poll_fn;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr};
+use std::net::{Shutdown, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -37,12 +37,6 @@ pub struct Net {
     logical_dest: Box<str>,
     epoch: u64,
     prefix: busbar_contract::secure::SecureVec,
-}
-
-impl Net {
-    fn peer_ip(&self) -> Option<IpAddr> {
-        socket::peer_ip(&self.sock.socket())
-    }
 }
 
 impl AsyncRead for Net {
@@ -255,13 +249,14 @@ pub(super) async fn connect(
     Err(failed)
 }
 
-/// The name a handshake checks: the SNI when there is one, else the peer's address.
-fn server_name(sni: &str, peer: Option<IpAddr>) -> Result<ServerName<'static>, NeedErr> {
-    if !sni.is_empty() {
-        return ServerName::try_from(sni.to_owned()).map_err(|_| NeedErr::Invalid);
-    }
-    peer.map(|ip| ServerName::IpAddress(ip.into()))
-        .ok_or(NeedErr::Invalid)
+/// The original logical origin (or its accepted SNI), never the connected proxy's IP.
+fn server_name(sni: &str, dest: &str) -> Result<ServerName<'static>, NeedErr> {
+    let name = if sni.is_empty() {
+        crate::tls::store::host_only(dest)
+    } else {
+        sni.to_owned()
+    };
+    ServerName::try_from(name).map_err(|_| NeedErr::Invalid)
 }
 
 /// The TLS handshake over `net`, and what it negotiated.
@@ -361,7 +356,7 @@ impl ConnectorIo {
         offered: &[Vec<u8>],
         timeout: Duration,
     ) -> Result<Dialled<Stream>, NeedErr> {
-        let name = server_name(plan.sni, net.peer_ip())?;
+        let name = server_name(plan.sni, &net.logical_dest)?;
         let host = net.logical_dest.clone();
         let result = async {
             let config = self.configs().get(&host, plan, offered)?;
