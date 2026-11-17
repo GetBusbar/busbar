@@ -1070,3 +1070,6 @@ fn stdio_selects_line_serving_through_mains_cli_path() {
     assert!(!line_serve_requested(&Argv::parse(Vec::<String>::new())));
     assert!(!line_serve_requested(&Argv::parse(["--mcp-stdio"])));
 }
+
+#[path = "openapi_evolution.rs"]
+mod openapi_evolution;
