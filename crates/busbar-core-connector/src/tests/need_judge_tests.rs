@@ -176,3 +176,77 @@ async fn native_judge_keeps_its_own_listener_snapshot() {
     );
     assert!(serving.dial("127.0.0.1", 8080, OPS, OWNER).await.is_ok());
 }
+
+#[tokio::test]
+async fn proxy_dns_checks_available_answers_and_only_delegates_unresolved_names() {
+    use busbar_kernel::config::tls::ProxyResolution;
+    let proxy = crate::proxy::test_config("127.0.0.1", 3128, None, "direct.example");
+    for answer in [
+        Ok(vec!["10.0.0.7".parse().unwrap()]),
+        Err("no local answer".into()),
+        Ok(vec![]),
+    ] {
+        let denied = answer.as_ref().is_ok_and(|ips| !ips.is_empty());
+        let resolver = Fixed {
+            answer,
+            lookups: Arc::default(),
+        };
+        let judge = Judge::with_proxy(
+            Guard::default().freeze(),
+            resolver,
+            Some(proxy.clone()),
+            ProxyResolution::Proxy,
+        );
+        let route = judge
+            .plan("origin.example", 443, DEFAULT, false, true, OWNER)
+            .await;
+        if denied {
+            assert!(matches!(route, Err(NeedErr::Denied)));
+        } else {
+            assert_eq!(route.unwrap().tunnel.unwrap().target, "origin.example:443");
+        }
+        assert!(
+            judge
+                .plan("direct.example", 443, DEFAULT, false, true, OWNER)
+                .await
+                .is_err(),
+            "NO_PROXY still needs local address admission"
+        );
+    }
+}
+
+#[tokio::test]
+async fn proxy_local_dns_pins_the_target_and_checks_proxy_own_node() {
+    use busbar_kernel::config::tls::ProxyResolution;
+    let proxy = crate::proxy::test_config("127.0.0.1", 3128, None, "");
+    let resolver = || Fixed {
+        answer: Ok(vec!["93.184.216.34".parse().unwrap()]),
+        lookups: Arc::default(),
+    };
+    let guard = Guard::default();
+    let judge = Judge::with_proxy(
+        guard.freeze(),
+        resolver(),
+        Some(proxy.clone()),
+        ProxyResolution::Local,
+    );
+    let route = judge
+        .plan("origin.example", 443, DEFAULT, false, true, OWNER)
+        .await
+        .expect("public target through configured proxy");
+    assert_eq!(route.addrs, ["127.0.0.1:3128".parse().unwrap()]);
+    assert_eq!(route.tunnel.unwrap().target, "93.184.216.34:443");
+    guard.publish_own(&[3128], &[]);
+    let judge = Judge::with_proxy(
+        guard.freeze(),
+        resolver(),
+        Some(proxy),
+        ProxyResolution::Local,
+    );
+    assert!(matches!(
+        judge
+            .plan("origin.example", 443, DEFAULT, false, true, OWNER)
+            .await,
+        Err(NeedErr::Denied)
+    ));
+}
