@@ -217,6 +217,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detached_response_waiter_does_not_dispose_reserved_publication() {
+        let handle = handle();
+        let prior = handle.load();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let applied = Arc::new(tokio::sync::Notify::new());
+        let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = Arc::clone(&applied);
+        handle.on_apply(Box::new(move |_| observed.notify_one()));
+        let request_handle = Arc::clone(&handle);
+        let opening = Arc::clone(&entered);
+        let finish = Arc::clone(&release);
+        let reserved_epoch = Arc::clone(&epoch);
+        let waiter = tokio::spawn(async move {
+            config_transaction(&request_handle, |txn| {
+                let prior = Arc::clone(txn.app());
+                Ok::<_, TxnError>(Outcome::asynchronous(async move {
+                    let reservation = reserve(Some(&prior))
+                        .await
+                        .map_err(TxnError::Validation)?
+                        .unwrap();
+                    reserved_epoch.store(reservation.epoch(), Ordering::Release);
+                    opening.notify_one();
+                    finish.notified().await;
+                    let mut next = (*prior).clone();
+                    next.publication_generation = Some(reservation);
+                    Ok(Outcome::commit(Arc::new(next), || Ok(()), ()))
+                }))
+            })
+            .await
+        });
+        entered.notified().await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(Arc::ptr_eq(&prior, &handle.load()));
+        release.notify_one();
+        applied.notified().await;
+        assert!(!Arc::ptr_eq(&prior, &handle.load()));
+        assert_eq!(
+            handle.load().config_generation.load(Ordering::Acquire),
+            epoch.load(Ordering::Acquire)
+        );
+    }
+
+    #[tokio::test]
     async fn stale_candidate_reservation_cannot_publish_over_a_new_app() {
         let handle = handle();
         let prior = handle.load();
@@ -250,10 +295,15 @@ mod tests {
             .unwrap();
         let mut next = (*prior).clone();
         next.publication_generation = Some(reserved);
+        let persisted = AtomicUsize::new(0);
         assert!(other
-            .commit_and_swap(Arc::new(next), || Ok(()))
+            .commit_and_swap(Arc::new(next), || {
+                persisted.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            })
             .await
             .is_err());
+        assert_eq!(persisted.load(Ordering::Acquire), 0);
         assert!(Arc::ptr_eq(&prior, &handle.load()));
         assert!(Arc::ptr_eq(&prior, &other.load()));
     }
