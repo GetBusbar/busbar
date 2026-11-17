@@ -314,6 +314,7 @@ impl PhysicalConnection {
         let state = Arc::new(StreamState {
             phase: Mutex::new(Phase::Pending),
             cancelled: CancellationToken::new(),
+            _request: request.clone(),
         });
         {
             let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
@@ -390,6 +391,8 @@ enum Phase {
 struct StreamState {
     phase: Mutex<Phase>,
     cancelled: CancellationToken,
+    // The response/feed owner may outlive both the Router call and all input backing.
+    _request: RequestLease,
 }
 impl StreamState {
     fn cancel(&self) {
