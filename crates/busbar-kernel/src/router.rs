@@ -174,10 +174,33 @@ async fn admin_response_boundary(
         return next.run(req).await;
     }
     let request_id = crate::admin::gate::request_id_of(handle.load().next_request_id());
+    // ADMIN-API-1.6-ONE-MODEL section 7: the caller's own id and trace ride beside the minted id.
+    // The admin span is the child of the caller's span; with no randomness it has no id to name,
+    // and the answer then carries no traceparent.
+    let correlation = crate::admin::gate::Correlation::of(req.headers());
+    let span_id = correlation
+        .trace
+        .as_ref()
+        .and_then(|_| busbar_contract::crypto::random::<8>().ok());
+    let span = tracing::info_span!(
+        "admin_request",
+        request_id = %request_id,
+        trace_id = correlation.trace.as_ref().map(|t| t.trace_id.as_str()),
+        parent_span_id = correlation.trace.as_ref().map(|t| t.parent_id.as_str()),
+        span_id = span_id.map(hex::encode).as_deref(),
+        client_request_id = correlation.client_request_id.as_deref(),
+    );
     // The admin router layer that owns ETags and `Idempotency-Key` (ADMIN-API-1.6 6) reads the
     // handle from here: a layer on a `Router<Arc<AppHandle>>` cannot extract `State`.
     req.extensions_mut().insert(handle.clone());
-    let mut response = crate::admin::gate::with_request_id(request_id.clone(), next.run(req)).await;
+    let mut response = tracing::Instrument::instrument(
+        crate::admin::gate::with_request_id(
+            request_id.clone(),
+            crate::admin::gate::with_correlation(correlation.clone(), next.run(req)),
+        ),
+        span,
+    )
+    .await;
     let plain_text = response
         .headers()
         .get(CONTENT_TYPE)
@@ -214,6 +237,7 @@ async fn admin_response_boundary(
             .entry(crate::admin::gate::HEADER_REQUEST_ID)
             .or_insert(value);
     }
+    correlation.answer(span_id.as_ref(), response.headers_mut());
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
