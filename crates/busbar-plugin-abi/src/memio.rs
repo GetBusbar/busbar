@@ -402,9 +402,27 @@ mod tests {
     #[derive(Default)]
     struct Rec(Vec<(u16, Vec<u8>)>);
     impl Writer for Rec {
+        fn put_parts(&mut self, _: u16, _: &[&[u8]]) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_pod_nested<T: crate::records::Pod>(
+            &mut self,
+            _: u16,
+            _: &T,
+            _: impl FnOnce(&mut crate::records::Nested<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
+        }
         fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
             self.0.push((tag, body.to_vec()));
             Ok(())
+        }
+        fn put_u32s(
+            &mut self,
+            _: u16,
+            _: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
         }
         fn put_pod<T: crate::records::Pod>(&mut self, _: u16, _: &T) -> Result<(), Full> {
             unreachable!()

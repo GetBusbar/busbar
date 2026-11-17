@@ -21,7 +21,7 @@ export:
     module: request-log
 ";
 
-/// An export axis that links every module and accepts any settings: the kernel has no root to link
+/// An export axis that links every module, accepts any settings and declares no stream set: the kernel has no root to link
 /// the exporters the 1.5.5 file names, and these tests judge instance ids, not exporters.
 struct AcceptsEveryExporter;
 
@@ -32,7 +32,9 @@ impl busbar_contract::export_calls::ExportAxis for AcceptsEveryExporter {
         _: &str,
         _: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Option<busbar_contract::export_calls::Probed> {
-        Some((Some(Vec::new()), Vec::new(), None))
+        // No stream declaration: the module carries what the release produces. An empty
+        // declaration would be a module that carries nothing, refused since S2-CA-C3.
+        Some((None, Vec::new(), None))
     }
     fn check(
         &self,
@@ -41,14 +43,6 @@ impl busbar_contract::export_calls::ExportAxis for AcceptsEveryExporter {
         _: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>> {
         Some(Vec::new())
-    }
-    fn open(
-        &self,
-        module: &str,
-        _: &str,
-        _: &busbar_contract::export_calls::PreparedExport,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls>, String> {
-        Err(format!("{module} opens nothing here"))
     }
     fn linked(&self, _: &str) -> bool {
         true

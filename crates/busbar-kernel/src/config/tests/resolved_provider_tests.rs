@@ -40,7 +40,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
     assert_eq!(p.base_url, "https://api.example.com");
     assert_eq!(p.path.as_deref(), Some("/v1/x"));
     assert_eq!(p.api_key, crate::config::secret::descriptor_reference("K"));
-    for key in CORE_PROVIDER_KEYS {
+    for key in CORE_PROVIDER_KEYS.iter().filter(|key| **key != "protocol") {
         assert!(
             !p.table.contains_key(*key),
             "`{key}` is the kernel's, never in the table"

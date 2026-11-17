@@ -58,10 +58,21 @@ crate::kind! {
             pub base_path: crate::types::Str<'a>,
             pub upstream: crate::types::Str<'a>,
             pub provider: crate::types::Str<'a>,
+            // The `path` parameter is the raw UTF-8 full static request-path override, including
+            // its configured query. The plane applies it before wire encoding, query precedence
+            // and signing. `base_path` remains the separate configured path_base.
             pub params: crate::types::Slice<'a, crate::types::Pair<'a>>,
+            // Host-prepared admission records; an empty block conveys no resource authority.
+            pub admission: crate::types::Bytes<'a>,
         }
         }
         pods {
+        pub struct ResourceEchoRec {
+            pub invocation: u64,
+            pub generation: u64,
+            pub route: u32,
+            pub descriptor: u32,
+        }
         pub struct Respond {
             pub status: u32,
             pub flags: u32,
@@ -178,6 +189,33 @@ crate::kind! {
             pub amount: u64,
             pub scale: u32,
             pub source: u32,
+        }
+        /// Current selected exchange-zero correlation; tail = configured resource, empty only if unbound.
+        pub struct SelectedResourceRec {
+            pub attempt: u32,
+            pub exchange: u32,
+        }
+        /// Complete candidate estimate replacement; tail = PREPARED_ESTIMATE records, one per declared class.
+        pub struct PreparedEstimatesRec {
+            pub attempt: u32,
+            pub exchange: u32,
+        }
+        /// Tail = class. knowledge 1 = known (scale <= 9), 2 = unknown (amount and scale exactly zero).
+        pub struct PreparedEstimateRec {
+            pub amount: u64,
+            pub scale: u32,
+            pub knowledge: u32,
+        }
+        /// Cumulative current-attempt usage; tail = declared attempt class, never a session total.
+        pub struct AttemptUsageRec {
+            pub attempt: u32,
+            pub _r: u32,
+            pub usage: UsageRec,
+        }
+        /// Current attempt terminal coverage: 1 complete, 2 partial, 3 unknown. No tail.
+        pub struct AttemptUsageEndRec {
+            pub attempt: u32,
+            pub completeness: u32,
         }
         /// Describe: one billable class this plane may report. unit = UNIT_*. expected_units = the amount
         /// of this class one request is expected to use when the plane states no EXPECT for it (NaN = no
@@ -580,6 +618,15 @@ crate::kind! {
             /// `request` answer: expected usage of one class for this request (UsageRec + class text; source
             /// must be SRC_ESTIMATED). Core prices it per candidate into C_COST_TERM (§8.4). Plane-local.
             EXPECT = 0x013A;
+            /// Selected preparation input/echo; upstream answer only (SelectedResourceRec + resource).
+            SELECTED_RESOURCE = 0x0160;
+            /// Complete typed estimate view in upstream preparation (PreparedEstimatesRec + nested entries).
+            PREPARED_ESTIMATES = 0x0161;
+            /// Nested only in PREPARED_ESTIMATES (PreparedEstimateRec + class).
+            PREPARED_ESTIMATE = 0x0162;
+            /// Cumulative current-attempt facts; FROM_UPSTREAM exchange zero or current unsealed session end.
+            ATTEMPT_USAGE = 0x0163;
+            ATTEMPT_USAGE_END = 0x0164;
             /// usage-observation custody (§12.4): intents, their core-built answers, nested pieces.
             OBS_SCOPE = 0x013B;
             OBS_SCOPE_ANS = 0x013C;
@@ -632,6 +679,9 @@ crate::kind! {
             D_DIALECT = 0x0181;
             D_TICK_S = 0x0182;
             D_USAGE_CLASS = 0x0183;
+            /// Unique attempt-owned subset of D_USAGE_CLASS; every UNIT_TOKENS class must be included.
+            /// Physical token quantities must be producer-normalized and disjoint; no semantic dedup in core.
+            D_ATTEMPT_CLASS = 0x0198;
             D_PROVIDER_SCHEMA = 0x0185;
             D_DIALECT_AUTH = 0x0186;
             /// Round 15: the nested fields of D_DIALECT_AUTH (only valid inside it; anywhere else FAULT UnknownTag).
@@ -656,6 +706,20 @@ crate::kind! {
             /// auth plugin, style or instance; core alone picks which configured auth instances run (§12.11
             /// "Route credential header").
             D_ROUTE_CRED_HEADER = 0x018E;
+            /// RouteHeaderRec followed by nested TEXT resource kinds.
+            D_ROUTE_RESOURCES = 0x0199;
+            RESOURCE_ENTRY = 0x0168;
+            RESOURCE_DESCRIPTOR = 0x0169;
+            RESOURCE_KIND = 0x016A;
+            RESOURCE_VALUE = 0x016B;
+            RESOURCE_FORWARD = 0x016C;
+            RESOURCE_UPSTREAM = 0x016D;
+            RESOURCE_DIALECT = 0x016E;
+            RESOURCE_MODEL = 0x016F;
+            RESOURCE_SELECTED = 0x0170;
+            RESOURCE_ECHO = 0x0171;
+            RESOURCE_POOL = 0x0172;
+            RESOURCE_MEMBER = 0x0173;
         }
         consts {
             REQUIRED: u64 = 0b1111;
@@ -841,6 +905,13 @@ crate::kind! {
         /// 0x100 (round 3's kind code CONNECT_REQUIRED) is retired: it is the generic R_CONNECT_REQUIRED now.
         /// describe fact bits: FB_PROBES = core may call `probe` per member (today's TAIL_PROBES).
             FB_PROBES: u64 = 1;
+            FB_RESOURCE_ADMISSION: u64 = 1 << 3;
+            RESOURCE_INVENTORY: u32 = 1;
+            RESOURCE_SELECT: u32 = 2;
+            /// Opt-in cumulative attempt accounting. Attempt classes cannot also use USAGE/OBS_COUNT in forwarded sessions.
+            FB_ATTEMPT_USAGE: u64 = 1 << 1;
+            /// Independent opt-in: every successful preparation returns a complete known/unknown estimate view.
+            FB_PREPARED_ESTIMATES: u64 = 1 << 2;
         /// wants (core reads them to choose candidates; plane-local keys, never forwarded to another kind)
         /// Round 10: W_UPSTREAM (FACT_TEXT = a configured upstream name the plane saw in `Target.upstream`):
         /// core's walk tries only that member and never reroutes; RETRY/HARD then yield P_EXHAUSTED (a
@@ -937,6 +1008,7 @@ crate::kind! {
             M_ADMIN: u64 = 1 << 6;
             M_PROBE: u64 = 1 << 7;
             M_DEMUX: u64 = 1 << 8;
+            M_SELECT_RESOURCES: u64 = 1 << 9;
         }
         /// Start one request. Answer (after the shim's TOKEN) is one of: RESPOND+PAIR*+(BODY*|MSG*)+(TRAILERS+PAIR*)?+END
         /// (answered locally); FORWARD + wants (core picks candidates, then calls `upstream`); intents alone
@@ -1018,6 +1090,11 @@ crate::kind! {
         /// Round 18: DEMUX may route by role instead of slot: DX_OUTSTANDING (the call now asking) or DX_BROADCAST
         /// (every session registered under a key), DemuxRec. Still pure: it reads key and message and names no session.
         sync fn demux(&self, h: &Host, key: Str<'_>, message: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, key, message, out); Err(crate::fail::Fail::unsupported()) }
+
+        /// Pure, sessionless resource facts. INVENTORY reads this opened instance's immutable config;
+        /// SELECT reads the exact frozen request. Host services are unavailable except output growth.
+        /// Answer only RESOURCE_ENTRY* or RESOURCE_SELECTED* respectively. No Needs or intents.
+        sync fn select_resources(&self, h: &Host, mode: u32, req: &PlaneReq<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, mode, req, body, out); Err(crate::fail::Fail::unsupported()) }
 
         extras {
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
@@ -1140,6 +1217,28 @@ crate::kind! {
                         }),
                         answer,
                     ))
+                }
+
+                pub fn select_resources<'o>(
+                    &self, buf: &'o mut crate::host_side::pool::PooledOut,
+                    mode: u32, req: &PlaneReq<'_>, body: &[u8],
+                ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
+                    use crate::plugin::__rt::Arg;
+                    use crate::types::Bytes;
+                    use crate::fail::{CallError, FaultReason};
+                    use crate::records::{Records, RecErr, tag};
+                    if !self.inst.is_live() { return Err(CallError::Quarantined); }
+                    let pure = crate::host_side::entry::Pure::enter();
+                    let status=crate::host_side::driver::step(self.inst.slot,
+                        crate::host_side::proxy::entry(M_SELECT_RESOURCES), buf, |lease| {
+                            self.live.call3(|vt| &vt.select_resources,
+                                (Arg::u32(mode), Arg::view(req), Arg::bytes(Bytes::new(body))), lease)
+                        }).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+                    if pure.violated() || Records::new(buf.bytes()).any(|r| r.is_ok_and(|r|r.tag==tag::TOKEN)) {
+                        return Err(self.inst.charge(FaultReason::BadRecords(RecErr::Reserved)));
+                    }
+                    crate::host_side::answer::Answer::parse(status,buf.bytes())
+                        .map_err(|r|self.inst.charge(r))
                 }
 
                 pub fn demux<'o>(

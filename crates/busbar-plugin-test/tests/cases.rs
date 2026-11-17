@@ -10,6 +10,16 @@
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
 
+/// Custom conformance registries share process-owned sinks, watchdog and instance IDs.
+/// Like the suite harness, these cases run one test per process under nextest.
+fn process_resources() -> &'static busbar_plugin_loader::process::ProcessResources {
+    static PROCESS: std::sync::OnceLock<busbar_plugin_loader::process::ProcessResources> =
+        std::sync::OnceLock::new();
+    PROCESS.get_or_init(|| {
+        busbar_plugin_loader::process::ProcessResources::new().expect("test process resources")
+    })
+}
+
 #[path = "bridge_fixture.rs"]
 mod bridge_fixture;
 #[path = "c_a2a_card_redirect.rs"]

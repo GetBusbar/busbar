@@ -23,18 +23,12 @@ async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings()
     let key = kernel::governance::synthesize_bound_key("idp", &principal, &rb).expect("bound");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane-host-role-{}",
@@ -55,7 +49,7 @@ async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings()
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -130,21 +124,16 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
     let build = async |shared: Option<(
         Arc<kernel::persistence::facade::CoreStore>,
         kernel::config::StoreCfg,
+        Arc<dyn kernel::appbuild::RootRules>,
     )>| {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "plane-host-audit-{}",
@@ -165,7 +154,7 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
                 "models": {},
                 "auth": { "chain": [], "admin_auth": [] },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }),
             &crate::root::boot::axis_test_grammar(),
         )
@@ -175,20 +164,16 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn kernel::appbuild::RootRules>;
-        let core = if let Some((core, store_cfg)) = shared {
+        let (core, rules) = if let Some((core, store_cfg, reader)) = shared {
             config.store = Some(store_cfg);
-            core
+            (core, crate::root::min3_boot::fixture::carry(reader, rules))
         } else {
-            crate::root::real_store::core_over(
-                kernel::appbuild::bootstrap_config_store(
-                    &config,
-                    &plugin_config,
-                    &busbar_kernel::preflight::Unopened,
-                )
+            let opened = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules)
                 .await
-                .expect("the shared configured backend opens"),
-            )
-            .await
+                .expect("the shared configured backend opens")
+                .admit()
+                .await;
+            (opened.core, opened.rules)
         };
         let store_cfg = config
             .store
@@ -262,10 +247,10 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
         if let Some(rotate) = rotate {
             rotate.await;
         }
-        (Arc::new(app), core, store_cfg)
+        (Arc::new(app), core, store_cfg, rules)
     };
-    let (app, core, store_cfg) = build(None).await;
-    let (other, _, _) = build(Some((core, store_cfg))).await;
+    let (app, core, store_cfg, rules) = build(None).await;
+    let (other, _, _, _) = build(Some((core, store_cfg, rules))).await;
     let host = kernel::plane_driver::engine_host(&app);
     host.hook_read("port-hook", Some("key-1"), OP, true)
         .await

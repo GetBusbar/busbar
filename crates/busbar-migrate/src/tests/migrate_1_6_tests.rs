@@ -98,56 +98,6 @@ fn a_metadata_entry_naming_no_host_is_removed_and_reported() {
     assert!(lines[0].contains("never matched any destination on 1.5.5"));
 }
 
-/// BUSBAR-3411: the retired 1.5.5 cloud-metadata carve-outs are removed whatever they hold, every
-/// entry that admitted something named; `blocked_metadata_hosts` stays.
-#[test]
-fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
-    let (after, report) = passes(
-        "security:\n  blocked_metadata_hosts: ['10.9.9.9']\n  \
-         allow_metadata_hosts: ['169.254.169.254', 'imds.corp']\n  allow_all_metadata: true\n\
-         providers:\n  gemini:\n    allow_metadata_hosts: ['169.254.170.2']\n  \
-         other:\n    allow_metadata_hosts: []\n",
-        &facts(),
-    )
-    .unwrap();
-    assert!(after.at("security").get("allow_metadata_hosts").is_none());
-    assert!(after.at("security").get("allow_all_metadata").is_none());
-    assert_eq!(
-        after
-            .at("security")
-            .at("blocked_metadata_hosts")
-            .at(0_usize),
-        &Value::from("10.9.9.9")
-    );
-    for provider in ["gemini", "other"] {
-        assert!(after
-            .at("providers")
-            .at(provider)
-            .get("allow_metadata_hosts")
-            .is_none());
-    }
-    for (path, entry) in [
-        ("security.allow_metadata_hosts", "169.254.169.254"),
-        ("security.allow_metadata_hosts", "imds.corp"),
-        ("security.allow_all_metadata", "true"),
-        ("providers.gemini.allow_metadata_hosts", "169.254.170.2"),
-    ] {
-        assert!(
-            report
-                .iter()
-                .any(|line| line
-                    .starts_with(&format!("BUSBAR-3411: {path}: removed entry '{entry}'"))),
-            "{path} {entry}: {report:?}"
-        );
-    }
-    assert!(
-        report
-            .iter()
-            .any(|line| line
-                .starts_with("BUSBAR-3411: providers.other.allow_metadata_hosts: removed"))
-    );
-}
-
 /// (x)(1): the open units from the facts are priced at 0, the cache-write TTL units at the lane's
 /// write rate; a plane lane is left alone; a lane already pricing a unit keeps its price.
 #[test]
@@ -213,4 +163,161 @@ fn a_provider_1_5_5_admitted_ungoverned_gains_the_ungoverned_binding() {
     let (again, report) = passes(&yaml::to_string(&after).unwrap(), &facts()).unwrap();
     assert!(yaml::same_tree(&again, &after));
     assert!(report.is_empty(), "{report:?}");
+}
+
+#[test]
+fn trust_optins_migrate_only_when_intent_is_unambiguous() {
+    for unsigned in [false, true] {
+        for third_party in [false, true] {
+            let source = format!("plugins: {{trust: {{allow_unsigned: {unsigned}, allow_third_party: {third_party}}}}}");
+            let result = passes(&source, &facts());
+            if unsigned != third_party {
+                assert!(
+                    result.is_err(),
+                    "one opt-in must require an explicit decision"
+                );
+            } else {
+                let (after, report) = result.unwrap();
+                let trust = after.at("plugins").at("trust");
+                assert_eq!(trust.at("allow_untrusted").as_bool(), Some(unsigned));
+                assert!(trust.get("allow_unsigned").is_none());
+                assert!(trust.get("allow_third_party").is_none());
+                assert!(report.iter().any(|line| line.contains("allow_untrusted")));
+            }
+        }
+    }
+}
+
+#[test]
+fn ambiguous_trust_and_unscoped_publishers_refuse_without_mutation() {
+    for source in [
+        "plugins: {trust: {allow_unsigned: false, allow_untrusted: false}}",
+        "plugins: {trust: {allow_third_party: true}}",
+        "plugins: {trust: {publishers: [{name: vendor, public_key: deadbeef}]}}",
+    ] {
+        let resolved = value(source);
+        let mut after = resolved.clone();
+        assert!(run(
+            after.as_mapping_mut().unwrap(),
+            &resolved,
+            &facts(),
+            &mut Vec::new()
+        )
+        .is_err());
+        assert_eq!(after, resolved, "refusal preserves input: {source}");
+    }
+}
+
+#[test]
+fn explicit_scoped_publisher_policy_needs_no_migration() {
+    let source = "plugins: {trust: {allow_untrusted: false, publishers: [{name: vendor, plugins: [example], keys: [{public_key: deadbeef}]}]}}";
+    let (after, _) = passes(source, &facts()).unwrap();
+    assert_eq!(after, value(source));
+}
+
+/// The three BUSBAR-3411 lines' common shape: one line, every removed path, no entry value.
+fn carve_out_lines(report: &[String]) -> Vec<&String> {
+    report
+        .iter()
+        .filter(|line| line.starts_with("BUSBAR-3411:"))
+        .collect()
+}
+
+/// BUSBAR-3411 (owner-signed removal plus warning): the retired metadata carve-outs are removed
+/// whatever they hold, in ONE line that names every removed path and never an entry's value.
+#[test]
+fn the_retired_metadata_carve_outs_are_removed_in_one_value_free_line() {
+    let (after, report) = passes(
+        "security:\n  blocked_metadata_hosts: ['10.9.9.9']\n  \
+         allow_metadata_hosts: ['169.254.169.254', 'imds.corp']\n  allow_all_metadata: true\n\
+         providers:\n  gemini:\n    allow_metadata_hosts: ['169.254.170.2']\n  \
+         other:\n    allow_metadata_hosts: []\n  third:\n    allow_metadata_hosts: null\n",
+        &facts(),
+    )
+    .unwrap();
+    assert!(after.at("security").get("allow_metadata_hosts").is_none());
+    assert!(after.at("security").get("allow_all_metadata").is_none());
+    assert_eq!(
+        after
+            .at("security")
+            .at("blocked_metadata_hosts")
+            .at(0_usize),
+        &Value::from("10.9.9.9")
+    );
+    for provider in ["gemini", "other", "third"] {
+        assert!(after
+            .at("providers")
+            .at(provider)
+            .get("allow_metadata_hosts")
+            .is_none());
+    }
+    let lines = carve_out_lines(&report);
+    assert_eq!(lines.len(), 1, "one line for every path: {report:?}");
+    for path in [
+        "security.allow_metadata_hosts",
+        "security.allow_all_metadata",
+        "providers.gemini.allow_metadata_hosts",
+        "providers.other.allow_metadata_hosts",
+        "providers.third.allow_metadata_hosts",
+    ] {
+        assert!(lines[0].contains(path), "{path}: {}", lines[0]);
+    }
+    for value in ["169.254.169.254", "imds.corp", "169.254.170.2", "10.9.9.9"] {
+        assert!(
+            !report
+                .iter()
+                .any(|line| line.contains(value) && line.starts_with("BUSBAR-3411")),
+            "an entry value is echoed: {value}"
+        );
+    }
+}
+
+/// The check comes first among the passes, so its line leads the 1d lines.
+#[test]
+fn the_carve_out_line_comes_before_the_other_passes_lines() {
+    let (_, report) = passes(
+        "security:\n  blocked_metadata_hosts: ['']\n  allow_metadata_hosts: ['x']\n",
+        &facts(),
+    )
+    .unwrap();
+    let carve = report
+        .iter()
+        .position(|line| line.starts_with("BUSBAR-3411:"))
+        .expect("the carve-out line");
+    let others: Vec<usize> = report
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| !line.starts_with("BUSBAR-3411:"))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(others.iter().all(|i| *i > carve), "{report:?}");
+}
+
+/// A provider name is operator text: a control character in it is escaped in the line.
+#[test]
+fn a_control_character_in_a_provider_name_is_escaped() {
+    let (_, report) = passes(
+        "providers:\n  \"bad\\e[31mname\":\n    allow_metadata_hosts: ['169.254.169.254']\n",
+        &facts(),
+    )
+    .unwrap();
+    let lines = carve_out_lines(&report);
+    assert_eq!(lines.len(), 1, "{report:?}");
+    assert!(!lines[0].contains('\u{1b}'), "a raw ESC reached the log");
+    assert!(lines[0].contains("bad"), "{}", lines[0]);
+}
+
+/// The shipped 1.5.0 example config (three empty carve-out keys) migrates end to end.
+#[test]
+fn the_shipped_clean_config_migrates_and_drops_its_empty_carve_outs() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../dist/default/tests/fixtures/clean-config-1.5.0.yaml"
+    ))
+    .expect("the shipped fixture");
+    let (after, report) = passes(&text, &facts()).expect("the shipped config migrates");
+    assert!(after.at("security").get("allow_metadata_hosts").is_none());
+    assert!(after.at("security").get("allow_all_metadata").is_none());
+    let lines = carve_out_lines(&report);
+    assert_eq!(lines.len(), 1, "{report:?}");
 }

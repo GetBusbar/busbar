@@ -207,6 +207,24 @@ check. A client with a missing or wrong certificate is dropped at handshake; the
 rejection is contained to that one connection and never affects the server or other
 clients.
 
+### Readiness propagation before shutdown
+
+The first operator signal or an admin restart released by its asking unit immediately makes
+`/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
+ordinary request handling and credential refresh continue for the boot-captured
+`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
+requests do not restart the allowance. Native writer renewal continues until retirement.
+
+A persistence safety failure or natural end of serving skips propagation and starts draining.
+A second OS signal skips propagation and permanently expires the drain clock. These safety
+paths intentionally give up the ordinary propagation allowance.
+
+Set supervisor grace to at least `deregister_delay + 20s + 6s + operator margin`. The default
+therefore requires 31 seconds before margin; the Kubernetes example uses 40 seconds. Increase
+both the allowance and grace if your endpoint/load-balancer propagation needs more time. The
+allowance does not guarantee delivery through an arbitrarily slow external load balancer.
+
 ### Certificate rotation
 
 Certs are loaded once at startup, so rotation always needs a restart. It does not, however, need a
@@ -379,6 +397,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
@@ -392,7 +411,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_lane_inflight` | gauge | `pool`, `lane` | In-flight requests (held concurrency permits) per lane, the depth companion to `busbar_lane_available`. Side-effect-free. |
 | `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated), the independent capacity axis. Unbounded lanes emit no sample. Side-effect-free. |
 | `busbar_pool_queued` | gauge | `pool` | Requests currently parked in the `on_exhausted: queue` bounded wait, per pool. Reads `0` until the queue policy is wired. Side-effect-free. |
-| `busbar_unit_checkpoints_terminal` | gauge | none | Finished governed requests whose spend still awaits settlement in the store (the admission gate's terminal backlog). New governed admission is refused with `503 durability_unavailable` while it is at `advanced.governance.max_pending_checkpoints`. A value that keeps rising means the store is not keeping up. Side-effect-free. |
+| `busbar_unit_checkpoints_terminal` | gauge | none | Finished governed requests whose spend still awaits settlement in the store (the admission gate's terminal backlog). New governed admission is refused with `503 durability_unavailable` while it is at its fixed cap of 20,000. A value that keeps rising means the store is not keeping up. Side-effect-free. |
 | `busbar_governed_admissions_live` | gauge | none | Governed admissions alive: each is released only after its unit's terminal checkpoint is staged, so a shutdown drain waits for this to reach `0`. Side-effect-free. |
 | `busbar_route_policy_selections_total` | counter | `pool`, `policy` | Requests where a selection strategy (a native strategy or a gate hook) produced a usable ranked order. Only incremented on a successful `Order` outcome; abstains and on-error fallbacks are not counted. |
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
@@ -669,7 +688,7 @@ The limit/group model those keys charge through is owned by
 **[Configuration → Virtual keys and enforcement](/docs/configuration/#virtual-keys-and-enforcement)**.
 This guide stays on the operational picture. In brief: `POST /api/v1/admin/keys` mints a key and
 returns the signed token **once**; a key is pure auth (every limit lives on the bound `group`), it
-EXPIRES (default 90 days, so re-mint or rotate before then), and `DELETE` puts its subject on the
+EXPIRES (default 90 days, so mint a replacement before then; rotation does not renew its lifetime), and `DELETE` puts its subject on the
 durable revocation denylist immediately.
 
 ### Containing a self-serve key
@@ -813,6 +832,39 @@ An upstream outage can make `/readyz` or `/healthz` return 503 while the process
 
 ## Configuration recovery boundaries
 
-Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery. A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
+Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery (see [backup set and order](#backup-set-and-order)). A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
 
 Durable MCP task records can be queried through a shared persistent Store. Legacy MCP transport sessions remain process-local: preserve session affinity and expect clients to reconnect after a node restart. Shared task storage does not make every live session portable.
+
+### Backup set and order
+
+A deployment is recoverable only from a complete, consistent set. Back up these items, in this
+order:
+
+1. **Configuration.** `config.yaml`, the stamped `config.yaml.1.5.5` if migration left one,
+   and the providers catalog.
+2. **The Store dataset.** Use the backend's own consistent point-in-time backup, for example a
+   PostgreSQL base backup with its WAL archive, a MySQL consistent snapshot, the SQLite online
+   backup API, or a Valkey RDB snapshot. A copy of live database files taken while a node
+   writes is not a backup. The Memory Store holds nothing across a restart and cannot be
+   backed up.
+3. **Signing material and at-rest keys.** Back these up by reference: each secret source
+   keeps its keys under its own backup, so record which secret source and key versions the
+   configuration names.
+4. **The exported audit stream.** Keep the audit export's own retention covering the Store
+   backup point. It is the only record of what changed in the Store after the backup.
+5. **Plugin packages and the release keys document** that the deployment runs.
+
+Take items 2 and 4 from the same point in time. To restore, stop **every** node that can
+reach the Store, restore in the reverse order (packages and keys document, signing material,
+Store dataset, configuration), then start the nodes again.
+`POST /api/v1/admin/store-restore` does not perform a restore; it always refuses. Restore
+off-node with the backend's own tooling.
+
+A restore returns every Store-held fact to the backup point. Key revocations, trust
+demotions, principal transitions, plugin and keys-document floors, consumed replay claims and
+redeemed single-use tickets recorded after the backup are lost, so a credential consumed after
+the backup point can be presented again until it expires. Before admitting traffic
+again, use the exported audit stream to re-apply every revocation, demotion and principal
+transition made after the backup point, and load packages and a keys document no older than
+the ones the deployment ran before the restore.

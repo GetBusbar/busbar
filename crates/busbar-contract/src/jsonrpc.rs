@@ -52,7 +52,7 @@
 //! code that built the outbound request, and is gone when that code returns: nothing is remembered
 //! between two calls, so there is nothing to invalidate.
 
-use crate::json::{JsonValueTrait as _, Value};
+use crate::json::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 
 /// The JSON-RPC 2.0 standard error codes this module can produce.
 pub const PARSE_ERROR: i64 = -32700;
@@ -478,11 +478,10 @@ fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>
     out.into_vec()
 }
 
-/// `value` as a JSON string, escaped straight into `out`. It stays on the old library until the
-/// facade has a writer that holds no heap buffer of its own: `json::to_writer` stages each piece
-/// in a buffer it neither sizes nor wipes, and these envelopes allocate only their final output.
+/// `value` as a JSON string, escaped straight into `out` without a staging allocation. These
+/// envelopes allocate only their final output; the borrowed string introduces no Value sorting.
 fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {
-    serde_json::to_writer(out, value).map_err(std::io::Error::other)
+    crate::json::to_writer(out, value).map_err(std::io::Error::other)
 }
 
 /// A success response: `{"id":<id>,"jsonrpc":"2.0","result":<result>}`. `id` and `result` are

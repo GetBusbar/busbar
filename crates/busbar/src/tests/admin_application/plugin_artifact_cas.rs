@@ -52,7 +52,7 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -68,13 +68,12 @@ async fn application() -> (Arc<busbar_kernel::state::App>, Scratch) {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -342,11 +341,10 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     let (app, _scratch) = application().await;
     let (_, router, handle) =
         busbar_core_admin::build_split_routers_with_limits(app, 1 << 20, 16, false);
-    let (shutdown, mut receiver) = tokio::sync::broadcast::channel(4);
-    busbar_core_admin::restart::publish_shutdown(
-        shutdown,
-        std::sync::Arc::new(busbar_kernel::endpoints::ProbeState::new(None)),
-    );
+    use busbar_kernel::governance::drain::{ShutdownIntent, ShutdownRequest};
+    let shutdown = ShutdownRequest::default();
+    let mut receiver = shutdown.subscribe();
+    busbar_core_admin::restart::publish_shutdown(shutdown);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -393,10 +391,8 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
     writer.await.unwrap();
     let stale = body(request.await.unwrap(), 409).await;
     assert_eq!(stale["error"]["code"], "version_conflict");
-    assert!(matches!(
-        receiver.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Serving);
+    assert!(!receiver.has_changed().unwrap());
     body(
         client
             .post(&url)
@@ -409,10 +405,8 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         400,
     )
     .await;
-    assert!(matches!(
-        receiver.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Serving);
+    assert!(!receiver.has_changed().unwrap());
     body(
         client
             .post(&url)
@@ -425,10 +419,11 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         202,
     )
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.changed())
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(*receiver.borrow_and_update(), ShutdownIntent::Operator);
     body(
         client
             .post(&url)
@@ -440,10 +435,11 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         202,
     )
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(*receiver.borrow(), ShutdownIntent::Operator);
+    assert!(
+        !receiver.has_changed().unwrap(),
+        "repeated operator requests do not restart deregistration"
+    );
     server.abort();
     let _ = server.await;
 }

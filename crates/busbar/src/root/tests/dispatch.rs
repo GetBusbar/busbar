@@ -5,9 +5,9 @@ use super::*;
 
 #[test]
 fn the_dispatcher_is_built_once_and_every_caller_shares_it() {
-    let a = boot(3, &crate::root::serve::LateServices::new());
+    let a = boot(3, &crate::root::serve::Services::bootstrap());
     let b = dispatcher();
-    let c = boot(9, &crate::root::serve::LateServices::new());
+    let c = boot(9, &crate::root::serve::Services::bootstrap());
     assert!(Arc::ptr_eq(&a, &b), "one dispatcher per process");
     assert!(Arc::ptr_eq(&a, &c), "the first build stands");
     assert!(a.workers() >= 1);
@@ -41,10 +41,10 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
             Ran::Later => panic!("an unresolved judgement answers at once"),
         }
     };
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = build(1, &late);
+    let late = crate::root::serve::Services::bootstrap();
+    let bootstrap_dispatcher = build(1, &late);
     assert_eq!(
-        judged(&dispatcher, "https://93.184.216.34/"),
+        judged(&bootstrap_dispatcher, "https://93.184.216.34/"),
         Stored::refused(crate::root::serve::NOT_INSTALLED),
         "before the composition every service answers REFUSED"
     );
@@ -54,8 +54,18 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     )
     .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
+    let credentials = crate::root::credentials::AppCredentials::new(None);
+    let credential_owner = credentials.clone();
+    let serving = crate::root::serve::Services::serving(Arc::new(
+        crate::root::serve::kernel_services(crate::root::connector::dest_judge(&cfg))
+            .with_credentials(Arc::new(credentials)),
+    ));
+    let dispatcher = build(1, &serving);
+    assert_eq!(
+        judged(&bootstrap_dispatcher, "https://93.184.216.34/"),
+        Stored::refused(crate::root::serve::NOT_INSTALLED),
+        "constructing serving services never upgrades bootstrap authority"
+    );
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::ready(svc::DEST_ALLOWED)
@@ -71,7 +81,9 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         ),
         Ran::Later => panic!("the credential read answers at once"),
     }
-    assert!(!credential_handle.is_set());
+    assert!(!busbar_contract::services::CredentialRead::installed(
+        &credential_owner
+    ));
     assert_eq!(
         judged(&dispatcher, "https://169.254.169.254/latest/meta-data/"),
         Stored::ready(svc::DEST_METADATA)

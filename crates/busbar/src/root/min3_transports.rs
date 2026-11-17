@@ -14,22 +14,21 @@
 //! path passes such an image over (plugin-loader `PluginRegistry::open_transport_entries`: a no-Statement row whose
 //! one stamp names kind TRANSPORT), the same door-axis rule W2-SW-PLANE gave planes.
 //!
-//! The opened ports are published once, before any listener serves, for the connector: the listener's
+//! The opened ports are retained by the complete native generation before any listener serves: the listener's
 //! `alpn(ROLE_SERVER)`, the dial's `alpn(ROLE_CLIENT)` and `defaults(ROLE_CLIENT)`, the session task's
 //! begin/ingest/emit/timer, and the upgrade target by D_PROTOCOL (§12.27).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use busbar_kernel::config::limits::LimitsResolved;
 use busbar_kernel::config::RootCfg;
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::admit::Admitted;
 use busbar_plugin_loader::instance::{BootPhase, InstanceSpec, OpenedPort};
 use busbar_ports::transport::TransportPort;
 
 use super::{Configured, MinRegistry};
 
-/// The limits section word a transport instance is keyed by (`<kind>.<name>.limits`, IF §12.22). The config
+/// The section word a transport instance is keyed by (`insecure_transport` lookups). The config
 /// grammar has no transport section, so every transport instance runs at the kind's defaults
 /// (`limits.stream_stall_ms` 60,000 included) until it gains one.
 const SECTION: &str = "transport";
@@ -51,17 +50,7 @@ pub(crate) struct ServedTransport {
     pub(crate) port: Arc<dyn TransportPort>,
 }
 
-static SERVED: OnceLock<Vec<ServedTransport>> = OnceLock::new();
-
-/// Every transport instance the MIN-3 boot opened, in plan order (empty before the boot, or when the boot took
-/// the old path).
-pub(crate) fn served() -> &'static [ServedTransport] {
-    SERVED.get().map_or(&[], Vec::as_slice)
-}
-
-/// The one instance of `served` declaring D_PROTOCOL `protocol` (ASCII case-insensitive): over [`served()`], the
-/// target of an upgrade to that protocol (§12.27 step 1: none = 501 R_UNSUPPORTED). [`publish`] refused a table
-/// in which two instances declare one protocol, so the first found is the only one.
+/// The unique instance declaring this protocol in an already validated generation table.
 pub(crate) fn declaring<'t>(
     served: &'t [ServedTransport],
     protocol: &str,
@@ -72,15 +61,6 @@ pub(crate) fn declaring<'t>(
             .iter()
             .any(|declared| declared.eq_ignore_ascii_case(protocol))
     })
-}
-
-/// The identity of every admitted MIN-3 transport image, in admission order.
-pub(super) fn identities<'i>(images: impl IntoIterator<Item = &'i Admitted>) -> Vec<String> {
-    images
-        .into_iter()
-        .filter(|image| image.kind() == KindCode::Transport)
-        .map(|image| image.identity().to_owned())
-        .collect()
 }
 
 /// One transport instance per identity, with the settings its D_SCHEMA names and the kind's limits.
@@ -166,7 +146,7 @@ pub(super) fn opened(
 
 /// The served table, or the refusal: two instances declaring one D_PROTOCOL (an upgrade names a protocol, never
 /// a plugin, so exactly one instance may answer it).
-fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
+pub(super) fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
     for (at, one) in served.iter().enumerate() {
         for protocol in one.port.protocols() {
             if let Some(other) = declaring(&served[at + 1..], protocol) {
@@ -179,26 +159,6 @@ fn table(served: Vec<ServedTransport>) -> Result<Vec<ServedTransport>, String> {
         }
     }
     Ok(served)
-}
-
-/// Publish the opened transports for the connector, once per process, and say which they are.
-pub(super) fn publish(opened: Vec<ServedTransport>) -> Result<(), String> {
-    SERVED
-        .set(table(opened)?)
-        .map_err(|_| "the MIN-3 transports were published twice in one process".to_owned())?;
-    let served = served();
-    if !served.is_empty() {
-        tracing::info!(
-            "MIN-3 boot: {} transport instances opened through ports: {}",
-            served.len(),
-            served
-                .iter()
-                .map(|one| &*one.instance)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

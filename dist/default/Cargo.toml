@@ -66,6 +66,7 @@ busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../../crates/plugin-loader" }
+busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi", features = ["host"] }
 busbar-ports = { path = "../../crates/busbar-ports" }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
@@ -342,14 +343,12 @@ transport-ws = "transport transport-door connector-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
-plane-decisions = "plane-door"
-# The fallback plane's door row also fills the protocol axis with the plane's own dialect
-# declarations (its entry's `PROTOCOLS`, contract data; ARCHITECT 2026-10-16 ruling 3): the
-# kernel's registry is seeded from the plane, and names none.
-plane-llm-door = "plane-door protocols"
-plane-mcp-door = "plane-door"
-plane-streaming = "plane-door"
-plane-a2a-door = "plane-door"
+plane-decisions = "min3-images"
+# MIN-3 planes register their PLUGIN header; open describes their dialects and routes.
+plane-llm-door = "min3-images"
+plane-mcp-door = "min3-images"
+plane-streaming = "min3-images"
+plane-a2a-door = "min3-images"
 hooks-complexity = "hooks"
 
 # A linked crate whose entry module is not `<crate>::linked`.
@@ -405,6 +404,11 @@ plane-streaming = "streams"
 # A `hooks` row's is the name the admin surface prints for it (`build.hook_plugins`, the hooks
 # catalogue): plugins.yaml's alias, the name 1.5.5 printed. The admin crate names no hook.
 [package.metadata.busbar.linked-name]
+plane-llm-door = "llm"
+plane-mcp-door = "mcp"
+plane-a2a-door = "a2a"
+plane-decisions = "decisions"
+plane-streaming = "streaming"
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
@@ -740,10 +744,8 @@ members = ["."]
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "bea74851f4c7da848c4ad4cbf5d811d0defb656f" }
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "4102868e504e32b22f1c6f19e6f5a363c1c1d980" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "eb40baa7b52c6a3209357bf298fa513fe48ab46e" }
-# THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is
-# e154678 plus its held-cell test reading the rig's node journal (busbar #1427: the node amendment
-# journal is an instance the node owns; `node_recent` is gone).
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "17372bd6ed66bb1830a635ec745c4880d6b91d56" }
+# Published MIN-3 LLM implementation, linked through its PLUGIN header.
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6f3a36a9762c86fb8059d4fa6598beed6c793932" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
@@ -844,30 +846,20 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "17620de2b816da4f9c38f4c32c2c0ee5d400ff1e" }
-# THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
-# door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
-# Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "0fe33ef5207a828457976be8e165f07300cca4da" }
-# THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
-# decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::door`). Its
-# dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "ae965dc8163be4073876adf08fe213dc21a56424" }
-# THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
-# plane's door row (`plane-a2a-door`, `busbar_plane_a2a::door`), whose own root cells it
-# states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
-# live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026" }
-# THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
-# streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door`), whose own root
-# cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
-# cdylib twin (`busbar-plane-streaming-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "ce5cedec9ad3fec357bdb9c5cd239899efce3fcf" }
+# Published MIN-3 MCP implementation, linked through its PLUGIN header.
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a63691561995d34a307567b85ba0a36f62b5e66c" }
+# Published MIN-3 decisions implementation, linked through its PLUGIN header.
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "316652515c7a01aaa9a87b95f12d1ec33ee615bb" }
+# Published MIN-3 A2A implementation, linked through its PLUGIN header.
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "48bf971292d7a27d5f3eff984ba0dabbb5ed666a" }
+# Published MIN-3 streaming implementation and its matching dropped-in artifact.
+busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "5851d48752d940a15d4bc3a2627f1a486ed6f9ef" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
 # (`cargo build -p busbar-plane-streaming-plugin`), so the dropped door is compiled against the host's
 # busbar-contract through the [patch] below, exactly as the linked row is. Built from the plane's own
 # lock it carried the plane repo's busbar pin, whose plane ops table is not the host's, and every
 # leg's dropped half was refused at load (TableSlots { door: 16, host: 17 }).
-busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "ce5cedec9ad3fec357bdb9c5cd239899efce3fcf" }
+busbar-plane-streaming-plugin = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "5851d48752d940a15d4bc3a2627f1a486ed6f9ef" }
 arc-swap = "1"
 foldhash = "0.2"
 async-trait = "0.1"
@@ -1082,8 +1074,15 @@ zeroize = "1"
 # busbar-contract links into the binary, and a plugin's rev of busbar never decides what the
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
+busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
+
+# Published MIN-3 planes name the GitLab source identity. Resolve their SDK and JSON facade
+# to this same core tree; URL aliases otherwise produce a second SDK/FFI type universe.
+[patch.'https://github.com/GetBusbar/busbar']
+busbar-contract = { path = "../../crates/busbar-contract" }
+busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
@@ -1104,7 +1103,7 @@ serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
 # JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
-sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "10b80cdcbfb07c0edc6535df28f7b248dc4f5223" }
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }

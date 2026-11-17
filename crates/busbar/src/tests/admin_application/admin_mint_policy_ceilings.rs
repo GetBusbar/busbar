@@ -64,7 +64,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -88,10 +88,11 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -208,7 +209,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -232,10 +233,11 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -335,7 +337,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -352,13 +354,12 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -446,7 +447,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -463,13 +464,12 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -582,7 +582,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -605,10 +605,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -729,7 +730,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -752,10 +753,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -876,7 +878,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -899,10 +901,11 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,

@@ -3,7 +3,7 @@
 
 use busbar_contract::crypto::{self, ed25519};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
@@ -143,8 +143,8 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 pub const HOST_IDENTITY: &str = "busbar";
 
 /// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
-/// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
-/// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
+/// A root key vouches for keys documents ([`crate::release_trust`]); plugin admission requires
+/// a delegated release seal, never a bare root signature on an artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstPartyKey {
     /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry
@@ -643,14 +643,8 @@ pub use busbar_contract::plugin_rows::NeedLevel;
 /// EXPLICIT opt-in (never a silent default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllowReason {
-    /// The artifact carries no valid signature (unsigned / tampered) and `allow_unsigned` is set.
-    Unsigned,
-    /// The artifact is VALIDLY signed but by a publisher NOT in the allowlist, and
-    /// `allow_third_party` is set.
-    ThirdParty,
-    /// The artifact is a first-party manifest signed by a RETIRED release key
-    /// ([`RETIRED_RELEASE_KEYS`]) that the operator names under `plugins.trust.publishers`.
-    RetiredKey,
+    /// No configured authority authenticates this artifact; the operator permits untrusted code.
+    Untrusted,
 }
 
 impl AllowReason {
@@ -658,9 +652,7 @@ impl AllowReason {
     #[must_use]
     pub const fn setting(self) -> &'static str {
         match self {
-            Self::Unsigned => "allow_unsigned",
-            Self::ThirdParty => "allow_third_party",
-            Self::RetiredKey => "retired_key",
+            Self::Untrusted => "allow_untrusted",
         }
     }
 }
@@ -669,7 +661,7 @@ impl AllowReason {
 /// keys, the EXPLICIT opt-in flags, and the anti-downgrade floors. Built from `plugins.trust` +
 /// `plugins.min_versions` config (plus the embedded release key and the binary's own version).
 ///
-/// DEFAULT posture (both flags `false`): an untrusted plugin (unsigned OR signed by a
+/// DEFAULT posture (`allow_untrusted: false`): an untrusted plugin (unsigned OR signed by a
 /// non-allowlisted publisher) is REJECTED - logged and skipped, never `dlopen`ed.
 #[derive(Clone, Default)]
 pub struct TrustPolicy {
@@ -720,13 +712,10 @@ pub struct TrustPolicy {
     /// Maintained by `busbar_plugin_loader::HighWaterMarks`: persisted under the fleet data dir when
     /// one is configured, memory-only otherwise (PB-13/15 — no data dir, no files).
     pub first_party_high_water: BTreeMap<String, String>,
-    /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
-    /// (`busbar`) never resolves here.
-    pub publishers: BTreeMap<String, VerifyingKey>,
-    /// Opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default `false`.
-    pub allow_unsigned: bool,
-    /// Opt-in: load plugins validly signed by a publisher NOT in `publishers`. Default `false`.
-    pub allow_third_party: bool,
+    /// Operator-configured publisher authority, scoped to exact artifact names.
+    pub publishers: BTreeMap<String, PublisherTrust>,
+    /// Explicit permission for unsigned or unknown-publisher code, never known-invalid proof.
+    pub allow_untrusted: bool,
     /// ANTI-DOWNGRADE floors: plugin `name` -> minimum acceptable `version`. A floored name must
     /// PROVE (via a trusted signature over a manifest at/above the floor) that it meets the floor;
     /// anything else is a hard reject no opt-in flag can relax. Applies to first- and third-party
@@ -734,15 +723,30 @@ pub struct TrustPolicy {
     pub min_versions: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PublisherKey {
+    pub key: VerifyingKey,
+    pub revoked: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PublisherTrust {
+    pub plugins: BTreeSet<String>,
+    pub keys: Vec<PublisherKey>,
+}
+
+pub use busbar_contract::plugin_rows::Verification;
+
+/// Publisher name, exact allowed artifact names, and (public key hex, revoked) records.
+pub type PublisherInput<'a> = (&'a str, &'a [String], Vec<(&'a str, bool)>);
+
 /// A `plugins:` block's trust facts, as plain data: what [`TrustPolicy::from_config`] resolves.
 #[derive(Debug, Clone, Copy)]
 pub struct TrustInput<'a> {
-    /// The configured third-party publishers, `(name, hex ed25519 public key)`.
-    pub publishers: &'a [(&'a str, &'a str)],
-    /// `plugins.trust.allow_unsigned`.
-    pub allow_unsigned: bool,
-    /// `plugins.trust.allow_third_party`.
-    pub allow_third_party: bool,
+    /// Scoped configured publisher keys, including explicit revoked keys.
+    pub publishers: &'a [PublisherInput<'a>],
+    /// `plugins.trust.allow_untrusted`.
+    pub allow_untrusted: bool,
     /// `plugins.min_versions`: per-name anti-downgrade floors, first- and third-party alike.
     pub min_versions: &'a BTreeMap<String, String>,
     /// The runtime per-name first-party floor overrides (explicit rollback pins).
@@ -754,16 +758,50 @@ pub struct TrustInput<'a> {
 impl TrustPolicy {
     pub fn from_config(i: TrustInput<'_>) -> Result<Self, String> {
         let mut publishers = BTreeMap::new();
-        for &(name, public_key) in i.publishers {
-            if name == FIRST_PARTY_PUBLISHER {
+        let mut public_keys = BTreeSet::new();
+        for (name, allowed, configured_keys) in i.publishers {
+            if *name == FIRST_PARTY_PUBLISHER {
                 return Err(format!(
                     "plugins.trust.publishers['{name}']: the publisher name '{FIRST_PARTY_PUBLISHER}' \
                      is reserved for busbar's embedded release key and cannot be configured"
                 ));
             }
-            let key = public_key_from_hex(public_key)
-                .map_err(|e| format!("plugins.trust.publishers['{name}']: {e}"))?;
-            publishers.insert(name.to_string(), key);
+            if !valid_name(name) || publishers.contains_key(*name) {
+                return Err(format!(
+                    "plugins.trust.publishers['{name}']: invalid or duplicate publisher name"
+                ));
+            }
+            let mut plugins = BTreeSet::new();
+            for plugin in *allowed {
+                if !valid_name(plugin) || !plugins.insert(plugin.clone()) {
+                    return Err(format!("plugins.trust.publishers['{name}']: invalid or duplicate allowed plugin name"));
+                }
+            }
+            if plugins.is_empty() || configured_keys.is_empty() {
+                return Err(format!(
+                    "plugins.trust.publishers['{name}']: plugins and keys must be nonempty"
+                ));
+            }
+            let mut keys = Vec::new();
+            for (public_key, revoked) in configured_keys {
+                let key = public_key_from_hex(public_key)
+                    .map_err(|e| format!("plugins.trust.publishers['{name}']: {e}"))?;
+                if key.is_weak() || ReleaseKey::Ed25519(key).retired_reason().is_some() {
+                    return Err(format!(
+                        "plugins.trust.publishers['{name}']: weak or retired public key"
+                    ));
+                }
+                if !public_keys.insert(key.to_bytes()) {
+                    return Err(format!(
+                        "plugins.trust.publishers['{name}']: public key is already configured"
+                    ));
+                }
+                keys.push(PublisherKey {
+                    key,
+                    revoked: *revoked,
+                });
+            }
+            publishers.insert(name.to_string(), PublisherTrust { plugins, keys });
         }
         Ok(TrustPolicy {
             first_party_key: embedded_release_pubkey(),
@@ -776,8 +814,7 @@ impl TrustPolicy {
             first_party_floors: i.first_party_floors.clone(),
             first_party_high_water: BTreeMap::new(),
             publishers,
-            allow_unsigned: i.allow_unsigned,
-            allow_third_party: i.allow_third_party,
+            allow_untrusted: i.allow_untrusted,
             min_versions: i.min_versions.clone(),
         })
     }
@@ -853,23 +890,25 @@ pub enum RejectKind {
     AntiDowngrade,
     /// A floored (`min_versions`) name whose artifact could NOT prove trust (unsigned/tampered/unknown
     /// publisher). Still a HARD reject the floor forbids relaxing — the floor requires trusted proof, so
-    /// a stripped-signature copy cannot launder a downgrade past it even with `allow_unsigned`/
-    /// `allow_third_party` set. Distinct from [`RejectKind::AntiDowngrade`] SOLELY so the display label
+    /// a stripped-signature copy cannot launder a downgrade past it even with `allow_untrusted`/
+    /// `allow_untrusted` set. Distinct from [`RejectKind::AntiDowngrade`] SOLELY so the display label
     /// reflects the real (untrusted) trust state instead of "trusted (below floor)".
     UntrustedFloored,
     /// No signature at all (or a first-party manifest in a build with no embedded key) and
-    /// `allow_unsigned` is off.
+    /// `allow_untrusted` is off.
     Unsigned,
-    /// A signature was PRESENT but failed verification against a held key, and `allow_unsigned` is
+    /// A signature was PRESENT but failed verification against a held key, and `allow_untrusted` is
     /// off — distinct from [`RejectKind::Unsigned`] for display purposes only.
     Tampered,
-    /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
+    /// A publisher has no configured verification authority and the untrusted opt-in is off.
     UnknownPublisher,
+    /// A configured publisher has no operator authority for this artifact name.
+    PublisherScope,
     /// An older build of a plugin whose newer build is in the same directory (the registry's
     /// supersede pass): not loaded, the newer build is.
     Superseded,
     /// A first-party manifest signed by a RETIRED release key ([`RETIRED_RELEASE_KEYS`]) the
-    /// operator does not name under `plugins.trust.publishers`, whatever `allow_unsigned` says.
+    /// operator does not name under `plugins.trust.publishers`, whatever `allow_untrusted` says.
     RetiredKey,
     /// An authenticated artifact or signer was revoked; no trust opt-in can admit it.
     Revoked,
@@ -888,6 +927,7 @@ impl RejectKind {
             Self::Unsigned => "unsigned",
             Self::Tampered => "tampered",
             Self::UnknownPublisher => "unknown_publisher",
+            Self::PublisherScope => "publisher_scope",
             Self::Superseded => "superseded",
             Self::RetiredKey => "retired_key",
             Self::Revoked => "revoked",
@@ -946,6 +986,68 @@ pub fn sign(key: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manife
     manifest.signature = String::new();
     let sig = key.sign(&canonical_manifest_bytes(&manifest));
     manifest.signature = hex::encode(sig.to_bytes());
+    manifest
+}
+
+/// Make a real release chain for test fixtures; no admission bypass is involved.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seal_test_artifact(root: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manifest {
+    use crate::release_trust::{
+        wire, KeysDoc, Role, Target, TargetsDoc, PLUGINS_ROLE, PLUGIN_TARGET,
+    };
+    let signer = SigningKey::from_bytes(&[197; 32]);
+    let root_key = ReleaseKey::Ed25519(root.verifying_key());
+    let signing_key = ReleaseKey::Ed25519(signer.verifying_key());
+    let signer_id = wire::key_id(&signing_key);
+    let expires = wire::parse_time("2100-01-01T00:00:00Z").expect("test expiry is valid");
+    let keys = KeysDoc {
+        version: 1,
+        expires,
+        keys: [(signer_id.clone(), signing_key)].into_iter().collect(),
+        roles: [(
+            PLUGINS_ROLE.into(),
+            Role {
+                keyids: vec![signer_id.clone()],
+                threshold: 1,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..KeysDoc::default()
+    };
+    manifest.sha256 = sha256_hex(artifact);
+    let canonical = canonical_manifest_bytes(&manifest);
+    let targets = TargetsDoc {
+        role: PLUGINS_ROLE.into(),
+        version: 1,
+        expires,
+        targets: vec![Target {
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            target: PLUGIN_TARGET.into(),
+            sha256: sha256_hex(&canonical),
+            length: canonical.len() as u64,
+        }],
+    };
+    let keys_payload = wire::keys_signed(&keys);
+    let keys_bytes = wire::canonical(&keys_payload).expect("test keys canonicalize");
+    let keys_envelope = wire::write_envelope(
+        &keys_payload,
+        &[(
+            wire::key_id(&root_key),
+            root.sign(&keys_bytes).to_bytes().to_vec(),
+        )],
+    )
+    .expect("test root envelope encodes");
+    let targets_payload = wire::targets_signed(&targets);
+    let targets_bytes = wire::canonical(&targets_payload).expect("test targets canonicalize");
+    let targets_envelope = wire::write_envelope(
+        &targets_payload,
+        &[(signer_id, signer.sign(&targets_bytes).to_bytes().to_vec())],
+    )
+    .expect("test signer envelope encodes");
+    manifest.signature =
+        wire::write_seal(&keys_envelope, &targets_envelope).expect("test seal encodes");
     manifest
 }
 
@@ -1050,23 +1152,13 @@ fn first_party_signer_evidence<'k>(
     keys: &'k [FirstPartyKey],
     checks: crate::release_trust::Checks,
     target: &str,
-) -> Result<(&'k FirstPartyKey, Option<u64>), FirstPartyUnverified> {
+) -> Result<(&'k FirstPartyKey, crate::release_trust::Verified), FirstPartyUnverified> {
     if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
         return first_party_sealed(manifest, bytes, keys, checks, seal, target);
     }
-    let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
-    let canonical = canonical_manifest_bytes(manifest);
-    for root in keys {
-        if root.retired_reason().is_none()
-            && matches!(root.key, ReleaseKey::Ed25519(_))
-            && crate::release_trust::wire::verify(&root.key, &canonical, &sig)
-        {
-            return Ok((root, None));
-        }
-    }
-    Err(FirstPartyUnverified::NoKey {
-        trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
-    })
+    Err(FirstPartyUnverified::Malformed(
+        "Busbar artifacts require a release seal; embedded roots sign keys documents, not artifacts".into(),
+    ))
 }
 
 fn first_party_sealed<'k>(
@@ -1076,7 +1168,7 @@ fn first_party_sealed<'k>(
     checks: crate::release_trust::Checks,
     seal: Result<crate::release_trust::wire::SealBytes, String>,
     target: &str,
-) -> Result<(&'k FirstPartyKey, Option<u64>), FirstPartyUnverified> {
+) -> Result<(&'k FirstPartyKey, crate::release_trust::Verified), FirstPartyUnverified> {
     use crate::release_trust::{verify_release, Seal, SealRefusal, Subject};
     let trusted_keys = || keys.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
     let lib_sha256 = sha256_hex(bytes);
@@ -1116,7 +1208,7 @@ fn first_party_sealed<'k>(
         keys.iter()
             .find(|k| k.id == verified.root)
             .expect("the vouching root is one of `keys`"),
-        Some(verified.keys_version),
+        verified,
     ))
 }
 
@@ -1145,38 +1237,13 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
     }
 }
 
-fn version_components(v: &str) -> Option<[&str; 3]> {
-    if !valid_semver(v) {
-        return None;
-    }
-    let core = v.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut component = || {
-        let digits = parts.next()?.trim_start_matches('0');
-        Some(if digits.is_empty() { "0" } else { digits })
-    };
-    Some([component()?, component()?, component()?])
-}
-
+/// `have` ≥ `floor` by SemVer 2.0 precedence (the one comparator, DES-359 r3 L11); an empty floor is no floor.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
-    if floor.is_empty() {
-        return true;
-    }
-    let (Some(have), Some(floor)) = (version_components(have), version_components(floor)) else {
-        return false;
-    };
-    for (have, floor) in have.into_iter().zip(floor) {
-        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Equal => {}
-        }
-    }
-    true
+    busbar_contract::semver::version_at_least(have, floor)
 }
 
 fn floor_note(floor: &str) -> &'static str {
-    if floor.is_empty() || valid_semver(floor) {
+    if floor.is_empty() || busbar_contract::semver::valid_authored(floor) {
         ""
     } else {
         " — NOTE: this floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v', e.g. \
@@ -1204,7 +1271,8 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> Option<u32>,
     host_identity: &str,
 ) -> Result<(), String> {
-    validate_identity(m, host_identity)?;
+    let native = native_stamp(lib_bytes)?;
+    validate_identity_for(m, host_identity, native.is_some())?;
     if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "manifest sha256 '{}' is not a 64-char hex digest",
@@ -1216,10 +1284,56 @@ pub fn validate_structure(
             "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
         );
     }
-    validate_abi(m, supported_abi)
+    match native {
+        Some(stamp) => validate_native_manifest(m, &stamp),
+        None => validate_abi(m, supported_abi),
+    }
 }
 
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
+    validate_identity_for(m, host_identity, false)
+}
+
+/// Classify the actual image bytes, never a manifest claim. A broken native stamp is not legacy.
+pub(crate) fn native_stamp(
+    bytes: &[u8],
+) -> Result<Option<busbar_plugin_abi::stamp::Stamp>, String> {
+    match crate::scan::stamp(bytes) {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(crate::scan::StampScanErr::Missing) => Ok(None),
+        Err(error) => Err(error.refusal().to_string()),
+    }
+}
+
+fn validate_native_manifest(
+    m: &Manifest,
+    stamp: &busbar_plugin_abi::stamp::Stamp,
+) -> Result<(), String> {
+    let kind = busbar_plugin_abi::types::KindCode::from_raw(stamp.kind)
+        .ok_or("native stamp names an unknown kind")?;
+    if m.name != crate::scan::text(&stamp.name)
+        || m.version != crate::scan::text(&stamp.version)
+        || m.kind != crate::admit::kind_word(kind)
+        || m.abi_version != stamp.kind_abi
+        || stamp.kind_abi != busbar_plugin_abi::versions::abi_of(kind)
+    {
+        return Err("native manifest name/version/kind/ABI must match its validated stamp and the current native ABI".into());
+    }
+    if m.statement.is_some()
+        || m.settings_schema.is_some()
+        || m.schema_derived
+        || m.declares != Declares::default()
+        || m.needs != HookNeeds::default()
+    {
+        return Err(
+            "native operational metadata belongs to the signed image, not legacy manifest fields"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_identity_for(m: &Manifest, host_identity: &str, native: bool) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
             "manifest name '{}' is not a valid plugin name (lowercase [a-z0-9-]+)",
@@ -1238,11 +1352,25 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
                 "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
             ));
         }
-        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+        if *former == m.name
+            || (!native && *former == m.alias)
+            || m.former_names[..i].contains(former)
+        {
             return Err(format!(
                 "manifest former name '{former}' repeats another name of the plugin"
             ));
         }
+    }
+    if native
+        && (m.former_names.len() > 8
+            || m.former_names.iter().any(|name| name.len() > 64)
+            || m.former_names
+                .iter()
+                .filter(|name| **name == m.alias)
+                .count()
+                != 1)
+    {
+        return Err("native former_names must contain the alias exactly once and at most eight words of at most 64 bytes".into());
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
@@ -1326,10 +1454,12 @@ const fn fips_backend_linked() -> bool {
 /// FIPS ADMISSION. On a backend that admits no external plugin, only a dropped-in plugin whose
 /// manifest verified against busbar's embedded release roots (`Verdict::Trusted { first_party:
 /// true }`; never the self-declared `publisher` string) passes. Everything else that phase 2
-/// would load, through an allowlisted publisher or an `allow_unsigned`/`allow_third_party`
-/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned, tampered or
-/// unknown-publisher reject, so its remedy never names an opt-in that cannot help. The hard
-/// rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
+/// would load, through an allowlisted publisher or an `allow_untrusted`
+/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned or unknown-publisher
+/// reject, so its remedy never names an opt-in that cannot help. Proof is verified before this
+/// policy: invalid proof from a known publisher (a Busbar artifact without a valid release seal
+/// included) refuses as tampered and is audited as tampering, never hidden as the backend's policy
+/// refusal (AGREED l.474). The hard rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
 /// reaches here: it is built in the same build, against the same backend.
 ///
 /// GAP (#260, DES-1): busbar's release seal does not yet attest that the crypto-graph and
@@ -1373,8 +1503,8 @@ fn backend_admission(
             format!(
                 "plugin '{}' version {} is not busbar's own verified release, and this binary's \
                  crypto backend admits no external plugin (EXTERNAL_PLUGINS is false, as in a \
-                 FIPS build): {how}. No plugins.trust setting (publishers, allow_unsigned, \
-                 allow_third_party) admits it. Install busbar's first-party release of the \
+                 FIPS build): {how}. No plugins.trust setting (publishers or allow_untrusted) \
+                 admits it. Install busbar's first-party release of the \
                  plugin, or run a build whose crypto backend admits external plugins.",
                 manifest.name, manifest.version
             ),
@@ -1428,20 +1558,9 @@ fn hard_seal_refusal(refusal: &crate::release_trust::SealRefusal) -> Option<Reje
 }
 
 enum Untrusted {
-    Unsigned {
-        reason: String,
-        tampered: bool,
-    },
+    Unsigned { reason: String },
 
-    ThirdParty {
-        publisher: String,
-    },
-
-    Retired {
-        key: String,
-        why: String,
-        trusted_as: Option<String>,
-    },
+    ThirdParty { publisher: String },
 }
 
 /// PHASE 2 - TRUST evaluation of a structurally-valid manifest + its exact library bytes against
@@ -1457,8 +1576,8 @@ enum Untrusted {
 ///     ([`TrustPolicy::first_party_floors`]) replaces that floor for the pinned name.
 ///     [`TrustPolicy::binary_version`] is NOT a floor.
 ///   * A publisher in `publishers` whose signature verifies -> TRUSTED (third-party allowlisted).
-///   * Unsigned/tampered -> [`Verdict::Allowed`] only under `allow_unsigned`; else [`Rejected`].
-///   * Signed by an unknown publisher -> [`Verdict::Allowed`] only under `allow_third_party`; else
+///   * Unsigned unknown-publisher code needs `allow_untrusted`; known-invalid proof always refuses.
+///   * Unknown-publisher signature text is unverified -> [`Verdict::Allowed`] only under `allow_untrusted`; else
 ///     [`Rejected`].
 ///   * On a crypto backend that admits no external plugin (`EXTERNAL_PLUGINS == false`, a FIPS
 ///     build), only first-party TRUSTED passes; every other outcome above that would load is
@@ -1481,6 +1600,15 @@ pub fn evaluate_with_evidence(
     manifest: &Manifest,
     policy: &TrustPolicy,
 ) -> Result<(Verdict, Option<u64>), Rejected> {
+    evaluate_with_verification(bytes, manifest, policy)
+        .map(|(verdict, proof)| (verdict, proof.keys_version))
+}
+
+pub fn evaluate_with_verification(
+    bytes: &[u8],
+    manifest: &Manifest,
+    policy: &TrustPolicy,
+) -> Result<(Verdict, Verification), Rejected> {
     evaluate_against_with_evidence(bytes, manifest, policy, RETIRED_RELEASE_KEYS)
 }
 
@@ -1499,7 +1627,7 @@ fn evaluate_against_with_evidence(
     manifest: &Manifest,
     policy: &TrustPolicy,
     retired: &[(&str, &str)],
-) -> Result<(Verdict, Option<u64>), Rejected> {
+) -> Result<(Verdict, Verification), Rejected> {
     let digest = sha256_hex(bytes);
     if let Some(why) = policy.revoked.get(&digest) {
         return Err(Rejected::new(
@@ -1528,161 +1656,126 @@ fn evaluate_against_with_evidence(
         keys_floor: policy.release_keys_floor,
         enforce_expiry: policy.release_enforce_expiry,
     };
-    let stale = if policy.release_enforce_expiry {
-        match crate::release_trust::wire::read_seal(&manifest.signature) {
-            Some(Ok((keys, targets))) => crate::release_trust::check_fresh(
-                crate::release_trust::Seal {
-                    keys: &keys,
-                    targets: &targets,
-                },
-                checks.now,
-            )
-            .err(),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    if stale.is_some() && manifest.publisher == FIRST_PARTY_PUBLISHER && !roots.is_empty() {
-        let boot_checks = crate::release_trust::Checks {
-            enforce_expiry: false,
-            ..checks
-        };
-        if let Err(FirstPartyUnverified::Release {
-            refusal,
-            trusted_keys,
-        }) = first_party_signer_evidence(
-            manifest,
-            bytes,
-            &roots,
-            boot_checks,
-            crate::release_trust::PLUGIN_TARGET,
-        ) {
-            if let Some(kind) = hard_seal_refusal(&refusal) {
-                return Err(Rejected {
-                    trusted_keys,
-                    ..Rejected::new(
-                        kind,
-                        format!(
-                            "plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.",
-                            manifest.name,
-                            manifest.version,
-                            refusal.code()
-                        ),
-                    )
-                });
-            }
-        }
+    // Integrity is independent of provenance, including unknown-publisher opt-ins.
+    if digest != manifest.sha256.to_ascii_lowercase() {
+        return Err(Rejected::new(
+            RejectKind::Tampered,
+            "library hash does not match the manifest".into(),
+        ));
     }
-    let mut authenticated_keys_version = None;
-    let mut trusted_keys = Vec::new();
-
-    let by_retired = if manifest.publisher == FIRST_PARTY_PUBLISHER {
-        retired_signer(manifest, retired)
-    } else {
-        None
-    };
-    let trusted_or_untrusted: Result<bool, Untrusted> = if let Some(refusal) = stale {
-        trusted_keys = roots.iter().map(|root| root.id.clone()).collect();
-        Err(Untrusted::Unsigned {
-            reason: format!(
-                "first-party signature failed: release seal refused ({}): {refusal}",
-                refusal.code()
-            ),
-            tampered: true,
-        })
-    } else if manifest.signature.trim().is_empty() {
-        Err(Untrusted::Unsigned {
-            reason: "manifest carries no signature".to_string(),
-            tampered: false,
-        })
-    } else if let Some((key, hex_key, why)) = by_retired {
-        match policy.publishers.iter().find(|(_, k)| **k == key) {
-            None => Err(Untrusted::Retired {
-                key: hex_key.to_string(),
-                why: why.to_string(),
-                trusted_as: None,
-            }),
-            Some((name, _)) => match signature_ok(manifest, bytes, &key) {
-                Ok(()) => Err(Untrusted::Retired {
-                    key: hex_key.to_string(),
-                    why: why.to_string(),
-                    trusted_as: Some(name.clone()),
-                }),
-                Err(reason) => Err(Untrusted::Unsigned {
-                    reason: format!(
-                        "first-party signature by the retired release key {hex_key} failed: \
-                         {reason}"
-                    ),
-                    tampered: true,
-                }),
-            },
+    let mut expired_seal = false;
+    if let Some(seal) = crate::release_trust::wire::read_seal(&manifest.signature) {
+        let malformed = |why| {
+            Rejected::new(
+                RejectKind::Tampered,
+                format!("release seal refused (release-seal-malformed): {why}"),
+            )
+        };
+        let (keys, targets) = seal.map_err(malformed)?;
+        let keys = crate::release_trust::wire::read_keys(&keys).map_err(malformed)?;
+        let targets = crate::release_trust::wire::read_targets(&targets).map_err(malformed)?;
+        expired_seal = keys.doc.expires <= checks.now || targets.doc.expires <= checks.now;
+    }
+    let mut verification = Verification::default();
+    let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.publisher
+        == FIRST_PARTY_PUBLISHER
+    {
+        if let Some((_, key, why)) = retired_signer(manifest, retired) {
+            return Err(Rejected::new(
+                RejectKind::RetiredKey,
+                format!("retired Busbar key {key}: {why}"),
+            ));
         }
-    } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
-        if roots.is_empty() {
-            Err(Untrusted::Unsigned {
-                reason: format!(
-                    "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this build embeds no busbar release key, so it cannot be verified{}",
-                    release_key_parse_error(option_env!("BUSBAR_RELEASE_PUBKEY"))
-                        .map(|e| format!(" (the embedded release key spec is malformed: {e})"))
-                        .unwrap_or_default()
-                ),
-                tampered: false,
-            })
-        } else {
-            match first_party_signer_evidence(
+        // Expiry cannot hide an authenticated revocation or rollback refusal.
+        if checks.enforce_expiry && expired_seal {
+            let installed = crate::release_trust::Checks {
+                enforce_expiry: false,
+                ..checks
+            };
+            if let Err(FirstPartyUnverified::Release {
+                refusal,
+                trusted_keys,
+            }) = first_party_signer_evidence(
                 manifest,
                 bytes,
                 &roots,
-                checks,
+                installed,
                 crate::release_trust::PLUGIN_TARGET,
             ) {
-                Ok((_, version)) => {
-                    authenticated_keys_version = version;
-                    Ok(true)
-                }
-                Err(FirstPartyUnverified::Release {
-                    refusal,
-                    trusted_keys,
-                }) if hard_seal_refusal(&refusal).is_some() => {
+                if let Some(kind) = hard_seal_refusal(&refusal) {
                     return Err(Rejected {
                         trusted_keys,
                         ..Rejected::new(
-                            hard_seal_refusal(&refusal).expect("matched"),
+                            kind,
                             format!(
-                                "plugin '{}' version {}: first-party release seal refused ({}): {refusal}. No plugins.trust opt-in admits it.",
-                                manifest.name,
-                                manifest.version,
+                                "Busbar release proof refused ({}): {refusal}",
                                 refusal.code()
                             ),
                         )
                     });
                 }
-                Err(unverified) => {
-                    trusted_keys = unverified.trusted_keys().to_vec();
-                    Err(Untrusted::Unsigned {
-                        reason: format!("first-party signature failed: {unverified}"),
-                        tampered: true,
-                    })
-                }
             }
         }
-    } else {
-        match policy.publishers.get(&manifest.publisher) {
-            None => Err(Untrusted::ThirdParty {
-                publisher: manifest.publisher.clone(),
-            }),
-            Some(key) => match signature_ok(manifest, bytes, key) {
-                Ok(()) => Ok(false),
-                Err(reason) => Err(Untrusted::Unsigned {
-                    reason: format!(
-                        "signature from allowlisted publisher '{}' failed: {reason}",
-                        manifest.publisher
-                    ),
-                    tampered: true,
-                }),
-            },
+        match first_party_signer_evidence(
+            manifest,
+            bytes,
+            &roots,
+            checks,
+            crate::release_trust::PLUGIN_TARGET,
+        ) {
+            Ok((root, verified)) => {
+                verification = Verification {
+                    root: Some(crate::release_trust::wire::key_id(&root.key)),
+                    signers: verified.signers,
+                    keys_version: Some(verified.keys_version),
+                };
+                Ok(true)
+            }
+            Err(unverified) => {
+                let kind = match &unverified {
+                    FirstPartyUnverified::Release { refusal, .. } => {
+                        hard_seal_refusal(refusal).unwrap_or(RejectKind::Tampered)
+                    }
+                    _ => RejectKind::Tampered,
+                };
+                return Err(Rejected {
+                    trusted_keys: unverified.trusted_keys().to_vec(),
+                    ..Rejected::new(kind, format!("Busbar release proof refused: {unverified}; allow_untrusted never admits invalid proof from a known publisher"))
+                });
+            }
         }
+    } else if let Some(publisher) = policy.publishers.get(&manifest.publisher) {
+        if !publisher.plugins.contains(&manifest.name) {
+            return Err(Rejected::new(
+                RejectKind::PublisherScope,
+                format!(
+                    "publisher '{}' is not authorized for plugin '{}'",
+                    manifest.publisher, manifest.name
+                ),
+            ));
+        }
+        let verified = publisher
+            .keys
+            .iter()
+            .find(|key| signature_ok(manifest, bytes, &key.key).is_ok());
+        match verified {
+            Some(key) if key.revoked || ReleaseKey::Ed25519(key.key).retired_reason().is_some() => {
+                return Err(Rejected::new(RejectKind::Revoked, format!("publisher '{}' signed with a revoked key", manifest.publisher)));
+            }
+            Some(key) => {
+                verification.signers.push(crate::release_trust::wire::key_id(&ReleaseKey::Ed25519(key.key)));
+                Ok(false)
+            }
+            None => return Err(Rejected::new(RejectKind::Tampered, format!("signature from configured publisher '{}' is absent or invalid; allow_untrusted never admits it", manifest.publisher))),
+        }
+    } else if manifest.signature.trim().is_empty() {
+        Err(Untrusted::Unsigned {
+            reason: "manifest carries no signature".into(),
+        })
+    } else {
+        Err(Untrusted::ThirdParty {
+            publisher: manifest.publisher.clone(),
+        })
     };
 
     if let Ok(true) = trusted_or_untrusted {
@@ -1691,7 +1784,10 @@ fn evaluate_against_with_evidence(
             .or_else(|| policy.first_party_high_water.get(&manifest.name))
             .map(String::as_str)
             .unwrap_or("");
-        if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
+        // An authored pin must also be a well-formed authored version (DES-359 r3 L11); a stored
+        // high-water mark is read as it was written.
+        let unreadable_pin = pinned.is_some() && !busbar_contract::semver::valid_authored(floor);
+        if !floor.is_empty() && (unreadable_pin || !version_at_least(&manifest.version, floor)) {
             let why = if pinned.is_some() {
                 "the PINNED first-party rollback floor"
             } else {
@@ -1717,7 +1813,9 @@ fn evaluate_against_with_evidence(
 
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
-            Ok(_) if version_at_least(&manifest.version, floor) => {}
+            Ok(_)
+                if version_at_least(&manifest.version, floor)
+                    && (floor.is_empty() || busbar_contract::semver::valid_authored(floor)) => {}
             Ok(_) => {
                 return Err(Rejected::new(
                     RejectKind::AntiDowngrade,
@@ -1750,100 +1848,31 @@ fn evaluate_against_with_evidence(
             publisher: manifest.publisher.clone(),
             first_party,
         }),
-        Err(Untrusted::Unsigned { reason, tampered }) => {
-            if policy.allow_unsigned {
+        Err(untrusted) => {
+            let (kind, reason) = match untrusted {
+                Untrusted::Unsigned { reason } => (RejectKind::Unsigned, reason),
+                Untrusted::ThirdParty { publisher } => (RejectKind::UnknownPublisher, format!("publisher '{publisher}' has no configured verification authority; signature presence does not establish provenance")),
+            };
+            if policy.allow_untrusted {
                 Ok(Verdict::Allowed {
                     reason,
-                    allow: AllowReason::Unsigned,
+                    allow: AllowReason::Untrusted,
                 })
             } else {
-                let kind = if tampered {
-                    RejectKind::Tampered
-                } else {
-                    RejectKind::Unsigned
-                };
-                Err(Rejected {
-                    trusted_keys,
-                    ..Rejected::new(
-                        kind,
-                        format!(
-                            "{reason}; refusing to load an unsigned plugin. Set \
-                         plugins.trust.allow_unsigned=true to permit unsigned plugins."
-                        ),
-                    )
-                })
+                Err(Rejected::new(kind, format!("{reason}; set plugins.trust.allow_untrusted=true only to permit unverified code")))
             }
-        }
-        Err(Untrusted::ThirdParty { publisher }) => {
-            if policy.allow_third_party {
-                Ok(Verdict::Allowed {
-                    reason: format!("signed by non-allowlisted publisher '{publisher}'"),
-                    allow: AllowReason::ThirdParty,
-                })
-            } else {
-                Err(Rejected::new(
-                    RejectKind::UnknownPublisher,
-                    format!(
-                        "publisher '{publisher}' is not in the allowlist; refusing to load a \
-                         third-party plugin. Add the publisher to plugins.trust.publishers, or set \
-                         plugins.trust.allow_third_party=true to permit third-party plugins."
-                    ),
-                ))
-            }
-        }
-
-        Err(Untrusted::Retired {
-            key,
-            why,
-            trusted_as: Some(name),
-        }) => Ok(Verdict::Allowed {
-            reason: format!(
-                "first-party manifest signed by the RETIRED busbar release key {key} ({why}); \
-                 loaded only because plugins.trust.publishers['{name}'] names that key. Replace \
-                 the plugin with a release signed by a current key, then remove the entry."
-            ),
-            allow: AllowReason::RetiredKey,
-        }),
-        Err(Untrusted::Retired {
-            key,
-            why,
-            trusted_as: None,
-        }) => {
-            let unsigned_note = if policy.allow_unsigned {
-                " plugins.trust.allow_unsigned does not admit a retired key: a retired key is a \
-                 revocation, not a missing signature."
-            } else {
-                ""
-            };
-            Err(Rejected::new(
-                RejectKind::RetiredKey,
-                format!(
-                    "first-party manifest signed by the RETIRED busbar release key {key} ({why}); \
-                     refusing to load it.{unsigned_note} Install the plugin's release signed by a \
-                     current busbar key. To keep running this exact plugin, trust the retired \
-                     key explicitly: add it under plugins.trust.publishers (any name but \
-                     '{FIRST_PARTY_PUBLISHER}', public_key: {key})."
-                ),
-            ))
         }
     };
-    backend_admission(manifest, verdict).map(|verdict| {
-        let version = matches!(
-            verdict,
-            Verdict::Trusted {
-                first_party: true,
-                ..
-            }
-        )
-        .then_some(authenticated_keys_version)
-        .flatten();
-        (verdict, version)
-    })
+    backend_admission(manifest, verdict).map(|verdict| (verdict, verification))
 }
 
 #[cfg(test)]
 #[path = "tests/sign_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/scoped_publisher_tests.rs"]
+mod scoped_publisher_tests;
 
 #[cfg(test)]
 #[path = "tests/declares_reader_tests.rs"]
@@ -1852,3 +1881,7 @@ mod declares_reader_tests;
 #[cfg(test)]
 #[path = "tests/release_seal_tests.rs"]
 mod release_seal_tests;
+
+#[cfg(test)]
+#[path = "tests/native_pack_sign_tests.rs"]
+mod native_pack_sign_tests;

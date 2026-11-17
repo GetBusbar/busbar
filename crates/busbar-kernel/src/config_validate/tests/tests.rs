@@ -22,7 +22,6 @@ fn make_root_cfg(
 
         endpoint_resources: Default::default(),
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
@@ -42,13 +41,11 @@ fn make_root_cfg(
         admin_auth: Vec::new(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_fees: Default::default(),
         store: Some(config::StoreCfg {
             module: "inert-store-metadata".into(),
             settings: Default::default(),
-            limits: None,
             insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),
@@ -831,39 +828,6 @@ fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
 }
 
 #[test]
-fn datagram_line_memory_limit_accepts_unset_or_any_positive_usize() {
-    for value in [None, Some(1), Some(usize::MAX)] {
-        let limits = config::LimitsResolved {
-            datagram_line_memory_bytes: value,
-            ..config::LimitsResolved::default()
-        };
-        let mut errors = Vec::new();
-        validate_limits(&limits, &mut errors);
-        assert!(errors.is_empty(), "{value:?}: {errors:?}");
-    }
-}
-
-#[test]
-fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
-    let deploy = crate::config::deploy_from_yaml_str(
-        "providers: {}\nmodels: {}\nlimits:\n  datagram_line_memory_bytes: 0\n",
-        &crate::config::Grammar::empty(),
-    )
-    .expect("zero has the right type; validation must reject it");
-    let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");
-    assert_eq!(cfg.limits.datagram_line_memory_bytes, Some(0));
-    let mut errors = Vec::new();
-    validate_limits(&cfg.limits, &mut errors);
-    assert_eq!(
-        errors,
-        [crate::diagnostics::coded::config_setting_out_of_range(
-            "limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
-        )
-        .to_string()],
-    );
-}
-
-#[test]
 fn test_validate_limits_max_inbound_concurrent_ceiling_is_exact() {
     let at_cap = config::LimitsResolved {
         max_inbound_concurrent: MAX_SEMAPHORE_PERMITS,
@@ -1026,7 +990,7 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
 }
 
 #[test]
-fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
+fn provider_core_sweep_leaves_dialect_authority_to_the_native_resolver() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
@@ -1034,74 +998,34 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     );
     providers.insert(
         "prov-b".to_string(),
-        make_provider("no-such-protocol", "https://b.example.com", "KEY_B"),
+        make_provider("native-only-dialect", "https://b.example.com", "KEY_B"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-
-    let mut errors = Vec::new();
-    super::validate_providers_with(&[], &cfg, &[], &mut errors);
-
-    for prov in ["prov-a", "prov-b"] {
-        let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
-        assert_eq!(
-            hits.len(),
-            1,
-            "an empty protocol set must refuse '{prov}' exactly once, got: {hits:?}"
-        );
+    for historical in [vec![], vec![proto_a(), proto_b()]] {
+        let mut errors = Vec::new();
+        super::validate_providers_with(&historical, &cfg, &[], &mut errors);
         assert!(
-            hits[0].contains("NO protocol") && hits[0].contains("compiled in"),
-            "the refusal must name the BUILD as the cause: {}",
-            hits[0]
+            errors.is_empty(),
+            "core destination checks must not replace native descriptor validation: {errors:?}"
         );
     }
-    assert!(
-        !errors.iter().any(|e| e.contains("must be one of")),
-        "the empty set must never render the unknown-protocol arm with an empty tail: {errors:?}"
-    );
-
-    let mut errors = Vec::new();
-    super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
-    assert!(
-        !errors.iter().any(|e| e.contains("prov-a")),
-        "a provider naming a compiled-in protocol validates: {errors:?}"
-    );
-    let hits: Vec<&String> = errors.iter().filter(|e| e.contains("prov-b")).collect();
-    assert_eq!(hits.len(), 1, "one refusal for the stranger: {hits:?}");
-    assert!(
-        hits[0].contains(&format!("must be one of: {}, {}", proto_a(), proto_b())),
-        "the populated set names the choices: {}",
-        hits[0]
-    );
 }
 
 #[test]
-fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let known = crate::plane_driver::dispatch::provider_dialects();
-    assert!(
-        known.is_empty(),
-        "the premise of this test: a registry with no declarations knows no protocols"
-    );
-
+fn native_provider_core_sweep_preserves_metadata_destination_refusal() {
     let mut providers = HashMap::new();
     providers.insert(
         "prov-a".to_string(),
-        make_provider(proto_a(), "https://a.example.com", "KEY_A"),
+        make_provider("native-only-dialect", "https://169.254.169.254", "KEY_A"),
     );
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-
     let mut errors = Vec::new();
-    super::validate_providers_with(&known, &cfg, &[], &mut errors);
-    assert_eq!(
-        errors.len(),
-        1,
-        "the registry-derived empty set refuses the provider, once: {errors:?}"
-    );
+    super::validate_providers_with(&[], &cfg, &[], &mut errors);
     assert!(
-        errors[0].contains("prov-a")
-            && errors[0].contains("NO protocol")
-            && errors[0].contains("compiled in"),
-        "and names the build: {}",
-        errors[0]
+        errors
+            .iter()
+            .any(|error| error.contains("blocked cloud-metadata host")),
+        "{errors:?}"
     );
 }
 
@@ -1125,17 +1049,6 @@ fn policy_errors(cfg: &RootCfg) -> Vec<String> {
 #[test]
 fn test_auth_policy_bad_duration_is_rejected() {
     let policy = config::AuthPolicyCfg {
-        default_ttl: Some("not-a-duration".to_string()),
-        ..Default::default()
-    };
-    let errs = policy_errors(&root_with_auth_policy(policy));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("auth.policy.default_ttl") && e.contains("not a valid duration")),
-        "a bad default_ttl must fail validation: {errs:?}"
-    );
-
-    let policy = config::AuthPolicyCfg {
         max_ttl: Some("90x".to_string()),
         ..Default::default()
     };
@@ -1144,21 +1057,6 @@ fn test_auth_policy_bad_duration_is_rejected() {
         errs.iter()
             .any(|e| e.contains("auth.policy.max_ttl") && e.contains("not a valid duration")),
         "a bad max_ttl must fail validation: {errs:?}"
-    );
-}
-
-#[test]
-fn test_auth_policy_default_exceeding_max_is_rejected() {
-    let policy = config::AuthPolicyCfg {
-        default_ttl: Some("90d".to_string()),
-        max_ttl: Some("24h".to_string()),
-        ..Default::default()
-    };
-    let errs = policy_errors(&root_with_auth_policy(policy));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("default_ttl") && e.contains("exceeds") && e.contains("max_ttl")),
-        "default_ttl > max_ttl must fail validation: {errs:?}"
     );
 }
 
@@ -1249,7 +1147,6 @@ fn test_auth_policy_valid_block_passes() {
             config::BindingMode::TimeBound,
             config::BindingMode::Both,
         ]),
-        default_ttl: Some("24h".to_string()),
         max_ttl: Some("90d".to_string()),
         mint_ceilings: ceilings,
         ..Default::default()
@@ -2063,111 +1960,6 @@ fn no_mint_path_names_remedies_that_exist() {
         assert!(
             !text.contains("`mint`"),
             "{op:?}: `mint` is offered: {text}"
-        );
-    }
-}
-
-/// SHUTDOWN-HANG F4/F4a: `advanced.shutdown.drain_timeout` and
-/// `advanced.governance.max_pending_checkpoints` read from YAML, default to 20 s and to 1,000
-/// per second of the budget, and refuse boot (never clamp) when unparseable or out of range.
-#[test]
-fn drain_settings_default_parse_and_refuse_out_of_range() {
-    use crate::config::limits::DrainSettings;
-    use std::time::Duration;
-    let read = |advanced: &str| {
-        let yaml = format!("providers: {{}}\nmodels: {{}}\n{advanced}");
-        let deploy = crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
-            .expect("the keys have the right types; validation judges the values");
-        let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");
-        let mut errors = Vec::new();
-        validate_limits(&cfg.limits, &mut errors);
-        (cfg.limits.drain_settings(), errors)
-    };
-
-    let (settings, errors) = read("");
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(
-        settings,
-        Ok(DrainSettings {
-            drain_timeout: Duration::from_secs(20),
-            max_pending_checkpoints: 20_000,
-        }),
-        "a config that sets neither key (every 1.5.5 config) takes the defaults"
-    );
-    assert_eq!(
-        crate::governance::drain::DEFAULT_MAX_PENDING_CHECKPOINTS,
-        20_000
-    );
-
-    let (settings, errors) = read("advanced:\n  shutdown:\n    drain_timeout: 30s\n");
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(
-        settings,
-        Ok(DrainSettings {
-            drain_timeout: Duration::from_secs(30),
-            max_pending_checkpoints: 30_000,
-        }),
-        "the cap's default follows the budget"
-    );
-
-    let (settings, errors) = read(
-        "advanced:\n  shutdown:\n    drain_timeout: 2m\n  governance:\n    max_pending_checkpoints: 7\n",
-    );
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(
-        settings,
-        Ok(DrainSettings {
-            drain_timeout: Duration::from_secs(120),
-            max_pending_checkpoints: 7,
-        })
-    );
-
-    let (_, errors) = read("advanced:\n  shutdown:\n    drain_timeout: 1s\n");
-    assert!(
-        errors.is_empty(),
-        "the floor itself is accepted: {errors:?}"
-    );
-
-    for (written, says) in [
-        ("0s", "is below the minimum of 1 s"),
-        ("soon", "is not a duration"),
-        ("1500ms", "is not a duration"),
-        ("20", "is not a duration"),
-    ] {
-        let (settings, errors) = read(&format!(
-            "advanced:\n  shutdown:\n    drain_timeout: \"{written}\"\n"
-        ));
-        assert!(
-            settings.is_err(),
-            "{written}: refused, never clamped to a default"
-        );
-        assert_eq!(errors.len(), 1, "{written}: {errors:?}");
-        assert!(
-            errors[0].contains(&format!("advanced.shutdown.drain_timeout '{written}'"))
-                && errors[0].contains(says)
-                && errors[0].contains("3117"),
-            "{written}: an explained BUSBAR-3117 refusal naming the key; got {errors:?}"
-        );
-    }
-
-    let (settings, errors) = read("advanced:\n  governance:\n    max_pending_checkpoints: 0\n");
-    assert!(settings.is_err());
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0].contains("advanced.governance.max_pending_checkpoints is 0")
-            && errors[0].contains("3117"),
-        "{errors:?}"
-    );
-
-    for typo in [
-        "advanced:\n  shutdown:\n    drain_timout: 30s\n",
-        "advanced:\n  governance:\n    max_pending_checkpoint: 5\n",
-        "advanced:\n  governance:\n    max_pending_checkpoints: -1\n",
-    ] {
-        let yaml = format!("providers: {{}}\nmodels: {{}}\n{typo}");
-        assert!(
-            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
-            "refused at parse: {typo}"
         );
     }
 }

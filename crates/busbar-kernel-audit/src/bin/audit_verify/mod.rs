@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::json::{self, JsonValueTrait, Value};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Value};
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 use busbar_kernel_audit::{
-    AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
-    DIGEST_RECIPE_V7,
+    AuditVerifyingKey, Fingerprint, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4,
+    DIGEST_RECIPE_V6, DIGEST_RECIPE_V7, LINK_RECIPE, STAMP_DOMAIN,
 };
 use std::collections::BTreeMap;
 
@@ -15,12 +15,15 @@ const V4: &str = include_str!("../../../../../docs/audit-chain-digest-v4.md");
 const V5: &str = include_str!("../../../../../docs/audit-chain-digest-v5.md");
 const V6: &str = include_str!("../../../../../docs/audit-chain-digest-v6.md");
 const V7: &str = include_str!("../../../../../docs/audit-chain-digest-v7.md");
+const LINK: &str = include_str!("../../../../../docs/audit-link-v1.md");
+mod stamped;
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy)]
 enum Kind {
     Text,
     Number,
+    Bytes32,
 }
 
 fn text<'a>(value: &'a Value, member: &str) -> Result<&'a str> {
@@ -59,6 +62,7 @@ fn recipe(name: &str) -> Result<&'static str> {
         DIGEST_RECIPE => Ok(V5),
         DIGEST_RECIPE_V6 => Ok(V6),
         DIGEST_RECIPE_V7 => Ok(V7),
+        LINK_RECIPE => Ok(LINK),
         _ => Err("unsupported audit digest recipe"),
     }
 }
@@ -66,7 +70,12 @@ fn recipe(name: &str) -> Result<&'static str> {
 fn envelope(value: &Value) -> Result<&str> {
     let name = text(value, "recipe")?;
     recipe(name)?;
-    if text(value, "signature_domain")? != SIGNATURE_DOMAIN {
+    let domain = if name == LINK_RECIPE {
+        STAMP_DOMAIN
+    } else {
+        SIGNATURE_DOMAIN
+    };
+    if text(value, "signature_domain")? != domain {
         return Err("unsupported audit signature domain");
     }
     if text(value, "algorithm")? != SIGNATURE_ALGORITHM {
@@ -75,7 +84,11 @@ fn envelope(value: &Value) -> Result<&str> {
     Ok(name)
 }
 
-fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
+/// THE PAGE'S FIELD TABLE, in position order: each field, its kind, and whether it is optional. The
+/// rows are those of the page's three-column table (`Position`, `Field`, `Kind`) and of its
+/// four-column table (`Present` = `records tail`), numbered as one sequence. The optional rows are
+/// framed only when the record carries the first of them; a record without them skips them all.
+fn layout(page: &str) -> Result<Vec<(&str, Kind, bool)>> {
     let mut fields = Vec::new();
     for line in page.lines() {
         let cells: Vec<_> = line
@@ -84,7 +97,7 @@ fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
             .split('|')
             .map(str::trim)
             .collect();
-        if cells.len() != 3 {
+        if cells.len() != 3 && cells.len() != 4 {
             continue;
         }
         let Ok(position) = cells[0].parse::<usize>() else {
@@ -93,12 +106,18 @@ fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
         let kind = match cells[2] {
             "text" => Kind::Text,
             "number" => Kind::Number,
+            "bytes32" => Kind::Bytes32,
             _ => return Err("the embedded digest field table is invalid"),
+        };
+        let optional = match cells.get(3) {
+            None => false,
+            Some(&"records tail") => true,
+            Some(_) => return Err("the embedded optional digest field table is invalid"),
         };
         if position != fields.len() + 1 {
             return Err("the embedded digest field table is not consecutive");
         }
-        fields.push((cells[1].trim_matches('`'), kind));
+        fields.push((cells[1].trim_matches('`'), kind, optional));
     }
     if fields.is_empty() {
         return Err("the embedded digest field table is empty");
@@ -118,6 +137,14 @@ fn feed(digest: &mut Digest, value: &Value, kind: Kind) -> Result<()> {
         Kind::Number => {
             digest.num(decimal(value)?);
         }
+        Kind::Bytes32 => {
+            let raw = value.as_str().ok_or("a fingerprint is not a string")?;
+            if !raw.is_empty() && !hex(raw, 32) {
+                return Err("a fingerprint is not canonical lowercase hex");
+            }
+            let fp = Fingerprint::from_hex(raw).ok_or("invalid fingerprint")?;
+            digest.raw(&32u64.to_be_bytes()).raw(&fp.0);
+        }
     }
     Ok(())
 }
@@ -128,7 +155,10 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         None if default_recipe == DIGEST_RECIPE_V2 => DIGEST_RECIPE_V2,
         None => return Err("a record recipe is absent"),
     };
-    if name == DIGEST_RECIPE || name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
+    if matches!(
+        name,
+        DIGEST_RECIPE | DIGEST_RECIPE_V6 | DIGEST_RECIPE_V7 | LINK_RECIPE
+    ) {
         let present = text(record, "rate_card_key_present")?;
         let key = text(record, "rate_card_version")?;
         let valid_key = key.len() == 40
@@ -144,7 +174,7 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
             return Err("a keyed rate-card boundary has invalid presence or spelling");
         }
     }
-    if name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
+    if matches!(name, DIGEST_RECIPE_V6 | DIGEST_RECIPE_V7 | LINK_RECIPE) {
         for line in record
             .get("lines")
             .and_then(Value::as_array)
@@ -158,7 +188,16 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
             }
         }
     }
-    let order = fields(recipe(name)?)?;
+    let layout = layout(recipe(name)?)?;
+    let framed_tail = layout
+        .iter()
+        .find(|(_, _, optional)| *optional)
+        .is_some_and(|(first, _, _)| record.get(*first).is_some());
+    let order: Vec<(&str, Kind)> = layout
+        .into_iter()
+        .filter(|(_, _, optional)| !optional || framed_tail)
+        .map(|(field, kind, _)| (field, kind))
+        .collect();
     let mut digest = Digest::new(Framing::LengthPrefixed);
     let mut index = 0;
     while index < order.len() {
@@ -216,8 +255,15 @@ fn hex(text: &str, bytes: usize) -> bool {
 
 fn trusted_keys(body: &Value) -> Result<BTreeMap<String, AuditVerifyingKey>> {
     envelope(body)?;
+    // The served /audit/keys page: its keys under `items`, and `next_cursor` null on the last page.
+    if body
+        .get("next_cursor")
+        .is_some_and(|cursor| !cursor.is_null())
+    {
+        return Err("the key set is one page of several; fetch every page and trust the whole set");
+    }
     let rows = body
-        .get("keys")
+        .get("items")
         .and_then(Value::as_array)
         .ok_or("key set is absent")?;
     let mut keys = BTreeMap::new();
@@ -272,6 +318,9 @@ fn matches_head(head: &Value, record: &Value) -> Result<()> {
 pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Result<Value> {
     let keys = trusted_keys(keys)?;
     let default_recipe = envelope(range)?;
+    if default_recipe == LINK_RECIPE {
+        return stamped::verify(&keys, range, head);
+    }
     let from = number(range, "from")?;
     let to = number(range, "to")?;
     if from == 0 || to < from {
@@ -286,6 +335,9 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
     }
     let mut previous = None;
     for (index, record) in records.iter().enumerate() {
+        if record.get("recipe").and_then(Value::as_str) == Some(LINK_RECIPE) {
+            return Err("a linked record requires a linked envelope and checked page authority");
+        }
         let seq = record_number(record, "seq")?;
         if seq != from + u64::try_from(index).map_err(|_| "record position overflow")? {
             return Err("records are not in consecutive requested order");
@@ -351,3 +403,6 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stamp_tests;

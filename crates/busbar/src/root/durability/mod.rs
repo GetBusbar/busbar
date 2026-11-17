@@ -104,6 +104,7 @@ pub struct Durability {
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
+    boot_records: Vec<JournalRecord>,
 
     pub voided_claims: Vec<String>,
 
@@ -538,6 +539,7 @@ pub(crate) async fn build_on_store(
         audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
+        boot_records: Vec::new(),
         voided_claims: Vec::new(),
         amendments_through: None,
         history_budget,

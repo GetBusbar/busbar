@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
 use super::AdminAnswer;
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_core_admin::GovernanceError;
 use busbar_kernel::governance::AdjustRefused;
 
@@ -140,7 +140,7 @@ fn parse_correction(
     let entry = busbar_kernel::cost::EntryKey::parse_hex(text("entry")?)
         .ok_or(GovernanceError::Validation)?;
     let card_epoch_ms = obj
-        .get("card_epoch_ms")
+        .get(&"card_epoch_ms")
         .and_then(json::Value::as_u64)
         .ok_or(GovernanceError::Validation)?;
     let pool = text("pool")?;

@@ -2085,7 +2085,6 @@ fn an_over_cap_hook_reject_is_cut_as_1_5_5_and_reported_once_against_the_hook() 
         }),
         "acme-gate",
         &[],
-        None,
     );
     let gates = gate(policy, crate::config::PolicyOnError::Reject, false, false);
     let body = br#"{"tool":"fs_read","arguments":{}}"#;
@@ -2132,7 +2131,6 @@ fn an_over_cap_hook_reject_is_cut_as_1_5_5_and_reported_once_against_the_hook() 
         Arc::new(Rejecting { message: long }),
         "acme-xform",
         &[],
-        None,
     );
     let req = RoutingRequest {
         request_id: 1,

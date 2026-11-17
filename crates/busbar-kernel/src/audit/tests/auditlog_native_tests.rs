@@ -3,6 +3,7 @@
 //! synchronous RecordStore adapter participates in these paths.
 use super::*;
 use crate::governance::persistence::prices::tests::{attach, Backend};
+use busbar_contract::export_calls::ExportDropReason;
 use busbar_contract::persistence::{Candidate, Mutation, PreparedCandidate, CANDIDATE_VERSION};
 
 async fn fixture() -> (
@@ -25,7 +26,7 @@ async fn fixture() -> (
     let native = install_native(kind, store.clone()).unwrap();
     let log = PlaneAuditLog::with_kind_id(kind);
     restore_native(&log, &native).await.unwrap();
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     (backend, store, native, log)
 }
 fn event(operation: u8, action: &str) -> PendingAudit {
@@ -38,6 +39,34 @@ fn event(operation: u8, action: &str) -> PendingAudit {
         prepared: None,
         confirmation: None,
     }
+}
+
+#[tokio::test]
+async fn observer_publication_is_confined_to_its_exact_store_attachment() {
+    let (_, store, native, _) = fixture().await;
+    let (_, _, unrelated, _) = fixture().await;
+    let exports = Arc::new(crate::export::plugin::Exports::default());
+    let unrelated_exports = Arc::new(crate::export::plugin::Exports::default());
+    let unrelated = Arc::new(NativeAudit {
+        storage: Arc::clone(&unrelated.storage),
+        exports: Some(unrelated_exports.clone()),
+    });
+    let mut owners = [(1, native.clone()), (2, unrelated.clone())]
+        .into_iter()
+        .collect();
+
+    publish_export_observers_on(&mut owners, &store, &exports).unwrap();
+
+    assert!(Arc::ptr_eq(&owners[&1].storage, &native.storage));
+    assert!(Arc::ptr_eq(owners[&1].exports.as_ref().unwrap(), &exports));
+    assert!(
+        Arc::ptr_eq(&owners[&2], &unrelated),
+        "another attachment keeps its complete owner"
+    );
+    assert!(Arc::ptr_eq(
+        owners[&2].exports.as_ref().unwrap(),
+        &unrelated_exports
+    ));
 }
 
 #[tokio::test]
@@ -120,7 +149,7 @@ async fn native_cancelled_drain_keeps_original_envelope_operation_and_queue_posi
 #[tokio::test]
 async fn native_restore_retains_tampered_legacy_preimage_and_continues_its_actual_tail() {
     let (_, store, native, log) = fixture().await;
-    native.ready.store(false, Ordering::Release);
+    native.storage.ready.store(false, Ordering::Release);
     let record = busbar_contract::records::AuditRecord {
         seq: 1,
         ts: 7,
@@ -152,7 +181,7 @@ async fn native_restore_retains_tampered_legacy_preimage_and_continues_its_actua
     assert_eq!(restored.records, 1);
     assert!(!restored.chain_breaks.is_empty());
     assert_eq!(log.list_filtered(0, 10, None, None)[0].hash, record.hash);
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     let queue = PendingAuditQueue::new(2);
     queue.enqueue(event(4, "next"));
     drain_native(&queue, &log, native).await.unwrap();
@@ -175,4 +204,105 @@ fn native_strict_body_admission_rejects_unknown_fields_and_duplicate_positions()
     assert!(
         decode_audit_body(br#"{"seq":1,"seq":2,"prev_hash":"","hash":"x","content":[]}"#).is_err()
     );
+}
+
+#[tokio::test]
+async fn export_loss_transfer_keeps_first_facts_and_confirms_only_the_original() {
+    let (backend, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    let facts = ExportLossFacts {
+        instance: "export.test".into(),
+        observed_at: 123,
+        count: 7,
+        kind: ExportLossKind::Dropped(ExportDropReason::QueueFull),
+    };
+    let request = Arc::new(AuditRequest::default());
+    let receipt = scope_request(Some(request.clone()), async {
+        let receipt = enqueue_export_failure(&queue, &facts).unwrap();
+        assert!(enqueue_export_failure(&queue, &facts).is_err());
+        receipt
+    })
+    .await;
+    assert!(
+        !request.failed.load(Ordering::Acquire),
+        "background export evidence cannot fail an unrelated request"
+    );
+    assert!(request.confirmations.lock().unwrap().is_empty());
+    assert!(!receipt.is_confirmed());
+    let original = queue.rows.lock().unwrap().queued.front().cloned().unwrap();
+    assert!(
+        !original.origin.redispatch(),
+        "loss evidence never feeds Events exports"
+    );
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert!(drain_native(&queue, &log, native.clone()).await.is_err());
+    assert!(!receipt.is_confirmed());
+    let first = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert_eq!(
+        queue.rows.lock().unwrap().queued.front().unwrap().operation,
+        original.operation
+    );
+    drain_native(&queue, &log, native).await.unwrap();
+    assert!(receipt.is_confirmed());
+    let replay = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert_eq!(first.fingerprint(), replay.fingerprint());
+    let rows = log.list_filtered(0, 10, None, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].ts, facts.observed_at);
+    assert_eq!(rows[0].instance.as_deref(), Some(facts.instance.as_str()));
+    assert!(rows[0].resource.contains("queue_full"));
+    assert!(rows[0].resource.contains("7"));
+}
+
+#[tokio::test]
+async fn dropping_export_loss_receipt_does_not_cancel_native_audit_custody() {
+    let (_, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    let facts = ExportLossFacts {
+        instance: "export.test".into(),
+        observed_at: 456,
+        count: 1,
+        kind: ExportLossKind::IntegrityFailed,
+    };
+    drop(enqueue_export_failure(&queue, &facts).unwrap());
+    assert_eq!(queue.len(), 1);
+    drain_native(&queue, &log, native).await.unwrap();
+    assert_eq!(queue.len(), 0);
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
+}
+
+#[tokio::test]
+async fn cancelled_export_loss_drain_replays_one_original_and_keeps_receipt_pending() {
+    let (backend, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    let facts = ExportLossFacts {
+        instance: "capture.test".into(),
+        observed_at: 789,
+        count: 1,
+        kind: ExportLossKind::CaptureRefused,
+    };
+    let receipt = enqueue_export_failure(&queue, &facts).unwrap();
+    backend.hang.store(true, Ordering::SeqCst);
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        drain_native(&queue, &log, native.clone())
+    )
+    .await
+    .is_err());
+    assert!(!receipt.is_confirmed());
+    assert_eq!(queue.len(), 1);
+    let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    backend.hang.store(false, Ordering::SeqCst);
+    drain_native(&queue, &log, native).await.unwrap();
+    assert!(receipt.is_confirmed());
+    let replay = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert_eq!(original.fingerprint(), replay.fingerprint());
+    let rows = log.list_filtered(0, 10, None, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "export.loss");
+    assert!(rows[0]
+        .resource
+        .contains("capture_refused.admission_rejected"));
+    assert_eq!(rows[0].request_id, None);
+    assert_eq!(rows[0].idempotency_key, None);
 }

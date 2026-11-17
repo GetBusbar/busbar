@@ -461,7 +461,7 @@ impl Sealer {
                     node = id,
                     reason = "foreign_host",
                     anchor_host = %anchor_host,
-                    "a predecessor's last stamp names another host; nothing is fenced, signed or written for it"
+                    "a predecessor's last stamp names another host; its tail is not signed or recorded as sealed"
                 );
                 self.finding(format!(
                     "audit predecessor {id} not sealed: its last stamp names host {anchor_host:?}"

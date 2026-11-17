@@ -3,19 +3,16 @@
 
 //! Decisions hook cells through the shipped root, signed Store and dropped webrequest products.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use axum::{Json, Router};
-use busbar_contract::conn::{DeclaredConns, PollConns};
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::AppHandle;
-use busbar_plugin_loader::dispatch::kinds::plane::Plane;
-use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
@@ -175,12 +172,20 @@ async fn provider() -> (
     (port, heard, task)
 }
 
-async fn hook_target(reply: Reply) -> (String, tokio::task::JoinHandle<()>) {
+async fn hook_target(
+    reply: Reply,
+) -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<Value>,
+    tokio::task::JoinHandle<()>,
+) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("hook target listener");
     let port = listener.local_addr().unwrap().port();
+    let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
     let routes = Router::new().fallback(move |Json(envelope): Json<Value>| {
+        sent.send(envelope.clone()).expect("record actual hook invocation");
         let reply = reply.clone();
         async move {
             let answer = match (envelope["op"].as_str(), reply) {
@@ -196,13 +201,17 @@ async fn hook_target(reply: Reply) -> (String, tokio::task::JoinHandle<()>) {
             .await
             .expect("actual webrequest HTTP far end");
     });
-    (format!("http://127.0.0.1:{port}/"), task)
+    (format!("http://127.0.0.1:{port}/"), heard, task)
 }
 
 struct Served {
     router: Router,
     token: String,
     heard: tokio::sync::mpsc::UnboundedReceiver<String>,
+    hook_heard: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    attached: bool,
+    _fixture: crate::root::min3_boot::fixture::PlaneFixture,
+    _workers: crate::root::boot::workers::RunningWorkers,
     _handle: Arc<AppHandle>,
     _book: crate::root::durability::NodeBook,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -219,7 +228,7 @@ impl Drop for Served {
 async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach: bool) -> Served {
     crate::dist_root_install::install();
     let (provider_port, heard, provider_task) = provider().await;
-    let (hook_url, hook_task) = hook_target(reply).await;
+    let (hook_url, hook_heard, hook_task) = hook_target(reply).await;
     let directory = plugins::scratch(&format!("decisions-root-hooks-{instance}"));
     let (store, store_pin) = stage(
         &directory,
@@ -250,7 +259,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
             "ingress":{"listen":"127.0.0.1:0"}
         },
         "auth":{"chain":["keys"],"signing_key":{"file":signing_key},"admin_auth":[]},
-        "advanced":{"allow_destinations":["127.0.0.1"]},
+        "advanced":{},
     });
     if attach {
         document["hooks"] = json!({"cell":{
@@ -278,17 +287,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     )]);
     let cfg = busbar_kernel::config::resolve(&deploy, &definitions)
         .expect("actual decisions deployment resolves");
-    let providers = crate::root::door_steps::provider_routes(
-        &cfg.providers,
-        &busbar_kernel::config_validate::MetadataPosture::default(),
-    );
-    let sections: BTreeMap<_, _> = deploy.door_sections();
     let judge = crate::root::connector::dest_judge(&cfg);
-    let late = crate::root::serve::LateServices::new();
-    let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(judge, &late, credentials);
-    let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
-    crate::root::connector::install_io(&dispatcher);
     let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
@@ -303,19 +302,30 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![store.clone(), webrequest.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+    let (admitted, serving) = crate::root::min3_boot::fixture::open(&cfg, &plugins, rules)
+        .await
+        .expect("actual Registry and signed Store open")
+        .admit_serving()
+        .await;
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg.clone(),
         plugins,
         None,
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
-        &rules,
+        &admitted.rules,
+        Some(admitted.core),
+        false,
     )
     .await
     .expect("the production root builds the decisions application");
@@ -358,84 +368,42 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .iter()
         .map(|d| &d.declaration)
         .collect();
-    crate::root::serve::attach(
-        &late,
-        Some(&gov),
-        Some(gov.clone()),
-        &app.demotion_record,
-        &declarations,
-    );
-    let connector = crate::root::connector::the();
-    let row =
-        LinkedRow::of(busbar_plane_decisions::door).expect("the actual decisions door statement");
-    let plane = Arc::new(
-        load_linked::<Plane>(
-            &row,
-            Bind {
-                instance: Arc::from(instance),
-                max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns: ConnTable::Host(crate::root::connector::admit(
-                    connector.clone() as Arc<dyn DeclaredConns>
-                )),
-            },
+    let core = gov
+        .core_store_handle()
+        .expect("actual signed Store custody");
+    let services = crate::root::serve::compose(judge, &app, core, &declarations);
+    let dispatcher = Arc::new(crate::root::dispatch::build(2, &services));
+    crate::root::connector::install_io(&dispatcher);
+    let mut fixture = serving
+        .plane(
+            &cfg,
+            "decisions",
+            &app,
+            services.kernel().expect("complete native kernel services"),
         )
-        .expect("the actual decisions door binds"),
-    );
+        .await
+        .expect("actual Decisions and hook ports bind before seat publication");
     let node = Arc::new(crate::root::plane_node::Node::new());
     node.bind_book(book.durability.clone());
+    let keys = node.kernel_and_keys().1;
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(node));
-    let money_gov = gov.clone();
-    let money_post = post.clone();
-    let money = move || {
+    let billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
         Arc::new(PlaneMoney::new(
-            money_gov.clone(),
-            money_post.clone() as Arc<dyn EndPost>,
-        ))
-    };
-    let stage = crate::root::serve::HookStage {
-        host: {
-            let app = app.clone();
-            Arc::new(move || busbar_kernel::plane_driver::engine_host(&app))
-        },
-        gov: gov.clone(),
-        journal: None,
-    };
-    let auths = crate::root::door_steps::OutboundAuths::new(
-        dispatcher.clone(),
-        crate::LINKED.auths,
-        None,
-        ConnTable::Host(crate::root::connector::admit(connector.clone())),
-        busbar_kernel::diagnostics::Catalogue::NEUTRAL,
-    );
-    let reach = crate::root::door_steps::DoorReach {
-        providers: &providers,
-        secrets: app.secret_resolver.clone(),
-        auths: Arc::new(auths),
-        conns: connector.clone() as Arc<dyn PollConns>,
-        stream_ceiling_secs: 600,
-        catalog: None,
-        models: None,
-        upgrades: Vec::new(),
-    };
-    let mut composed = crate::root::serve::compose_planes(
-        &[(instance.to_owned(), plane)],
-        &dispatcher,
-        &late,
-        &sections,
-        None,
-        &money,
-        Some(&crate::root::serve::DoorEgress {
-            reach: &reach,
-            journal: post.clone(),
-        }),
-        Some(&stage),
-        &app.serve_tables,
+            gov.clone(),
+            post.clone() as Arc<dyn EndPost>,
+        )),
+        gov,
+        keys,
+        Arc::new(busbar_kernel::plane_driver::CoreAudit),
     )
-    .await
-    .expect("the actual root composes decisions egress and hooks");
-    composed.post = Some(post);
+    .with_journal(post.clone());
+    let composed = crate::root::serve::Served {
+        ports: vec![fixture.seat.clone()],
+        billing: Some(billing),
+        post: Some(post),
+        tables: app.serve_tables.clone(),
+        ..Default::default()
+    };
     let doors = crate::root::serve::door_routes(
         composed,
         || crate::root::kernel::ROOT_CARD.pin(),
@@ -445,9 +413,17 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     .expect("actual decisions routes mount");
     let (router, _, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
-    credential_handle.set(handle.clone());
+    let workers = std::mem::replace(
+        &mut fixture.workers,
+        crate::root::boot::workers::PreparedWorkers::new(),
+    )
+    .start();
     Served {
         router,
+        hook_heard,
+        attached: attach,
+        _fixture: fixture,
+        _workers: workers,
         token: token.expose(&busbar_kernel::seal::lend()).to_owned(),
         heard,
         _handle: handle,
@@ -475,6 +451,11 @@ impl Served {
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
             .await
             .expect("decision response body");
+        assert_eq!(
+            self.hook_heard.try_recv().is_ok(),
+            self.attached,
+            "the actual native hook attachment is invoked exactly when configured"
+        );
         (
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
@@ -499,7 +480,10 @@ async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
     .await;
     let (status, body, heard) = s.decide().await;
     assert_eq!(status.as_u16(), 409, "the hook's own status: {body}");
-    assert_eq!(body["detail"]["message"], "no decisions today", "{body}");
+    assert_eq!(
+        body["detail"]["message"], "the request was refused by policy",
+        "{body}"
+    );
     assert_eq!(body["detail"]["error_type"], "api_usage_error", "{body}");
     assert!(
         heard.is_none(),
@@ -548,7 +532,10 @@ async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
     .await;
     let (status, body, heard) = s.decide().await;
     assert_eq!(status.as_u16(), 403, "{body}");
-    assert_eq!(body["detail"]["message"], "decisions closed", "{body}");
+    assert_eq!(
+        body["detail"]["message"], "the request was refused by policy",
+        "{body}"
+    );
     assert_eq!(body["detail"]["error_type"], "permission_denied", "{body}");
     assert!(heard.is_none(), "{heard:?}");
     println!("actual Decisions hook assertions completed");

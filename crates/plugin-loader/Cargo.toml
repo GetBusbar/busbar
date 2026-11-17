@@ -85,6 +85,25 @@ name = "neutral_frame_door"
 path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
+# The native pack proof uses an actual exported MIN-3 image, built with the other examples.
+[[example]]
+name = "native_pack_fixture"
+path = "tests/fixtures/native_pack_fixture.rs"
+crate-type = ["cdylib"]
+
+# A MIN-3 store whose describe answers a recursion-bomb D_SCHEMA (core's D_SCHEMA validator; admin inspect).
+[[example]]
+name = "native_schema_bomb"
+path = "tests/fixtures/native_schema_bomb.rs"
+crate-type = ["cdylib"]
+
+# A MIN-3 store whose describe touches a thread_local with a destructor, so glibc keeps it mapped after dlclose
+# (DES-443 r3: an inspected image that pins itself).
+[[example]]
+name = "native_tls_pin"
+path = "tests/fixtures/native_tls_pin.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }

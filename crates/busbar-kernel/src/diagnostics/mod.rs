@@ -273,11 +273,11 @@ diagnostics! {
         "A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.",
         "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.";
 
-    /// An `advanced.allow_destinations` entry names a cloud-metadata destination, which no configuration admits.
-    CONFIG_DESTINATION_NAMES_METADATA = 3134, Config, Fatal, "config-destination-names-metadata", "1.6.0", false,
+    /// RETIRED: the global destination allowlist was removed; metadata is always refused.
+    CONFIG_DESTINATION_NAMES_METADATA = 3134, Config, Fatal, "config-destination-names-metadata", "1.6.0", true,
         "An allowlist entry names a cloud-metadata destination",
-        "An `advanced.allow_destinations` entry is a cloud-metadata host name (such as `metadata.google.internal`), a metadata address (such as `169.254.169.254`, `fd00:ec2::254` or an IPv6 link-local address), or a /32 or /128 network equal to one. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so the entry is refused at startup rather than silently ignored. A wider network that merely covers a metadata address (such as `169.254.0.0/16`) loads, and still never admits the metadata address.",
-        "Remove the entry named in the message. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
+        "RETIRED. The global advanced.allow_destinations setting was removed. Private reach is owned by a declared registration or core-selected provider route. No route grant admits cloud metadata.",
+        "Remove advanced.allow_destinations. Set allow_private only on the declared registration that requires private reach; metadata stays refused.";
 
     /// A retired 1.5.5 cloud-metadata carve-out key is set; no configuration admits cloud metadata.
     CONFIG_METADATA_CARVE_OUT_RETIRED = 3136, Config, Fatal, "config-metadata-carve-out-retired", "1.6.0", false,
@@ -321,11 +321,11 @@ diagnostics! {
         "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
         "Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
 
-    /// A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade).
-    CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", false,
+    /// RETIRED: configured providers retain private reach on their own core-selected origins.
+    CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", true,
         "A provider URL names a private or loopback host the destination guard refuses",
-        "A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.",
-        "Add exactly that host to `advanced.allow_destinations`, or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.";
+        "RETIRED. Configured providers retain private reach on their core-selected base/token routes. The grant is restricted to those origins and never becomes a global hostname permission. Metadata remains refused.",
+        "Nothing emits this code. Review the configured provider route; arbitrary requests and strict OPEN_WEB checks do not inherit its private reach.";
 
     /// RETIRED: a metadata host-list entry that names no host is refused at startup, not warned about.
     CONFIG_METADATA_ENTRY_NAMES_NO_HOST = 3024, Config, Actionable, "config-metadata-entry-names-no-host", "1.6.0", true,
@@ -634,7 +634,7 @@ diagnostics! {
     /// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in. Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
     PLUGIN_LOADED_UNVERIFIED = 6003, Plugins, Actionable, "plugin-loaded-unverified", "1.6.0", false,
         "Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
-        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
+        "A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_untrusted`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.",
         "Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.";
 
     /// The RAM (ephemeral) store was resolved while a STATEFUL plane (one carrying per-task state) is configured, so in-flight plane task state is dropped on restart.
@@ -748,20 +748,20 @@ diagnostics! {
     /// A stored recoverable credential opens under neither at-rest key, so it does not authenticate.
     CREDENTIAL_AT_REST_UNOPENABLE = 8023, Governance, Actionable, "credential-at-rest-unopenable", "1.6.0", false,
         "A stored recoverable credential opens under neither at-rest key (it does not authenticate)",
-        "A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.",
-        "Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it.";
+        "A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid does not match the key derived from auth.signing_key on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.",
+        "Give every node that shares the store the same auth.signing_key, and reload. Rotating auth.signing_key retires the credentials sealed under the old one: re-mint them.";
 
     /// Recoverable credentials still need re-sealing under the current at-rest key.
     CREDENTIAL_AT_REST_REWRAP_PENDING = 8024, Governance, Actionable, "credential-at-rest-rewrap-pending", "1.6.0", false,
         "Recoverable credentials are not yet re-sealed under the current at-rest key",
-        "A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under.",
-        "Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.";
+        "A boot or reload re-seals every stored recoverable credential stored in the clear before 1.6.0 under the key derived from auth.signing_key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate.",
+        "A later boot or reload re-seals them (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.";
 
     /// A recoverable credential written before 1.6.0 is stored in the clear.
     CREDENTIAL_AT_REST_LEGACY_PLAIN = 8025, Governance, Actionable, "credential-at-rest-legacy-plain", "1.6.0", false,
         "A recoverable credential written before 1.6.0 is stored in the clear",
-        "A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.",
-        "Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.";
+        "A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with auth.signing_key configured re-seals it under the key derived from it.",
+        "Configure auth.signing_key and reload; the row is re-sealed and no longer stored in the clear.";
 
     /// A plane member's upstream credential could not be refreshed; the held value is kept until its lease ends.
     UPSTREAM_CREDENTIAL_REFRESH_FAILED = 8026, Governance, Actionable, "upstream-credential-refresh-failed", "1.6.0", false,
@@ -858,34 +858,40 @@ diagnostics! {
         "The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.",
         "Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.";
 
+    AUDIT_SEALED_AFTER_RESTART = 2054, Audit, BenignRecurring, "audit-sealed-after-restart", "1.6.0", false,
+        "An unstamped audit tail was sealed after a restart",
+        "A busbar process stopped before its audit notary stamped its last lines. On restart, the node itself (same holder) or the next process on the same host walked the links from the last valid stamp to the tail, found them intact and no longer than any crash leaves, and signed one after_restart page over exactly those lines with the deployment key. The verify tool reports such pages under restart_sealed, apart from live pages, with the sealer node and the down interval.",
+        "None: this is the designed outcome of a crash. Look for the crash itself (exit code, kill, host restart) if it was not expected.";
+
+    AUDIT_CHAIN_BROKEN_AT_BOOT = 2055, Audit, Actionable, "audit-chain-broken-at-boot", "1.6.0", false,
+        "An audit chain is broken after its last valid stamp; the tail is recorded, never sealed",
+        "On restart the walk from a node's last valid audit stamp to its tail failed: a line does not link or hash (link, sequence, digest), a body does not decode (decode), a stamp failed its own check (stamp), a legacy line carries no signature (unsigned), the tail has no stamp of this node on this host (unanchored), it follows a clean-shutdown page (after_final), it is longer than any crash leaves (span), the walk ran out of budget (budget), or a fenced node has no seal row (unsealed_fenced). A signed break notice records the node, the last good line and the unsealed range; no stamp vouches for those lines. Boot continues.",
+        "Treat the named lines as unauthenticated until explained: compare the store with a backup or the export of earlier audit pages. The fields node, last_good, unsealed_from, unsealed_to and reason locate the damage.";
+
+    AUDIT_PREDECESSOR_REFUSED = 2056, Audit, Actionable, "audit-predecessor-refused", "1.6.0", false,
+        "A crashed predecessor on this host was not sealed",
+        "The start-up predecessor sealer found a node on this host that it may not seal: the process has no host name (host_unknown), the node's host or archive row does not match its id reservation (assignment), its last stamp names another host (foreign_host), its liveness at this process's start cannot be shown (sibling_unknown), its seal row does not verify (seal_row_invalid), its records use a recipe this build cannot read (recipe_unsupported), or a step failed for good (permanent). No seal outcome was written for it; any completed writer fence remains in force, and its tail stays reported as unauthenticated, and the next process on the host retries it.",
+        "For host_unknown, set HOSTNAME to a value unique to the machine. For assignment or seal_row_invalid, treat the store as tampered until explained. For the rest, check the store and start the next process on the host.";
+
+    AUDIT_PREDECESSOR_SEAL_FAILED = 2057, Audit, Actionable, "audit-predecessor-seal-failed", "1.6.0", false,
+        "Sealing a crashed predecessor is failing and is retried",
+        "A step of sealing a crashed predecessor's audit tail (fence, tail read, sign or seal write) failed or did not answer within one second. The step is retried on a capped backoff of up to one second, and a write is never dropped mid-flight. An Info line follows once the node is sealed.",
+        "Check the store's health and the audit signing key. If the process stops first, the next process on the host seals the node.";
+
     TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
         "A request terminal audit original could not be staged",
         "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",
         "Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.";
 
-    /// A crash leftover was sealed after a restart (SEALING-FIX §3.6.1, §3.6.2).
-    AUDIT_SEALED_AFTER_RESTART = 2052, Audit, BenignRecurring, "audit-sealed-after-restart", "1.6.0", false,
-        "An unstamped audit tail was sealed after a restart",
-        "A busbar process stopped before its audit notary stamped its last lines. On restart, the node itself (same holder) or the next process on the same host walked the links from the last valid stamp to the tail, found them intact and no longer than any crash leaves, and signed one after_restart page over exactly those lines with the deployment key. The verify tool reports such pages under restart_sealed, apart from live pages, with the sealer node and the down interval.",
-        "None: this is the designed outcome of a crash. Look for the crash itself (exit code, kill, host restart) if it was not expected.";
+    EXPORT_LOSS_OBSERVED = 2052, Audit, Actionable, "export-loss-observed", "1.6.0", false,
+        "An exporter first observed lost delivery or failed evidence",
+        "The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.",
+        "Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.";
 
-    /// A chain could not be vouched for after a restart (SEALING-FIX §3.6).
-    AUDIT_CHAIN_BROKEN_AT_BOOT = 2053, Audit, Actionable, "audit-chain-broken-at-boot", "1.6.0", false,
-        "An audit chain is broken after its last valid stamp; the tail is recorded, never sealed",
-        "On restart the walk from a node's last valid audit stamp to its tail failed: a line does not link or hash (link, sequence, digest), a body does not decode (decode), a stamp failed its own check (stamp), a legacy line carries no signature (unsigned), the tail has no stamp of this node on this host (unanchored), it follows a clean-shutdown page (after_final), it is longer than any crash leaves (span), the walk ran out of budget (budget), or a fenced node has no seal row (unsealed_fenced). A signed break notice records the node, the last good line and the unsealed range; no stamp vouches for those lines. Boot continues.",
-        "Treat the named lines as unauthenticated until explained: compare the store with a backup or the export of earlier audit pages. The fields node, last_good, unsealed_from, unsealed_to and reason locate the damage.";
-
-    /// The predecessor sealer refused a node (SEALING-FIX §3.6.2).
-    AUDIT_PREDECESSOR_REFUSED = 2054, Audit, Actionable, "audit-predecessor-refused", "1.6.0", false,
-        "A crashed predecessor on this host was not sealed",
-        "The start-up predecessor sealer found a node on this host that it may not seal: the process has no host name (host_unknown), the node's host or archive row does not match its id reservation (assignment), its last stamp names another host (foreign_host), its liveness at this process's start cannot be shown (sibling_unknown), its seal row does not verify (seal_row_invalid), its records use a recipe this build cannot read (recipe_unsupported), or a step failed for good (permanent). Nothing was fenced, signed or written for it; its tail stays reported as unauthenticated, and the next process on the host retries it.",
-        "For host_unknown, set HOSTNAME to a value unique to the machine. For assignment or seal_row_invalid, treat the store as tampered until explained. For the rest, check the store and start the next process on the host.";
-
-    /// A predecessor seal step keeps failing (SEALING-FIX §3.6.2 "Errors").
-    AUDIT_PREDECESSOR_SEAL_FAILED = 2055, Audit, Actionable, "audit-predecessor-seal-failed", "1.6.0", false,
-        "Sealing a crashed predecessor is failing and is retried",
-        "A step of sealing a crashed predecessor's audit tail (fence, tail read, sign or seal write) failed or did not answer within one second. The step is retried on a capped backoff of up to one second, and a write is never dropped mid-flight. An Info line follows once the node is sealed.",
-        "Check the store's health and the audit signing key. If the process stops first, the next process on the host seals the node.";
+    EXPORT_LOSS_UNCONFIRMED = 2053, Audit, Actionable, "export-loss-unconfirmed", "1.6.0", false,
+        "Exporter loss evidence remains unconfirmed or a producer reported after quiescence",
+        "The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.",
+        "Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.";
 
     PLANE_AUDITLOG_WRITE_FAILED = 2044, Audit, Actionable, "plane-auditlog-write-failed", "1.6.0", false,
         "Admin audit record could not be written through the durable journal seam (evidence lost)",
@@ -1001,10 +1007,10 @@ diagnostics! {
         "RETIRED. Nothing emits this code: the engine keeps no plane task store.",
         "Nothing emits this code.";
 
-    /// `entitlement.check` named a scope kind the calling plane did not declare; the answer is NOT_ENTITLED.
+    /// A scope authorization check named a scope kind the calling plane did not declare.
     ENTITLEMENT_UNDECLARED_SCOPE_KIND = 8021, Governance, BenignRecurring, "entitlement-undeclared-scope-kind", "1.6.0", false,
         "An entitlement check named a scope kind its plane did not declare",
-        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.",
+        "A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.",
         "Declare the scope kind in the plane's tail, or correct the target the plane asks about.";
 
     ADMIN_STORE_OPERATION_FAILED = 1006, Durability, Actionable, "admin-store-operation-failed", "1.6.0", false,
@@ -1441,11 +1447,11 @@ diagnostics! {
 
     CONFIG_AUTH_POLICY_INVALID = 3113, Config, Fatal, "config-auth-policy-invalid", "1.6.0", false,
         "An auth policy or key lifetime setting is invalid",
-        "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a default TTL above the maximum, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.",
+        "A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.",
         "Fix the named setting: durations are written like `30d` or `12h`, per-role ceilings must stay within `auth.policy`, and a browser login needs top-level `public_url: https://<busbar-host>`."
         => config_auth_policy_invalid(detail) "{detail}",
-        example "auth:\n  policy: { default_ttl: 90d, max_ttl: 30d }",
-        detail "auth.policy.default_ttl ('90d', 7776000s) exceeds auth.policy.max_ttl ('30d', 2592000s); the default a mint falls back to cannot be longer than the ceiling";
+        example "auth:\n  policy:\n    binding_modes: [time-bound]\n    mint_ceilings:\n      ci: { binding_modes: [both] }",
+        detail "auth.policy.mint_ceilings.ci.binding_modes names 'both', which auth.policy.binding_modes does not allow; a per-role ceiling cannot widen the deployment-wide binding modes";
 
     CONFIG_ROLE_BINDING_INVALID = 3114, Config, Fatal, "config-role-binding-invalid", "1.6.0", false,
         "A role binding is invalid",
@@ -1871,11 +1877,20 @@ diagnostics! {
         "The configuration was read under the grammar its admitted modules declared at that moment. A secret shorthand word, a core grammar role, a plane section or an outbound auth style the configuration uses is declared differently by what admission now gives (plugins.dir changed after the read), or by the Store's plugin version pins at boot, or would be at the next start after a pin. Busbar refuses rather than read a value under one declaration and resolve it under another: a reload or apply is refused and the running generation keeps serving, a boot exits, and a pin is not written. The message names the item and both owners with their files. A module upgraded with an equal declaration never refuses, and an item the configuration does not use never refuses.",
         "Reload (or restart) to read the configuration again. At boot, make config.yaml's plugins: block admit the same module, write the canonical `{ module: ..., settings: ... }` reference, or start once with --ignore-overlay and remove the pin with POST /api/v1/admin/plugins/rollback.";
 
+    /// A configuration key that is reserved or retired was written.
+    CONFIG_RESERVED_KEY = 3171, Config, Fatal, "config-reserved-key", "1.6.0", false,
+        "A reserved configuration key was written",
+        "A key busbar reserves or has retired was written in config.yaml or in an admin configuration publication. It is refused by name before the document is read, rather than with the generic unknown-field error, so the reason and the remedy are stated. Another unknown key keeps the generic error.",
+        "Remove the key the message names. For `plugins.trust.operator`: 1.6.0 operator plugins must be first-party signed, so there is no operator trust setting to write."
+        => config_reserved_key(detail) "{detail}",
+        example "plugins:\n  trust:\n    operator: my-publisher",
+        detail "plugins.trust.operator: reserved; 1.6.0 operator plugins must be first-party signed (Q13)";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
-        "If the destination is intended, add it to `advanced.allow_destinations` (private hosts), use TLS, or list its CA under `advanced.tls`.";
+        "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
 
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,
@@ -2115,3 +2130,18 @@ macro_rules! diag_debug {
     };
 }
 pub use crate::{diag_debug, diag_error, diag_warn};
+
+/// The reserved observer path is visible to the normal stderr layer but excluded from every
+/// export projection, including events attached to an otherwise exportable parent span.
+pub const EXPORT_LOSS_TARGET: &str = "busbar::export::loss";
+
+/// Bounded caller-selected first/retry notification. Deliberately bypasses `emit` and its
+/// actionable diagnostic audit event: the observer already owns its one native original.
+pub fn export_loss(first: bool, instance: &str) {
+    let diagnostic = if first {
+        EXPORT_LOSS_OBSERVED
+    } else {
+        EXPORT_LOSS_UNCONFIRMED
+    };
+    tracing::warn!(target: EXPORT_LOSS_TARGET, diag = %diagnostic.banner(), instance, "export observation requires attention");
+}

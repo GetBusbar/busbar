@@ -460,8 +460,65 @@ pub trait ConnectionSecurity: Send + Sync {
 }
 
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
-pub type SecuredIoFut<'a> =
-    Pin<Box<dyn Future<Output = std::io::Result<Box<dyn RawIo>>> + Send + 'a>>;
+pub type SecuredIoFut<'a> = Pin<Box<dyn Future<Output = std::io::Result<SecuredIo>> + Send + 'a>>;
+
+/// A secured stream and the peer leaf certificate verified by its handshake.
+pub struct SecuredIo {
+    /// The stream returned by the completed security handshake.
+    pub io: Box<dyn RawIo>,
+    /// Verified peer leaf certificate bytes, or empty when no peer certificate is supplied.
+    pub peer_certificate: Box<[u8]>,
+}
+
+impl fmt::Debug for SecuredIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecuredIo")
+            .field("peer_certificate_bytes", &self.peer_certificate.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl SecuredIo {
+    /// Wrap a secured stream whose handshake supplies no peer certificate to the caller.
+    pub fn anonymous(io: Box<dyn RawIo>) -> Self {
+        Self {
+            io,
+            peer_certificate: Box::default(),
+        }
+    }
+}
+
+impl futures::io::AsyncRead for SecuredIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl futures::io::AsyncWrite for SecuredIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_close(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_close(cx)
+    }
+}
 
 /// The byte stream under a connection, detached from the layer that owned it.
 pub struct RawStream {

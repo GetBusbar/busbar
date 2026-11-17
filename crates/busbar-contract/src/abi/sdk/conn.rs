@@ -205,7 +205,6 @@ snapshot_table!(
     trust_due,
     verify_lookup,
     verify_store,
-    entitlement_check,
     content_scan,
     hook_call,
     random_fill,

@@ -23,6 +23,7 @@ use busbar_plugin_abi::plane::{FROM_CORE, P_EXHAUSTED};
 use busbar_plugin_abi::records::Reply;
 use busbar_ports::codec::plane::encode_refusal;
 use busbar_ports::plane::PlaneIn;
+use busbar_ports::FactVal;
 use std::sync::Arc;
 
 use super::port_auth::{plain_refusal, TicketDoor};
@@ -45,6 +46,9 @@ pub trait Books {
     fn ended(&self, ending: Ending, usage: &SessionUsage);
     /// One AUDIT row the plane stated.
     fn audit(&self, row: &AuditRow);
+
+    /// The end user the plane projected on its request answer (PJ_END_USER), once. Default: kept nowhere.
+    fn end_user(&self, _user: &str) {}
 }
 
 /// The books of a billed unit: the end through the unit's money seam, audit rows under the verified principal.
@@ -52,6 +56,7 @@ pub struct UnitBooks<'a> {
     money: &'a PortMoney,
     ctx: &'a UnitCtx,
     principal: Option<&'a str>,
+    journal: Option<&'a dyn super::HookJournal>,
 }
 
 impl<'a> UnitBooks<'a> {
@@ -61,7 +66,15 @@ impl<'a> UnitBooks<'a> {
             money,
             ctx,
             principal,
+            journal: None,
         }
+    }
+
+    /// The node's journal, told the end user the plane projects (`records.user`, ADMIN-API-1.6 §3.5).
+    #[must_use]
+    pub fn with_journal(mut self, journal: Option<&'a dyn super::HookJournal>) -> Self {
+        self.journal = journal;
+        self
     }
 }
 
@@ -73,6 +86,12 @@ impl Books for UnitBooks<'_> {
     fn audit(&self, row: &AuditRow) {
         if self.money.audit(row, self.principal).is_err() {
             tracing::warn!(action = &*row.action, "a plane audit row was not accepted");
+        }
+    }
+
+    fn end_user(&self, user: &str) {
+        if let Some(journal) = self.journal.filter(|journal| journal.keeps_end_user()) {
+            journal.end_user(self.ctx.key, user);
         }
     }
 }
@@ -195,7 +214,20 @@ pub fn run_session<K: Calls + ?Sized>(
     body: &[u8],
     mut drive: Drive<'_>,
 ) -> Result<Ran, SessionError> {
+    if let Some(pending) = drive.effects.admission() {
+        return run_pending_session(calls, req, body, drive, pending);
+    }
+    if let Some(hooks) = drive
+        .effects
+        .hooks()
+        .filter(|hooks| hooks.binder.active(req.route))
+    {
+        return run_hook_session(calls, req, body, drive, hooks);
+    }
     let (mut task, first) = Task::begin(calls, req, body, drive.effects)?;
+    if let Some(user) = end_user_of(&first) {
+        drive.books.end_user(user);
+    }
     match drive_task(&mut task, first, req, &mut drive) {
         Ok(ran) => Ok(ran),
         Err(error) => {
@@ -205,24 +237,164 @@ pub fn run_session<K: Calls + ?Sized>(
     }
 }
 
+fn run_pending_session<K: Calls + ?Sized>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    mut drive: Drive<'_>,
+    pending: &super::port_admission::Pending,
+) -> Result<Ran, SessionError> {
+    use super::port_hooks::stage::{self, Buffered, Observed};
+    let buffered = Buffered::new(drive.effects);
+    let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
+    let outcome = (|| {
+        let mut answers = task.resolve_before_hooks(first, drive.resolver, &buffered)?;
+        let wants = answers
+            .iter()
+            .find_map(|answer| answer.forward.as_ref())
+            .map(|forward| Wants::from_facts(&forward.wants));
+        pending.admit(
+            drive.members.as_deref_mut().map(|m| m as &mut dyn Members),
+            wants.as_ref(),
+        )?;
+        task.bind_admission(pending)?;
+        if let Some(user) = answers.iter().find_map(end_user_of) {
+            drive.books.end_user(user);
+        }
+        if let Some(hooks) = drive
+            .effects
+            .hooks()
+            .filter(|hooks| hooks.binder.active(req.route))
+        {
+            let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
+            let observed = Observed::new(drive.effects, stage);
+            buffered.release();
+            let mut resolved = Vec::new();
+            for answer in answers {
+                if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
+                    carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
+                }
+                resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+            }
+            let mut allowed = Drive {
+                resolver: drive.resolver,
+                members: drive.members.take().map(|m| m as &mut dyn Members),
+                send: drive.send.take().map(|s| s as &mut dyn UpSend),
+                dialect: drive.dialect,
+                refusals: drive.refusals,
+                effects: &observed,
+                books: drive.books,
+                carrier: drive.carrier,
+            };
+            drive_answers(&mut task, resolved, req, &mut allowed)
+        } else {
+            buffered.release();
+            let mut resolved = Vec::new();
+            for answer in answers {
+                if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
+                    carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
+                }
+                resolved.extend(task.resolve(answer, drive.resolver, drive.effects)?);
+            }
+            drive_answers(&mut task, resolved, req, &mut drive)
+        }
+    })();
+    if outcome.is_err() {
+        drive.books.ended(Ending::Failed, task.usage());
+    }
+    outcome
+}
+
+fn run_hook_session<K: Calls + ?Sized>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    mut drive: Drive<'_>,
+    hooks: &super::port_hooks::Invocation,
+) -> Result<Ran, SessionError> {
+    use super::port_hooks::stage::{self, Buffered, Observed};
+    drive
+        .effects
+        .invocation()
+        .ok_or(SessionError::HookPrerequisite)?;
+    let buffered = Buffered::new(drive.effects);
+    let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
+    if let Some(user) = end_user_of(&first) {
+        drive.books.end_user(user);
+    }
+    let outcome = (|| {
+        let mut answers = if hooks.binder.enforcing(req.route) {
+            task.resolve_before_hooks(first, drive.resolver, &buffered)?
+        } else {
+            task.resolve(first, drive.resolver, &buffered)?
+        };
+        let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
+        let observed = Observed::new(drive.effects, stage);
+        buffered.release();
+        let mut resolved = Vec::new();
+        for answer in answers {
+            if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
+                carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
+            }
+            resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+        }
+        let mut allowed = Drive {
+            resolver: drive.resolver,
+            members: drive.members.take().map(|m| m as &mut dyn Members),
+            send: drive.send.take().map(|s| s as &mut dyn UpSend),
+            dialect: drive.dialect,
+            refusals: drive.refusals,
+            effects: &observed,
+            books: drive.books,
+            carrier: drive.carrier,
+        };
+        drive_answers(&mut task, resolved, req, &mut allowed)
+    })();
+    if outcome.is_err() {
+        drive.books.ended(Ending::Failed, task.usage());
+    }
+    outcome
+}
+
+/// The end user a plane projected on its request answer (PJ_END_USER), when it stated one.
+fn end_user_of(first: &Answer) -> Option<&str> {
+    first.facts.iter().find_map(|(key, value)| match value {
+        FactVal::Text(user)
+            if *key == busbar_plugin_abi::fail::fact::PJ_END_USER && !user.is_empty() =>
+        {
+            Some(&**user)
+        }
+        _ => None,
+    })
+}
+
 fn drive_task<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
     first: Answer,
     req: &PlaneIn<'_>,
     drive: &mut Drive<'_>,
 ) -> Result<Ran, SessionError> {
-    let mut ran = Ran::default();
-    let mut forward = None;
     if let (Some(carrier), Some(first_forward)) = (drive.carrier, &first.forward) {
-        // A CHANNEL in this answer attaches to the target the FORWARD pins, before any walk.
         carrier
             .map
             .point_wanted(&Wants::from_facts(&first_forward.wants));
     }
     let answers = task.resolve(first, drive.resolver, drive.effects)?;
+    drive_answers(task, answers, req, drive)
+}
+
+fn drive_answers<K: Calls + ?Sized>(
+    task: &mut Task<'_, K>,
+    answers: Vec<Answer>,
+    req: &PlaneIn<'_>,
+    drive: &mut Drive<'_>,
+) -> Result<Ran, SessionError> {
+    let mut ran = Ran::default();
+    let mut forward = None;
     let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
     absorb(&mut ran, &mut forward, answers, drive.books);
     absorb(&mut ran, &mut None, written, drive.books);
+    drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
     if let Some(forward) = forward {
         let (Some(members), Some(send)) = (drive.members.as_deref_mut(), drive.send.as_deref_mut())
@@ -257,6 +429,7 @@ fn drive_task<K: Calls + ?Sized>(
                 ..
             } => {
                 ran.client.extend(client);
+                drive.effects.observed_usage(task.usage());
                 hand_out(drive.effects, &mut ran.client);
                 ran.member = Some(member);
                 ran.attempts = attempts;
@@ -279,6 +452,7 @@ fn drive_task<K: Calls + ?Sized>(
     }
     absorb(&mut ran, &mut None, vec![last], drive.books);
     ran.usage = task.usage().clone();
+    drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
     drive.books.ended(Ending::End, &ran.usage);
     Ok(ran)

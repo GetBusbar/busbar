@@ -9,7 +9,6 @@ use std::sync::{Arc, LazyLock, RwLock, Weak};
 
 use busbar_contract::{abi::mechanism::lifecycle::slot, UnitKey};
 use busbar_kernel::{
-    config::{measurement_rates, PluginRateCards},
     host_measurement::{
         MeasurementBinding, MeasurementContext, MeasurementOperation, MeasurementRuntime,
     },
@@ -22,7 +21,6 @@ use super::loader::dispatch::measurement::{
 
 #[derive(Default)]
 struct State {
-    rates: PluginRateCards,
     runtime: Option<Arc<MeasurementRuntime>>,
     governor: Weak<busbar_kernel::governance::GovState>,
 }
@@ -87,24 +85,10 @@ fn refusal(error: busbar_kernel::host_measurement::Refusal) -> Refusal {
     }
 }
 
-fn coverage(rates: &PluginRateCards, binding: &Binding) -> Result<Vec<String>, String> {
-    measurement_rates::validate_plugin_rate_coverage(
-        rates,
-        binding.caller.kind().word(),
-        binding.caller.namespace(),
-        binding.classes.iter().map(|class| class.class.as_str()),
-    )
-}
-
 impl Authority for RootAuthority {
-    fn admit(&self, binding: &Binding) -> Result<(), Refusal> {
-        let state = self.0.read().unwrap_or_else(|p| p.into_inner());
-        for warning in coverage(&state.rates, binding).map_err(|error| {
-            tracing::error!(%error, "plugin measurement registration refused");
-            Refusal::Malformed
-        })? {
-            tracing::warn!(%warning);
-        }
+    /// Every declared measurement class is admitted: its counts are recorded and reported
+    /// unpriced (no configuration key prices plugin measurements).
+    fn admit(&self, _binding: &Binding) -> Result<(), Refusal> {
         Ok(())
     }
 
@@ -244,71 +228,12 @@ pub(super) fn authority() -> Arc<dyn Authority> {
     AUTHORITY.clone()
 }
 
-/// Staged configuration is checked against already bound instances before replacing it.
-pub(crate) fn configure(rates: &PluginRateCards) -> Result<(), String> {
-    measurement_rates::validate(rates)?;
-    let bindings = super::dispatch::dispatcher().measurement_bindings();
-    for binding in &bindings {
-        for warning in coverage(rates, binding)? {
-            tracing::warn!(%warning);
-        }
-    }
-    AUTHORITY.0.write().unwrap_or_else(|p| p.into_inner()).rates = rates.clone();
-    Ok(())
-}
-
-/// Only the existing confirmed rate publication notification updates live coverage metadata.
-pub(super) fn confirmed_rates(rates: &PluginRateCards) {
-    AUTHORITY.0.write().unwrap_or_else(|p| p.into_inner()).rates = rates.clone();
-}
-
-pub(crate) fn validate_bindings() -> Result<(), String> {
-    let bindings = super::dispatch::dispatcher().measurement_bindings();
-    let state = AUTHORITY.0.read().unwrap_or_else(|p| p.into_inner());
-    measurement_rates::validate_plugin_rate_instances(
-        &state.rates,
-        bindings.iter().map(|binding| {
-            (
-                binding.caller.kind().word(),
-                binding.caller.namespace().as_ref(),
-            )
-        }),
-    )
-}
-
-/// Validate an activation without mutating the confirmed card or its publication state.
-pub(super) fn validate_rates(rates: &PluginRateCards) -> Result<(), String> {
-    let bindings = super::dispatch::dispatcher().measurement_bindings();
-    for binding in &bindings {
-        coverage(rates, binding)?;
-    }
-    if AUTHORITY
-        .0
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .runtime
-        .is_some()
-    {
-        measurement_rates::validate_plugin_rate_instances(
-            rates,
-            bindings.iter().map(|binding| {
-                (
-                    binding.caller.kind().word(),
-                    binding.caller.namespace().as_ref(),
-                )
-            }),
-        )?;
-    }
-    Ok(())
-}
-
 /// Called only after both native recovery sinks have been attached.
 pub(super) fn install(app: &busbar_kernel::state::App) -> Result<(), String> {
     let gov = app
         .governance
         .clone()
         .ok_or("measurement custody requires governance")?;
-    configure(app.cost.measurement_rates())?;
     let mut state = AUTHORITY.0.write().unwrap_or_else(|p| p.into_inner());
     if state
         .governor
@@ -378,9 +303,7 @@ pub(super) async fn request<F: Future>(scope: RequestScope, future: F) -> F::Out
 #[cfg(test)]
 pub(super) fn local_authority(
     gov: Arc<busbar_kernel::governance::GovState>,
-    rates: PluginRateCards,
 ) -> Result<Arc<dyn Authority>, String> {
-    measurement_rates::validate(&rates)?;
     let runtime = MeasurementRuntime::new(
         &busbar_kernel::seal::acquire(),
         gov.clone(),
@@ -388,7 +311,6 @@ pub(super) fn local_authority(
     )
     .map_err(|error| format!("measurement custody: {error:?}"))?;
     Ok(Arc::new(RootAuthority(RwLock::new(State {
-        rates,
         runtime: Some(runtime),
         governor: Arc::downgrade(&gov),
     }))))

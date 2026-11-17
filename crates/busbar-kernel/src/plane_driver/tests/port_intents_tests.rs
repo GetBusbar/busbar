@@ -584,9 +584,9 @@ impl IntentHost for Host {
         self.distrust
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
         self.note(format!("trust_state {party}"));
-        (self.distrust, self.state_items.clone())
+        (self.distrust, None, self.state_items.clone())
     }
 
     fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
@@ -840,6 +840,61 @@ fn a_store_that_is_not_applied_is_a_store_failed_piece_naming_the_key() {
     assert_eq!(
         script.got(),
         vec![(FROM_CORE, P_STORE_FAILED, b"s".to_vec())]
+    );
+}
+
+#[test]
+fn an_enforcing_hook_holds_a_mutation_before_a_local_response() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"secret".to_vec(),
+            },
+            It::Respond(200),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    let held = task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .unwrap();
+    assert!(
+        host.seen().is_empty(),
+        "a hook refusal must leave the Store untouched"
+    );
+    assert_eq!(
+        held[0].intents.len(),
+        1,
+        "the accepted stage releases the original intent once"
+    );
+}
+
+#[test]
+fn a_hook_prerequisite_never_reads_before_its_held_mutation() {
+    let script = Script {
+        request: vec![
+            It::Store {
+                flags: 0,
+                ttl_s: 30,
+                key: b"s".to_vec(),
+                value: b"new".to_vec(),
+            },
+            lookup(b"s"),
+        ],
+        ..Script::default()
+    };
+    let host = Host::default();
+    let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+    assert!(task
+        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
+        .is_err());
+    assert!(
+        host.seen().is_empty(),
+        "neither mutation nor stale read may escape the barrier"
     );
 }
 
@@ -1620,9 +1675,13 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
         CONN_REFUSED
     );
     assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
-    let (verdict, items) = host.trust_state("github");
+    let (verdict, root, items) = host.trust_state("github");
     assert_ne!(verdict, DISTRUST_NONE);
     assert!(items.is_empty());
+    assert!(
+        root.is_none(),
+        "a missing trust service cannot supply a root"
+    );
     assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);
     assert!(host.sight("github", None, &[]).is_err());
 }

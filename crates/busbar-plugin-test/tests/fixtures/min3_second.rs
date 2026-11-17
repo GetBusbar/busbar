@@ -722,16 +722,12 @@ impl core::future::Future for Park {
 
 /// A registry over `needs`, the real `HOST` and a [`MemBinder`], with `max_steps` as its step cap and every image
 /// of `plugins` admitted, in order.
-pub fn registry<N: Needs>(
-    needs: Arc<N>,
-    max_steps: u32,
-    plugins: &[&'static Plugin],
-) -> Registry<N> {
+pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Plugin]) -> Registry {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let mut registry = Registry::new(
+    let process = crate::process_resources();
+    let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
         &HOST,
-        needs,
-        binder,
+        Arc::clone(process.slots()),
         Ceilings {
             max_steps,
             ..Ceilings::DEFAULT
@@ -739,16 +735,17 @@ pub fn registry<N: Needs>(
     );
     for plugin in plugins {
         let admitted = admit_header(*plugin).unwrap_or_else(|r| panic!("admit: {r:?}"));
-        registry
-            .add(admitted)
+        images
+            .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));
     }
-    registry
+    Registry::new(images.finish(), binder, Arc::clone(process.ids()))
 }
 
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.
 pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: module,
         name,
         config_json: config,

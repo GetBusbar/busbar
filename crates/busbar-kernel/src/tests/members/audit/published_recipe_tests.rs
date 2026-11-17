@@ -248,8 +248,7 @@ fn the_published_table_still_describes_what_this_build_seals() {
     );
 
     let body: json::Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, std::slice::from_ref(&sealed), 1, 1)
-            .as_bytes(),
+        busbar_kernel_audit::expose::range_body(std::slice::from_ref(&sealed), 1, 1).as_bytes(),
     )
     .expect("a published body is JSON");
 
@@ -273,7 +272,7 @@ fn the_published_key_set_checks_the_published_examples_signature() {
     let domain = range["signature_domain"]
         .as_str()
         .expect("the published body names its signature domain");
-    let published_key = &keys["keys"][0];
+    let published_key = &keys["items"][0];
     let key_hex = published_key["public_key"]
         .as_str()
         .expect("a published key");
@@ -350,10 +349,9 @@ fn the_published_bodies_expose_a_window_that_stops_short() {
         })
         .collect();
 
-    let short: json::Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, &records[..4], 1, 5).as_bytes(),
-    )
-    .expect("a published body is JSON");
+    let short: json::Value =
+        json::parse_value(busbar_kernel_audit::expose::range_body(&records[..4], 1, 5).as_bytes())
+            .expect("a published body is JSON");
     let head: json::Value =
         json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes())
             .expect("a published body is JSON");

@@ -183,9 +183,8 @@ pub fn settle(store: &dyn RecordStore, local: &Local, now: u64) -> Result<Vec<Se
     let mut after = ATTEMPT_PREFIX.to_vec();
     after.pop();
     loop {
-        let page = store.scan(IMPORT_NS, &after, PAGE)?;
-        let full = page.len() == PAGE as usize;
-        for (key, value) in &page {
+        let page = store.scan(IMPORT_NS, Some(&after), PAGE)?;
+        for (key, value) in &page.rows {
             if !key.starts_with(ATTEMPT_PREFIX) {
                 continue;
             }
@@ -212,9 +211,9 @@ pub fn settle(store: &dyn RecordStore, local: &Local, now: u64) -> Result<Vec<Se
                 settled.push(outcome);
             }
         }
-        match page.last() {
-            Some((last, _)) if full => after.clone_from(last),
-            _ => break,
+        match super::continuation(&page)? {
+            Some(next) => after = next,
+            None => break,
         }
     }
     Ok(settled)

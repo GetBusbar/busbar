@@ -303,7 +303,9 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "busbar-count",
  "busbar-crypto",
+ "busbar-secure",
  "bytes",
  "ciborium",
  "foldhash",
@@ -345,6 +347,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "crc32fast",
  "dimpl",
  "foldhash",
@@ -370,6 +373,14 @@ dependencies = [
  "windows-sys 0.61.2",
  "x509-cert",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-count"
+version = "1.6.0"
+dependencies = [
+ "serde",
+ "sonic-rs",
 ]
 
 [[package]]
@@ -426,6 +437,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "bytes",
  "foldhash",
  "futures",
@@ -542,6 +554,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "busbar-secure",
  "crossbeam-queue",
  "hex",
  "percent-encoding",
@@ -557,6 +570,7 @@ dependencies = [
  "busbar-contract",
  "busbar-ffi",
  "busbar-plugin-abi",
+ "busbar-ports",
  "flate2",
  "foldhash",
  "futures",
@@ -572,6 +586,22 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-ports"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-secure"
+version = "1.6.0"
+dependencies = [
  "zeroize",
 ]
 
@@ -2623,7 +2653,7 @@ dependencies = [
 [[package]]
 name = "sonic-number"
 version = "0.1.3"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]
@@ -2631,7 +2661,7 @@ dependencies = [
 [[package]]
 name = "sonic-rs"
 version = "0.5.11"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "ahash",
  "bumpalo",
@@ -2651,7 +2681,7 @@ dependencies = [
 [[package]]
 name = "sonic-simd"
 version = "0.1.4"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]

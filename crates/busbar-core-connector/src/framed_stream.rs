@@ -11,6 +11,9 @@ use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
 use crate::compose::HeadWords;
 use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yielded};
 
+// The MIN-3 framing: one `TransportSession` per connection, driven by the task that owns it (IF §8.7, §13).
+pub mod session;
+
 /// How many status rows a framed stream holds inline before they spill to the heap.
 const STATUS_ROWS_INLINE: usize = 8;
 

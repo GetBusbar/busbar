@@ -20,6 +20,9 @@ fn adjustment_slot(key_id: &str, lane: &str, era: impl Into<RawRateEra>) -> Stri
 
 #[must_use]
 pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
+    if model.contains(PLANE_LANE_SEP) {
+        return std::borrow::Cow::Borrowed(model);
+    }
     match crate::plane_driver::registry::plane_decl_for(provider) {
         Some(decl) if !decl.fallback => {
             std::borrow::Cow::Owned(ledger_off_path::ledger_adjust_plane_lane(decl.key, model))

@@ -563,12 +563,19 @@ fn rel(root: &Path, file: &Path) -> String {
 /// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
 /// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
 /// from the facade would enter that build too.
+///
+/// The facade's own graph is read once, in the root workspace, where busbar-crypto is a member and
+/// `--all-features` turns on every feature it has. In the shipped workspace busbar-crypto is a path
+/// dependency, not a member: cargo refuses features for it there, and the features its members
+/// unify on it are a subset of the root reading's, so only the graph outside the seam is read.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
-    let mut findings = crypto_workspace_graph(root)?;
+    let mut findings = seam_outside_graph(root)?;
+    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
+    findings.extend(backend_only_reached(&facade));
     let shipped = root.join("dist/default");
     if shipped.join("Cargo.toml").is_file() {
         findings.extend(
-            crypto_workspace_graph(&shipped)?
+            seam_outside_graph(&shipped)?
                 .into_iter()
                 .map(|finding| format!("dist/default: {finding}")),
         );
@@ -576,7 +583,8 @@ fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
     Ok(findings)
 }
 
-fn crypto_workspace_graph(root: &Path) -> Result<Vec<String>, String> {
+/// Every seam-only crate the workspace reaches outside busbar-crypto (and its backend).
+fn seam_outside_graph(root: &Path) -> Result<Vec<String>, String> {
     let outside = cargo_tree(
         root,
         &[
@@ -589,10 +597,7 @@ fn crypto_workspace_graph(root: &Path) -> Result<Vec<String>, String> {
             BACKEND,
         ],
     )?;
-    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
-    let mut findings = seam_only_reached(&outside);
-    findings.extend(backend_only_reached(&facade));
-    Ok(findings)
+    Ok(seam_only_reached(&outside))
 }
 
 /// `cargo tree` over every feature, target and edge kind, as `--prefix depth` lines of `{p}`.

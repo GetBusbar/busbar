@@ -10,10 +10,9 @@
 //! principal is never recovered. The reference is the row's key. Rows are scoped to the principal that opened them
 //! (`owner_of`): another principal's reference answers `R_DENIED`.
 //!
-//! Core refuses (`R_UNSUPPORTED`, the IF's fail-closed answer, so the plane sends no paid create) while it cannot
-//! recover: the recovery scheduler is not ready, the store is not open yet, or governance holds no live standing for
-//! the principal. These are installed late, as the push queue is: the boot builds the custody before the store
-//! opens and fills the slots as the boot proceeds.
+//! Core refuses (`R_UNSUPPORTED`, the IF's fail-closed answer, so the plane sends no paid create) while the
+//! recovery scheduler is stopped or governance holds no live standing for the principal. The store and
+//! generation-scoped governance policy are complete constructor inputs, before any plane opens.
 //!
 //! The MIN-3 instances are not admitted in `KernelServices` (no `InstanceFacts`), so this custody does not go
 //! through its unit-bound `work_*` services: it opens the instance's private [`ScopedStore`] itself, over the same
@@ -21,7 +20,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use busbar_plugin_abi::fail::refused::{
     R_DENIED, R_INVALID, R_NOT_FOUND, R_RATE_LIMITED, R_UNSUPPORTED,
@@ -49,33 +48,16 @@ const RECOVERY_BATCH: usize = 8;
 /// `now_s`, or why it has none (no live principal, no current standing, an external role with no expiry).
 pub type Binder = dyn Fn(&str, u64) -> Result<RecoveryBinding, &'static str> + Send + Sync;
 
-/// The binder, installed once governance is attached; until then every open is `R_UNSUPPORTED`. Clones share the slot.
-#[derive(Clone, Default)]
-pub struct LateBinder {
-    slot: Arc<OnceLock<Arc<Binder>>>,
-}
-
-impl LateBinder {
-    /// The binder every clone uses from now on (the first install stays).
-    pub fn install(&self, binder: Arc<Binder>) {
-        let _ = self.slot.set(binder);
-    }
-
-    fn get(&self) -> Option<&Arc<Binder>> {
-        self.slot.get()
-    }
-}
-
-/// The binder over live governance: the principal `subject` as the governance book holds it now, and the standing
-/// `live_standing` judges for it (`recovery_binding_of`, the rules the unit-bound `work_open` captures under). An
-/// external-role principal is not in the book (it is synthesised per request) and has no binding here.
+/// The generation's complete governance policy. The live governance book still decides standing
+/// on each operation; retaining a generation never freezes revocation or expiry.
 #[must_use]
-pub fn governed_binder(handle: Arc<crate::state::AppHandle>) -> Arc<Binder> {
-    let standing = super::host::live_standing(Arc::clone(&handle));
+pub fn governed_binder(
+    governance: Option<Arc<crate::governance::GovState>>,
+    role_bindings: crate::config::RoleBindings,
+) -> Arc<Binder> {
+    let standing = super::host::policy_standing(governance.clone(), role_bindings);
     Arc::new(move |subject, now| {
-        let app = handle.load();
-        let key = app
-            .governance
+        let key = governance
             .as_deref()
             .and_then(|gov| gov.lookup_by_sub(subject))
             .ok_or("recovery requires an authenticated principal")?;
@@ -83,27 +65,10 @@ pub fn governed_binder(handle: Arc<crate::state::AppHandle>) -> Arc<Binder> {
     })
 }
 
-/// The core store, installed when the boot's store opens; until then every call is `R_UNSUPPORTED`.
-#[derive(Clone, Default)]
-pub struct LateStore {
-    slot: Arc<OnceLock<Arc<CoreStore>>>,
-}
-
-impl LateStore {
-    /// The store every clone uses from now on (the first install stays).
-    pub fn install(&self, store: Arc<CoreStore>) {
-        let _ = self.slot.set(store);
-    }
-
-    fn get(&self) -> Option<&Arc<CoreStore>> {
-        self.slot.get()
-    }
-}
-
 /// [`DurableWork`] over the core store.
 pub struct StoreWork {
-    store: LateStore,
-    binder: LateBinder,
+    store: Arc<CoreStore>,
+    binder: Arc<Binder>,
     book: Arc<WorkBook>,
     bounds: WorkBounds,
     wall_ms: WallMs,
@@ -125,7 +90,7 @@ struct Scan {
 
 impl StoreWork {
     #[must_use]
-    pub fn new(store: LateStore, binder: LateBinder, wall_ms: WallMs) -> Self {
+    pub fn new(store: Arc<CoreStore>, binder: Arc<Binder>, wall_ms: WallMs) -> Self {
         Self {
             store,
             binder,
@@ -152,7 +117,7 @@ impl StoreWork {
 
     /// The instance's private work rows, with its book loaded from them (once).
     async fn rows(&self, plane: &Caller<'_>) -> Result<(ScopedStore, Arc<str>), u32> {
-        let store = self.store.get().ok_or(R_UNSUPPORTED)?;
+        let store = &self.store;
         let instance: Arc<str> = Arc::from(plane.name);
         let rows = ScopedStore::host_private(
             Arc::clone(store),
@@ -226,7 +191,7 @@ impl DurableWork for StoreWork {
             if !self.ready.load(Ordering::Acquire) {
                 return Err(R_UNSUPPORTED);
             }
-            let binder = self.binder.get().ok_or(R_UNSUPPORTED)?;
+            let binder = &self.binder;
             let now_ms = (self.wall_ms)();
             let recovery = binder(subject, now_ms / 1000).map_err(|_| R_UNSUPPORTED)?;
             let (rows, instance) = self.rows(plane).await?;
@@ -349,9 +314,6 @@ impl DurableWork for StoreWork {
         plane: &'a Caller<'_>,
     ) -> BoxFut<'a, Result<Vec<RecoveryWork>, &'static str>> {
         Box::pin(async move {
-            if self.store.get().is_none() {
-                return Ok(Vec::new());
-            }
             let (rows, instance) = self
                 .rows(plane)
                 .await

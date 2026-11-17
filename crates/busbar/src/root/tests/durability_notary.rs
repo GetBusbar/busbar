@@ -307,6 +307,7 @@ async fn stage_line_moves_the_record() {
 #[test]
 fn the_book_holds_no_signing_capability() {
     trait NoSigner {}
+    impl NoSigner for busbar_kernel_wal::JournalRecord {}
     impl NoSigner for u64 {}
     impl NoSigner for bool {}
     impl NoSigner for String {}
@@ -612,7 +613,7 @@ async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
                         <= task
                             .progress()
                             .stamped_through
-                            .load(std::sync::atomic::Ordering::Relaxed()),
+                            .load(std::sync::atomic::Ordering::Relaxed),
                     "no cut passes the newest durable stamp's audit target"
                 );
             }
@@ -698,6 +699,7 @@ async fn clean_stop_stamps_a_final_page() {
     stamped_through(&task, 3).await;
     let end = task.stop().await.unwrap();
     assert_eq!(end.final_staged, None);
+    assert_eq!(end.committed_through, 3);
     assert!(stamps(&quiet)
         .await
         .iter()
@@ -706,13 +708,29 @@ async fn clean_stop_stamps_a_final_page() {
 
 #[tokio::test]
 async fn final_page_is_not_staged_after_the_seal_cut() {
-    let fixture = NativeFixture::new(46).await;
+    let fixture = NativeFixture::new(43).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
-    seal_n(&book, 1, 12).await;
+    seal_n(&book, 1, 3).await;
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let (journal, feed) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), Arc::clone(&held.head))
+    };
+    let (services, _checkpoint) = crate::root::durability::audit_services::AuditServices::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        journal.node(),
+        journal,
+        feed,
+        Default::default(),
+    )
+    .unwrap();
     let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
     clock.arm(tokio::time::Instant::now());
-    let task = notary_over_clock(&book, 1, Some(clock));
-    let end = task.stop().await.unwrap();
+    assert!(services.start_notary(1, clock, None, Arc::clone(&book)));
+    let end = services.take_notary().unwrap().stop().await.unwrap();
     assert_eq!(end.final_staged, Some(false));
     assert!(
         stamps(&book).await.is_empty(),

@@ -80,8 +80,19 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read once by the first-boot upgrade of a 1.5.5 config, which copies their values into the upgraded config before serving. Startup does not import or apply them. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is folded into `config.yaml` on that same upgrade boot; runtime config is persisted through the Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
-<!-- docs-truth: code gap #329 (audit-1.6): the design (MIGRATE-ON-BOOT retired-inputs pass) captures these variables on the upgrade boot, but dev only reports a set one as ignored (crates/busbar/src/root/migrate_environment.rs; capture is test-only). Until #329 lands, write `providers_file:` and the `advanced` keys by hand. -->
+**Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
+(or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
+`BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
+Boot and `--validate` refuse a set retired launch variable with `BUSBAR-3029`, naming its
+replacement without echoing the value. Write the intended values into configuration using
+[the environment-input mappings](migration-1.6.md#environment-inputs), then remove the variables
+from the launcher before validating or starting Busbar. An empty `BUSBAR_PROVIDERS` selects
+nothing and counts as unset; the other retired variables refuse even when empty.
+
+`BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
+folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.
+`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
+`TOKIO_WORKER_THREADS` fallback remain supported.
 
 ### `config`
 
@@ -395,7 +406,7 @@ auth:
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 | `key_ttl` | duration string | no | `90d` | The lifetime of a key minted by the self-serve token exchange (`POST /auth/token`): the key expires `key_ttl` after it is minted. Read at every apply/reload. |
-| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. <!-- docs-truth: ruling 23:15Z renames `auth.policy.require_if_match` to `auth.require_if_match`; no rename MR exists yet (dev still reads `auth.policy.require_if_match`). Re-check at the release-candidate pass. --> |
+| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. `auth.policy.require_if_match` is not a key: it is refused as an unknown field. |
 
 **The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
@@ -1427,11 +1438,12 @@ plugins:
     # zero configuration. This block is for THIRD-PARTY publishers and explicit opt-ins.
     publishers:                 # third-party ed25519 signing keys (allowlist)
       - name: acme
-        public_key: "<64-hex ed25519 public key>"
-    allow_unsigned: false       # default false: unsigned/tampered plugins are logged + skipped
-    allow_third_party: false    # default false: signed-but-unknown-publisher plugins are skipped
+        plugins: [acme-store-dynamo]
+        keys:
+          - { public_key: "<64-hex ed25519 public key>", revoked: false }
+    allow_untrusted: false      # default false: unsigned/unknown publisher code is refused
   min_versions:                 # anti-downgrade floors, keyed by manifest name (third-party;
-    acme-store-dynamo: "2.0.0"  # first-party is automatically floored at the binary's version)
+    acme-store-dynamo: "2.0.0"  # first-party tracks its own accepted version high-water mark)
   fetch:                        # tarballs Busbar downloads into `dir` before preflight
     - { github: "org/repo@v1.2.3", sha256: "<64-hex>" }
 ```
@@ -1440,13 +1452,10 @@ plugins:
 |---|---|---|---|---|
 | `enabled` | bool | no | `false` | Master switch. `false`/absent = NO plugin loads (drop-is-inert). A non-`memory` `store.module` with plugins disabled is a boot error naming this flag. |
 | `dir` | string | no | `plugins` | Directory holding the signed plugin tarballs (`*.tar.gz`), relative to the working directory. Filenames are irrelevant: identity comes from each tarball's signed manifest. |
-| `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. A RETIRED busbar release key (the 1.5 key `b18395a3…`) listed here under any other name is the explicit opt-in that loads a first-party plugin it signed; without the entry that plugin is refused (`retired_key`), and with it the boot warns that the plugin is unverified. |
-| `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. It never admits a plugin signed by a RETIRED busbar release key: that is a revocation, refused (`retired_key`) unless the key is named under `trust.publishers`. |
-| `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
+| `trust.publishers` | list | no | empty | Entries contain `name`, a nonempty `plugins` list of exact canonical names, and nonempty `keys` records (`public_key`: hex Ed25519, `revoked`: default false). Valid active keys admit only those names automatically. Multiple keys allow rotation overlap; revoked keys refuse. Duplicate identities/keys, weak keys, empty scopes and the reserved `busbar` identity refuse. |
+| `trust.allow_untrusted` | bool | no | `false` | Explicit opt-in for unsigned or unknown-publisher code, always labelled unverified. Invalid known-publisher signatures, altered bytes, scope failures, revocations, incompatible ABI and trusted floors remain hard refusals. |
 | `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a complete-archive pin is required before dropped native bootstrap/check/migration code executes (see [Plugins](plugins.md#how-plugins-are-secured)); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
-| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
-
-<!-- docs-truth: `plugins.logs.*` is deleted by !2688 (unmerged); the `logs:` block and its rows are removed. Dev still accepts the key until that MR lands. -->
+| `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the highest accepted version of each plugin on this host. |
 
 **Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` checks operator inputs and local artifacts without network access, Store opening or overlay recovery. Authorized native grammar/check callbacks may execute; they require the bootstrap archive authorization described in [Plugins](plugins.md#how-plugins-are-secured). Validation does not prove plugin opening, readiness or backend reachability. `busbar --list-plugins` remains manifest-only.
 
@@ -1855,9 +1864,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; old BUSBAR_WORKER_THREADS values are captured by the first 1.6.0 boot); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (old BUSBAR_UPSTREAM_HTTP1_ONLY values are captured by the first 1.6.0 boot)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (old BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE values are captured by the first 1.6.0 boot)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each; omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
@@ -1872,7 +1881,7 @@ BUSBAR-4036: **set `trusted_proxies` when an ingress fronts busbar**, or every u
 ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. It is a **boot-time** knob.
 <!-- docs-truth: depends on !2676 (unmerged), which deletes `advanced.forwarded_header` (fixed `x-forwarded-for`) -->
 
-The shutdown drain budget (20 s, first signal to exit) and the cap on finished governed requests
+The shutdown drain budget (20 s, starting when listener draining begins) and the cap on finished governed requests
 awaiting settlement (20,000) are fixed engine constants, not configuration. A quarter of the drain
 is a reserve: requests are cut at three quarters, then spend is settled, the audit tail sealed, the
 journal flushed and the writer retired inside the reserve. A second signal ends the drain at once.
@@ -1881,12 +1890,34 @@ running requests were cut (each listed on stderr as `open_at_exit`), and `70` wh
 spend is not durable (listed on stderr as evidence). At the pending cap, a new governed request is
 refused with `503 durability_unavailable` and `Retry-After: 1` until the backlog falls
 (`busbar_unit_checkpoints_terminal`); running requests never count.
-<!-- docs-truth: depends on !2658 (unmerged), which deletes `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints` -->
+
+`advanced.shutdown.deregister_delay` is the readiness propagation allowance before that drain:
+
+```yaml
+advanced:
+  shutdown:
+    deregister_delay: 5s
+```
+
+It defaults to `5s` and accepts duration strings from `0s` through `300s` inclusive (`5m` is also
+300 seconds). Invalid values are refused, never clamped. `0s` begins listener draining immediately.
+The value is captured at boot. Edit it through the configuration document; a stored change is
+reported under `/advanced/shutdown/deregister_delay` as pending restart and leaves the running
+process's allowance unchanged. `PUT /config/settings` does not expose this field.
+
+An operator signal or released admin restart first marks `/readyz` unready while listeners and
+credential refresh continue through the allowance, then begins the full fixed 20-second drain.
+Persistence safety shutdown bypasses the allowance; a second signal also expires the drain.
+Repeated operator requests cannot extend either interval. Reserve at least
+`deregister_delay + 20s + 6s + operator margin` in the process supervisor: with the default, at
+least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
-`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time (the first 1.6.0 boot on a 1.5.5 config copies them into config); `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
+`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
+see the [development migration limitation](#environment-variables) before upgrading a launcher
+that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
@@ -1896,11 +1927,12 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 **The destination guard.** One check applies to every outbound connection busbar makes (provider
 upstreams, token endpoints, health probes, export sinks, plugin fetches, plane and plugin dials). It
-is always on and has no switch. A destination that comes from request data or the network (a
+applies the default private-address refusal to a destination that comes from request data or the network (a
 target a caller or a plane names) is refused when it is, or resolves to, a private (RFC 1918),
 loopback, link-local, CGNAT, IPv6 unique-local (`fc00::/7`) or IPv6 site-local (`fec0::/10`)
-address. Operator infrastructure that configuration names (a provider upstream such as a local
-vLLM host, a database, a secret service, a directory) may be private or loopback without an entry.
+address. A core-selected provider route may reach its own configured base/token origins.
+Declared operator-infrastructure Needs, such as a database, secret service or directory, retain
+their declared-target policy. Neither grants arbitrary requests permission to the same hostname.
 A cloud-metadata address is refused for every destination, configured ones included (a configured
 name that later resolves to one is refused). The check runs after name resolution, and the
 connection is made to the address that was checked; an IP address written in a URL is checked as
@@ -1914,15 +1946,18 @@ every egress class and nothing admits it. Of the 1.5.5 keys, `security.blocked_m
 still loads and extends the same check; `security.allow_metadata_hosts`,
 `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` are retired and refused
 (BUSBAR-3136).
-<!-- docs-truth: depends on !2676 (unmerged; deletes `advanced.block_private_addresses`, fixed true) and on !2665 (unmerged; deletes `advanced.proxy_resolution`, fixed `local`). Owner ruling 23:15Z deletes `advanced.allow_destinations` and returns per-registration `allow_private`; !2676 left `allow_destinations` in place and no MR yet reinstates `allow_private` or exempts configured provider hosts in guard.rs. Re-check at the release-candidate pass. -->
 
-**One setting governs every outbound connection, plugins included.** No plugin and no transport
+**One guard governs every outbound connection, plugins included.** No plugin and no transport
 dials on its own: a plugin declares what it needs (a transport and an egress class), and busbar's
 connector resolves the name, applies this check to every answered address, and lets the transport
 open only the address it checked. So the guard governs an export sink, a hook's outbound call, an
 identity provider fetch, a plane's upstream (an MCP server, an A2A agent) and every other plugin
-dial alike. There is no global private-address switch: a plane registration that must reach a
-private target carries its own `allow_private` (see the plane's own documentation). The scheme a
+dial alike. There is no global hostname allowlist: a plane registration that must reach a
+private target carries its own core-owned `allow_private` on its declared registration. The
+connector restricts this grant to that selected route's origin. Configured providers retain
+private reach only on their own base/token origins; other requests, strict JUDGE/OPEN_WEB checks,
+redirects to other origins and callbacks cannot borrow it. `advanced.allow_destinations` is
+removed and refused as an unknown field. The scheme a
 destination may use is part of the same check: an export sink or hook on the `loopback-allowed`
 class takes `https://`, or plaintext `http://` only to loopback; an `open-web` destination (a
 webhook sink, an identity provider's documents) takes `https://` only.
@@ -2045,3 +2080,37 @@ association is installed and released on failed installation or close. An
 association expires after **300 seconds**, even when its transport supplies no
 deadline. Exhaustion refuses association admission. Expiry closes the association;
 clients must establish a new one.
+
+Root data and admin stream listeners retain the connector's **1,024 concurrent
+connection** limit. Framed request-body collection uses the same read bounds as
+the admin HTTP listener: at least **1 KiB/s** averaged over the read after a
+**10-second** grace period, plus a total read deadline derived from the current
+translation-body byte cap divided by 1 KiB/s. The inter-piece timeout still
+applies. Periodic small pieces cannot reset the total deadline or bypass the
+throughput floor; a violation refuses the request as deadline exceeded.
+
+The Hyper HTTP listener requires the first complete request headers within
+**30 seconds** of plaintext IO becoming available, after any TLS handshake.
+Silent sockets, partial protocol prefaces, HTTP/2 control frames and incomplete
+headers do not extend that deadline. The first HTTP/1 request shares this one
+window with protocol detection; subsequent HTTP/1 header-read behavior is unchanged.
+
+After its first request, an HTTP/2 connection closes after **30 seconds with no
+active requests**. A request remains active while its handler runs or either its
+request or response body remains unfinished. Complete request admission before
+expiry starts fresh activity; control frames do not. Healthy long streaming
+responses remain supported. Hyper also sends keepalive PINGs after **30 seconds**
+of receive inactivity with a **10-second** acknowledgement timeout.
+
+First-header and HTTP/2 idle expiry close the transport immediately, without a
+drain task. Ordinary connection close allows shutdown and read-drain to share a
+**30-second total** budget, with a **5-second** read-idle bound inside it. The
+connection admission slot remains held until the actual transport is released,
+including normal draining. These fixed policies add no configuration keys and do
+not govern plugin-framed upgrades or datagrams.
+
+**Active-stall limitation:** Hyper's keepalive timeout starts protocol shutdown;
+it is not a hard socket-close deadline. An active peer that stops reading can
+block the GOAWAY write and retain its connection slot. There is currently no hard
+active-stall bound or per-stream incomplete-header deadline. The first-header and
+zero-active deadlines above still force closure even when transport writes block.

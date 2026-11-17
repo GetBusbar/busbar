@@ -543,6 +543,10 @@ pub struct DoorSteps<'s> {
     arrived: u64,
 
     records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
+    execution: Option<(
+        Arc<busbar_kernel::host_services::ServingGeneration>,
+        busbar_contract::services::Caller,
+    )>,
 
     depth: u32,
 
@@ -623,6 +627,7 @@ impl<'s> DoorSteps<'s> {
             open: caller.open,
             arrived: caller.arrived,
             records: caller.records,
+            execution: None,
             depth: caller.depth,
             credential: caller.credential,
             ticket: caller.ticket,
@@ -636,6 +641,21 @@ impl<'s> DoorSteps<'s> {
             child_constraints: None,
             unit: Mutex::new(DoorUnit::default()),
         }
+    }
+
+    /// Complete invocation ownership before this request's steps are shared with its driver.
+    pub(crate) fn with_invocation_owner(
+        mut self,
+        owner: Option<(
+            Arc<busbar_kernel::host_services::ServingGeneration>,
+            busbar_contract::services::Caller,
+        )>,
+    ) -> Self {
+        if let Some((generation, _)) = &owner {
+            self.records = Some(Arc::clone(generation.core().units()));
+        }
+        self.execution = owner;
+        self
     }
 
     pub(crate) fn with_ticket_admission(
@@ -1022,6 +1042,16 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    fn invocation(&self, unit: u64) -> Option<busbar_kernel::host_services::InvocationContext> {
+        let (generation, caller) = self.execution.as_ref()?;
+        busbar_kernel::host_services::InvocationContext::new(
+            Arc::clone(generation),
+            caller.clone(),
+            unit,
+        )
+        .ok()
+    }
+
     fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal> {
         Ok(busbar_contract::ArrivalRecord {
             source: String::new(),
@@ -1038,13 +1068,15 @@ impl DriverSteps for DoorSteps<'_> {
             Admission::Refused => Err(Refusal::new(ReasonCode::Unauthenticated)),
             Admission::Keyed | Admission::Anonymous => {
                 if let Some(records) = &self.records {
-                    records.admitted(
-                        ctx.key.get(),
-                        busbar_kernel::host_units::UnitRecord {
-                            principal: self.key.clone(),
-                            depth: self.depth,
-                        },
-                    );
+                    let record = busbar_kernel::host_units::UnitRecord {
+                        principal: self.key.clone(),
+                        depth: self.depth,
+                    };
+                    if let Some((_, caller)) = &self.execution {
+                        records.admitted_for(ctx.key.get(), caller, record);
+                    } else {
+                        records.admitted(ctx.key.get(), record);
+                    }
                     if let Some(credential) = &self.credential {
                         records.lend(ctx.key.get(), credential.clone());
                     }

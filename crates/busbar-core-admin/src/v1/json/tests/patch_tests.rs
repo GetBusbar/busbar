@@ -6,26 +6,46 @@ use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 
 #[test]
-fn datagram_line_memory_limit_applies_to_new_connections_without_restart() {
-    for value in [serde_json::json!(12345), serde_json::Value::Null] {
-        let settings: busbar_kernel::config::overlay::RootSettings =
-            serde_json::from_value(serde_json::json!({
-                "limits": {
-                    "datagram_line_memory_bytes": value,
-                    "pool_idle_timeout_secs": 17
-                }
-            }))
-            .expect("settings accept setting or disabling the optional limit");
-        assert_eq!(
-            super::reload_to_apply_fields(&settings),
-            ["limits.pool_idle_timeout_secs"],
-            "the new-pairing limit must not be classified as requiring a restart"
+fn removed_pre_release_limits_and_drain_keys_are_refused_at_the_settings_door() {
+    for (body, key) in [
+        (
+            serde_json::json!({"limits": {"datagram_line_memory_bytes": 12345}}),
+            "datagram_line_memory_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"datagram_line_memory_bytes": null}}),
+            "datagram_line_memory_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"migration_index_bytes": 1048576}}),
+            "migration_index_bytes",
+        ),
+        (
+            serde_json::json!({"limits": {"migration_value_bytes": 1048576}}),
+            "migration_value_bytes",
+        ),
+        (
+            serde_json::json!({"advanced": {"shutdown": {"drain_timeout": "30s"}}}),
+            "shutdown",
+        ),
+        (
+            serde_json::json!({"advanced": {"governance": {"max_pending_checkpoints": 7}}}),
+            "governance",
+        ),
+    ] {
+        let err = serde_json::from_value::<busbar_kernel::config::overlay::RootSettings>(body)
+            .expect_err("PUT /config/settings refuses a removed pre-release key");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains(key),
+            "expected an unknown-field error naming `{key}`; got: {msg}"
         );
     }
 }
 
 fn budget(cents: u64) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount: cents,
         per: Some(LimitWindow::Month),

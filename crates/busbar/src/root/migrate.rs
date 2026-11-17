@@ -102,7 +102,13 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        tracing::info!(target: "busbar::migrate", "{line}");
+        // A line that carries a BUSBAR code is one the operator must act on or know about (the
+        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
+        if line.starts_with("BUSBAR-") {
+            tracing::warn!(target: "busbar::migrate", "{line}");
+        } else {
+            tracing::info!(target: "busbar::migrate", "{line}");
+        }
     }
     for line in plan.warnings() {
         tracing::warn!(target: "busbar::migrate", "{line}");
@@ -207,21 +213,16 @@ pub(crate) fn stamped() -> bool {
     PENDING.get().is_none()
 }
 
-/// Step 4 (§3 4a, 4b) over the store FST admission handed the boot, before step 5 and before anything
-/// serves: the 1.5.5 rows a store's data step left under IMPORT become native records.
-///
-/// # Errors
-/// The records step's refusal text; the boot refuses with it.
-#[cold]
-#[inline(never)]
-pub(crate) async fn records(
+/// Step 4 using the secrets already resolved by the pre-publication boot stages.
+pub(crate) async fn records_with_keys(
     core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
 ) -> Result<(), String> {
     let config = CONFIG_PATH
         .get()
         .cloned()
         .unwrap_or_else(|| PathBuf::from(crate::root::cli::resolve_config_path(None)));
-    crate::root::migrate_records::step4(core, config, stamped()).await
+    crate::root::migrate_records::step4_with_keys(core, keys, config, stamped()).await
 }
 
 /// Step 5 with what every instance's `open` settled (MIGRATE-ON-BOOT r42 §4, `Registry::take_settled`): the
@@ -236,26 +237,72 @@ pub(crate) async fn finish_settled(
     settled: Vec<busbar_migrate::Settled>,
     core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
 ) -> Result<Option<Written>, String> {
+    finish_settled_checked(settled, core, std::sync::Arc::new(|_| Ok(()))).await
+}
+
+/// The admitted images' pure candidate check runs again inside the guarded writer after LIFT.
+pub(crate) async fn finish_settled_checked(
+    settled: Vec<busbar_migrate::Settled>,
+    core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
     };
     let runtime = tokio::runtime::Handle::current();
     let config = CONFIG_PATH.get().cloned().unwrap_or_default();
-    tokio::task::spawn_blocking(move || match core {
-        // 5S, 5d and 5C over the opened store (§A6 "Attempts").
-        Some(core) => crate::root::migrate_records::write_with_attempt(
-            &crate::root::migrate_records::Store::new(core, runtime),
-            plan,
-            &settled,
-            &strict_parse,
-            &config,
-        ),
-        None => busbar_migrate::write_settled(plan, &settled, &strict_parse),
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        match core {
+            // 5S, 5d and 5C over the opened store (§A6 "Attempts").
+            Some(core) => crate::root::migrate_records::write_with_attempt(
+                &crate::root::migrate_records::Store::new(core, runtime),
+                plan,
+                &settled,
+                &check,
+                &config,
+            ),
+            None => busbar_migrate::write_settled(plan, &settled, &check),
+        }
     })
     .await
     .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
     .map(Some)
     .map_err(text_of)
+}
+
+/// Steps 4 and 5 together for a converting boot: step 5's refusals are judged before the store is
+/// converted (#328), then the records are converted and config.yaml is written.
+///
+/// # Errors
+/// The records step's refusal, or CONFIG text for a refused document.
+pub(crate) async fn convert_and_finish_checked(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let config = CONFIG_PATH.get().cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        let store = crate::root::migrate_records::Store::new(core, runtime);
+        crate::root::migrate_records::convert_and_write(
+            &store, &keys, plan, &settled, &check, &config, false,
+        )
+        .map(Some)
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
 }
 
 /// 5W (MIGRATE-ON-BOOT r42 §3): on a stamped boot and on a reload, write what the instances settled back into
@@ -310,7 +357,7 @@ pub(crate) fn restart<T>(
 
 /// THE RECOVERABLE GATE (§3 step 2 (a); the loader's `migrate.admit` answer): whether this boot
 /// can seal the `n` recoverable 1.5.5 credentials a store's data step is about to hand core. Core
-/// answers from its own config alone, through the at-rest key the store bootstrap resolved before
+/// answers from its own config alone, through the signing key (the at-rest key derives from it) the store bootstrap resolved before
 /// the store opened, with the resolver it built from the store's secret instances. The text is the
 /// process's for its life (the host-service rule): at most one per store per boot.
 #[cold]
@@ -350,25 +397,24 @@ pub(crate) fn admit_answer(
         Some(Err(text)) => Err(format!("CONFIG: {text}")),
         None => Err(format!(
             "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials stored in the clear, \
-             and this boot resolved no `credentials.at_rest` before the store opened, so it \
+             and this boot resolved no `auth.signing_key` before the store opened, so it \
              cannot seal them; nothing was written"
         )),
     }
 }
 
-/// TEXT_ADD_KEY (§3): core's text when a store holds `n` recoverable rows and no at-rest key is
+/// TEXT_ADD_KEY (§3): core's text when a store holds `n` recoverable rows and no signing key is
 /// configured, naming the absolute config directory `dir`.
 pub(crate) fn text_add_key(n: u64, dir: &Path) -> String {
-    let key = dir.join("at-rest.key");
+    let key = dir.join("signing.key");
     let key = key.display();
     format!(
         "CONFIG: this 1.5.5 store holds `{n}` recoverable credentials (SigV4 secret keys) stored \
-         in the clear, and 1.6.0 stores them only sealed. Nothing was written. Add an at-rest \
-         key, then boot 1.6.0 again:\n  (1) `openssl rand -hex 32 > {key} && chmod 600 {key}`. \
-         Use this same file on every node that shares this store.\n  (2) add to config.yaml: \
-         `credentials: {{at_rest: {{key: {{file: {key}}}}}}}`.\n1.5.5 does not accept this \
-         block, so add it only after every 1.5.5 instance has stopped. To roll back to 1.5.5 \
-         later, delete it from `config.yaml.1.5.5` first (docs/migration-1.6, \"At-rest key\")."
+         in the clear, and 1.6.0 stores them only sealed, under a key derived from \
+         `auth.signing_key`. Nothing was written. Set `auth.signing_key`, then boot 1.6.0 \
+         again:\n  (1) `openssl rand -hex 32 > {key} && chmod 600 {key}`. Use this same file \
+         on every node that shares this store.\n  (2) add to config.yaml: \
+         `auth: {{signing_key: {{file: {key}}}}}`."
     )
 }
 
@@ -491,6 +537,33 @@ fn text_of(refusal: Refusal) -> String {
     refusal.to_string()
 }
 
+/// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
+/// removed paths and never a value; it is written only for a write this process made, never for a
+/// peer's stamp (#293, via the #291 settled write path).
+pub(crate) fn record_completed_changes(written: &Written) {
+    if !matches!(written, Written::Stamped) {
+        return;
+    }
+    let Some(plan) = PENDING.get() else {
+        return;
+    };
+    for line in plan.report() {
+        if let Some(paths) = line
+            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(paths, _)| paths)
+        {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                "migrate.metadata_carve_out_removed",
+                paths,
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        }
+    }
+}
+
 /// Replace this process with a fresh image of itself: the same executable and argv, with
 /// `BUSBAR_MIGRATED=1`. Returns only the failure.
 pub(crate) fn reexec() -> String {
@@ -536,3 +609,49 @@ fn close_on_exec_from_3() {
 #[cfg(test)]
 #[path = "tests/migrate_seam.rs"]
 mod tests;
+
+/// Read before canonical instances open, so normalization never overwrites a later operator edit.
+pub(crate) fn normalization_source() -> Result<Option<(PathBuf, SecureString)>, String> {
+    if !stamped() {
+        return Ok(None);
+    }
+    CONFIG_PATH
+        .get()
+        .map(|path| {
+            busbar_migrate::read_config(path)
+                .map(|text| (path.clone(), SecureString::from(text)))
+                .map_err(text_of)
+        })
+        .transpose()
+}
+
+/// Validate the complete candidate before treating guarded write failure as an optional normalization.
+pub(crate) async fn normalize_settled(
+    source: Option<(PathBuf, SecureString)>,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<(), String> {
+    let Some((path, seen)) = source else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || {
+        let applied = busbar_migrate::apply_settled(seen.as_str(), &path, &settled, true, |name| {
+            std::env::var(name).ok()
+        })
+        .map_err(text_of)?;
+        strict_parse(applied.text(), None)?;
+        candidate(applied.text())?;
+        let wanted = SecureString::from(applied.text());
+        match busbar_migrate::write_back(&path, &busbar_migrate::digest(seen.as_str()), &|_| {
+            Ok(wanted.as_str().to_owned())
+        }) {
+            Ok(_) => {}
+            Err(_) => tracing::warn!(
+                "the validated normalization could not be written; the authored file is kept"
+            ),
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "the normalization writer did not finish".to_owned())?
+}

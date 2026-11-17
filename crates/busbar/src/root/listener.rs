@@ -329,15 +329,11 @@ async fn accept_loop(
             stop: stop.clone(),
             _live: live.clone(),
         };
-        let conn = served
-            .clone()
-            .accepted(stream, a.peer, graceful.watcher(), drain);
-        let hold = a.hold;
-        tokio::spawn(async move {
-            conn.await;
-            drop(guard);
-            drop(hold);
-        });
+        let conn =
+            served
+                .clone()
+                .accepted(stream, a.peer, graceful.watcher(), drain, a.hold, guard);
+        tokio::spawn(conn);
     };
 
     loop {
@@ -380,6 +376,213 @@ async fn accept_loop(
 struct Drain {
     stop: tokio::sync::watch::Receiver<bool>,
     _live: tokio::sync::mpsc::Sender<()>,
+}
+
+/// Admission follows the actual transport, including TLS wrapping and normal lingering.
+/// Handler/body ownership is separate: retaining a body after forced close cannot retain a slot.
+struct AdmittedIo<I> {
+    inner: I,
+    _hold: Option<Box<dyn Send>>,
+    _guard: Option<ConnCountGuard>,
+}
+
+impl<I: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for AdmittedIo<I> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<I: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for AdmittedIo<I> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+const HTTP_FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP2_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP2_PING_INTERVAL: Duration = Duration::from_secs(30);
+const HTTP2_PING_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionDeadline {
+    FirstRequest,
+    Http2Idle,
+}
+
+struct ConnectionState {
+    first_deadline: tokio::time::Instant,
+    seen_request: bool,
+    http2: bool,
+    active: usize,
+    idle_since: Option<tokio::time::Instant>,
+    forced: Option<ConnectionDeadline>,
+}
+
+impl ConnectionState {
+    fn deadline(&self) -> Option<(tokio::time::Instant, ConnectionDeadline)> {
+        if !self.seen_request {
+            Some((self.first_deadline, ConnectionDeadline::FirstRequest))
+        } else if self.http2 && self.active == 0 {
+            self.idle_since
+                .map(|since| (since + HTTP2_IDLE_TIMEOUT, ConnectionDeadline::Http2Idle))
+        } else {
+            None
+        }
+    }
+
+    fn expire(&mut self, now: tokio::time::Instant) -> Option<ConnectionDeadline> {
+        if self.forced.is_none() {
+            if let Some((deadline, reason)) = self.deadline() {
+                if now >= deadline {
+                    self.forced = Some(reason);
+                }
+            }
+        }
+        self.forced
+    }
+}
+
+struct ConnectionLifetime {
+    state: std::sync::Mutex<ConnectionState>,
+    changed: tokio::sync::Notify,
+}
+
+impl ConnectionLifetime {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: std::sync::Mutex::new(ConnectionState {
+                first_deadline: tokio::time::Instant::now() + HTTP_FIRST_REQUEST_TIMEOUT,
+                seen_request: false,
+                http2: false,
+                active: 0,
+                idle_since: None,
+                forced: None,
+            }),
+            changed: tokio::sync::Notify::new(),
+        })
+    }
+
+    fn admit(self: &Arc<Self>, version: hyper::Version) -> Option<Arc<RequestActivity>> {
+        let mut state = self.state.lock().expect("connection lifetime lock");
+        // This time check serializes admission with expiry even when Hyper calls the service
+        // during a poll, or the controller has not yet been scheduled at the deadline.
+        if state.expire(tokio::time::Instant::now()).is_some() {
+            self.changed.notify_one();
+            return None;
+        }
+        if !state.seen_request {
+            state.http2 = version == hyper::Version::HTTP_2;
+            state.seen_request = true;
+        }
+        state.active += 1;
+        state.idle_since = None;
+        self.changed.notify_one();
+        Some(Arc::new(RequestActivity(self.clone())))
+    }
+
+    fn forced(&self) -> bool {
+        self.state
+            .lock()
+            .expect("connection lifetime lock")
+            .forced
+            .is_some()
+    }
+
+    async fn closed(&self) -> ConnectionDeadline {
+        loop {
+            let deadline = {
+                let mut state = self.state.lock().expect("connection lifetime lock");
+                if let Some(reason) = state.expire(tokio::time::Instant::now()) {
+                    return reason;
+                }
+                state.deadline()
+            };
+            // notify_one retains a permit, so an admission/release between the locked read
+            // and awaiting this notification cannot leave the controller using a stale timer.
+            if let Some((deadline, _)) = deadline {
+                tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => {},
+                    () = self.changed.notified() => {},
+                }
+            } else {
+                self.changed.notified().await;
+            }
+        }
+    }
+}
+
+/// One activity owner shared by the handler and both body legs. The handler retains its clone
+/// while constructing the response body, so transfer cannot transiently make the connection idle.
+struct RequestActivity(Arc<ConnectionLifetime>);
+
+impl Drop for RequestActivity {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().expect("connection lifetime lock");
+        state.active -= 1;
+        if state.active == 0 {
+            state.idle_since = Some(tokio::time::Instant::now());
+        }
+        self.0.changed.notify_one();
+    }
+}
+
+struct ActiveBody<B> {
+    inner: B,
+    activity: Option<Arc<RequestActivity>>,
+}
+
+impl<B: Body> ActiveBody<B> {
+    fn new(inner: B, activity: &Arc<RequestActivity>) -> Self {
+        let activity = (!inner.is_end_stream()).then(|| activity.clone());
+        Self { inner, activity }
+    }
+}
+
+impl<B: Body + Unpin> Body for ActiveBody<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_frame(cx);
+        if matches!(&result, Poll::Ready(None | Some(Err(_)))) || this.inner.is_end_stream() {
+            this.activity = None;
+        }
+        result
+    }
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 struct TimeoutBody<B> {
@@ -530,6 +733,8 @@ struct BodyTimeoutService {
     /// The connection's socket peer, stamped on every request it serves (the login attempt
     /// limiter's and the admin door's client address).
     peer: Option<SocketAddr>,
+    tls_peer_cert: bytes::Bytes,
+    lifetime: Arc<ConnectionLifetime>,
 }
 
 impl BodyTimeoutService {
@@ -538,12 +743,16 @@ impl BodyTimeoutService {
         timeout: Duration,
         scheme: busbar_kernel::plane_routes::ListenerScheme,
         peer: Option<SocketAddr>,
+        tls_peer_cert: bytes::Bytes,
+        lifetime: Arc<ConnectionLifetime>,
     ) -> Self {
         Self {
             inner: TowerToHyperService::new(router),
             timeout,
             scheme,
             peer,
+            tls_peer_cert,
+            lifetime,
         }
     }
 }
@@ -554,16 +763,31 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
+        let Some(activity) = self.lifetime.admit(req.version()) else {
+            return Box::pin(async { Ok(status_response(hyper::StatusCode::REQUEST_TIMEOUT)) });
+        };
         let timeout = self.timeout;
         let inner = self.inner.clone();
         let scheme = self.scheme;
-        let mut req = req.map(|body| TimeoutBody::new(body, timeout));
+        let mut req = req.map(|body| ActiveBody::new(TimeoutBody::new(body, timeout), &activity));
         req.extensions_mut().insert(scheme);
         if let Some(peer) = self.peer {
             req.extensions_mut()
                 .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+            req.extensions_mut()
+                .insert(super::ingress_context::RequestContext {
+                    peer: peer.to_string().into_boxed_str(),
+                    tls_peer_cert: self.tls_peer_cert.clone(),
+                });
         }
-        Box::pin(inner.call(req))
+        let response = inner.call(req);
+        Box::pin(async move {
+            let response = response.await?;
+            let response =
+                response.map(|body| axum::body::Body::new(ActiveBody::new(body, &activity)));
+            drop(activity);
+            Ok(response)
+        })
     }
 }
 
@@ -645,6 +869,11 @@ fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(std::time::Duration::from_secs(30));
     builder
+        .http2()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .keep_alive_interval(HTTP2_PING_INTERVAL)
+        .keep_alive_timeout(HTTP2_PING_TIMEOUT);
+    builder
 }
 
 /// What one listener serves every connection with: the hardened builder (see
@@ -691,12 +920,21 @@ impl Served {
         peer: SocketAddr,
         watcher: Watcher,
         drain: Drain,
+        hold: Option<Box<dyn Send>>,
+        guard: Option<ConnCountGuard>,
     ) {
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }
+        let stream = AdmittedIo {
+            inner: stream,
+            _hold: hold,
+            _guard: guard,
+        };
         if self.security.is_none() {
-            return self.io(stream, peer, watcher, drain).await;
+            return self
+                .io(stream, peer, bytes::Bytes::new(), watcher, drain)
+                .await;
         }
         let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
         self.raw(raw, peer, watcher, drain).await;
@@ -704,7 +942,7 @@ impl Served {
 
     async fn raw(self, raw: Box<dyn RawIo>, peer: SocketAddr, watcher: Watcher, drain: Drain) {
         let wrapped = match &self.security {
-            None => raw,
+            None => busbar_contract::transport::wire::SecuredIo::anonymous(raw),
             Some(security) => {
                 match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
                     Ok(Ok(s)) => s,
@@ -721,16 +959,23 @@ impl Served {
             }
         };
         self.io(
-            FuturesAsyncReadCompatExt::compat(wrapped),
+            FuturesAsyncReadCompatExt::compat(wrapped.io),
             peer,
+            bytes::Bytes::from(wrapped.peer_certificate.into_vec()),
             watcher,
             drain,
         )
         .await;
     }
 
-    async fn io<I>(self, io: I, peer: SocketAddr, watcher: Watcher, drain: Drain)
-    where
+    async fn io<I>(
+        self,
+        io: I,
+        peer: SocketAddr,
+        tls_peer_cert: bytes::Bytes,
+        watcher: Watcher,
+        drain: Drain,
+    ) where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         if let Some(framer) = self.framer {
@@ -743,21 +988,38 @@ impl Served {
                 body_read_timeout(),
                 drain.stop,
                 Some(peer),
+                tls_peer_cert,
             )
             .await;
             return;
         }
+        let lifetime = ConnectionLifetime::new();
         let service = BodyTimeoutService::new(
             self.router,
             body_read_timeout(),
             listener_scheme(self.security.is_some()),
             Some(peer),
+            tls_peer_cert,
+            lifetime.clone(),
         );
-        let conn = self
-            .builder
-            .serve_connection_with_upgrades(TokioIo::new(Lingering(Some(io))), service);
-        if let Err(e) = watcher.watch(conn).await {
-            tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
+        let conn = self.builder.serve_connection_with_upgrades(
+            TokioIo::new(Lingering(Some(io), Some(lifetime.clone()))),
+            service,
+        );
+        tokio::select! {
+            biased;
+            reason = lifetime.closed() => {
+                let reason = match reason {
+                    ConnectionDeadline::FirstRequest => "first_request_deadline",
+                    ConnectionDeadline::Http2Idle => "http2_idle",
+                };
+                tracing::debug!(%reason, %peer, "{}: connection deadline", self.scheme);
+            }
+            result = watcher.watch(conn) => {
+                if let Err(e) = result {
+                    tracing::debug!(error = %e, %peer, "{}: connection error", self.scheme);
+                }
+            }
         }
     }
 }
@@ -767,6 +1029,7 @@ const LINGER_IDLE: Duration = Duration::from_secs(5);
 
 struct Lingering<I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
     Option<I>,
+    Option<Arc<ConnectionLifetime>>,
 );
 
 impl<I> Lingering<I>
@@ -835,17 +1098,21 @@ where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     fn drop(&mut self) {
+        if self.1.as_ref().is_some_and(|lifetime| lifetime.forced()) {
+            return;
+        }
         let (Some(mut io), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
         else {
             return;
         };
+        let deadline = tokio::time::Instant::now() + LINGER_TOTAL;
         runtime.spawn(async move {
             use tokio::io::AsyncWriteExt as _;
-            let _ = io.shutdown().await;
             // Drained bytes are discarded unread, so the sink is never zeroed: each read fills
             // only what it returns.
             let mut sink = [std::mem::MaybeUninit::<u8>::uninit(); 16 * 1024];
-            let _ = tokio::time::timeout(LINGER_TOTAL, async {
+            let _ = tokio::time::timeout_at(deadline, async {
+                let _ = io.shutdown().await;
                 while let Ok(Ok(n)) = tokio::time::timeout(
                     LINGER_IDLE,
                     std::future::poll_fn(|cx| {

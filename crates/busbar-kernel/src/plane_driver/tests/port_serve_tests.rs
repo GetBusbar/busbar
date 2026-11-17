@@ -40,6 +40,7 @@ use crate::teller::{Ended, UnitCtx};
 #[derive(Clone)]
 enum It {
     Respond(u16),
+    Emit,
     Body(&'static [u8]),
     End,
     Forward,
@@ -50,11 +51,16 @@ enum It {
     UpEnd,
     Usage(&'static str, u64),
     Audit(&'static str),
+    Fact(u32, &'static str),
 }
 
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::Emit => PlaneOut::Emit {
+                carrier: 1,
+                bytes: b"must stay held",
+            },
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Body(b) => PlaneOut::Body(b),
             It::End => PlaneOut::End,
@@ -74,6 +80,7 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 scale: 0,
                 source: SRC_REPORTED,
             },
+            It::Fact(k, v) => PlaneOut::Fact(*k, FactRef::Text(v)),
             It::Audit(action) => PlaneOut::Audit {
                 verdict: AUDIT_APPLIED,
                 action,
@@ -87,6 +94,7 @@ struct Live;
 
 #[derive(Default)]
 struct Plane {
+    resource_scoped: bool,
     request: Vec<It>,
     upstream: Mutex<VecDeque<Vec<It>>>,
     pieces: Mutex<VecDeque<Vec<It>>>,
@@ -106,12 +114,20 @@ fn nope() -> PortError {
 impl Calls for Plane {
     type Session = Live;
 
+    fn resource_scoped(&self, _: u32) -> bool {
+        self.resource_scoped
+    }
+
     fn request(
         &self,
         _: &PlaneIn<'_>,
         _: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<Live, PortError> {
+        assert!(
+            !self.resource_scoped,
+            "resource admission must finish before request dispatch"
+        );
         play(&self.request, sink);
         Ok(Live)
     }
@@ -220,6 +236,10 @@ impl Books for Log {
     fn audit(&self, row: &AuditRow) {
         self.0.lock().unwrap().push(format!("audit {}", row.action));
     }
+
+    fn end_user(&self, user: &str) {
+        self.0.lock().unwrap().push(format!("user {user}"));
+    }
 }
 
 struct Store;
@@ -254,6 +274,10 @@ impl IntentHost for Store {
 
 fn candidate() -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
         upstream: "m1".into(),
         provider: "{}".into(),
         base_path: "/v1".into(),
@@ -341,6 +365,125 @@ fn forwarding() -> Plane {
     plane
 }
 
+#[test]
+fn a_resource_scoped_route_cannot_execute_without_completed_admission() {
+    let plane = Plane {
+        resource_scoped: true,
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    assert!(matches!(
+        run(&plane, None, &books),
+        Err(SessionError::NotDriven)
+    ));
+    assert!(books.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn pending_money_refusal_holds_emits_even_without_hooks() {
+    use crate::host_services::{
+        InvocationContext, KernelServices, Nest, NestDone, NestRoute, ServingGeneration,
+    };
+    use crate::plane_driver::port_admission::Pending;
+    use crate::plane_driver::request_admission::{RequestAllocation, RequestDomain, RequestRoutes};
+    use crate::refusal::RefusalMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct NoChildren;
+    impl NestRoute for NoChildren {
+        fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
+            panic!("no child before admission");
+        }
+    }
+    let core = Arc::new(KernelServices::new());
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        41,
+        &caller,
+        crate::host_units::UnitRecord {
+            principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                id: "payer".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
+        caller,
+        41,
+    )
+    .unwrap();
+    let allocation = RequestAllocation::new(
+        context,
+        Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        100,
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let pending = Pending::new(
+        allocation,
+        Arc::new(RequestRoutes::new("seat", None, None, None).unwrap()),
+        None,
+        move |receipt| {
+            assert_eq!(receipt.domain(), &RequestDomain::Local);
+            count.fetch_add(1, Ordering::SeqCst);
+            Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_POLICY))
+        },
+    );
+    struct Waiting<'a>(&'a Pending);
+    impl Effects for Waiting<'_> {
+        fn admission(&self) -> Option<&Pending> {
+            Some(self.0)
+        }
+        fn invocation(&self) -> Option<&InvocationContext> {
+            Some(self.0.context())
+        }
+        fn emit(&self, _: u64, _: &[u8]) {
+            panic!("money refusal must not release emitted bytes");
+        }
+    }
+    let plane = Plane {
+        request: vec![It::Emit, It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let effects = Waiting(&pending);
+    let result = run_session(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &pending,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::AdmissionRefused(_))),
+        "{result:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!pending.context().effects_allowed());
+}
+
 fn statuses(client: &[ToClient]) -> Vec<String> {
     client
         .iter()
@@ -368,6 +511,35 @@ fn a_local_answer_is_served_with_its_audit_rows_and_billed_as_an_end() {
         *books.0.lock().unwrap(),
         ["audit did_it", "ended End classes=1"]
     );
+}
+
+/// RED (ADMIN-API-1.6 §3.5, `records.user` on the MIN-3 path): the end user the plane projected (PJ_END_USER on
+/// its request answer) reaches the unit's books once, before the session ends; a plane that states none tells
+/// the books nothing.
+#[test]
+fn the_end_user_a_plane_projects_reaches_the_books() {
+    let stated = Plane {
+        request: vec![
+            It::Fact(busbar_plugin_abi::fail::fact::PJ_END_USER, "u-1"),
+            It::Respond(200),
+            It::End,
+        ],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    run(&stated, None, &books).unwrap();
+    assert_eq!(
+        *books.0.lock().unwrap(),
+        ["user u-1", "ended End classes=0"]
+    );
+
+    let silent = Plane {
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    run(&silent, None, &books).unwrap();
+    assert_eq!(*books.0.lock().unwrap(), ["ended End classes=0"]);
 }
 
 #[test]
@@ -700,4 +872,211 @@ fn a_retry_after_the_plane_stated_is_never_overwritten() {
         panic!("a head");
     };
     assert_eq!(fields.len(), 1);
+}
+
+#[test]
+fn a_native_hook_cannot_run_without_its_admitted_invocation() {
+    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
+    struct Required;
+    impl Binder for Required {
+        fn active(&self, _: u32) -> bool {
+            true
+        }
+        fn enforcing(&self, _: u32) -> bool {
+            true
+        }
+        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
+            panic!("unadmitted hook selection must never run")
+        }
+    }
+    struct Hooked(Invocation);
+    impl Effects for Hooked {
+        fn hooks(&self) -> Option<&Invocation> {
+            Some(&self.0)
+        }
+        fn emit(&self, _: u64, _: &[u8]) {
+            panic!("unadmitted hook effects must never escape")
+        }
+    }
+    let effects = Hooked(Invocation {
+        binder: Arc::new(Required),
+        principal: None,
+        now_s: 1,
+        classes: Vec::new(),
+        journal: None,
+        unit: UnitKey::new(1),
+    });
+    let plane = Plane {
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let books = Log::default();
+    let result = run_session(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &books,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::HookPrerequisite)),
+        "{result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
+    use crate::config::{PromptAccess, UserAccess};
+    use crate::plane_driver::port_hooks::tests::{configured, Fixture};
+    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
+    use busbar_plugin_abi::kinds::hook::hook as abi;
+    use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+    use busbar_ports::CallCx;
+    struct Gate(tokio::sync::mpsc::UnboundedSender<Vec<(u32, busbar_ports::FactVal)>>);
+    impl HookPort for Gate {
+        fn points(&self) -> u32 {
+            (1 << abi::POINT_ROUTE) | (1 << abi::POINT_NOTIFY)
+        }
+        fn facts(&self) -> u64 {
+            0
+        }
+        fn on<'a>(&'a self, _: CallCx, point: u32, view: &'a HookView<'a>) -> HookCall<'a> {
+            if point == abi::POINT_NOTIFY {
+                self.0
+                    .send(
+                        view.signals
+                            .iter()
+                            .map(|(key, value)| {
+                                (
+                                    *key,
+                                    match value {
+                                        FactRef::U(value) => busbar_ports::FactVal::U(*value),
+                                        FactRef::Text(value) => {
+                                            busbar_ports::FactVal::Text((*value).into())
+                                        }
+                                    },
+                                )
+                            })
+                            .collect(),
+                    )
+                    .unwrap();
+            }
+            HookCall::Done(Ok(HookAnswer {
+                verb: abi::VERB_REJECT,
+                reject_status: Some(409),
+                order: Vec::new(),
+                restrict: Vec::new(),
+                message: Some("operator-only".into()),
+                rewrite: None,
+            }))
+        }
+    }
+    struct Bound(Selected);
+    impl Binder for Bound {
+        fn active(&self, _: u32) -> bool {
+            true
+        }
+        fn enforcing(&self, _: u32) -> bool {
+            true
+        }
+        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
+            Ok(self.0.clone())
+        }
+    }
+    struct Hooked {
+        invocation: Invocation,
+        context: crate::host_services::InvocationContext,
+    }
+    impl Effects for Hooked {
+        fn hooks(&self) -> Option<&Invocation> {
+            Some(&self.invocation)
+        }
+        fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+            Some(&self.context)
+        }
+        fn emit(&self, _: u64, _: &[u8]) {
+            panic!("the rejected session emitted before enforcement")
+        }
+    }
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let fixture = Fixture::new();
+    let call = configured(Arc::new(Gate(sent)), PromptAccess::No, UserAccess::No);
+    let mut selected = fixture.selected.clone();
+    selected.gates.push(call.clone());
+    selected.taps.response.push(call);
+    let effects = Hooked {
+        invocation: Invocation {
+            binder: Arc::new(Bound(selected)),
+            principal: None,
+            now_s: 1,
+            classes: Vec::new(),
+            journal: None,
+            unit: UnitKey::new(7),
+        },
+        context: fixture.context.clone(),
+    };
+    tokio::task::spawn_blocking(move || {
+        let plane = Plane {
+            request: vec![It::Emit, It::Respond(200), It::End],
+            ..Plane::default()
+        };
+        let store = Store;
+        let resolver = Resolver::new(&store, None);
+        let refusals = CoreRefusals::new();
+        let books = Log::default();
+        let result = run_session(
+            &plane,
+            &req(),
+            b"{}",
+            Drive {
+                resolver: &resolver,
+                members: None,
+                send: None,
+                dialect: "test",
+                refusals: &refusals,
+                effects: &effects,
+                books: &books,
+                carrier: None,
+            },
+        );
+        match result {
+            Err(SessionError::HookRefused(refusal)) => {
+                assert_eq!(refusal.status, 409);
+                assert_eq!(refusal.text, "the request was refused by policy");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            books.0.lock().unwrap().len(),
+            1,
+            "the refused unit is booked once"
+        );
+    })
+    .await
+    .unwrap();
+    let signals = tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
+        .await
+        .expect("a gate refusal fires its response tap")
+        .unwrap();
+    assert!(signals.contains(&(abi::S_STAGE, busbar_ports::FactVal::U(abi::STAGE_RESPONSE))));
+    assert!(signals.contains(&(abi::S_STATUS, busbar_ports::FactVal::U(409))));
+    assert!(signals.contains(&(
+        abi::S_OUTCOME,
+        busbar_ports::FactVal::Text("rejected_by_gate".into())
+    )));
+    assert!(
+        received.try_recv().is_err(),
+        "the response stage fires once"
+    );
 }

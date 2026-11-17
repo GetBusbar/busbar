@@ -29,6 +29,7 @@ struct Served {
     signing_key: std::path::PathBuf,
     operator_token: std::path::PathBuf,
     operator: String,
+    record_user_key: [u8; 32],
 }
 
 struct Read {
@@ -114,9 +115,10 @@ async fn serve(name: &str) -> Served {
         "auth": { "chain": [], "admin_auth": [operator.as_str()],
                   "signing_key": { "file": shown(&signing_key) } },
         "store": { "module": module.as_str(), "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "groups": { "team": { "limits": [{ "budget": 20000, "per": "month" }] } },
         "identity-providers": {},
+        "records": { "user": "pseudonymous" },
     });
     document["plugins"] = plugins;
     document["identity-providers"][operator.as_str()] = json!({
@@ -134,13 +136,12 @@ async fn serve(name: &str) -> Served {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .unwrap();
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .unwrap();
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -152,14 +153,30 @@ async fn serve(name: &str) -> Served {
         (Some(config_path), Some(providers_path)),
         None,
         &rules,
-        Some(anchor),
+        Some(anchor.clone()),
         true,
     )
     .await
     .unwrap();
+    crate::root::records_capture::configure(&deploy.records);
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module).await.unwrap();
+    let identity = busbar_kernel::persistence::boot_identity::BootIdentity::new(anchor).unwrap();
+    let deployment = identity.keep_deployment_id().await.unwrap();
+    let seed = identity.stored_keyset().await.unwrap().unwrap();
+    let signer = busbar_kernel_audit::AuditSigningKey::from_hex_seed(&seed).unwrap();
+    let record_user_key = signer.derived_key(
+        deployment.as_bytes(),
+        crate::root::records_capture::USER_KEY_INFO,
+    );
+    let mac = busbar_contract::crypto::hmac_sha256(&record_user_key, b"canary-user").unwrap();
+    assert_eq!(
+        crate::root::records_capture::user("canary-user").unwrap(),
+        format!("u_{}", hex::encode(&mac[..16])),
+        "the derived canary is the process's bound K_user"
+    );
     limits.keep().await.unwrap();
+
     if let Some(rotate) = rotate {
         rotate.await;
     }
@@ -177,6 +194,7 @@ async fn serve(name: &str) -> Served {
         signing_key,
         operator_token,
         operator,
+        record_user_key,
     }
 }
 
@@ -431,6 +449,7 @@ async fn no_secret_in_any_admin_body() {
     let canaries: Vec<(&str, Vec<String>)> = vec![
         ("admin token", forms(ADMIN_TOKEN.as_bytes())),
         ("signing key", forms(SIGNING_KEY)),
+        ("records user key", forms(&s.record_user_key)),
         ("signing key file", forms(signing_hex.as_bytes())),
         ("minted key token", forms(token.as_bytes())),
     ];
@@ -443,11 +462,7 @@ async fn no_secret_in_any_admin_body() {
         .as_object()
         .expect("documented paths")
         .iter()
-        .filter(|(path, operations)| {
-            !path.contains('{')
-                && operations["get"].is_object()
-                && operations["get"]["x-busbar-plane"].is_null()
-        })
+        .filter(|(path, operations)| !path.contains('{') && operations["get"].is_object())
         .filter_map(|(path, _)| path.strip_prefix("/api/v1/admin").map(str::to_owned))
         .collect();
     for tree in [

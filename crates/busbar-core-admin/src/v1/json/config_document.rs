@@ -285,6 +285,8 @@ pub(super) async fn apply(
             if loaded.deploy.advanced.worker_threads == Some(0) {
                 return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
             }
+            loaded.resource_ownership.validate_named_maps(&doc)
+                .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
                 .map_err(AdminError::Validation)?;
             if let Some(patch) = request.providers_patch.as_ref() {
@@ -298,8 +300,8 @@ pub(super) async fn apply(
             }
             let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                 .map_err(|_| AdminError::Validation("patched configuration failed resolution".into()))?;
-            let base_hook_names = cfg.hooks.keys().cloned().collect();
-            let base_group_names = cfg.groups.keys().cloned().collect();
+            let base_hook_names = loaded.resource_ownership.hook_names().clone();
+            let base_group_names = loaded.resource_ownership.group_names().clone();
             busbar_kernel::config::overlay::merge_into(&mut cfg, doc.clone());
             if let Some(rejection) =
                 trust_ceiling_rejection(&snapshot.identity_providers, &cfg.identity_providers, &ceiling_actor)
@@ -330,7 +332,7 @@ pub(super) async fn apply(
                 for name in exports {
                     let def = next.export_defs.get(&name);
                     if def != snapshot.export_defs.get(&name)
-                        && busbar_kernel::export::plugin::requires_restart(&name, def)
+                        && busbar_kernel::export::plugin::requires_restart(&next.exports, &name, def)
                     {
                         own.push(format!("export.{name}"));
                     }
@@ -345,7 +347,7 @@ pub(super) async fn apply(
             let exports: std::collections::BTreeSet<_> = next.export_defs.keys()
                 .chain(snapshot.export_defs.keys()).cloned().collect();
             for name in exports {
-                if busbar_kernel::export::plugin::requires_restart(&name, next.export_defs.get(&name)) {
+                if busbar_kernel::export::plugin::requires_restart(&next.exports, &name, next.export_defs.get(&name)) {
                     next.config_pending_restart.push(format!("export.{name}"));
                 }
             }
@@ -508,7 +510,6 @@ fn shadowed_path(doc: &OverlayDoc, patch: &DocumentPatch) -> Result<Option<Strin
             admin_tls,
             admin_require_mtls,
             rate_card,
-            plugin_rate_cards,
             per_request_fee,
             store
         );
@@ -562,6 +563,7 @@ pub(super) fn restart_unreachable(endpoint: &str, restart: &[String], msg: Strin
 
 fn restart_paths(paths: &[String]) -> Vec<String> {
     const BOOT: &[&str] = &[
+        "/records",
         "/listen",
         "/tls",
         "/admin_listen",
@@ -576,6 +578,7 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/max_inbound_concurrent",
         "/advanced/response_headers",
         "/advanced/worker_threads",
+        "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
     ];
@@ -773,6 +776,22 @@ mod tests {
     }
 
     #[test]
+    fn record_capture_edits_require_restart_without_matching_unrelated_keys() {
+        let paths = [
+            "/records",
+            "/records/user",
+            "/records/labels/0",
+            "/records_extra",
+            "/limits/request_body_max_bytes",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            ["/records", "/records/user", "/records/labels/0"]
+        );
+    }
+
+    #[test]
     fn boot_changes_remain_explicitly_pending_and_live_limits_do_not() {
         let paths = [
             "/advanced/worker_threads",
@@ -785,6 +804,30 @@ mod tests {
             restart_paths(&paths),
             ["/advanced/worker_threads", "/store/settings", "/listen"]
         );
+    }
+
+    #[test]
+    fn retired_shutdown_and_admission_caps_never_enter_restart_state() {
+        for path in [
+            "/advanced/shutdown/drain_timeout",
+            "/advanced/governance/max_pending_checkpoints",
+            "/advanced/governance",
+        ] {
+            assert!(
+                restart_paths(&[path.to_owned()]).is_empty(),
+                "retired configuration cannot become restart state: {path}"
+            );
+        }
+        // #323: `advanced.shutdown.deregister_delay` is boot-scoped and restart-only, so the
+        // shutdown block that holds it is restart state; its retired drain cap stays out.
+        for path in ["/advanced/shutdown/deregister_delay", "/advanced/shutdown"] {
+            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
+        }
+        assert_eq!(
+            restart_paths(&["/advanced/worker_threads".to_owned()]),
+            ["/advanced/worker_threads"]
+        );
+        assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 
     #[cfg(feature = "openapi-schema")]
@@ -836,5 +879,24 @@ mod tests {
                 .get("configuration")
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_restart_tests {
+    use super::restart_paths;
+
+    #[test]
+    fn document_deregister_delay_and_ancestor_edits_require_restart() {
+        for path in [
+            "/advanced/shutdown/deregister_delay",
+            "/advanced/shutdown",
+            "/advanced",
+            "",
+        ] {
+            let paths = vec![path.to_owned()];
+            assert_eq!(restart_paths(&paths), paths, "add/change/remove at {path}");
+        }
+        assert!(restart_paths(&["/advanced/rate_sweep_interval".to_owned()]).is_empty());
     }
 }

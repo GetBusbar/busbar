@@ -747,15 +747,12 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
     assert!(signing_key.status.success(), "--generate-signing-key");
     std::fs::write(dir.join("signing.key"), &signing_key.stdout).unwrap();
 
-    std::fs::write(dir.join("at-rest.key"), "5a".repeat(32)).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 store: {{module: memory}}
-advanced:
-  allow_destinations: ["127.0.0.1"]
 limits:
   request_body_max_bytes: {cap}
 admin_require_mtls: false
@@ -768,9 +765,6 @@ auth:
   signing_key: {{ file: "{signing}" }}
   admin_auth:
     - admin-tokens
-credentials:
-  at_rest:
-    key: {{ file: "{at_rest}" }}
 providers:
   bedrock-lane:
     api_key: {{ env: {UPSTREAM_CREDS_ENV} }}
@@ -780,7 +774,6 @@ models:
     upstream_model: "{WIRE_MODEL}"
 "#,
             signing = dir.join("signing.key").display(),
-            at_rest = dir.join("at-rest.key").display(),
             cap = BODY_CAP,
         ),
     )

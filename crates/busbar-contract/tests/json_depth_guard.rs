@@ -3,7 +3,7 @@
 
 //! THE ONE JSON DEPTH GUARD (`spans::exceeds_max_depth`) answers exactly as the copies it replaced.
 
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
 /// The scan as `busbar-kernel/src/json.rs` carried it before the fold, verbatim.

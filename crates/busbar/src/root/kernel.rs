@@ -592,10 +592,7 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
         'a,
         Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
     > {
-        Box::pin(async move {
-            super::measurements::validate_rates(&card.plugin_rate_cards)?;
-            busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin).await
-        })
+        busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin)
     }
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
@@ -608,7 +605,6 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     }
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         ROOT_CARD.card_applied(card, origin);
-        super::measurements::confirmed_rates(&card.plugin_rate_cards);
     }
 }
 impl busbar_kernel::rate_apply::RateApply for RootHistory {

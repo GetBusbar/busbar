@@ -428,7 +428,9 @@ dependencies = [
  "async-trait",
  "axum-core",
  "base64 0.22.1",
+ "busbar-count",
  "busbar-crypto",
+ "busbar-secure",
  "bytes",
  "ciborium",
  "foldhash 0.2.0",
@@ -539,6 +541,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-count"
+version = "1.6.0"
+dependencies = [
+ "serde",
+ "sonic-rs",
+]
+
+[[package]]
 name = "busbar-crypto"
 version = "1.6.0"
 dependencies = [
@@ -606,6 +616,7 @@ dependencies = [
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
  "busbar-secret-env",
@@ -894,48 +905,37 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026#19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=48bf971292d7a27d5f3eff984ba0dabbb5ed666a#48bf971292d7a27d5f3eff984ba0dabbb5ed666a"
 dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "httpdate",
- "indexmap",
- "memchr",
+ "busbar-plugin-abi",
  "pbjson",
  "pbjson-build",
- "percent-encoding",
- "proc-macro2",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
  "serde",
- "serde_json",
- "syn 2.0.117",
- "tracing",
- "url",
- "zeroize",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=ae965dc8163be4073876adf08fe213dc21a56424#ae965dc8163be4073876adf08fe213dc21a56424"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=316652515c7a01aaa9a87b95f12d1ec33ee615bb#316652515c7a01aaa9a87b95f12d1ec33ee615bb"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "memchr",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=17372bd6ed66bb1830a635ec745c4880d6b91d56#17372bd6ed66bb1830a635ec745c4880d6b91d56"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=6f3a36a9762c86fb8059d4fa6598beed6c793932#6f3a36a9762c86fb8059d4fa6598beed6c793932"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "crc32fast",
  "foldhash 0.2.0",
@@ -951,15 +951,15 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=0fe33ef5207a828457976be8e165f07300cca4da#0fe33ef5207a828457976be8e165f07300cca4da"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=a63691561995d34a307567b85ba0a36f62b5e66c#a63691561995d34a307567b85ba0a36f62b5e66c"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "indexmap",
  "jsonschema",
  "percent-encoding",
- "ring",
  "serde",
  "serde_json",
  "tracing",
@@ -969,10 +969,11 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=ce5cedec9ad3fec357bdb9c5cd239899efce3fcf#ce5cedec9ad3fec357bdb9c5cd239899efce3fcf"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=5851d48752d940a15d4bc3a2627f1a486ed6f9ef#5851d48752d940a15d4bc3a2627f1a486ed6f9ef"
 dependencies = [
+ "base64 0.22.1",
  "bumpalo",
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "foldhash 0.2.0",
  "serde",
@@ -990,6 +991,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "busbar-secure",
  "crossbeam-queue",
  "hex",
  "percent-encoding",
@@ -1052,6 +1054,13 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-secure"
+version = "1.6.0"
+dependencies = [
  "zeroize",
 ]
 
@@ -3622,7 +3631,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3749,7 +3757,7 @@ dependencies = [
 [[package]]
 name = "sonic-number"
 version = "0.1.3"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]
@@ -3757,7 +3765,7 @@ dependencies = [
 [[package]]
 name = "sonic-rs"
 version = "0.5.11"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "ahash",
  "bumpalo",
@@ -3777,7 +3785,7 @@ dependencies = [
 [[package]]
 name = "sonic-simd"
 version = "0.1.4"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]

@@ -15,7 +15,7 @@ fn native_document_uses_admitted_source_declarations() {
             .declare(owner, &[(REWRITE_SUGAR, word.into(), member.into())])
             .unwrap();
         let raw = format!(
-            "credentials:\n  at_rest:\n    key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
+            "auth:\n  signing_key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
         );
         let read = |sources: &Sugars| {
             busbar_contract::yaml::with_deserializer(&raw, |d| {
@@ -26,7 +26,7 @@ fn native_document_uses_admitted_source_declarations() {
             })
         };
         let parsed = read(&sources).unwrap();
-        let key = parsed.credentials.at_rest.unwrap().key;
+        let key = parsed.auth.unwrap().signing_key.unwrap();
         assert_eq!(key.source_module(), Some(owner));
         assert_eq!(key, sources.get(word).unwrap().reference("descriptor"));
         assert_eq!(

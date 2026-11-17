@@ -199,6 +199,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
     }
 
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        if v == "upstreams" {
+            return Err(E::custom("unknown field `upstreams`: move each entry's dial settings into the registration that uses it, under that plane's declared registration path"));
+        }
         if let Some(entry) = self.lift.iter().find(|(k, _)| *k == v) {
             *self.lifted = Some(*entry);
             return Ok(KeyOutcome::Lift(self.inner));
@@ -348,11 +351,52 @@ fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
     Ok((deploy, lifted))
 }
 
+/// A key busbar reserves or has retired: its path from the document root, and why it is refused.
+/// The table is read before the typed parse, so a refusal names the key and its reason with a
+/// coded error instead of the generic unknown-field text. It adds no schema field (DES-359 r3 L10).
+pub(crate) struct ReservedKey {
+    pub(crate) path: &'static [&'static str],
+    pub(crate) reason: &'static str,
+}
+
+pub(crate) const RESERVED_KEYS: &[ReservedKey] = &[ReservedKey {
+    path: &["plugins", "trust", "operator"],
+    reason: "reserved; 1.6.0 operator plugins must be first-party signed (Q13)",
+}];
+
+/// The coded refusal for the first reserved key `document` writes, if any.
+pub(crate) fn reserved_key_refusal(document: &busbar_contract::yaml::Value) -> Option<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    RESERVED_KEYS.iter().find_map(|reserved| {
+        reserved
+            .path
+            .iter()
+            .try_fold(document, |value, key| value.get(*key))?;
+        let detail = format!("{}: {}", reserved.path.join("."), reserved.reason);
+        Some(crate::diagnostics::coded::config_reserved_key(detail).into())
+    })
+}
+
+fn reserved_key_error(
+    document: &busbar_contract::yaml::Value,
+) -> Result<(), busbar_contract::yaml::Error> {
+    match reserved_key_refusal(document) {
+        Some(refusal) => Err(<busbar_contract::yaml::Error as serde::de::Error>::custom(
+            refusal,
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Read a deployment document under `grammar`: the grammar of this read (§3.4).
 pub fn deploy_from_yaml_str(
     text: &str,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    // A document the plain reader cannot read is left to the typed reader's own error.
+    if let Ok(document) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text) {
+        reserved_key_error(&document)?;
+    }
     let mut deploy =
         busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d, grammar))?;
     deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
@@ -366,13 +410,41 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     de: D,
     grammar: &Grammar,
 ) -> Result<DeployCfg, D::Error> {
+    // Bind the opaque named secret definitions before any typed SecretRef is parsed. The
+    // untyped reader rejects duplicate keys, including duplicate instance definitions.
+    let bound;
     let words = busbar_contract::secret_ref::context::UsedWords::default();
-    let SplitDocument(mut deploy, sections) =
-        busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
-            de,
-            &grammar.sugars,
-            &words,
-        )?;
+    let (SplitDocument(mut deploy, sections), grammar) = if !grammar.secret_binding_required() {
+        (
+            busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+                de,
+                &grammar.sugars,
+                &words,
+            )?,
+            grammar,
+        )
+    } else {
+        use busbar_contract::yaml::ValueExt as _;
+        let document = busbar_contract::yaml::untyped(de)?;
+        let secrets = match document.get("secrets") {
+            Some(value) => busbar_contract::yaml::from_value::<
+                std::collections::BTreeMap<String, super::SecretModuleCfg>,
+            >(value.clone())
+            .map_err(D::Error::custom)?,
+            None => std::collections::BTreeMap::new(),
+        };
+        bound = grammar
+            .bind_secret_instances(&secrets)
+            .map_err(D::Error::custom)?;
+        let parsed =
+            busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+                busbar_contract::yaml::deserializer(document),
+                &bound.sugars,
+                &words,
+            )
+            .map_err(D::Error::custom)?;
+        (parsed, &bound)
+    };
     // What this read used of its grammar, recorded by the parse itself (§3.8): the grammar pin
     // compares exactly these items.
     let mut used = super::grammar::Used::default();
@@ -391,6 +463,7 @@ pub fn deploy_from_yaml_value(
     value: busbar_contract::yaml::Value,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    reserved_key_error(&value)?;
     deploy_from_deserializer(busbar_contract::yaml::deserializer(value), grammar)
 }
 
@@ -405,3 +478,7 @@ mod document_metadata_tests;
 #[cfg(test)]
 #[path = "tests/prepass_tests.rs"]
 mod source_declarations_tests;
+
+#[cfg(test)]
+#[path = "tests/reserved_key_tests.rs"]
+mod reserved_key_tests;

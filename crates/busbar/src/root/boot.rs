@@ -87,76 +87,6 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// THE OLD ABI STORE'S OPEN (until #274 deletes that ABI): inspect the prepared native store and OPEN an empty or
-/// current dataset, then admit its format. 1.6.0 converts a 1.5.5 store only inside a MIN-3 store's own open, so
-/// any other inspected state is refused before the store is opened or written.
-pub(crate) async fn open_current_store(
-    prepared: &busbar_contract::persistence::lifecycle::axis::Prepared,
-    bounds: busbar_contract::persistence::lifecycle::Bounds,
-    shutdown: &tokio::sync::watch::Receiver<bool>,
-) -> Result<busbar_kernel::persistence::startup::Startup, String> {
-    use busbar_contract::persistence::lifecycle::{
-        Error, InspectionState, OpenBinding, Request, Response,
-    };
-    const RETRY: std::time::Duration = std::time::Duration::from_millis(250);
-    let request = Arc::new(Request::Inspect { bounds });
-    let binding = loop {
-        if *shutdown.borrow() {
-            return Err("shutdown requested during native Store inspection".into());
-        }
-        let inspected = match prepared.bootstrap(Arc::clone(&request)).await {
-            Ok(inspected) => inspected,
-            Err(Error::Pending | Error::Busy | Error::Unknown) => {
-                tokio::time::sleep(RETRY).await;
-                continue;
-            }
-            Err(error) => return Err(format!("Store inspection refused: {error:?}")),
-        };
-        let Response::Inspected(inspection) = &*inspected else {
-            return Err("Store inspection answered with something other than an inspection".into());
-        };
-        match inspection.state {
-            InspectionState::Empty => break OpenBinding::Empty,
-            InspectionState::Current => {
-                let source = inspection
-                    .source
-                    .clone()
-                    .ok_or("a current Store answered no source identity")?;
-                let marker = inspection
-                    .admission_marker
-                    .as_ref()
-                    .ok_or("a current Store answered no admission marker")?;
-                break OpenBinding::Current {
-                    source,
-                    admission_marker_digest: busbar_contract::crypto::sha256(
-                        marker.expose(&busbar_kernel::seal::lend()),
-                    ),
-                };
-            }
-            InspectionState::Busy => tokio::time::sleep(RETRY).await,
-            _ => {
-                return Err(
-                    "UNSUPPORTED: this store holds data this store plugin's old ABI build cannot open \
-                     as 1.6.0; install the plugin's 1.6.0 (MIN-3) build, whose own open upgrades it. \
-                     Nothing was written"
-                        .into(),
-                )
-            }
-        }
-    };
-    let backend = loop {
-        if *shutdown.borrow() {
-            return Err("shutdown requested during native Store open".into());
-        }
-        match prepared.open(binding.clone()).await {
-            Ok(backend) => break backend,
-            Err(Error::Pending | Error::Busy | Error::Unknown) => tokio::time::sleep(RETRY).await,
-            Err(error) => return Err(format!("Store open refused: {error:?}")),
-        }
-    };
-    admit_format(backend, true).await
-}
-
 pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
@@ -442,8 +372,7 @@ pub fn trust_policy(
     let mut policy =
         super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
             publishers: &cfg.publisher_keys(),
-            allow_unsigned: cfg.trust.allow_unsigned,
-            allow_third_party: cfg.trust.allow_third_party,
+            allow_untrusted: cfg.trust.allow_untrusted,
             min_versions: &cfg.min_versions,
             first_party_floors: &cfg.first_party_floors,
             binary_version,
@@ -1190,16 +1119,6 @@ pub(crate) fn install_start(
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let StartScan { plugins, scanned } = scan;
     if let Some(plugins) = &plugins {
-        let l = &plugins.logs;
-        if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
-            l.dir.as_deref(),
-            l.level.as_deref(),
-            &l.levels,
-            l.rotate_mb,
-            l.keep,
-        ) {
-            let _ = LOGS.set(logs);
-        }
         plugins.warn_invalid_floors();
     }
     let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
@@ -1309,29 +1228,10 @@ pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretVi
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
 /// the build links. Pure: no dlopen, no high-water write, no axis mutation, no fetch.
 pub(crate) fn phase_one(
+    process: &busbar_plugin_loader::process::ProcessResources,
     input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
 ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
-    let refused = busbar_kernel::config::GrammarRefusal;
-    let mut pinned = input.plugins.clone();
-    pinned.dir = input.dir.to_string_lossy().into_owned();
-    for (name, version) in input.pins {
-        pinned.min_versions.insert(name.clone(), version.clone());
-        pinned
-            .first_party_floors
-            .insert(name.clone(), version.clone());
-    }
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(linked_row)
-        .collect();
-    linked.extend(linked_exports(crate::LINKED.export_doors).map_err(refused)?);
-    let judged = judge(linked, &pinned).map_err(refused)?;
-    let report = skip_lines(judged.registry.skipped());
-    let items = classify(&judged.registry, Some(&pinned));
-    Ok(
-        busbar_kernel::config::Grammar::new(judged.sugars, owners_of(&judged.registry), report)
-            .with_items(items),
-    )
+    images::prepare(process, input).map(|prepared| prepared.grammar)
 }
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
@@ -1374,11 +1274,11 @@ fn scanned_registry(
 /// declares (the linked rows, plus whatever a test admitted), passed explicitly.
 #[cfg(test)]
 pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
-    busbar_kernel::config::Grammar::new(
-        busbar_contract::secret::SecretAxis::sugars(super::linked::secret_rows()),
-        std::collections::BTreeMap::new(),
-        Vec::new(),
-    )
+    crate::root::min3_boot::fixture::grammar(&PluginsCfg {
+        enabled: false,
+        ..Default::default()
+    })
+    .expect("the actual linked images describe the fixture grammar")
 }
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.
@@ -1891,23 +1791,6 @@ pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLog
     })
 }
 
-pub(crate) fn follow_plugin_logs(
-    logs: &crate::root::loader::dispatch::PluginLogConfig,
-    plugins: &busbar_kernel::config::PluginsCfg,
-) {
-    let l = &plugins.logs;
-    match crate::root::loader::dispatch::PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    ) {
-        Ok(next) => logs.reconfigure(&next),
-        Err(e) => tracing::warn!(error = %e, "plugins.logs kept its words across a config apply"),
-    }
-}
-
 pub(crate) fn door_planes() -> &'static [(String, DoorPlane)] {
     DOOR_PLANES.get().map_or(&[], Vec::as_slice)
 }
@@ -2312,6 +2195,7 @@ impl BookPreparation {
             .await?;
         super::durability::report_operator_breaks(durability).await;
         self.governance.bind_deployment_caller_ref(bound.caller_ref);
+        super::records_capture::warn_unkeyed();
         self.shared = Some(Arc::new(std::sync::Mutex::new(
             self.durability.take().unwrap(),
         )));
@@ -2586,6 +2470,7 @@ pub(crate) async fn stored_format_refusal(
 ///
 /// # Errors
 /// The walk reported a store it did not admit.
+#[cfg(test)]
 pub(crate) fn walk_admission<T>(
     walked: bool,
     take: impl FnOnce() -> Option<T>,
@@ -2598,3 +2483,27 @@ pub(crate) fn walk_admission<T>(
             .to_owned()
     })
 }
+
+#[cfg(test)]
+#[path = "tests/boot_walk.rs"]
+mod boot_walk_tests;
+
+/// Root-owned deployment ordering and instance opening.
+pub(crate) mod walk;
+
+pub(crate) mod images;
+
+/// Store opening for the root's integration fixtures. Production opens through MIN-3 bootstrap.
+#[cfg(test)]
+pub(crate) mod store;
+
+pub(crate) mod process;
+
+pub(crate) mod inputs;
+
+pub(crate) mod restricted;
+pub(crate) mod workers;
+
+#[cfg(test)]
+#[path = "tests/generation_workers.rs"]
+mod generation_workers_tests;

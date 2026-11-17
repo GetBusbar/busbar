@@ -9,8 +9,10 @@
 //! text alone. A refusal reaches the plugin as `NeedErr::Denied` with no text (I2) and is audited
 //! here with the full reason.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, PoisonError, RwLock};
+
+use busbar_kernel::telemetry::{counter_slot, CounterSlot};
 
 use busbar_plugin_abi::host_side::caller::{transport_verdict, Accept, Caller, Verdict};
 use busbar_plugin_abi::host_side::needs::NeedErr;
@@ -79,6 +81,56 @@ fn shown(dest: &str) -> &str {
 /// The resource text of the audit row.
 fn resource(who: &Caller<'_>, dest: &str) -> String {
     format!("dest:{}:{}", shown(dest), who.name)
+}
+
+/// `busbar_insecure_transport_admitted_total{kind, instance, accept}` (#359 SEC-L2, DES-359 r3): every
+/// Need the transport gate admitted under the instance's `insecure_transport.accept`, pooled reuse
+/// included (not TCP dials). Verified TLS is not counted. The counter cell of each (instance,
+/// acceptance) is interned once, at the instance's first such admission; after that a count is one
+/// read-locked lookup and one relaxed add, with no allocation.
+#[derive(Debug, Default)]
+pub struct Admitted {
+    slots: RwLock<HashMap<(u64, u8), CounterSlot>>,
+}
+
+impl Admitted {
+    /// Count one admission of `admit` for the instance `id` (configured as `name` of `kind`).
+    pub fn count(&self, kind: &str, id: u64, name: &str, admit: Admit) {
+        let (bit, word) = match admit {
+            Admit::Verified => return,
+            Admit::Waived => (Accept::UNVERIFIED_TLS, "unverified_tls"),
+            Admit::Plain => (Accept::PLAINTEXT, "plaintext"),
+        };
+        let held = self
+            .slots
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(id, bit))
+            .copied();
+        let slot = match held {
+            Some(slot) => slot,
+            None => *self
+                .slots
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry((id, bit))
+                .or_insert_with(|| {
+                    counter_slot(
+                        busbar_kernel::snapshot::INSECURE_TRANSPORT_ADMITTED_TOTAL,
+                        &[("kind", kind), ("instance", name), ("accept", word)],
+                    )
+                }),
+        };
+        slot.incr();
+    }
+
+    /// An instance is gone: drop its cells.
+    pub fn forget(&self, id: u64) {
+        self.slots
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(instance, _), _| *instance != id);
+    }
 }
 
 /// The once-per-(instance, endpoint) memory of the ERROR line a lazy dial refusal writes after

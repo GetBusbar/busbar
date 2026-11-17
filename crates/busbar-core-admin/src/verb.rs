@@ -42,7 +42,7 @@ pub enum Class {
     Ledger,
     /// One of the 1.6.0 audit-chain reads, and `/records`, the per-unit projection of the chain.
     Audit,
-    /// A named non-admin surface.
+    /// A named surface mounted outside the admin codec, including administrative metrics.
     Named,
 }
 
@@ -105,7 +105,6 @@ const fn row(
             verb,
             KernelVerb::PostKeys
                 | KernelVerb::PostKeysIdRotate
-                | KernelVerb::PostSigningKeyRotate
                 | KernelVerb::Adjust
                 | KernelVerb::PlaneRecordWrite
                 | KernelVerb::CommitUpgrade
@@ -186,7 +185,6 @@ pub enum KernelVerb {
     GetPluginsFileSchema,
 
     PostRestart,
-    PostSigningKeyRotate,
 
     Verify,
     PlaneRecordWrite,
@@ -205,7 +203,6 @@ pub enum KernelVerb {
     GetLedgerCheckpoints,
     GetLedgerReconciliation,
     GetLedgerMigration,
-    GetLedgerOpenapiJson,
 
     GetAuditHead,
     GetAuditRange,
@@ -279,7 +276,6 @@ pub const TABLE: &[VerbRow] = table! {
     Legacy DeletePluginsFile "DELETE" "/api/v1/admin/plugins/{file}" "delete_plugins_file";
     Legacy GetPluginsFileSchema "GET" "/api/v1/admin/plugins/{file}/schema" "get_plugins_file_schema";
     Legacy PostRestart "POST" "/api/v1/admin/restart" "post_restart";
-    Legacy PostSigningKeyRotate "POST" "/api/v1/admin/signing-key/rotate" "post_signing_key_rotate";
     Legacy GetUsage "GET" "/api/v1/admin/usage" "get_usage";
     New Verify "GET" "/api/v1/admin/verify" "verify";
     New PlaneRecordWrite "POST" "/api/v1/admin/plane-record-write" "plane_record_write";
@@ -306,7 +302,6 @@ pub const TABLE: &[VerbRow] = table! {
     Ledger GetLedgerCheckpoints "GET" "/api/v1/admin/ledger/checkpoints" "get_ledger_checkpoints";
     Ledger GetLedgerReconciliation "GET" "/api/v1/admin/ledger/reconciliation" "get_ledger_reconciliation";
     Ledger GetLedgerMigration "GET" "/api/v1/admin/ledger/migration" "get_ledger_migration";
-    Ledger GetLedgerOpenapiJson "GET" "/api/v1/admin/ledger/openapi.json" "get_ledger_openapi_json";
     Audit GetAuditHead "GET" "/api/v1/admin/audit/head" "get_audit_head";
     Audit GetAuditRange "GET" "/api/v1/admin/audit/range" "get_audit_range";
     Audit GetAuditKeys "GET" "/api/v1/admin/audit/keys" "get_audit_keys";
@@ -372,8 +367,21 @@ pub fn row_of(verb: KernelVerb) -> Option<&'static VerbRow> {
     TABLE.iter().find(|r| r.verb == verb)
 }
 
+/// Operations executed by the admin codec; authorization also includes external handlers.
 pub fn admin_rows() -> impl Iterator<Item = &'static VerbRow> {
     TABLE.iter().filter(|r| r.class != Class::Named)
+}
+
+/// The admin authorization vocabulary, including handlers mounted outside the codec.
+/// Other Named surfaces remain public or data-plane operations, never admin grants.
+pub fn admin_grant_rows() -> impl Iterator<Item = &'static VerbRow> {
+    TABLE.iter().filter(|row| {
+        row.class != Class::Named
+            || matches!(
+                row.verb,
+                KernelVerb::GetMetrics | KernelVerb::GetMetricsHooks
+            )
+    })
 }
 
 #[must_use]

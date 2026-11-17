@@ -254,6 +254,10 @@ async fn seal_own_node(
                 Ok(signed) => {
                     let staged = stage_break(durability, &signed, pending).await;
                     let finding = broken_finding(node, &at);
+                    durability.restart_findings.push(finding);
+                    if let Err(why) = staged {
+                        return refuse(durability, why);
+                    }
                     busbar_kernel::diag_error!(
                         busbar_kernel::diagnostics::AUDIT_CHAIN_BROKEN_AT_BOOT,
                         node, sealer = node, last_good = at.last_good,
@@ -261,10 +265,6 @@ async fn seal_own_node(
                         reason = at.reason.as_str(),
                         "the node's own audit chain is broken after its last valid stamp; recorded, never sealed"
                     );
-                    durability.restart_findings.push(finding);
-                    if let Err(why) = staged {
-                        durability.restart_findings.push(why);
-                    }
                     OwnSeal::Broken(at)
                 }
                 Err(failure) => sign_failed(durability, node, failure),

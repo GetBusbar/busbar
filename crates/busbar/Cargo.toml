@@ -87,9 +87,12 @@ test-harness = []
 serde_json = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 # The legacy-signing chain builder of the existing audit fixtures (SEALING-FIX §3.2).
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
+# Root trust tests bind admin trust to one real KernelServices (kernel test fixtures).
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 busbar-contract = { path = "../busbar-contract", features = ["tls", "stage-probe", "test-seal"] }
 # The seam's tests count busbar_migrate's entries (MIGRATE-ON-BOOT §9 C1 (sz2)).

@@ -71,7 +71,8 @@ fn the_cap_is_at_least_one() {
     let (gate, _) = gate(0);
     gate.set_cap(0);
     assert_eq!(gate.cap(), 1);
-    assert_eq!(DEFAULT_MAX_PENDING_CHECKPOINTS, 20_000);
+    assert_eq!(MAX_PENDING_CHECKPOINTS, 20_000);
+    assert_eq!(DRAIN_TIMEOUT, Duration::from_secs(20));
 }
 
 #[test]
@@ -204,6 +205,7 @@ async fn a_refusal_after_the_hold_leaks_no_live_count() {
         .await
         .expect("native Store constructs");
     let limit = |metric: LimitMetric, amount: u64, per: Option<LimitWindow>| LimitCfg {
+        selected: None,
         metric,
         amount,
         per,

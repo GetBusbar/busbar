@@ -5569,6 +5569,26 @@
         "stdout_contains": null
       },
       "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): `--migrate-config` of a 1.5.x inline `admin_auth` operator entry lifts it onto its definition and keeps the bare name in the chain (busbar #1017 auth_bindings.rs migration_lifts_the_inline_operator_entry_as_1_5_5_did)."
+    },
+    {
+      "id": "LAW0-MIG-PLANE-MCP-LITERALS",
+      "family": "config.migrate",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        {
+          "args": [
+            "--migrate-config",
+            "testing/shadow-oracle/fixtures/migrate-plane-mcp-literals-1.5.5.yaml"
+          ]
+        }
+      ],
+      "expect": {
+        "exit": 0,
+        "stderr_contains": null,
+        "stdout_contains": null
+      },
+      "notes": "W36 DES-346 Step 1 (2026-11-17): `--migrate-config` of a 1.5.x `tools:` stdio registration whose `env:` carries literal values. Core lifts each literal of the mcp plane's declared secret positions (`/*/env/*`) into a 0600 secret file and writes a reference in its place, so the migrated file holds no literal. Hand-added; the 1.5.5 recording is owed (W02): record it from the published 1.5.5 add-only. The 1.6 behaviour is `a_1_5_5_plane_mcp_env_and_client_identity_literals_are_lifted_by_core`."
     }
   ]
 }

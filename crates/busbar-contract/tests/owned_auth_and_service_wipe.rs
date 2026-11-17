@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe registered initialized auth inputs and service results before their allocation is freed.
+//! Owned auth inputs, shared secrets and service results are wiped on every exit (Q24, UNSAFE-MIN
+//! §4.4). Each owned buffer in turn carries a fresh canary; it leaves by success, failure,
+//! cancellation, unwinding, its last shared owner, a clone's drop, a late send or a transfer; then a
+//! scan of this process's memory must not find the canary. Wherever an owner is still alive part-way,
+//! the canary must still be found. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -14,84 +18,43 @@ use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Stored;
 use busbar_contract::Secret;
 
-thread_local! {
-    static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::WipeProof;
 
-// SAFETY: allocations are forwarded unchanged to System. The observer reads only the initialized
-// prefix registered by this thread, before forwarding that same live allocation to System.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = WATCH.try_with(|watch| {
-            if let Some((_, len)) = watch
-                .get()
-                .filter(|(address, _)| *address == pointer.addr())
-            {
-                watch.set(None);
-                let wiped = len <= layout.size()
-                    && (0..len).all(|index| {
-                        // SAFETY: registration identified initialized Vec contents. This matching
-                        // live allocation has not been freed. Read through dealloc's current
-                        // owning pointer, not the shared registration borrow. No padding or
-                        // spare capacity is read.
-                        unsafe { pointer.add(index).read_volatile() == 0 }
-                    });
-                let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-            }
-        });
-        // SAFETY: pointer and layout describe the allocator caller's live allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn watch(bytes: &[u8]) {
-    assert!(!bytes.is_empty());
-    WATCH.with(|watched| {
-        assert!(watched.get().is_none());
-        watched.set(Some((bytes.as_ptr().addr(), bytes.len())));
-    });
-    WIPED.with(|result| result.set(None));
-}
-
-fn fields_request() -> FieldsRequest {
+/// A request whose input `field` holds `secret` (its only copy); every other input is plain. The
+/// caller credential, when it is the field, is the secret moved into a shared `Secret`.
+fn fields_request(field: &str, secret: &str) -> FieldsRequest {
+    let pick = |name: &str, plain: &str| {
+        if field == name {
+            secret.to_owned()
+        } else {
+            plain.to_owned()
+        }
+    };
     FieldsRequest {
         point: busbar_contract::abi::auth::AuthPoint::HeadBody,
         conn: 1,
         unit: 2,
-        body: Some(b"private-body".to_vec()),
-        method: b"private-method".to_vec(),
-        authority: "private-authority".into(),
-        path: b"/private-path".to_vec(),
-        query: Some(b"credential=private-query".to_vec()),
+        body: Some(pick("body", "private-body").into_bytes()),
+        method: pick("method", "private-method").into_bytes(),
+        authority: pick("authority", "private-authority"),
+        path: pick("path", "/private-path").into_bytes(),
+        query: Some(pick("query", "credential=private-query").into_bytes()),
         timestamp: 0,
-        headers: vec![(b"private-name".to_vec(), b"private-value".to_vec())],
-        caller_credential: None,
-        extensions: b"private-extensions".to_vec(),
-    }
-}
-
-fn input_bytes<'a>(request: &'a FieldsRequest, field: &str) -> &'a [u8] {
-    match field {
-        "body" => request.body.as_deref().unwrap(),
-        "method" => &request.method,
-        "authority" => request.authority.as_bytes(),
-        "path" => &request.path,
-        "query" => request.query.as_deref().unwrap(),
-        "header-name" => &request.headers[0].0,
-        "header-value" => &request.headers[0].1,
-        "extensions" => &request.extensions,
-        _ => unreachable!(),
+        headers: vec![(
+            pick("header-name", "private-name").into_bytes(),
+            pick("header-value", "private-value").into_bytes(),
+        )],
+        caller_credential: (field == "caller-credential")
+            .then(|| Secret::new(secret.as_bytes().to_vec()).share()),
+        extensions: pick("extensions", "private-extensions").into_bytes(),
     }
 }
 
@@ -103,7 +66,7 @@ fn returned<T>(_owned: T, fail: bool) -> Result<(), ()> {
     }
 }
 
-fn cancel<T>(owned: T) {
+fn cancel<T>(owned: T, proof: &mut WipeProof) {
     let mut pending = Box::pin(async move {
         let owned = owned;
         std::future::pending::<()>().await;
@@ -115,20 +78,23 @@ fn cancel<T>(owned: T) {
             .poll(&mut Context::from_waker(Waker::noop())),
         Poll::Pending
     );
-    assert_eq!(WIPED.with(Cell::get), None, "pending still owns its bytes");
+    proof.assert_held("pending still owns its bytes");
     drop(pending);
 }
 
 #[test]
-fn the_live_payload_observer_distinguishes_plain_and_zeroized_buffers() {
-    let plain = b"plain-initialized-control".to_vec();
-    watch(&plain);
+fn the_scan_distinguishes_plain_and_zeroized_buffers() {
+    let proof = WipeProof::new();
+    let plain = proof.payload().to_vec();
     drop(plain);
-    assert_eq!(WIPED.with(Cell::get), Some(false));
-    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
-    watch(&wiped);
+    assert!(
+        proof.canary_copies("a plain buffer") >= 1,
+        "a plain buffer's freed bytes must be found"
+    );
+    let proof = WipeProof::new();
+    let wiped = SecureVec::from(proof.payload().to_vec());
     drop(wiped);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a SecureVec");
 }
 
 #[test]
@@ -147,17 +113,13 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
         for exit in [
             "return", "failure", "cancel", "unwind", "shared", "transfer",
         ] {
-            let mut request = fields_request();
-            if field == "caller-credential" {
-                // The sealed credential's bytes are watched before they move into the `Secret`.
-                let credential = b"private-caller-credential".to_vec();
-                watch(&credential);
-                request.caller_credential = Some(Secret::new(credential).share());
-            } else {
-                watch(input_bytes(&request, field));
-            }
+            let what = format!("{field} on {exit}");
+            let mut proof = WipeProof::text();
+            let staging = proof.text_payload();
+            let mut request = fields_request(field, &staging);
+            drop(staging);
             match exit {
-                "cancel" => cancel(request),
+                "cancel" => cancel(request, &mut proof),
                 "unwind" => {
                     assert!(std::panic::catch_unwind(move || {
                         let _request = request;
@@ -169,7 +131,7 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
                     let first = Arc::new(request);
                     let last = Arc::clone(&first);
                     drop(first);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the last shared owner still holds the inputs");
                     drop(last);
                 }
                 "transfer" => {
@@ -188,7 +150,7 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
                         extensions: std::mem::take(&mut request.extensions),
                     };
                     drop(request);
-                    assert_eq!(WIPED.with(Cell::get), None);
+                    proof.assert_held("the next owner still holds the inputs");
                     drop(next);
                 }
                 _ => assert_eq!(
@@ -196,7 +158,7 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
                     exit == "failure"
                 ),
             }
-            assert_eq!(WIPED.with(Cell::get), Some(true), "{field} on {exit}");
+            proof.assert_absent(&what);
         }
     }
 }
@@ -207,29 +169,22 @@ busbar_contract::own_seal!(Own);
 /// handle lives and is wiped, by `Secret`'s own `Drop`, when the last one drops.
 #[test]
 fn shared_secret_wiped_on_last_drop() {
-    let bytes = b"private-shared-secret".to_vec();
-    watch(&bytes);
-    let first = Secret::<Vec<u8>, Own>::held(bytes).share();
+    let mut proof = WipeProof::new();
+    let staging = proof.payload();
+    let first = Secret::<Vec<u8>, Own>::held(staging.to_vec()).share();
     let others: Vec<_> = (0..3).map(|_| first.clone()).collect();
     let last = first.clone();
     drop(first);
     drop(others);
     assert_eq!(
-        WIPED.with(Cell::get),
-        None,
-        "a handle remains, so the one buffer is still held"
-    );
-    assert_eq!(
         last.expose_own(&Own::here()).as_slice(),
-        b"private-shared-secret",
+        staging.as_slice(),
         "the bytes stay intact while any handle lives"
     );
+    drop(staging);
+    proof.assert_held("a handle remains, so the one buffer is still held");
     drop(last);
-    assert_eq!(
-        WIPED.with(Cell::get),
-        Some(true),
-        "the last handle's drop wipes the one buffer before it is freed"
-    );
+    proof.assert_absent("the last handle's drop wipes the one buffer before it is freed");
 }
 
 #[test]
@@ -237,16 +192,16 @@ fn service_result_bytes_wipe_after_clone_cancel_forget_failure_unwind_and_transf
     for exit in [
         "return", "failure", "cancel", "unwind", "shared", "clone", "transfer", "late",
     ] {
+        let mut proof = WipeProof::new();
         let mut stored = Stored::ready(1);
-        stored.bytes = b"private-service-credential".to_vec();
+        stored.bytes = proof.payload().to_vec();
         if exit == "clone" {
             let clone = stored.clone();
             drop(stored);
             stored = clone;
         }
-        watch(&stored.bytes);
         match exit {
-            "cancel" => cancel(stored),
+            "cancel" => cancel(stored, &mut proof),
             "unwind" => {
                 assert!(std::panic::catch_unwind(move || {
                     let _stored = stored;
@@ -258,14 +213,14 @@ fn service_result_bytes_wipe_after_clone_cancel_forget_failure_unwind_and_transf
                 let first = Arc::new(stored);
                 let last = Arc::clone(&first);
                 drop(first);
-                assert_eq!(WIPED.with(Cell::get), None);
+                proof.assert_held("the last shared owner still holds the result");
                 drop(last);
             }
             "transfer" => {
                 let mut next = Stored::ready(stored.value);
                 next.bytes = std::mem::take(&mut stored.bytes);
                 drop(stored);
-                assert_eq!(WIPED.with(Cell::get), None);
+                proof.assert_held("the next owner still holds the result");
                 drop(next);
             }
             "late" => {
@@ -278,7 +233,7 @@ fn service_result_bytes_wipe_after_clone_cancel_forget_failure_unwind_and_transf
                 exit == "failure"
             ),
         }
-        assert_eq!(WIPED.with(Cell::get), Some(true), "{exit}");
+        proof.assert_absent(exit);
     }
 }
 

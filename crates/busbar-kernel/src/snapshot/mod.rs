@@ -198,13 +198,23 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
+/// Plugin inspections refused because the process opened its cap of distinct images for inspection (DES-443 r3).
+pub const PLUGIN_INSPECT_CAP_REFUSALS_TOTAL: &str = "busbar_plugin_inspect_cap_refusals_total";
+
+/// How long the one plugin inspection slot has been held, in seconds (0 when free; DES-443 r3).
+pub const PLUGIN_INSPECT_SLOT_HELD_SECONDS: &str = "busbar_plugin_inspect_slot_held_seconds";
+
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
 /// Terminal audit originals refused before native confirmation (no labels).
 pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
+pub const EXPORT_DROPPED_TOTAL: &str = "busbar_export_dropped_total";
+pub const EXPORT_CAPTURE_REFUSALS_TOTAL: &str = "busbar_export_capture_refusals_total";
+pub const EXPORT_INTEGRITY_FAILURES_TOTAL: &str = "busbar_export_audit_integrity_failures_total";
+pub const EXPORT_HELD_LINES: &str = "busbar_export_held_lines";
 
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
-/// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
+/// terminal backlog, SHUTDOWN-HANG F4a); `governance::drain::MAX_PENDING_CHECKPOINTS` caps it.
 pub const UNIT_CHECKPOINTS_TERMINAL: &str = "busbar_unit_checkpoints_terminal";
 
 /// Governed admissions alive (an admission grant not yet released after its unit's terminal
@@ -297,6 +307,8 @@ pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total";
 pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total";
 pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds";
 pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total";
+/// Needs admitted under an instance's `insecure_transport.accept` (DES-359 r3 L2).
+pub const INSECURE_TRANSPORT_ADMITTED_TOTAL: &str = "busbar_insecure_transport_admitted_total";
 
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds";
@@ -497,6 +509,10 @@ fn describe() {
         "Cross-protocol translations, by source and target protocol"
     );
     describe_counter!(
+        INSECURE_TRANSPORT_ADMITTED_TOTAL,
+        "Needs (OPEN, STARTTLS, FETCH) admitted under an instance's insecure_transport acceptance, by kind, instance and accept; pooled reuse included, not TCP dials"
+    );
+    describe_counter!(
         BILLING_TAP_DECODE_FAIL_TOTAL,
         "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
     );
@@ -530,6 +546,26 @@ fn describe() {
     describe_counter!(
         AUDIT_STAGE_FAILURES_TOTAL,
         "Terminal audit originals refused before native confirmation"
+    );
+    describe_counter!(
+        EXPORT_DROPPED_TOTAL,
+        "Terminally discarded export lines by instance and bounded reason"
+    );
+    describe_counter!(
+        crate::export::delivery::EXPORT_CUSTODY_TOTAL,
+        "Accepted export lines by instance, stream and checked custody level"
+    );
+    describe_counter!(
+        EXPORT_CAPTURE_REFUSALS_TOTAL,
+        "Export capture admission refusals by instance and bounded reason"
+    );
+    describe_counter!(
+        EXPORT_INTEGRITY_FAILURES_TOTAL,
+        "Export audit integrity failure occurrences by instance"
+    );
+    describe_gauge!(
+        EXPORT_HELD_LINES,
+        "Current retained export ciphertext lines with an unavailable key by instance"
     );
 
     describe_gauge!(
@@ -593,7 +629,7 @@ fn describe() {
     describe_gauge!(
         UNIT_CHECKPOINTS_TERMINAL,
         Unit::Count,
-        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped by advanced.governance.max_pending_checkpoints) (scrape-time)"
+        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped at 20,000) (scrape-time)"
     );
     describe_gauge!(
         GOVERNED_ADMISSIONS_LIVE,

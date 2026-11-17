@@ -30,7 +30,12 @@ pub trait TrustBook: Send + Sync + 'static {
         item: Option<(&str, Option<[u8; 32]>)>,
     ) -> u32;
     /// TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.
-    fn state(&self, plane: &Caller<'_>, party: &str, sink: &mut dyn FnMut(TrustItem<'_>)) -> u32;
+    fn state(
+        &self,
+        plane: &Caller<'_>,
+        party: &str,
+        sink: &mut dyn FnMut(TrustItem<'_>),
+    ) -> (u32, Option<[u8; 32]>);
     /// Upstreams of this plane instance whose re-verification is due; K8 runs `probe(TGT_SIGHT)` for each
     /// (and on DX_RESIGHT), with RetrySite::PlaneProbe.
     fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>>;

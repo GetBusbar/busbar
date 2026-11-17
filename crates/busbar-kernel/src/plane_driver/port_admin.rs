@@ -4,13 +4,9 @@
 //! ROUTE_ADMIN on the admin listener (IF §8.6, PLANE-DRIVER slice 8): the admin routes the MIN-3 plane instances
 //! declare, served through [`PortDriver::serve`] for an operator.
 //!
-//! The admin router is built before the boot's seats are known to it and lives in another crate, so the seats are
-//! installed once into this process-wide table ([`install`]) and the router's fallback asks [`answer`] before it
-//! answers not-found. A request the admin listener's operator chain admitted reaches here already authenticated:
-//! the route's class (`AUTH_OPERATOR`, §12.11) is satisfied by that fact, so the plane is handed an empty identity
-//! and the operator class. Nothing here runs for a request the chain refused.
-
-use std::sync::OnceLock;
+//! The admin router borrows the request generation's completed seats. The operator chain has
+//! already authenticated this request before it reaches these routes; the generation and its
+//! instances stay owned for the entire asynchronous answer.
 
 use busbar_contract::abi::transport::route::{method_bit, path_matches, PATH_PATTERN};
 
@@ -19,14 +15,6 @@ use super::port_auth::{Credentials, Principal};
 use super::port_routes::Mounted;
 use super::port_session::ToClient;
 use super::HeadFields;
-
-static SEATS: OnceLock<Vec<PortSeat>> = OnceLock::new();
-
-/// The seats whose admin routes the admin listener serves, installed once by the boot. A second install is refused
-/// (the first stays).
-pub fn install(seats: Vec<PortSeat>) -> bool {
-    SEATS.set(seats).is_ok()
-}
 
 /// The admin route of `routes` the request names: its method is in the route's mask and its path matches the
 /// route's pattern. First match in route order.
@@ -44,12 +32,10 @@ pub fn matching<'a>(routes: &'a [Mounted], method: &str, path: &str) -> Option<&
 /// Whether an installed plane declares an admin route this request names (so the caller reads the body and asks
 /// [`answer`]; any other request is the router's).
 #[must_use]
-pub fn serves(method: &str, path: &str) -> bool {
-    SEATS.get().is_some_and(|seats| {
-        seats
-            .iter()
-            .any(|seat| matching(&seat.driver.routes().admin, method, path).is_some())
-    })
+pub fn serves(seats: &[PortSeat], method: &str, path: &str) -> bool {
+    seats
+        .iter()
+        .any(|seat| matching(&seat.driver.routes().admin, method, path).is_some())
 }
 
 /// The status, head fields and joined body of the client items. No head = the plane wrote no answer: 502 with
@@ -75,11 +61,12 @@ pub fn joined(items: Vec<ToClient>) -> (u16, HeadFields, Vec<u8>) {
 
 /// One admin request the admin listener's operator chain admitted.
 pub struct AdminRequest {
+    pub request: crate::limits::process_admission::RequestLease,
     pub method: String,
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<u8>)>,
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
     pub request_id: u64,
     pub now_s: u64,
 }
@@ -89,13 +76,13 @@ pub type AdminAnswer = (u16, HeadFields, Vec<u8>);
 
 /// The answer of the installed plane whose admin route the request names, or `None` when no installed plane has
 /// one (the router answers not-found). A plane that fails the request answers 502 with nothing.
-pub async fn answer(request: AdminRequest) -> Option<AdminAnswer> {
-    let seats = SEATS.get()?;
+pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAnswer> {
     let (seat, route) = seats.iter().find_map(|seat| {
         matching(&seat.driver.routes().admin, &request.method, &request.path)
             .map(|route| (seat, route.route))
     })?;
     let AdminRequest {
+        request,
         method,
         path,
         query,
@@ -105,6 +92,9 @@ pub async fn answer(request: AdminRequest) -> Option<AdminAnswer> {
         now_s,
     } = request;
     let input = ServeIn {
+        request,
+        admission: None,
+        invocation: None,
         route,
         http: HttpIn {
             method,

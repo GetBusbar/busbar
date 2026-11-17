@@ -834,7 +834,7 @@ impl Custody {
     }
 
     pub(super) fn decode(bytes: &[u8]) -> RecordStoreResult<Self> {
-        let custody: Self = serde_json::from_slice(bytes)
+        let custody: Self = busbar_contract::json::parse(bytes)
             .map_err(|_| unresolved("invalid raw correction custody encoding"))?;
         if custody.version != 1 || custody.targets.is_empty() {
             return Err(unresolved("unsupported or empty raw correction custody"));

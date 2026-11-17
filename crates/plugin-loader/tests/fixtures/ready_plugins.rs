@@ -117,8 +117,6 @@ pub mod auth {
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
-    pub const NAME: &str = "ready-auth-witness";
-
     pub const SECRET_NAME: &str = "secret-auth-witness";
 
     pub const SECRET_KEY: &str = "client_secret";
@@ -188,15 +186,6 @@ pub mod auth {
                 },
             }
         };
-    }
-
-    pub mod with_ready {
-        use super::*;
-        auth_door!(
-            super::super::Discovers<busbar_contract::plugin::markers::AuthKind>,
-            with_tail(statement(NAME, "0", 4), TAIL),
-            ready
-        );
     }
 
     pub mod with_secret {

@@ -869,15 +869,13 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
   `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
   are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
   unknown key, as it was in 1.5.5); a client stops signing corrections.
-- 1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.
+- 1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs `auth.signing_key`; without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.
   1.5.5 minted it and stored the secret access key in the clear. 1.6.0 stores it sealed
-  (AES-256-GCM) under `credentials.at_rest.key`, a secret reference that resolves to 32 random
-  bytes; `credentials.at_rest.previous` keeps a rotated-out key opening, and every row is re-sealed
-  under the current key at boot and on reload. A credential minted by 1.5.5 still authenticates and
-  is re-sealed once a key is configured. A bearer-only mint needs no at-rest key. **Migration:**
-  before minting AWS credentials, give every node that shares the store the same
-  `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }` (create the file
-  with `openssl rand -hex 32`).
+  (AES-256-GCM) under a key derived from `auth.signing_key` (HKDF-SHA256), and every legacy row is
+  re-sealed under it at boot and on reload. A credential minted by 1.5.5 still authenticates and
+  is re-sealed once a signing key is configured. A bearer-only mint needs no signing key. **Migration:**
+  give every node that shares the store the same `auth.signing_key`. Rotating the signing key also
+  retires the credentials sealed under it (re-mint them).
 
 ### Retired operational environment overrides
 
@@ -2217,3 +2215,5 @@ This changelog begins at 0.14.0; earlier history is not recorded here.
 
 Project scaffolding for the open-source release. The project is licensed under the Apache License 2.0 as of
 1.2.0.
+
+- 1.6.0 config rulings: planes declare registration maps; core dial/auth/TLS fields and private reach remain scoped to each registration. Retire flat `upstreams` and global `advanced.allow_destinations`. Split A2A cert/key references require an explicit bundled PEM reference; migration refuses and preserves the source rather than guessing.

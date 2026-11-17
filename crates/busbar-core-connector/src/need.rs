@@ -327,6 +327,7 @@ where
     ids: PooledIds,
     certs: CertDigests,
     reported: Reported,
+    admitted: policy::Admitted,
     configured: Option<ConfiguredFn>,
 }
 
@@ -396,6 +397,7 @@ where
             ids: PooledIds::default(),
             certs: CertDigests::default(),
             reported: Reported::default(),
+            admitted: policy::Admitted::default(),
             configured: None,
         }
     }
@@ -405,6 +407,7 @@ where
         self.ids.forget(instance);
         self.certs.forget(instance);
         self.reported.forget(instance);
+        self.admitted.forget(instance);
     }
 
     fn is_configured(&self, dest: &str) -> bool {
@@ -534,6 +537,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let dest = normalise(n.dest)?;
         let class = judged_class(n.egress, self.is_configured(&dest));
         if let Some(path) = unix {
@@ -663,6 +668,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let (trust, trust_digest) = self.trust(cx, held.key.class, p.trust)?;
         let (cert, cert_digest) = self.cert(cx, p.cert, true).await?;
         let sni = effective_sni(p.sni, &held.key.dest);
@@ -789,6 +796,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let (host, port) = split_url(n.url)?;
         let dest = normalise(&format!("{host}:{port}"))?;
         let class = judged_class(n.egress, self.is_configured(&dest));

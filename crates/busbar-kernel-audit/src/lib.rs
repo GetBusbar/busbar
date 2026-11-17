@@ -101,19 +101,19 @@ pub mod journal;
     )
 )]
 pub mod link;
+// The notary key certificate line (certificate v2): linked by the Bootstrap signer, decoded for
+// the range read and checked by verify.
+pub mod notary_key;
 // The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
 // Bootstrap signer threads, never per request.
+pub mod restart;
 pub mod stamp;
+pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkContext, WalkOutcome};
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
-// The restart walk (SEALING-FIX §3.6.0): run at boot and by the predecessor sealer, never per
-// request.
 /// Common chain decoding and integrity checks, including certificate rows.
 pub mod linked_record;
-/// Per-boot notary certificates, signed by the Bootstrap capability.
-pub mod notary_key;
-pub mod restart;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -176,6 +176,10 @@ pub use grant::{
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
 pub use link::{line_fingerprint, line_hasher, Fingerprint, LineAt, Linked, Prepared};
+pub use notary_key::{
+    notary_key_from_journal_body, NotaryKeyCertificate, NotaryKeyRecord, NOTARY_KEY_DOMAIN,
+    NOTARY_KEY_JOURNAL_TAG, NOTARY_KEY_RECORD_DOMAIN,
+};
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
@@ -184,10 +188,9 @@ pub use recipe::{
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,
     AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId,
-    OutcomeFacts, QuantitySource, Subject, UnitFacts, UnitId, Usage, UsageLine, What,
-    ATTEMPT_SLOTS, ATTRIBUTION_SEP,
+    OutcomeFacts, QuantitySource, RecordFacts, Subject, UnitFacts, UnitId, Usage, UsageLine, What,
+    ATTEMPT_SLOTS, ATTRIBUTION_SEP, LABEL_SLOTS,
 };
-pub use restart::{span_ms, walk_tail, BreakAt, TailItem, WalkContext, WalkOutcome};
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,
     CHECKPOINT_SIGNATURE_DOMAIN, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN,

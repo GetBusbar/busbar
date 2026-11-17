@@ -37,9 +37,6 @@ section_patch!(
     LimitsPatch => crate::config::LimitsCfg {
         upstream_request_timeout_secs: u64,
         request_body_max_bytes: usize,
-        // Outer None = omitted; Some(None) = explicitly disable; Some(Some(bytes)) = set.
-        #[serde(deserialize_with = "deserialize_optional_patch")]
-        datagram_line_memory_bytes: Option<usize>,
         pool_max_idle_per_host: usize,
         pool_idle_timeout_secs: u64,
         max_inbound_concurrent: usize,
@@ -54,14 +51,6 @@ section_patch!(
         reasoning_effort_budgets: crate::config::ReasoningEffortBudgets,
     }
 );
-
-fn deserialize_optional_patch<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
 
 section_patch!(
     /// Per-field patch for [`crate::config::SecurityCfg`].

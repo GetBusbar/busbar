@@ -182,6 +182,10 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             Err(other) => return Err(other),
         };
+        // `records.user` (ADMIN-API-1.6 §3.5): the end user this first projection stated.
+        if let Some(journal) = self.end_user_wanted() {
+            self.note_end_user(&**journal, cur.end_user().as_deref());
+        }
         // The spare arena a rewrite re-projects into: a stage run allocates at most two.
         let mut spare: Option<ProjectArena> = None;
 

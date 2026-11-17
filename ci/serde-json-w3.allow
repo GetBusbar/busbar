@@ -51,7 +51,6 @@ crates/plugin-loader/src/sign.rs
 crates/plugin-loader/src/tarball.rs
 crates/plugin-loader/src/tests/auth_door_tests.rs
 crates/plugin-loader/src/tests/hook_door_tests.rs
-crates/plugin-loader/src/tests/migrate_door_tests.rs
 crates/plugin-loader/tests/fixtures/hook_door_plugin.rs
 crates/plugin-loader/tests/fixtures/secret_door_plugin.rs
 dist/default/tests/traces_stream_both_doors.rs

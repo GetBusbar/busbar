@@ -89,8 +89,6 @@ fn write_configs(dir: &Path, extra: &str) {
         format!(
             r#"listen: "127.0.0.1:0"
 admin_listen: "127.0.0.1:0"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {store}
 {providers}{section}{extra}"#,
             section = plane_section(),

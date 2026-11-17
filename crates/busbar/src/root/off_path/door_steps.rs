@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::caps::OpClassId;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY,
-    POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY,
-    RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
+    MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY, POOL_MEMBER_NAME_KEY,
+    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_WORK_KEY,
 };
 use busbar_contract::yaml::{MappingExt, ValueExt};
 use busbar_contract::MeterClassId;
@@ -418,10 +418,10 @@ pub(crate) fn compose_egress(
 /// resolved configuration as it is built (the root's install record,
 /// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
 /// is swapped in.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DoorConfig {
     /// Candidate-owned physical handlers, constructed by its root rules before publication.
-    pub(crate) listener_routes: std::sync::OnceLock<crate::root::serve::PreparedListeners>,
+    pub(crate) listener_routes: Option<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
     pub(crate) listeners: Result<crate::root::boot::ListenerNeeds, String>,
     /// Effective root binds, independent of the boot catalog used by the early projection.
@@ -449,7 +449,7 @@ pub(crate) fn door_config(
         sections
     });
     let config = DoorConfig {
-        listener_routes: std::sync::OnceLock::new(),
+        listener_routes: None,
         listeners: sections
             .as_ref()
             .map_err(Clone::clone)
@@ -532,10 +532,10 @@ pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
 /// configuration whose anchor the boot would refuse never goes live through an apply, and the
 /// running generation (its declared trust among it) is untouched. They also hold the deployment's
 /// one destination guard, which hears each committed configuration's destinations through them.
-#[derive(Default)]
 pub(crate) struct Rules {
+    reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
-    pub(crate) listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
+    pub(crate) listeners: Option<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     pub(crate) owned_anchors: Mutex<Vec<&'static str>>,
     /// The declaring sections of the door planes the boot bound but did not open (their section
@@ -544,7 +544,7 @@ pub(crate) struct Rules {
     /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
     pub(crate) unopened: Mutex<Vec<&'static str>>,
     /// The deployment's one destination guard (`root::connector::dest_judge`), told each committed
-    /// configuration's destinations ([`Rules::hearing`]). `None`: no guard hears a commit.
+    /// configuration's destinations ([`Rules::with_reader`]). `None`: no guard hears a commit.
     pub(crate) guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
     /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
     /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
@@ -563,23 +563,69 @@ impl std::fmt::Debug for Rules {
     }
 }
 
+#[cfg(test)]
+impl Default for Rules {
+    fn default() -> Self {
+        Self::with_reader(None, Arc::new(busbar_kernel::appbuild::AcceptAll))
+    }
+}
+
 impl Rules {
-    pub(crate) fn hold_listeners(
-        &self,
-        listeners: Arc<crate::root::serve::ListenerPlan>,
-    ) -> Result<(), String> {
-        self.listeners
-            .set(listeners)
-            .map_err(|_| "listener topology was already installed".into())
+    /// Keep the exact reader and bootstrap owners through every serving candidate read.
+    pub(crate) fn with_reader(
+        guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
+        reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Self {
+        Self {
+            reader,
+            member_tls_sections: Mutex::new(Vec::new()),
+            listeners: None,
+            owned_anchors: Mutex::new(Vec::new()),
+            unopened: Mutex::new(Vec::new()),
+            guard,
+            unloaded: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Construct the rules retained by a completed serving generation. No candidate can
+    /// install listener state into rules already retained by a different generation.
+    pub(crate) fn with_listeners(&self, listeners: Arc<crate::root::serve::ListenerPlan>) -> Self {
+        Self {
+            reader: Arc::clone(&self.reader),
+            member_tls_sections: Mutex::new(
+                self.member_tls_sections
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+            listeners: Some(listeners),
+            owned_anchors: Mutex::new(
+                self.owned_anchors
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+            unopened: Mutex::new(
+                self.unopened
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+            guard: self.guard.clone(),
+            unloaded: Mutex::new(
+                self.unloaded
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            ),
+        }
     }
 
     /// Rules whose destination guard hears each committed configuration's destinations.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
-        Self {
-            guard: Some(guard),
-            ..Self::default()
-        }
+        Self::with_reader(Some(guard), Arc::new(busbar_kernel::appbuild::AcceptAll))
     }
 
     pub(crate) fn hold_member_tls_sections(&self, sections: &[&'static str]) {
@@ -669,13 +715,31 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn grammar(
+        &self,
+        input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+    ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
+        self.reader.grammar(input)
+    }
+
+    fn secret_resolver<'a>(
+        &'a self,
+        cfg: &'a busbar_kernel::config::RootCfg,
+        plugins: &'a busbar_kernel::config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Arc<busbar_kernel::config::secret::SecretResolver>, String>,
+    > {
+        self.reader.secret_resolver(cfg, plugins)
+    }
+
     /// An unstamped boot runs the planned document, not the 1.5.5 bytes on disk (MIGRATE-ON-BOOT
     /// r42 §3 step 2).
     fn held_document(
         &self,
         path: &std::path::Path,
     ) -> Option<busbar_contract::secure::SecureString> {
-        crate::root::migrate::held(path)
+        self.reader.held_document(path)
     }
     fn claim_ticket_admission(
         &self,
@@ -684,7 +748,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         crate::root::serve::claim_ticket_custody(identity)
     }
 
-    fn check_built(&self, app: &App) -> Result<(), String> {
+    fn check_built(&self, app: &mut App) -> Result<(), String> {
         if let Some(config) = app
             .config_projection
             .as_ref()
@@ -692,14 +756,14 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         {
             config.sections.as_ref().map_err(Clone::clone)?;
         }
-        match self.listeners.get() {
-            Some(listeners) => listeners.check(app),
+        match self.listeners.as_ref() {
+            Some(listeners) => listeners.prepare(app),
             None => Ok(()),
         }
     }
 
     fn mounted_plugin_paths(&self, app: &App) -> Option<std::collections::HashSet<String>> {
-        self.listeners.get()?.mounted_plugin_paths(app)
+        self.listeners.as_ref()?.mounted_plugin_paths(app)
     }
     fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
         unloaded_plane_refusal(
@@ -725,6 +789,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
     }
 
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        self.reader.check(cfg)?;
         offline_root_rules(cfg).map_err(|e| e.join("\n"))?;
         let anchors = self
             .owned_anchors
@@ -806,11 +871,6 @@ pub(crate) fn kernel_sections(
             "prompt_caching",
             model.prompt_caching.map(Value::from),
         );
-        opt(
-            &mut m,
-            MODEL_PROTOCOL_KEYS[0],
-            model.protocol.clone().map(Value::from),
-        );
         models.insert_key(Value::from(name.clone()), Value::Map(m));
     }
     let mut pools = Pairs::new();
@@ -859,12 +919,6 @@ pub(crate) fn kernel_sections(
         (
             "request_body_max_bytes",
             Value::from(cfg.limits.request_body_max_bytes as u64),
-        ),
-        (
-            "datagram_line_memory_bytes",
-            cfg.limits
-                .datagram_line_memory_bytes
-                .map_or(Value::Null, |n| Value::from(n as u64)),
         ),
         (
             "reasoning_effort_budgets",
@@ -1658,7 +1712,7 @@ pub(crate) fn token_exchange_binding(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+) -> Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String> {
     use busbar_contract::section::{
         AUDIENCE_KEY, DEFAULT_SUBJECT_TOKEN_TYPE, SUBJECT_TOKEN_KEY, SUBJECT_TOKEN_TYPE_KEY,
         TOKEN_EXCHANGE_KEY, TOKEN_URL_KEY,
@@ -1715,7 +1769,7 @@ pub(crate) fn token_exchange_binding(
             &settings,
         )
         .map_err(|e| format!("member '{entry}' {e}"))?;
-    Ok(Some(busbar_kernel::plane_driver::AuthBinding {
+    Ok(Some(busbar_kernel::plane_driver::ConfiguredAuthBinding {
         auth,
         handle,
         style_flags: decl.flags,
@@ -1730,7 +1784,7 @@ pub(crate) fn upstream_credential_binding(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+) -> Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String> {
     Ok(
         upstream_credential(member_name, registration, reach, scope)?.map(|(binding, per)| {
             let first = per.first_due(std::time::Instant::now(), busbar_kernel::retry::unit());
@@ -1748,7 +1802,13 @@ pub(crate) fn upstream_credential(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
+) -> Result<
+    Option<(
+        busbar_kernel::plane_driver::ConfiguredAuthBinding,
+        Arc<PerHop>,
+    )>,
+    String,
+> {
     use busbar_contract::section::{
         CREDENTIAL_LEASE_TTL_KEY, CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY,
         PLACEMENT_BEARER, PLACEMENT_HEADER_KEY, UPSTREAM_CREDENTIAL_KEY,
@@ -1858,7 +1918,7 @@ pub(crate) fn upstream_credential(
     ));
     drop(credential);
     Ok(Some((
-        busbar_kernel::plane_driver::AuthBinding {
+        busbar_kernel::plane_driver::ConfiguredAuthBinding {
             auth,
             handle,
             style_flags: decl.flags,
@@ -2472,7 +2532,8 @@ pub(crate) fn bind_member_fetches(
 ) {
     let targeted = member_target_needs(served);
     for (member, route) in routes {
-        let Some(binding) = &route.auth else {
+        let Some(busbar_kernel::plane_driver::AuthBinding::Configured(binding)) = &route.auth
+        else {
             continue;
         };
 
@@ -2536,7 +2597,9 @@ pub(crate) fn member_routes(
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
-    use busbar_kernel::plane_driver::{resolve_member_needs, AuthBinding, MemberAuth, MemberRoute};
+    use busbar_kernel::plane_driver::{
+        resolve_member_needs, ConfiguredAuthBinding, MemberAuth, MemberRoute,
+    };
     struct Resolved<'p> {
         entry: String,
         name: String,
@@ -2611,10 +2674,7 @@ pub(crate) fn member_routes(
         let provider = reach.providers.get(name).ok_or_else(|| {
             format!("member '{entry}' names provider '{name}', which is not configured")
         })?;
-        let dialect = MODEL_PROTOCOL_KEYS
-            .iter()
-            .find_map(|k| entry_text(member, k))
-            .unwrap_or(&provider.protocol);
+        let dialect: &str = &provider.protocol;
         let default_of = |dialect: &str| {
             let at = served.dialects.iter().position(|d| *d == dialect)?;
             let at = u32::try_from(at).ok()?;
@@ -2703,7 +2763,7 @@ pub(crate) fn member_routes(
             let handle = auth
                 .open_outbound(PASSTHROUGH_STYLE, &[], &serde_json::json!({}))
                 .map_err(|e| format!("member '{entry}' {e}"))?;
-            Some(AuthBinding {
+            Some(ConfiguredAuthBinding {
                 auth,
                 handle,
                 style_flags: decl.flags,
@@ -2733,7 +2793,7 @@ pub(crate) fn member_routes(
                     .collect(),
                 need,
                 base_url,
-                auth,
+                auth: auth.map(busbar_kernel::plane_driver::AuthBinding::Configured),
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
@@ -2829,14 +2889,16 @@ pub(crate) fn member_routes(
                 need,
                 base_url: r.provider.base_url.clone(),
 
-                auth: Some(AuthBinding {
-                    auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
-                    handle,
-                    style_flags: decl.flags,
-                    points: busbar_contract::abi::auth::AuthPoints(decl.points),
-                    passthrough: false,
-                    per_request: None,
-                }),
+                auth: Some(busbar_kernel::plane_driver::AuthBinding::Configured(
+                    ConfiguredAuthBinding {
+                        auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
+                        handle,
+                        style_flags: decl.flags,
+                        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                        passthrough: false,
+                        per_request: None,
+                    },
+                )),
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 rides,
@@ -3121,5 +3183,68 @@ impl std::fmt::Debug for StyleParams {
             .field("scope", &self.scope)
             .field("subject", &self.subject)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod owned_reader_tests {
+    use super::Rules;
+    use busbar_kernel::{appbuild::RootRules, config};
+    use std::sync::Arc;
+
+    struct Reader;
+    impl RootRules for Reader {
+        fn grammar(
+            &self,
+            _: &config::grammar::PhaseOneIn<'_>,
+        ) -> Result<config::Grammar, config::GrammarRefusal> {
+            Err(config::GrammarRefusal("candidate image refused".into()))
+        }
+        fn check(&self, _: &config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn held_document(
+            &self,
+            _: &std::path::Path,
+        ) -> Option<busbar_contract::secure::SecureString> {
+            Some("held candidate".into())
+        }
+        fn secret_resolver<'a>(
+            &'a self,
+            _: &'a config::RootCfg,
+            _: &'a config::PluginsCfg,
+        ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+            'a,
+            Result<Arc<config::secret::SecretResolver>, String>,
+        > {
+            Box::pin(async { Err("candidate boot projection refused".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn serving_rules_preserve_the_owned_reader_refusals() {
+        let rules = Rules::with_reader(None, Arc::new(Reader));
+        let plugins = config::PluginsCfg::default();
+        assert_eq!(
+            rules
+                .grammar(&config::grammar::PhaseOneIn::of(&plugins))
+                .err()
+                .unwrap()
+                .0,
+            "candidate image refused"
+        );
+        assert_eq!(
+            rules
+                .held_document(std::path::Path::new("config.yaml"))
+                .unwrap()
+                .as_str(),
+            "held candidate"
+        );
+        let deploy = busbar_contract::yaml::from_str("{}").unwrap();
+        let cfg = config::resolve(&deploy, &Default::default()).unwrap();
+        assert_eq!(
+            rules.secret_resolver(&cfg, &plugins).await.err().unwrap(),
+            "candidate boot projection refused"
+        );
     }
 }

@@ -6,6 +6,17 @@ use std::sync::Arc;
 
 use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
 
+fn assert_pending(body: &Value, path: &str) {
+    assert!(
+        body["reload_to_apply"]
+            .as_array()
+            .expect("restart requirements")
+            .iter()
+            .any(|value| value.as_str() == Some(path)),
+        "missing {path}: {body}"
+    );
+}
+
 /// GET one admin path as the operator, parsed.
 async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
     let bytes = client
@@ -81,7 +92,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
         "plugins": plugin_document,
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -125,17 +136,16 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         Some(overlay),
@@ -149,7 +159,17 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     )
     .await
     .expect("the real root composes the configured Store and admin application");
+    busbar_kernel::config::readback::ConfiguredView::capture_documents(
+        &mut app,
+        &deploy,
+        &definitions,
+    );
+    assert!(
+        app.config_pending_restart.is_empty(),
+        "a fresh boot has no unapplied settings"
+    );
     limits.stage_boot();
+
     let _book = crate::root::boot::book(&app, &module)
         .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
@@ -176,7 +196,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
             .header("content-type", "application/json")
     };
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "providers": {
             "test-provider": {"protocol": protocol, "base_url": "http://127.0.0.1:1/"}
         },
@@ -192,6 +212,8 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
             "pools": {"apply-pool": {"members": [{"model": "m0"}, {"model": "m-applied"}]}}
         }
     });
+    body["config"]["listen"] = "127.0.0.1:19092".into();
+    body["config"]["advanced"]["worker_threads"] = 3.into();
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .body(body.to_string())
         .send()
@@ -199,6 +221,10 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
 
+    let applied = busbar_contract::json::parse_value(&resp.bytes().await.unwrap()).unwrap();
+    for path in ["/listen", "/advanced/worker_threads"] {
+        assert_pending(&applied, path);
+    }
     let members = pool_members(&client, addr, "apply-pool").await;
     let m0 = members.iter().find(|m| m["model"] == "m0").unwrap();
     let ma = members.iter().find(|m| m["model"] == "m-applied").unwrap();
@@ -264,12 +290,24 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
         "plugins": plugin_document,
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
+    let identity = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
+        "127.0.0.1".into(),
+    ])
+    .expect("valid TLS identity for reference-change configuration");
+    let certificate_a = directory.join("listener-a.pem");
+    let certificate_b = directory.join("listener-b.pem");
+    let listener_key = directory.join("listener-key.pem");
+    std::fs::write(&certificate_a, identity.cert.pem()).unwrap();
+    std::fs::write(&certificate_b, identity.cert.pem()).unwrap();
+    std::fs::write(&listener_key, identity.signing_key.serialize_pem()).unwrap();
+    document["tls"]["cert"]["file"] = certificate_a.to_string_lossy().into_owned().into();
+    document["tls"]["key"]["file"] = listener_key.to_string_lossy().into_owned().into();
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-credential")
@@ -298,6 +336,10 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     )
     .unwrap();
     let mut disk = document.clone();
+    disk["listen"] = "127.0.0.1:19091".into();
+    disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().into_owned().into();
+    disk["advanced"]["worker_threads"] = 3.into();
+
     disk["models"]["m-new"] = serde_json::json!({"provider":"test-provider","max_concurrent":4});
     disk["pools"] =
         serde_json::json!({"reload-pool":{"members":[{"model":"m0"},{"model":"m-new"}]}});
@@ -312,17 +354,16 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         Some(overlay),
@@ -336,7 +377,17 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     )
     .await
     .expect("the real root composes the configured Store and admin application");
+    busbar_kernel::config::readback::ConfiguredView::capture_documents(
+        &mut app,
+        &deploy,
+        &definitions,
+    );
+    assert!(
+        app.config_pending_restart.is_empty(),
+        "a fresh boot has no unapplied settings"
+    );
     limits.stage_boot();
+
     let _book = crate::root::boot::book(&app, &module)
         .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
@@ -365,6 +416,35 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
+    let reload = busbar_contract::json::parse_value(&resp.bytes().await.unwrap()).unwrap();
+    assert!(
+        reload["reload_to_apply"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str() == Some("/listen")),
+        "disk listener changes remain unapplied until process restart: {reload}"
+    );
+    for path in ["/tls", "/advanced/worker_threads"] {
+        assert_pending(&reload, path);
+    }
+    // Reverting a desired setting does not clear conservative pending state until boot.
+    disk["listen"] = deploy.listen.clone().into();
+    std::fs::write(&config_path, disk.to_string()).unwrap();
+    let repeated = admin(client.post(format!("http://{addr}/api/v1/admin/config/reload")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(repeated.status().as_u16(), 200);
+    let repeated = busbar_contract::json::parse_value(&repeated.bytes().await.unwrap()).unwrap();
+    assert!(
+        repeated["reload_to_apply"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str() == Some("/listen")),
+        "a second reload cannot reset the boot-applied listener baseline: {repeated}"
+    );
     // `/models` is removed in 1.6.0 (ADMIN-API-1.6 §0.2): the models are core/routing's `config.models`.
     let routing = read(&client, addr, "/kinds/core/instances/routing").await;
     let names: Vec<&str> = routing["config"]["models"]
@@ -403,6 +483,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "models":{"broken":{"provider":"nope","max_concurrent":1}},
     });
     std::fs::write(&config_path, serde_json::to_vec_pretty(&invalid).unwrap()).unwrap();
+    let pending_before_failure = read(&client, addr, "/config").await;
     let before = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
         .send()
         .await
@@ -428,6 +509,15 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         before["config_version"], after["config_version"],
         "a rejected reload changes nothing"
     );
+
+    let pending_after_failure = read(&client, addr, "/config").await;
+    assert_eq!(
+        pending_before_failure["reload_to_apply"], pending_after_failure["reload_to_apply"],
+        "failed reload preserves pending requirements of the serving generation"
+    );
+    for path in ["/listen", "/tls", "/advanced/worker_threads"] {
+        assert_pending(&pending_after_failure, path);
+    }
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);

@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use super::{respond, AppHandle};
 use crate::v1::contract::AdminError;
-use crate::verb::{admin_rows, VerbScope};
+use crate::verb::{admin_grant_rows, VerbScope};
 
 /// The credential behind the caller.
 #[derive(Debug, Serialize)]
@@ -129,7 +129,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
     use busbar_kernel::ratelimit::{MutationClass, MUTATION_RATE_WINDOW_SECS};
     let door = &who.door;
     let principal = principal_of(door);
-    let mut verbs: Vec<&'static str> = admin_rows()
+    let mut verbs: Vec<&'static str> = admin_grant_rows()
         .filter(|row| door_admits_verb(door, row.name, rung(row.scope)))
         .map(|row| row.name)
         .collect();
@@ -156,7 +156,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
         scope: scope_of(door),
         verbs,
         verbs_all: matches!(door, AdminDoor::Open | AdminDoor::Identified(..)),
-        require_if_match: false,
+        require_if_match: app.require_if_match,
     }
 }
 

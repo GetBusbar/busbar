@@ -47,6 +47,7 @@ pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
         AdminError::Internal => None,
 
         AdminError::Unavailable(_) => None,
+        AdminError::RetryLater { .. } => None,
         AdminError::UnpricedClass { .. } => Some(ErrKind::UnpricedClass),
         AdminError::PluginText { .. } => Some(ErrKind::Validation),
     }
@@ -63,6 +64,20 @@ pub async fn apply_config(
 
 pub fn openapi_json() -> String {
     crate::v1::json::openapi_json()
+}
+
+/// Exercise the production replay middleware around a controlled effect handler.
+pub fn with_idempotency(
+    router: axum::Router,
+    app: std::sync::Arc<busbar_kernel::state::App>,
+) -> axum::Router {
+    router
+        .layer(axum::middleware::from_fn(
+            crate::v1::json::generation::preconditions,
+        ))
+        .layer(axum::Extension(std::sync::Arc::new(
+            busbar_kernel::state::AppHandle::new(app),
+        )))
 }
 
 #[cfg(feature = "openapi-schema")]

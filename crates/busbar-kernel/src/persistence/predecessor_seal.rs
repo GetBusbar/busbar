@@ -269,7 +269,7 @@ impl PredecessorFence {
             let bytes = value.expose(&crate::seal::lend());
             let Ok(assignment) = Assignment::parse(bytes) else {
                 let id = (bytes.len() == 8)
-                    .then(|| bytes.try_into().ok().map(u64::from_be_bytes))
+                    .then(|| bytes.as_slice().try_into().ok().map(u64::from_be_bytes))
                     .flatten();
                 if id != Some(own) {
                     out.refused.push(RefusedNode {
@@ -461,4 +461,23 @@ pub(super) fn seal_records(
     core: std::sync::Arc<super::super::facade::CoreStore>,
 ) -> Result<BootRecords, String> {
     BootRecords::new(core, &[NODE_SCHEMA])
+}
+
+/// A NODE'S OWN SEAL ROW, for the admin range read (SEALING-FIX §3.5 "Reads"): a node's stamps are
+/// its own journal's, plus at most one predecessor-seal outcome in `sealed:<node>`, fetched with
+/// this one point read through the journal's own store. `None`: no row (the normal case for a
+/// live node). The bytes are returned as read; [`SealRow::parse`] judges them.
+pub async fn read_seal_row(
+    journal: &crate::persistence::journal::runtime::RuntimeJournal,
+) -> Result<Option<Vec<u8>>, String> {
+    let rows = seal_records(journal.store().clone())?;
+    let row = rows
+        .records
+        .read(&[(NODE_SCHEMA, &sealed_key(journal.node()))])
+        .await
+        .map_err(error)?
+        .into_iter()
+        .next()
+        .ok_or("seal row observation missing")?;
+    Ok(row.map(|value| value.expose(&crate::seal::lend()).to_vec()))
 }

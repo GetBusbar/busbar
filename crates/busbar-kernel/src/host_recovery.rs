@@ -160,7 +160,7 @@ impl KernelServices {
     }
 
     pub(crate) fn supports_work_recovery(&self) -> bool {
-        self.persistence.get().is_some()
+        self.persistence.as_ref().is_some()
             && self
                 .recovery
                 .ready
@@ -195,7 +195,7 @@ impl KernelServices {
             .and_then(|unit| self.units.get(unit))
             .and_then(|unit| unit.principal.clone())
             .ok_or("recovery requires an authenticated principal")?;
-        recovery_binding_of(&key, (self.wall_ms)() / 1000, self.standing.get())
+        recovery_binding_of(&key, (self.wall_ms)() / 1000, self.standing.as_ref())
     }
 
     /// Scan one native Store page, retaining pagination across ticks. Only the opened instance
@@ -207,7 +207,7 @@ impl KernelServices {
         if self.facts(caller).is_none() {
             return Err("recovery instance is not admitted");
         }
-        let Some(store) = self.persistence.get() else {
+        let Some(store) = self.persistence.as_ref() else {
             return Ok(Vec::new());
         };
         let rows = ScopedStore::host_private(
@@ -289,7 +289,7 @@ impl KernelServices {
         if principal.is_empty() || !valid_reference(&proposed) || self.facts(caller).is_none() {
             return Err("invalid caller binding");
         }
-        let Some(store) = self.persistence.get() else {
+        let Some(store) = self.persistence.as_ref() else {
             return Ok(proposed);
         };
         let rows = self.caller_rows(store, caller)?;

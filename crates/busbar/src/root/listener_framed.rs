@@ -12,6 +12,9 @@ use busbar_core_connector::framer::{
     self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
 use busbar_core_connector::secure_vec::SecureVec;
+use busbar_kernel::limits::process_admission::{
+    AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
+};
 use bytes::Bytes;
 use foldhash::{HashMap, HashSet};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -81,6 +84,8 @@ pub struct DataFramer {
     pub(in crate::root) listener: Arc<crate::root::inbound::ListenerRegistration>,
     pub(in crate::root) dispatch: Option<DispatchFor>,
     pub(in crate::root) inbound_limit: Option<Arc<tokio::sync::Semaphore>>,
+    /// The boot-owned process admission each plane request and its session input is charged to.
+    pub(in crate::root) process: Option<Arc<ProcessAdmission>>,
     pub(in crate::root) upgrade: FramerFor,
 }
 
@@ -119,6 +124,12 @@ impl DataFramer {
 
     pub(crate) fn with_inbound_limit(mut self, limit: usize) -> Self {
         self.inbound_limit = (limit != 0).then(|| Arc::new(tokio::sync::Semaphore::new(limit)));
+        self
+    }
+
+    /// Share the one boot-owned process admission with this listener's plane requests.
+    pub(crate) fn with_process_admission(mut self, admission: Arc<ProcessAdmission>) -> Self {
+        self.process = Some(admission);
         self
     }
 }
@@ -174,6 +185,8 @@ enum Op {
 
     Switch {
         pipe: busbar_kernel::plane_routes::SessionPipe,
+        /// The admitted request's lease; the session's caller input is charged to it.
+        request: RequestLease,
     },
 
     Ended {
@@ -302,6 +315,40 @@ struct InboundBody {
     ended: bool,
 }
 
+async fn gather_body(
+    mut body: InboundBody,
+    body_limit: u64,
+    timeout: std::time::Duration,
+) -> Result<Bytes, busbar_contract::caps::ReasonCode> {
+    use busbar_contract::caps::ReasonCode;
+    let mut whole = Gathered::default();
+    let started = tokio::time::Instant::now();
+    let deadline = started + super::total_body_deadline();
+    while !body.ended {
+        let piece_deadline = (tokio::time::Instant::now() + timeout).min(deadline);
+        match tokio::time::timeout_at(piece_deadline, body.pieces.recv()).await {
+            Ok(Some(Ok(bytes))) => {
+                let oversized = whole
+                    .len()
+                    .checked_add(bytes.len())
+                    .is_none_or(|size| body_limit != 0 && size as u64 > body_limit);
+                if oversized {
+                    return Err(ReasonCode::BodyTooLarge);
+                }
+                whole.push(bytes);
+            }
+            Ok(None) => body.ended = true,
+            Ok(Some(Err(_))) => return Err(ReasonCode::DecodeFailed),
+            Err(_) => return Err(ReasonCode::DeadlineExceeded),
+        }
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if super::check_body_bounds(0, elapsed, whole.len() as u64).is_some() {
+            return Err(ReasonCode::DeadlineExceeded);
+        }
+    }
+    Ok(whole.into_bytes())
+}
+
 /// A request body gathered from its pieces: a body that arrives in one piece is kept as received
 /// (no copy); only one that arrives in several is joined.
 #[derive(Default)]
@@ -342,9 +389,11 @@ type SessionSlot = busbar_kernel::plane_routes::FramedSession;
 
 struct Session {
     stream: u64,
-    from: Option<mpsc::Sender<Vec<u8>>>,
-    message: Vec<u8>,
-    messages: VecDeque<Vec<u8>>,
+    from: Option<mpsc::Sender<busbar_kernel::plane_driver::SessionInput>>,
+    /// The request this session continues; every retained caller byte is reserved against it.
+    request: RequestLease,
+    message: Option<OwnedInput>,
+    messages: VecDeque<busbar_kernel::plane_driver::SessionInput>,
     sending: Option<Pin<Box<dyn std::future::Future<Output = bool> + Send>>>,
     closing: bool,
     body_limit: u64,
@@ -353,7 +402,11 @@ struct Session {
 }
 
 impl Session {
-    fn over(stream: u64, pipe: busbar_kernel::plane_routes::SessionPipe) -> Self {
+    fn over(
+        stream: u64,
+        pipe: busbar_kernel::plane_routes::SessionPipe,
+        request: RequestLease,
+    ) -> Self {
         let busbar_kernel::plane_routes::SessionPipe {
             from_caller,
             to_caller,
@@ -361,7 +414,8 @@ impl Session {
         Self {
             stream,
             from: Some(from_caller),
-            message: Vec::new(),
+            request,
+            message: None,
             messages: VecDeque::new(),
             sending: None,
             closing: false,
@@ -380,7 +434,7 @@ impl Session {
                     Poll::Ready(false) => {
                         self.from = None;
                         self.messages.clear();
-                        self.message.clear();
+                        self.message = None;
                         self.closing = true;
                         self.sending = None;
                         return None;
@@ -424,6 +478,7 @@ pub(super) async fn serve<I>(
     timeout: std::time::Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
     peer: Option<std::net::SocketAddr>,
+    tls_peer_cert: Bytes,
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -452,7 +507,7 @@ pub(super) async fn serve<I>(
     let (tx, ops) = mpsc::unbounded_channel();
     let (admission_tx, admissions) = mpsc::unbounded_channel();
     let mut conn = Conn {
-        io: super::Lingering(Some(io)),
+        io: super::Lingering(Some(io), None),
         framing: Some(framing),
         framer,
         router,
@@ -460,6 +515,7 @@ pub(super) async fn serve<I>(
         established,
         timeout,
         peer,
+        tls_peer_cert,
         out: SecureVec::new(),
         read_done: false,
         ended: false,
@@ -501,6 +557,7 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     timeout: std::time::Duration,
     /// The connection's socket peer, stamped on every operator request it carries.
     peer: Option<std::net::SocketAddr>,
+    tls_peer_cert: Bytes,
 
     /// Reply bytes for the peer: one contiguous run whose written prefix is wiped (T7b).
     out: SecureVec,
@@ -535,7 +592,7 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
 enum UpgradePhase {
     Adopting(oneshot::Sender<bool>),
     Admitted,
-    Committing(busbar_kernel::plane_routes::SessionPipe),
+    Committing(busbar_kernel::plane_routes::SessionPipe, RequestLease),
 }
 
 struct StagedUpgrade {
@@ -943,22 +1000,47 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 session.from = None;
                 session.messages.clear();
                 session.sending = None;
-                session.message.clear();
+                session.message = None;
                 session.closing = true;
                 return;
             }
             if session.closing {
                 return;
             }
-            let size = session.message.len().checked_add(piece.bytes.len());
+            let held = session.message.as_ref().map_or(0, OwnedInput::len);
+            let size = held.checked_add(piece.bytes.len());
             if size.is_none_or(|size| session.body_limit != 0 && size as u64 > session.body_limit) {
                 self.failed = true;
                 return;
             }
-            session.message.extend_from_slice(&piece.bytes);
+            // Every retained caller byte is reserved against the admitted request first; a
+            // denied reservation fails the connection exactly like an oversized message.
+            let charged = match session.message.as_mut() {
+                Some(message) => message.try_extend_from_slice(&piece.bytes).is_ok(),
+                None => match session.request.adopt_input(piece.bytes) {
+                    Ok(input) => {
+                        session.message = Some(input);
+                        true
+                    }
+                    Err(_) => false,
+                },
+            };
+            if !charged {
+                self.failed = true;
+                return;
+            }
             if piece.end_of_frame {
-                let message = std::mem::take(&mut session.message);
-                session.messages.push_back(message);
+                let message = match session.message.take() {
+                    Some(message) => message,
+                    None => match session.request.adopt_input(Vec::new()) {
+                        Ok(empty) => empty,
+                        Err(_) => {
+                            self.failed = true;
+                            return;
+                        }
+                    },
+                };
+                session.messages.push_back(message.into_session_input());
             }
             session.closing |= piece.end;
             return;
@@ -1131,9 +1213,35 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 });
                 return;
             };
+            // The plane request enters the one boot-owned process admission before it runs;
+            // without that owner it is refused, never served uncounted.
+            let Some(process) = self.framer.process.as_ref() else {
+                out.send(Op::Refuse {
+                    status: 503,
+                    head_sent: false,
+                });
+                return;
+            };
+            let Ok(lease) = process.try_enter(AdmissionClass::Data) else {
+                metrics::counter!(busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL, "gate" => "inbound")
+                    .increment(1);
+                request.refuse(
+                    busbar_contract::caps::StepName::Arrival,
+                    busbar_contract::caps::ReasonCode::InFlightCap,
+                );
+                match dispatcher.capacity_refusal(request) {
+                    Some(rendered) => queue_whole(&out, rendered),
+                    None => out.send(Op::Refuse {
+                        status: 503,
+                        head_sent: false,
+                    }),
+                }
+                return;
+            };
             self.tasks.spawn(serve_data(
                 dispatcher,
                 request.clone(),
+                lease,
                 body,
                 slot,
                 out,
@@ -1162,11 +1270,40 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 request
                     .extensions_mut()
                     .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+                request
+                    .extensions_mut()
+                    .insert(crate::root::ingress_context::RequestContext {
+                        peer: peer.to_string().into_boxed_str(),
+                        tls_peer_cert: self.tls_peer_cert.clone(),
+                    });
             }
             request.extensions_mut().insert(slot.clone());
+            // Routed requests on this data listener enter the same boot-owned process admission;
+            // a switched session keeps that lease for its caller input.
+            let Some(lease) = self
+                .framer
+                .process
+                .as_ref()
+                .and_then(|process| process.try_enter(AdmissionClass::Data).ok())
+            else {
+                metrics::counter!(busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL, "gate" => "inbound")
+                    .increment(1);
+                if let Some(admission) = &admission {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Arrival,
+                        busbar_contract::caps::ReasonCode::InFlightCap,
+                    );
+                }
+                out.send(Op::Refuse {
+                    status: 503,
+                    head_sent: false,
+                });
+                return;
+            };
             self.tasks.spawn(operator::serve(
                 self.router.clone(),
                 request,
+                lease,
                 slot,
                 out,
                 ended,
@@ -1347,7 +1484,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let r = framing.refuse(Some(stream), &[], status, head_sent);
                 self.took(r);
             }
-            Op::Switch { pipe } => self.switch(stream, pipe),
+            Op::Switch { pipe, request } => self.switch(stream, pipe, request),
             Op::Ended { scope } => {
                 if self
                     .staged
@@ -1513,17 +1650,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             return;
         }
-        if matches!(stage.phase, UpgradePhase::Committing(_)) {
+        if matches!(stage.phase, UpgradePhase::Committing(..)) {
             let Some(mut stage) = self.staged.take() else {
                 return;
             };
             let incoming = stage.take_incoming();
-            let UpgradePhase::Committing(pipe) = stage.phase else {
+            let UpgradePhase::Committing(pipe, request) = stage.phase else {
                 return;
             };
             self.heads.clear();
             self.full.clear();
-            let mut session = Session::over(stage.stream, pipe);
+            let mut session = Session::over(stage.stream, pipe, request);
             if let Some(inflow) = self.inflows.get(&stage.stream) {
                 session.body_limit = inflow.body_limit;
             }
@@ -1541,14 +1678,19 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         }
     }
 
-    fn switch(&mut self, stream: u64, pipe: busbar_kernel::plane_routes::SessionPipe) {
+    fn switch(
+        &mut self,
+        stream: u64,
+        pipe: busbar_kernel::plane_routes::SessionPipe,
+        request: RequestLease,
+    ) {
         let Some(stage) = self.staged.as_mut().filter(|stage| {
             stage.stream == stream && matches!(stage.phase, UpgradePhase::Admitted)
         }) else {
             self.failed = true;
             return;
         };
-        stage.phase = UpgradePhase::Committing(pipe);
+        stage.phase = UpgradePhase::Committing(pipe, request);
         let status = stage.opening_status.unwrap_or_default();
         let Some(framing) = self.framing.as_mut() else {
             self.abandon_stage();
@@ -1802,7 +1944,23 @@ pub(in crate::root) async fn serve_governed_test<I>(
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    serve(io, framer, Router::new(), secured, timeout, stop, None).await;
+    // The production listener shares the boot-owned admission; the fixture owns its own.
+    let framer = if framer.process.is_some() {
+        framer
+    } else {
+        framer.with_process_admission(ProcessAdmission::new(0))
+    };
+    serve(
+        io,
+        framer,
+        Router::new(),
+        secured,
+        timeout,
+        stop,
+        None,
+        Bytes::new(),
+    )
+    .await;
 }
 
 /// One response op the admitted request actor sent, as the connection writer receives it.
@@ -1910,6 +2068,9 @@ pub(in crate::root) async fn serve_admitted_wire_test(
         serve_data(
             routes,
             admission,
+            ProcessAdmission::new(0)
+                .try_enter(AdmissionClass::Data)
+                .expect("an unlimited process admission admits the fixture request"),
             InboundBody {
                 pieces: body_rx,
                 ended: false
@@ -1934,7 +2095,8 @@ pub(in crate::root) async fn serve_admitted_wire_test(
 async fn serve_data(
     routes: Arc<crate::root::serve::DataRoutes>,
     admission: busbar_kernel::inbound::RequestAdmission,
-    mut body: InboundBody,
+    request: RequestLease,
+    body: InboundBody,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
@@ -1967,37 +2129,27 @@ async fn serve_data(
                 return None;
             }
         };
-        let mut whole = Gathered::default();
-        while !body.ended {
-            match tokio::time::timeout(timeout, body.pieces.recv()).await {
-                Ok(Some(Ok(bytes))) => {
-                    let oversized = whole.len().checked_add(bytes.len()).is_none_or(|size| {
-                        admission.body_limit() != 0 && size as u64 > admission.body_limit()
-                    });
-                    if oversized {
-                        refuse_data(&routes, &admission, &caller, ReasonCode::BodyTooLarge).await;
-                        return None;
-                    }
-                    whole.push(bytes);
-                }
-                Ok(None) => body.ended = true,
-                Ok(Some(Err(_))) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DecodeFailed).await;
-                    return None;
-                }
-                Err(_) => {
-                    refuse_data(&routes, &admission, &caller, ReasonCode::DeadlineExceeded).await;
-                    return None;
-                }
+        let body = match gather_body(body, admission.body_limit(), timeout).await {
+            Ok(body) => body,
+            Err(reason) => {
+                refuse_data(&routes, &admission, &caller, reason).await;
+                return None;
             }
-        }
-        let body = whole.into_bytes();
+        };
         *caller
             .body
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(body.clone());
         routes
-            .serve_admitted(&admission, context, body, scheme, slot, Arc::clone(&caller))
+            .serve_admitted(
+                &admission,
+                context,
+                body,
+                request.clone(),
+                scheme,
+                slot,
+                Arc::clone(&caller),
+            )
             .await
     });
     // With `Server-Timing` on, the request is served under its measurement, so the forward path
@@ -2031,7 +2183,7 @@ async fn serve_data(
         None => work.await,
     };
     if let Some(pipe) = pipe {
-        out.send(Op::Switch { pipe });
+        out.send(Op::Switch { pipe, request });
         return;
     }
     if caller.stated().is_none() {

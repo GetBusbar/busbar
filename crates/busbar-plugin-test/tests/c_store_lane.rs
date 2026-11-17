@@ -39,12 +39,16 @@ fn lane_commits_block_no_worker_and_pass_their_declared_ceiling() {
         .build()
         .expect("a 2-worker runtime");
     let h = booted(lane::PLUGIN.plugin(), FakeNeeds::new());
-    h.registry().start_watchdog();
     let id = "c-store-lane-commit";
     let config = format!(r#"{{"id":"{id}","commit_sleep_ms":2000}}"#);
     let spec = h.spec("lane", config.as_bytes());
     let store = rt
-        .block_on(h.registry().open_store(&spec))
+        .block_on(h.registry().open_store(
+            &spec,
+            &h.needs_arc(),
+            &h.refs_arc(),
+            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+        ))
         .unwrap_or_else(|e| panic!("open failed: {e:?}"));
     let backend = Arc::clone(&store.backend);
     let polled_on = std::thread::current().id();
@@ -116,10 +120,10 @@ fn a_dropped_lane_commit_runs_to_completion() {
         .open_store("lane-drop", config.as_bytes())
         .unwrap_or_else(|e| panic!("open failed: {e:?}"));
     let (init, key) = initialization(&*store.backend);
-    let gave_up = h.block_on(tokio::time::timeout(
-        Duration::from_millis(50),
-        store.backend.commit(init, key),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let gave_up = h.block_on(async {
+        tokio::time::timeout(Duration::from_millis(50), store.backend.commit(init, key)).await
+    });
     assert!(gave_up.is_err(), "the commit was still running at 50 ms");
     assert_eq!(counts(id).commits, 0, "not recorded before its sleep ends");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -140,7 +144,7 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
         let mut needs = FakeNeeds::new();
         needs.secret("/secret", b"backend-password-1");
         let h = booted(plugin, needs);
-        let opened = h.open_store("needs", br#"{"secret":"vault:db"}"#);
+        let opened = h.open_store("needs", br#"{"secret":{"vault":"db"}}"#);
         match opened {
             Err(OpenError::Call(CallError::Fault(FaultReason::NeedNotAllowed(_))))
                 if lane_store => {}
@@ -157,22 +161,17 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
 fn a_ceiling_above_the_lane_range_is_clamped_and_logged() {
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_loader::admit::admit_header;
-    use busbar_plugin_loader::instance::{Ceilings, Registry};
-    use busbar_plugin_test::suites::harness::MemBinder;
-    use busbar_ports::binder::ConfigBinder;
+
+    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder};
 
     use crate::min3_store::{Capture, LANE_SCAN_CLAMPED_US, LANE_SCAN_US};
 
     let capture = Capture::default();
     let _tap = capture.install();
-    let mut registry = Registry::new(
-        &HOST,
-        Arc::new(FakeNeeds::new()),
-        Arc::new(MemBinder::new()) as Arc<dyn ConfigBinder>,
-        Ceilings::DEFAULT,
-    );
+    let process = crate::process_resources();
+    let mut images = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
     let admitted = admit_header(lane::PLUGIN.plugin()).expect("the lane image admits");
-    registry.add(admitted).expect("the lane image is added");
+    images.admit(admitted).expect("the lane image is described");
     let clamps = capture.with_message("plugin ceiling clamped into its range");
     assert_eq!(clamps.len(), 1, "one clamp, logged once");
     let scan_bit = busbar_plugin_abi::store::M_SCAN

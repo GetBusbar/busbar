@@ -22,21 +22,6 @@ pub(crate) fn at_rest_envelope(prefix: &str, kid: &str, nonce: &[u8], sealed: &[
     format!("{prefix}{kid}:{}:{}", b64.encode(nonce), b64.encode(sealed))
 }
 
-/// `at_rest`: a configured at-rest key that is not 32 bytes, refused at boot or reload.
-#[cold]
-pub(crate) fn at_rest_key_refusal(path: &str) -> String {
-    format!(
-        "{path} must resolve to a 32-byte key (32 raw bytes, or 64 hex characters: `openssl rand \
-         -hex 32`)"
-    )
-}
-
-/// `at_rest`: the raw 32-byte at-rest key, copied once per boot or reload.
-#[cold]
-pub(crate) fn at_rest_raw_key(bytes: &[u8]) -> busbar_contract::secure::SecureVec {
-    busbar_contract::secure::SecureVec::from(bytes.to_vec())
-}
-
 /// `at_rest`: a refused kid, remembered once (at most the cap) and audited once.
 #[cold]
 pub(crate) fn at_rest_refused_kid(seen: &mut std::collections::BTreeSet<String>, kid: &str) {

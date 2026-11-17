@@ -28,13 +28,12 @@ impl HookPolicy {
         calls: Arc<dyn HookCalls>,
         name: &str,
         signals: &[busbar_contract::Signal],
-        child: Option<&crate::hook_child::Grant>,
     ) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
             name: Arc::from(name),
             signals: signals.to_vec(),
-            child: child.cloned().map(Arc::new),
+            child: None,
             statics: std::sync::Mutex::default(),
         })
     }

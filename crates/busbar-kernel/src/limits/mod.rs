@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub(crate) mod admission;
+pub mod input_body;
+pub mod process_admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,

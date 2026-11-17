@@ -55,6 +55,8 @@ pub struct PortBilling {
     gov: Arc<GovState>,
     keys: Arc<UnitKeyMint>,
     audit: Arc<dyn AuditSink>,
+    /// Where a unit's end user goes (`records.user`, ADMIN-API-1.6 §3.5); `None` keeps none.
+    journal: Option<Arc<dyn super::HookJournal>>,
 }
 
 impl std::fmt::Debug for PortBilling {
@@ -76,7 +78,15 @@ impl PortBilling {
             gov,
             keys,
             audit,
+            journal: None,
         }
+    }
+
+    /// The node's journal, told the end user a plane projects for each unit it opens.
+    #[must_use]
+    pub fn with_journal(mut self, journal: Arc<dyn super::HookJournal>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 
     /// Admits the request and opens it as a unit. A refusal (`LimitBlocked`) opened nothing and charged nothing.
@@ -123,6 +133,45 @@ impl PortBilling {
                 admin_listener: false,
                 kernel_verb_only: false,
             },
+            journal: self.journal.clone(),
+        })
+    }
+
+    /// Open an ordinary child under its live parent's actual admission and rate era. The
+    /// money book checks the complete verified key and parent provenance before sharing its
+    /// fee participation and governor hold. A missing, ended or foreign parent opens nothing.
+    pub fn child(
+        &self,
+        parent: UnitKey,
+        key: &VirtualKey,
+        instance: &str,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, busbar_contract::caps::ReasonCode> {
+        let admitted = self.money.parent_money(parent, key)?;
+        let child = self.keys.mint();
+        self.money.open_child(
+            &admitted,
+            child,
+            format!("{instance}{PLANE_LANE_SEP}"),
+            Arc::clone(&classes),
+            FeeRefund::PlaneFeeUnits(Arc::from([])),
+        )?;
+        Ok(Unit {
+            money: PortMoney::new(
+                Arc::clone(&self.money) as Arc<dyn super::cancel::MoneySeam>,
+                classes,
+                Arc::clone(&self.audit),
+            ),
+            ctx: UnitCtx {
+                call: CallId::UNBOUND,
+                key: child,
+                origin: OriginKind::Nested { parent },
+                session: None,
+                generation: Generation::FIRST,
+                admin_listener: false,
+                kernel_verb_only: false,
+            },
+            journal: self.journal.clone(),
         })
     }
 

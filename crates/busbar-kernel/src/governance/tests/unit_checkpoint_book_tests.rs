@@ -87,6 +87,7 @@ fn unit(n: u64, unit: u64, targets: &[(&str, u64)], units: &[(&str, Count)]) -> 
         audit: None,
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn cost(groups: &[&str]) -> crate::cost::CostModel {
                 crate::config::GroupCfg {
                     enabled: true,
                     limits: vec![LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Budget,
                         amount: u64::MAX / 4,
                         per: Some(LimitWindow::Total),
@@ -451,6 +453,7 @@ fn chain_cost() -> crate::cost::CostModel {
         parent: parent.map(String::from),
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: u64::MAX / 4,
             per: Some(LimitWindow::Total),

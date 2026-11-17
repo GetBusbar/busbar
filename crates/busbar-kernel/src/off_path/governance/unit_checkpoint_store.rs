@@ -32,8 +32,11 @@ use std::{
 const FAMILY: NamespaceId = NamespaceId(*b"busbar.unitcp.v1");
 const TAG: &str = "unit.accrued";
 const MEASUREMENT_TAG: &str = "measurement.accrued";
+const PARTITIONED_TAG: &str = "unit.partitioned.v1";
 fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
-    if snapshot.measurement.is_some() {
+    if snapshot.partitions.is_some() {
+        PARTITIONED_TAG
+    } else if snapshot.measurement.is_some() {
         MEASUREMENT_TAG
     } else {
         TAG
@@ -371,8 +374,9 @@ impl StoreUnitCheckpoints {
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
     ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>, Carried)> {
-        let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
-        if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
+        let head: Head =
+            busbar_contract::json::parse(raw.expose(&crate::seal::lend())).map_err(error)?;
+        if !matches!(head.version, 1 | 2) || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
         let journal = self.evidence.journal.history().map_err(error)?;
@@ -399,7 +403,9 @@ impl StoreUnitCheckpoints {
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
-        if record.class != RecordClass::Checkpoint || !matches!(tag, Some(TAG | MEASUREMENT_TAG)) {
+        if record.class != RecordClass::Checkpoint
+            || !matches!(tag, Some(TAG | MEASUREMENT_TAG | PARTITIONED_TAG))
+        {
             return Err(refusal(
                 "running money head does not name unit.accrued evidence",
             ));
@@ -426,7 +432,15 @@ impl StoreUnitCheckpoints {
         {
             return Err(refusal("host measurement evidence exceeds bound"));
         }
-        let snapshot: UnitCheckpoint = serde_json::from_slice(encoded).map_err(error)?;
+        if (head.version == 2) != (tag == Some(PARTITIONED_TAG)) {
+            return Err(refusal(
+                "checkpoint head version differs from its signed domain",
+            ));
+        }
+        if tag == Some(PARTITIONED_TAG) {
+            crate::governance::unit_checkpoint::partitions::check_encoded(encoded)?;
+        }
+        let snapshot: UnitCheckpoint = busbar_contract::json::parse(encoded).map_err(error)?;
         snapshot.validate()?;
         if tag != Some(checkpoint_tag(&snapshot)) {
             return Err(refusal(
@@ -882,7 +896,7 @@ impl StoreUnitCheckpoints {
                 continue;
             };
             let head = Head {
-                version: 1,
+                version: if snapshot.partitions.is_some() { 2 } else { 1 },
                 node: self.evidence.node,
                 sequence: record.node_seq,
                 revision: snapshot.revision,
@@ -947,6 +961,11 @@ impl StoreUnitCheckpoints {
                 return Err(refusal(
                     "running money checkpoint would overwrite selected custody",
                 ));
+            }
+            if selected.partitions.is_some() || snapshot.partitions.is_some() {
+                crate::governance::unit_checkpoint::partitions::validate_successor(
+                    &selected, snapshot,
+                )?;
             }
         }
         let encoded = crate::off_path::governance::runtime::unit_checkpoint_store_encode(snapshot)

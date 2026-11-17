@@ -34,7 +34,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
@@ -42,7 +41,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
-        upstreams: None,
         advanced: AdvancedCfg::default(),
         plugins: Default::default(),
         security: None,
@@ -51,6 +49,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
+        records: Default::default(),
         audit: Default::default(),
     }
 }
@@ -383,7 +382,6 @@ fn test_auth_policy_block_parses_and_resolves() {
            policy:\n    \
              self_mint: true\n    \
              binding_modes: [time-bound, user-bound, both]\n    \
-             default_ttl: \"24h\"\n    \
              max_ttl: \"90d\"\n    \
              mint_ceilings:\n      \
                app-admin:\n        \
@@ -415,7 +413,6 @@ fn test_auth_policy_block_parses_and_resolves() {
             ][..]
         )
     );
-    assert_eq!(p.default_ttl.as_deref(), Some("24h"));
     assert_eq!(p.max_ttl.as_deref(), Some("90d"));
 
     let ceiling = p
@@ -450,7 +447,6 @@ fn test_auth_policy_absent_is_default() {
     let p = &auth.policy;
     assert_eq!(p.self_mint, None);
     assert!(p.binding_modes.is_none());
-    assert!(p.default_ttl.is_none());
     assert!(p.max_ttl.is_none());
     assert!(p.mint_ceilings.is_empty());
     assert_eq!(p, &busbar_kernel::config::AuthPolicyCfg::default());
@@ -543,4 +539,64 @@ fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
             busbar_contract::section::reserved_name_refusal("pools", "pool", word)
         );
     }
+}
+
+/// A deployment document carrying `body` under the given prelude, parsed as the boot does.
+fn parse_deploy_text(text: &str) -> Result<DeployCfg, String> {
+    crate::dist_root_install::install();
+    crate::distribution::install_migration_rows();
+    busbar_kernel::config::deploy_from_yaml_str(text, &crate::root::boot::axis_test_grammar())
+        .map_err(|e| e.to_string())
+}
+
+#[test]
+fn config_refuses_the_removed_plugin_rate_cards_key() {
+    let err = parse_deploy_text(
+        "plugin_rate_cards:\n  store:\n    primary:\n      input: 1\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("`plugin_rate_cards` is no longer a config key");
+    assert!(err.contains("plugin_rate_cards"), "{err}");
+}
+
+#[test]
+fn config_refuses_the_removed_auth_policy_default_ttl_key() {
+    let err = parse_deploy_text(
+        "auth:\n  chain: [keys]\n  policy:\n    default_ttl: \"1h\"\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("`auth.policy.default_ttl` is no longer a config key");
+    assert!(err.contains("default_ttl"), "{err}");
+}
+
+#[test]
+fn config_refuses_the_removed_auth_policy_max_outstanding_tickets_key() {
+    let err = parse_deploy_text(
+        "auth:\n  chain: [keys]\n  policy:\n    max_outstanding_tickets_per_key: 8\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect_err("`auth.policy.max_outstanding_tickets_per_key` is no longer a config key");
+    assert!(err.contains("max_outstanding_tickets_per_key"), "{err}");
+}
+
+#[test]
+fn settings_body_refuses_the_removed_plugin_rate_cards_key() {
+    let err = busbar_contract::yaml::from_str::<busbar_kernel::config::overlay::RootSettings>(
+        "plugin_rate_cards: {}\n",
+    )
+    .expect_err("`PUT /config/settings` takes no `plugin_rate_cards`");
+    assert!(err.to_string().contains("plugin_rate_cards"), "{err}");
+}
+
+#[test]
+fn a_1_5_5_shaped_config_with_key_ttl_still_parses() {
+    let deploy = parse_deploy_text(
+        "auth:\n  chain: [keys]\n  key_ttl: \"30d\"\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("a 1.5.5-shaped config parses");
+    assert_eq!(
+        deploy.auth.as_ref().and_then(|a| a.key_ttl.as_deref()),
+        Some("30d")
+    );
 }

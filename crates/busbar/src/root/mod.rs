@@ -46,6 +46,13 @@ pub mod cli;
 pub(crate) mod cold;
 pub mod connector;
 pub mod credentials;
+pub(crate) mod export_observer;
+pub(crate) mod min3_admin_auth;
+pub(crate) mod min3_auth;
+pub(crate) mod min3_outbound_auth;
+pub(crate) mod native_refusals;
+pub(crate) mod provisioning;
+pub(crate) mod provisioning_mount;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -170,6 +177,7 @@ pub mod inbound;
 #[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/inbound.rs"]
 mod inbound_tests;
+pub(crate) mod ingress_context;
 pub mod kernel;
 pub mod keyset;
 pub mod linked;
@@ -198,6 +206,8 @@ pub(crate) mod migrate;
 pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+pub(crate) mod min3_provider_catalog;
+pub(crate) mod min3_provider_plan;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
@@ -260,11 +270,14 @@ pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
 pub mod principal_transition;
+// ADMIN-API-1.6 §3.5: `records.user` and `records.labels`, configured at boot.
+pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
+pub(crate) mod secret_grammar;
 #[cfg_attr(
     not(test),
     deny(
@@ -319,6 +332,10 @@ mod product_pin_aliases;
 #[cfg(test)]
 #[path = "tests/product_pin_former_names.rs"]
 mod product_pin_former_names;
+
+#[cfg(test)]
+#[path = "tests/records_capture.rs"]
+mod records_capture_tests;
 
 #[cfg(test)]
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

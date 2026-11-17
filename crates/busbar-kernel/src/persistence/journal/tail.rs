@@ -31,8 +31,10 @@ impl StoreJournal<'_> {
             .await?;
         let owner = rows.pop().ok_or(Error::Corrupt)?;
         let head = rows.pop().ok_or(Error::Corrupt)?;
-        let (Some(head), Some(owner)) = (head, owner) else {
-            return Ok(None);
+        let (head, owner) = match (head, owner) {
+            (None, None) => return Ok(None),
+            (Some(head), Some(owner)) => (head, owner),
+            _ => return Err(Error::Corrupt),
         };
         if !valid_owner(&owner) {
             return Err(Error::Corrupt);

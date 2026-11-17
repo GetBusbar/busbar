@@ -215,6 +215,12 @@ fn main() {
         .join("linked_plane_doors.rs");
     std::fs::write(out, linked_plane_doors_source(&manifest, &enabled))
         .expect("write linked_plane_doors.rs");
+    std::fs::write(
+        std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
+            .join("linked_native_images.rs"),
+        linked_native_images_source(&manifest, &enabled),
+    )
+    .expect("write linked_native_images.rs");
 
     let (proofs, words) = driver_proofs_source(&manifest, &enabled);
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -660,6 +666,36 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
         }
     }
     (proofs, words)
+}
+
+fn linked_native_images_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
+    let mut out = String::from(
+        "// @generated from the same MIN-3 image rows as the composition root.\n\
+         pub(crate) static LINKED_NATIVE_IMAGES: &[fn() -> Result<\
+         ::busbar_plugin_loader::admit::Admitted, \
+         ::busbar_plugin_loader::refusal::Refusal>] = &[\n",
+    );
+    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
+        if !enabled(&feature)
+            || !axes.iter().any(|(key, list)| {
+                *key == feature && list.split_whitespace().any(|axis| axis == MIN3_AXIS)
+            })
+        {
+            continue;
+        }
+        let entry = entries
+            .iter()
+            .find(|(key, _)| *key == feature)
+            .or_else(|| entries.iter().find(|(key, _)| *key == krate))
+            .map_or_else(|| ident(&krate), |(_, path)| path.clone());
+        out.push_str(&format!(
+            "    || ::busbar_plugin_loader::admit::admit_linked(&{entry}::PLUGIN),\n"
+        ));
+    }
+    out.push_str("];\n");
+    out
 }
 
 fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {

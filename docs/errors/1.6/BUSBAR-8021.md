@@ -8,7 +8,7 @@ slug: docs/1.6/errors/BUSBAR-8021
 
 ## What it means
 
-A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.
 
 ## How to fix it
 

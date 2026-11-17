@@ -38,7 +38,7 @@ pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
 pub const ABI_VERSION: u32 = super::versions::AUTH.raw();
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x5b57a4ca0d0cd422;
+pub const LAYOUT_FINGERPRINT: u64 = 0x7f8289d571846432;
 
 /// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -91,6 +91,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(ServeOut =>
         head, status_code, _reserved, headers_out, headers_out_len, body
     ),
+    crate::abi::host::service::HOST_SLOTS_LAYOUT,
 ];
 
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot

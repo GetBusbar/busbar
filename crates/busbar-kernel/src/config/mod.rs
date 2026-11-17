@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod card;
 pub mod measurement_rates;
-pub use measurement_rates::{validate_plugin_rate_coverage, PluginRateCards};
+pub use measurement_rates::PluginRateCards;
 pub mod overlay;
 mod overlay_native;
 mod overlay_store;
@@ -27,6 +27,9 @@ pub mod named_map;
 pub mod operator_file;
 pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
+mod resource_ownership;
+pub use resource_ownership::ResourceOwnership;
+pub(crate) mod restart;
 
 pub mod parse;
 
@@ -43,7 +46,6 @@ pub mod transaction;
 pub use grammar::{Grammar, GrammarField, GrammarRefusal};
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
-pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
@@ -385,9 +387,6 @@ pub struct RootCfg {
     /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
     /// secret references the owner listed in it.
     pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
-    /// The `credentials:` block, carried through `resolve` verbatim: the at-rest key references,
-    /// resolved at boot and at reload ([`CredentialsCfg`]).
-    pub credentials: CredentialsCfg,
     /// EVERY REGISTERED PLANE'S DECLARED SECTION this document writes, by config section, carried
     /// through `resolve` VERBATIM.
     ///
@@ -431,8 +430,6 @@ pub struct RootCfg {
     /// plane's own card rides in it under plane-qualified keys
     /// (`busbar_kernel_ledger::cost::compose_plane_cards`); with none, it is `rate_card:` verbatim.
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Exact host-owned rates for common plugin measurements, by kind, configured namespace, class.
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
     /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
@@ -641,6 +638,10 @@ pub fn resolve_auth(
         .collect();
 
     AuthCfg {
+        verdict_cache: auth.verdict_cache,
+        outbound: auth.outbound,
+        unknown_key_refresh_s: auth.unknown_key_refresh_s,
+        require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
         chain,
         admin_auth,
@@ -952,10 +953,6 @@ pub struct DeployCfg {
     /// absent means nothing is built: see `crate::oauth_as`.
     #[serde(default, deserialize_with = "busbar_contract::yaml::untyped_option")]
     pub oauth_as: Option<busbar_contract::yaml::Value>,
-    /// `credentials:` — how a recoverable credential is kept at rest ([`CredentialsCfg`]): the
-    /// `at_rest` key it is sealed under, and the `previous` one a rotation still opens.
-    #[serde(default, deserialize_with = "credentials::deserialize_section")]
-    pub credentials: CredentialsCfg,
     /// TLS/mTLS for the management-surface listener (only meaningful with `admin_listen`). Its own
     /// cert + optional `client_ca_file`, so the management surface can require client certificates
     /// without forcing them on data-plane clients. A network-exposed `admin_listen` REQUIRES
@@ -1014,9 +1011,6 @@ pub struct DeployCfg {
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
-    /// Common measurement rates: kind -> configured instance namespace -> declared class.
-    #[serde(default)]
-    pub plugin_rate_cards: PluginRateCards,
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub per_request_fee: i64,
@@ -1050,13 +1044,6 @@ pub struct DeployCfg {
     /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
     #[serde(default)]
     pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
-    /// The top-level `upstreams:` section (IF §12.1, §12.18; 1.6.0, additive): upstream name → entry (`url:` or
-    /// `command:`, optional `tls:`, `auth:`, `upstream_credentials:`). Kept as written; [`min3::parse_min3`]
-    /// parses each entry's binding keys and [`crate::upstreams::ConfiguredUpstreams::from_config`] types the
-    /// entries, at load (refusals) and at boot (the table every plane seat reads). A 1.5.x plane's `migrate`
-    /// writes its members here (CORE_CFG(UPSTREAM)). Absent = no upstream.
-    #[serde(default)]
-    pub upstreams: Option<serde_json::Map<String, serde_json::Value>>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
@@ -1101,6 +1088,10 @@ pub struct DeployCfg {
     /// The `telemetry:` block (the metric registry; default on).
     #[serde(default)]
     pub telemetry: TelemetryCfg,
+    /// The `records:` block (ADMIN-API-1.6 §3.5): what each unit's record keeps of the end user and
+    /// of allow-listed request headers. Absent: off, at no cost. Applied at boot.
+    #[serde(default)]
+    pub records: RecordsCfg,
     /// The `audit:` block (SEALING-FIX §3.4): `seal_every`, the notary's stamp cadence in ms.
     #[serde(default)]
     pub audit: AuditCfg,
@@ -1139,6 +1130,7 @@ impl DeployCfg {
 }
 
 pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
+pub use busbar_kernel::config::sections::{RecordsCfg, RecordsUser, RECORDS_LABELS_MAX};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -1192,29 +1184,6 @@ pub struct PluginsCfg {
     /// Signature verification remains the trust gate; sha256 is integrity/cache only. Default empty.
     #[serde(default)]
     pub fetch: Vec<PluginFetch>,
-    /// PLUGIN LOGS (`plugins.logs:`): every plugin instance logs to its own file, which the host
-    /// writes from what the plugin reported on its replies (`BUSBAR-1.6.0.md` decision #85).
-    #[serde(default)]
-    pub logs: PluginLogsCfg,
-}
-
-/// `plugins.logs:` — `dir` (default `logs/plugins`), `level` (default `info`), per-instance
-/// `levels`, `rotate_mb` (unset: never rotate; the host's rename rotation) and `keep` (default 5).
-/// Every default and every refusal is the plugin log configuration's own; the binary resolves this
-/// block at boot, so a bad value fails the boot naming its key.
-#[cfg_attr(
-    feature = "openapi-schema",
-    derive(schemars::JsonSchema, serde::Serialize)
-)]
-#[derive(Deserialize, Clone, Default, Debug, PartialEq)]
-#[serde(deny_unknown_fields, default)]
-pub struct PluginLogsCfg {
-    pub dir: Option<String>,
-    pub level: Option<String>,
-    #[serde(default)]
-    pub levels: std::collections::BTreeMap<String, String>,
-    pub rotate_mb: Option<u64>,
-    pub keep: Option<u32>,
 }
 
 /// One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a
@@ -1374,15 +1343,11 @@ impl Default for PluginsCfg {
             min_versions: std::collections::BTreeMap::new(),
             first_party_floors: std::collections::BTreeMap::new(),
             fetch: Vec::new(),
-            logs: PluginLogsCfg::default(),
         }
     }
 }
 
-/// `plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin
-/// verifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;
-/// anything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and
-/// SKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.
+/// Signature admission policy, independent of dynamic loading and runtime grants.
 #[cfg_attr(
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
@@ -1390,23 +1355,16 @@ impl Default for PluginsCfg {
 #[derive(Deserialize, Clone, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsTrustCfg {
-    /// THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a
-    /// publisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the
-    /// binary and never configured here.
+    /// Explicit scoped publisher authorities. Busbar authority is embedded, never configured.
     #[serde(default)]
     pub publishers: Vec<PluginPublisher>,
-    /// EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default
-    /// `false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed
-    /// / executed), at boot and in the admin catalog.
+    /// Permit unsigned or unknown-publisher artifacts. Known invalid or revoked authority
+    /// and failed integrity checks always refuse admission. Defaults to false.
     #[serde(default)]
-    pub allow_unsigned: bool,
-    /// EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in
-    /// `publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.
-    #[serde(default)]
-    pub allow_third_party: bool,
+    pub allow_untrusted: bool,
 }
 
-/// One allowlisted plugin publisher: a name and its hex ed25519 public key.
+/// One operator-authorized publisher and its exact plugin names and overlapping keys.
 #[cfg_attr(
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
@@ -1415,25 +1373,51 @@ pub struct PluginsTrustCfg {
 #[serde(deny_unknown_fields)]
 pub struct PluginPublisher {
     pub name: String,
-    pub public_key: String,
+    pub plugins: Vec<String>,
+    pub keys: Vec<PluginPublisherKey>,
 }
+
+/// A configured Ed25519 publisher key. Revoked keys remain visible but never admit code.
+#[cfg_attr(
+    feature = "openapi-schema",
+    derive(schemars::JsonSchema, serde::Serialize)
+)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginPublisherKey {
+    pub public_key: String,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+/// Borrowed operator publisher authority passed to the admission policy.
+pub type PluginPublisherInput<'a> = (&'a str, &'a [String], Vec<(&'a str, bool)>);
 
 impl PluginsCfg {
     pub fn fetch_targets(&self) -> Result<Vec<FetchTarget>, String> {
         self.fetch.iter().map(fetch_target_from).collect()
     }
 
-    pub fn publisher_keys(&self) -> Vec<(&str, &str)> {
+    pub fn publisher_keys(&self) -> Vec<PluginPublisherInput<'_>> {
         self.trust
             .publishers
             .iter()
-            .map(|p| (p.name.as_str(), p.public_key.as_str()))
+            .map(|p| {
+                (
+                    p.name.as_str(),
+                    p.plugins.as_slice(),
+                    p.keys
+                        .iter()
+                        .map(|key| (key.public_key.as_str(), key.revoked))
+                        .collect(),
+                )
+            })
             .collect()
     }
 
     pub fn warn_invalid_floors(&self) {
         for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
@@ -1445,7 +1429,7 @@ impl PluginsCfg {
             }
         }
         for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::semver::valid_authored(floor) {
                 diag_warn!(
                     CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),
@@ -1464,9 +1448,8 @@ pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, Store
 
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    AdvancedGovernanceCfg, AdvancedShutdownCfg, AuditCfg, ResponseHeadersCfg,
-    DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY,
-    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    AuditCfg, ResponseHeadersCfg, DEFAULT_AUDIT_SEAL_EVERY_MS,
+    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{
@@ -1499,7 +1482,7 @@ pub struct ExportCfg {
     pub recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
     /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
-    /// config order. Opened once at boot ([`crate::export::plugin::open`]).
+    /// config order. Opened once at boot ([`crate::export::plugin::open_prepared`]).
     pub plugins: Vec<PluginExportSettings>,
 }
 
@@ -1529,8 +1512,7 @@ impl ExportCfg {
 
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
-        let recorder =
-            crate::export::plugin::boot_recorder_requirements().unwrap_or(export.recorder);
+        let recorder = export.recorder;
         let key_gauge_limit = recorder
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
@@ -1638,14 +1620,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
             "a hook definition must name a non-empty `module:` (a `kind: hook` plugin)".to_string(),
         );
     }
-    if let Some(grant) = &def.child_dispatch {
-        grant.validate().map_err(str::to_owned)?;
-        if def.kind == Some(HookKind::Tap) {
-            return Err("child dispatch requires a gate hook".into());
-        }
-    }
     Ok(HookCfg {
-        child_dispatch: def.child_dispatch.clone(),
         kind: def.kind.unwrap_or(HookKind::Gate),
         plugin,
         timeout_ms: def.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),
@@ -1678,10 +1653,26 @@ pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
+    let planes = deploy
+        .grammar
+        .prepared()
+        .map_or(&[][..], |read| read.provider_planes());
+    resolve_with_provider_planes(deploy, defs, planes).map(|resolved| resolved.config)
+}
+
+/// Configuration and immutable provider projections validated against this read's admitted images.
+/// Keeping these together prevents boot/reload from substituting another generation's descriptors.
+pub struct ResolvedConfig {
+    pub config: RootCfg,
+    pub catalogs: crate::plane_driver::provider_catalog::ProviderCatalogs,
+}
+
+pub fn resolve_with_provider_planes(
+    deploy: &DeployCfg,
+    defs: &HashMap<String, ProviderDef>,
+    planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
+) -> Result<ResolvedConfig, Vec<String>> {
     let mut errors = Vec::new();
-    if let Err(error) = measurement_rates::validate(&deploy.plugin_rate_cards) {
-        errors.push(coded::config_rate_card_invalid(error).into());
-    }
     for name in deploy
         .rate_card
         .iter()
@@ -1705,25 +1696,6 @@ pub fn resolve(
 
     let mut resolved_providers = ResolvedProviders::default();
 
-    let resolve_provider_hook = crate::plane_driver::registry::plane_decl_for(
-        crate::plane_driver::dispatch::fallback_key(),
-    )
-    .and_then(|d| d.resolve_provider);
-
-    let mut catalog_names: Vec<&String> = defs.keys().collect();
-    catalog_names.sort();
-    for name in catalog_names {
-        let judged = if deploy.providers.is_empty() {
-            providers::judge_unused_catalog_entry(name, &defs[name])
-        } else {
-            providers::judge_catalog_entry(name, &defs[name])
-        };
-        if let Err(refusal) = judged {
-            errors
-                .push(coded::config_provider_invalid(format!("providers.yaml: {refusal}")).into());
-        }
-    }
-
     for (deploy_name, deploy_cfg) in &deploy.providers {
         let Some(def) = defs.get(deploy_name) else {
             errors.push(
@@ -1736,10 +1708,7 @@ pub fn resolve(
             continue;
         };
 
-        let merged = match resolve_provider_hook {
-            Some(f) => f(def, deploy_cfg),
-            None => merge_provider_fallback(def, deploy_cfg),
-        };
+        let merged = merge_provider_fallback(def, deploy_cfg);
         resolved_providers.insert(deploy_name.clone(), merged);
     }
 
@@ -2076,71 +2045,87 @@ pub fn resolve(
         });
 
     let min3 = resolve_min3(deploy, &mut errors);
+    let catalogs = match crate::plane_driver::provider_catalog::resolve(
+        deploy,
+        &resolved_providers,
+        &pools,
+        planes,
+    ) {
+        Ok(catalogs) => catalogs,
+        Err(refused) => {
+            errors.extend(refused);
+            Default::default()
+        }
+    };
 
     if errors.is_empty() {
         let security = deploy.security.clone().unwrap_or_default();
-        Ok(RootCfg {
-            listen: deploy.listen.clone(),
-            listen_explicit: deploy.listen_explicit,
-            public_url: deploy.public_url.clone(),
-            endpoint_resources,
-            oauth_as,
-            credentials: deploy.credentials.clone(),
+        let retained_catalogs = std::sync::Arc::new(catalogs.clone());
+        Ok(ResolvedConfig {
+            catalogs,
+            config: RootCfg {
+                listen: deploy.listen.clone(),
+                listen_explicit: deploy.listen_explicit,
+                public_url: deploy.public_url.clone(),
+                endpoint_resources,
+                oauth_as,
 
-            plane_defs: raw_judged
-                .into_iter()
-                .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
-                .collect(),
-            plane_pools,
-            tls: deploy.tls.clone(),
-            admin_listen: deploy.admin_listen.clone(),
-            admin_tls: deploy.admin_tls.clone(),
-            auth: resolved_auth,
-            providers: resolved_providers,
-            models: deploy.models.clone(),
-            pools,
-            upstream_credentials: deploy
-                .pools
-                .all_pool_upstream_credentials
-                .unwrap_or_default(),
-            hooks: hooks_registry,
+                plane_defs: raw_judged
+                    .into_iter()
+                    .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
+                    .collect(),
+                plane_pools,
+                tls: deploy.tls.clone(),
+                admin_listen: deploy.admin_listen.clone(),
+                admin_tls: deploy.admin_tls.clone(),
+                auth: resolved_auth,
+                providers: resolved_providers,
+                models: deploy.models.clone(),
+                pools,
+                upstream_credentials: deploy
+                    .pools
+                    .all_pool_upstream_credentials
+                    .unwrap_or_default(),
+                hooks: hooks_registry,
 
-            admin_auth: admin_auth_names,
-            groups: deploy.groups.clone(),
-            rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
-            plugin_rate_cards: deploy.plugin_rate_cards.clone(),
-            per_request_fee: deploy.per_request_fee,
-            plane_fees: deploy.plane_fees.clone(),
-            store: deploy.store.clone(),
-            secrets: deploy.secrets.clone(),
-            global_hooks: global_hook_names,
-            blocked_metadata_hosts: security.blocked_metadata_hosts,
-            allow_metadata_hosts: security.allow_metadata_hosts,
-            allow_all_metadata: security.allow_all_metadata,
-            guard: Destinations {
-                block_private_addresses: deploy.advanced.block_private_addresses,
-                allow: deploy.advanced.allow_destinations.clone(),
-                ..Destinations::default()
+                admin_auth: admin_auth_names,
+                groups: deploy.groups.clone(),
+                rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
+                per_request_fee: deploy.per_request_fee,
+                plane_fees: deploy.plane_fees.clone(),
+                store: deploy.store.clone(),
+                secrets: deploy.secrets.clone(),
+                global_hooks: global_hook_names,
+                blocked_metadata_hosts: security.blocked_metadata_hosts,
+                allow_metadata_hosts: security.allow_metadata_hosts,
+                allow_all_metadata: security.allow_all_metadata,
+                guard: Destinations {
+                    block_private_addresses: deploy.advanced.block_private_addresses,
+                    ..Destinations::default()
+                },
+                outbound_tls: deploy.advanced.tls.clone(),
+                proxy_resolution: deploy.advanced.proxy_resolution,
+                login_limits,
+
+                limits: LimitsResolved::from_sections(
+                    &deploy.limits,
+                    &deploy.advanced,
+                    &export,
+                    &deploy.health,
+                    &deploy.routing,
+                ),
+                export,
+                identity_providers: deploy.identity_providers.clone(),
+                operator_overlay_names: deploy.operator_overlay_names.clone(),
+                operator_file_defs: None,
+                export_defs: deploy.export.clone(),
+                plane_sections,
+                grammar: deploy
+                    .grammar
+                    .clone()
+                    .with_provider_catalogs(retained_catalogs),
+                min3,
             },
-            outbound_tls: deploy.advanced.tls.clone(),
-            proxy_resolution: deploy.advanced.proxy_resolution,
-            login_limits,
-
-            limits: LimitsResolved::from_sections(
-                &deploy.limits,
-                &deploy.advanced,
-                &export,
-                &deploy.health,
-                &deploy.routing,
-            ),
-            export,
-            identity_providers: deploy.identity_providers.clone(),
-            operator_overlay_names: deploy.operator_overlay_names.clone(),
-            operator_file_defs: None,
-            export_defs: deploy.export.clone(),
-            plane_sections,
-            grammar: deploy.grammar.clone(),
-            min3,
         })
     } else {
         Err(errors)
@@ -2167,13 +2152,6 @@ fn resolve_min3(deploy: &DeployCfg, errors: &mut Vec<String>) -> min3::Min3Confi
         }
     };
     if let Err(refused) = min3::check_upstream_credentials(&parsed) {
-        errors.extend(refused.into_iter().map(code));
-    }
-    if let Err(refused) = crate::upstreams::ConfiguredUpstreams::from_config(
-        &parsed.upstream_section,
-        &parsed.upstreams,
-        &crate::plugin_config::upstream_anchor,
-    ) {
         errors.extend(refused.into_iter().map(code));
     }
     parsed
@@ -2208,7 +2186,6 @@ mod shipped_structured_outputs_tests;
 mod provider_debug_redaction_tests;
 
 pub mod auth;
-pub mod credentials;
 pub mod hooks;
 pub mod limits;
 pub mod min3;
@@ -2239,6 +2216,7 @@ pub use providers::ProviderAuth;
 #[path = "tests/config_boundary_tests.rs"]
 mod config_boundary_tests;
 
+#[cfg(test)]
 mod provider_grammar;
 
 impl std::fmt::Debug for RootCfg {
@@ -2249,7 +2227,6 @@ impl std::fmt::Debug for RootCfg {
             .field("public_url", &"<redacted>")
             .field("endpoint_resources", &self.endpoint_resources)
             .field("oauth_as", &self.oauth_as)
-            .field("credentials", &self.credentials)
             .field("plane_defs", &self.plane_defs)
             .field("tls", &self.tls)
             .field("admin_listen", &self.admin_listen)
@@ -2263,7 +2240,6 @@ impl std::fmt::Debug for RootCfg {
             .field("admin_auth", &self.admin_auth)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_fees", &self.plane_fees)
             .field("store", &self.store)
@@ -2301,7 +2277,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("providers_file", &self.providers_file)
             .field("endpoint", &self.endpoint)
             .field("oauth_as", &self.oauth_as)
-            .field("credentials", &self.credentials)
             .field("admin_tls", &self.admin_tls)
             .field("admin_require_mtls", &self.admin_require_mtls)
             .field("auth", &self.auth)
@@ -2312,7 +2287,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("hooks", &self.hooks)
             .field("groups", &self.groups)
             .field("rate_card", &self.rate_card)
-            .field("plugin_rate_cards", &self.plugin_rate_cards)
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)
@@ -2320,13 +2294,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("declared_raw", &self.declared_raw)
             .field("store", &self.store)
             .field("secrets", &self.secrets)
-            .field(
-                "upstreams",
-                &self
-                    .upstreams
-                    .as_ref()
-                    .map(|section| section.keys().collect::<Vec<_>>()),
-            )
             .field("advanced", &self.advanced)
             .field("export", &self.export)
             .field("declared", &self.declared)
@@ -2335,6 +2302,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("limits", &self.limits)
             .field("health", &self.health)
             .field("routing", &self.routing)
+            .field("records", &self.records)
             .finish()
     }
 }
@@ -2357,3 +2325,6 @@ impl std::fmt::Debug for FetchTarget {
             .finish()
     }
 }
+
+mod shutdown;
+pub use shutdown::AdvancedShutdownCfg;

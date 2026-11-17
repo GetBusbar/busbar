@@ -19,10 +19,72 @@ pub(super) fn resolve_admission(
         .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
 }
 
-fn refused(refusal: Refusal) -> AdminError {
+pub(crate) fn refused(refusal: Refusal) -> AdminError {
     match refusal {
         Refusal::Validation(m) => AdminError::Validation(m),
         Refusal::Conflict(m) => AdminError::Conflict(m),
+        Refusal::Unavailable {
+            text,
+            retry_after_s,
+        } => AdminError::RetryLater {
+            text,
+            retry_after_s,
+        },
+    }
+}
+
+/// Record one `plugin.inspect` audit row for an operator inspection (DES-443 r3 §5): the actor, the plugin, the
+/// image's sha256, the verdict, how it ended and why. An inspection that reports no load is `manifest` (shown from
+/// its manifest alone) or `refused`.
+fn audited_inspection(
+    inspection: busbar_kernel::admission::Inspection,
+    tarball: &[u8],
+    actor: &str,
+) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+    let (answer, load) = inspection;
+    let (outcome, sha256, opened, reason) = match (&answer, load) {
+        (_, Some(load)) => (load.outcome, load.sha256, load.opened, load.reason),
+        (Ok(_), None) => ("manifest", String::new(), false, None),
+        (Err(refusal), None) => ("refused", String::new(), false, Some(refusal_text(refusal))),
+    };
+    let (plugin, verdict) = match &answer {
+        Ok((stated, judged, _)) => (
+            stated.name.clone(),
+            match judged {
+                Judged::Trusted { .. } => "trusted",
+                Judged::Allowed => "allowed",
+                Judged::Rejected { .. } => "rejected",
+            },
+        ),
+        Err(_) => (String::new(), "unknown"),
+    };
+    let archive = busbar_contract::redacted::sha256_hex(tarball);
+    let mut message = format!("verdict={verdict} opened={opened} archive_sha256={archive}");
+    if !sha256.is_empty() {
+        message.push_str(" sha256=");
+        message.push_str(&sha256);
+    }
+    if let Some(reason) = reason {
+        message.push_str(" reason=");
+        message.push_str(&reason);
+    }
+    busbar_kernel::audit_ring::AUDIT.record_row(busbar_kernel::audit::auditlog::AuditRowInput {
+        action: "plugin.inspect".into(),
+        resource: format!("plugin:{plugin}"),
+        outcome: outcome.into(),
+        principal: actor.into(),
+        kind: Some("plugin".into()),
+        message,
+        ..Default::default()
+    });
+    answer
+}
+
+fn refusal_text(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Validation(text) | Refusal::Conflict(text) | Refusal::Unavailable { text, .. } => {
+            text.clone()
+        }
     }
 }
 
@@ -47,58 +109,28 @@ impl AdminService {
 
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let live = busbar_kernel::persistence::boot_identity::live();
-        let nodes = match live {
-            Some(live) => live
-                .nodes()
-                .await
-                .map_err(|_| AdminError::Internal)?
-                .into_iter()
-                .map(|n| NodeView {
-                    node_id: n.node_id,
-                    started_at: n.started_at,
-                    last_seen_at: n.last_seen_at,
-                    state: n.state.into(),
-                    role: n.role.into(),
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
-
-        let view = self.app.engine_tables_view();
-        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
-            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
-            .collect();
-
+        let started_at_ms = super::started_at_ms();
+        let mut warnings = Vec::new();
+        if busbar_kernel::appbuild::booted_with_ignore_overlay() {
+            warnings.push(InfoWarning {
+                code: "overlay_ignored",
+                message: "booted with --ignore-overlay: the persisted config overlay was not \
+                          merged; a later reload or apply re-merges it",
+                since_ms: started_at_ms.unwrap_or(0),
+            });
+        }
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
-            build: BuildInfo {
-                auth_modules,
-                hook_plugins,
-                weighted_floor: true,
-            },
-            uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
-            started_at: PROCESS_START_EPOCH.get().copied(),
-            process_boot_nonce: busbar_kernel::snapshot::process_generation()
+            deployment_id: live.map(|l| l.deployment_id().to_string()),
+            node_id: live.map(|l| l.node_id()),
+            incarnation: busbar_kernel::snapshot::process_generation()
                 .map(|(nonce, _)| nonce.to_string()),
-            topology: TopologyInfo {
-                pools: view.pools().len(),
-                models: view.model_indices().len(),
-                providers: providers.len(),
-            },
-            config_persistence: self.app.overlay_path.is_some(),
-            config_version: self.app.config_version,
-            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
+            started_at_ms,
             config_generation: self
                 .app
                 .config_generation
                 .load(std::sync::atomic::Ordering::Acquire),
-            overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
-            deployment_id: live.map(|l| l.deployment_id().to_string()),
-            node_id: live.map(|l| l.node_id()),
-            nodes,
+            warnings,
         })
     }
 
@@ -555,6 +587,22 @@ impl AdminService {
             }
         }
         for view in &mut plugins {
+            if let Some(row) = self.app.hook_env.registry.resolve(&view.name) {
+                let verdict = match row.trust {
+                    busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
+                    busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
+                };
+                view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
+                    self.app.hook_env.registry.signature_present(&row.name),
+                    verdict,
+                    &self
+                        .app
+                        .hook_env
+                        .registry
+                        .verification(&row.name)
+                        .unwrap_or_default(),
+                ));
+            }
             if view.configuration.is_none() {
                 let row = self.app.hook_env.registry.resolve(&view.name);
                 let declaration = admission(&self.app).ok().and_then(|admission| {
@@ -712,15 +760,17 @@ impl AdminService {
                 .map(|bytes| busbar_contract::redacted::sha256_hex(bytes));
             let mut view = plugin_inventory_view(row);
             view.configuration = Some(
-                match bytes
-                    .as_ref()
-                    .and_then(|bytes| admission.inspect(bytes, cfg).ok())
-                {
-                    Some((manifest, judged))
+                match bytes.as_ref().and_then(|bytes| {
+                    admission
+                        .inspect_installed_with_verification(bytes, cfg)
+                        .ok()
+                }) {
+                    Some((manifest, judged, verification))
                         if manifest.name == view.name
                             && manifest.kind == view.r#type
                             && Some(&manifest.version) == view.version.as_ref() =>
                     {
+                        view.trust = Some(image_trust(&manifest, &judged, &verification));
                         crate::v1::plugin_configuration::configuration(
                             &manifest.kind,
                             manifest.configuration.as_ref(),
@@ -784,7 +834,7 @@ impl AdminService {
             .admit_upload(&self.app.plugins_dir, &file, tarball, &self.app.plugins_cfg)
             .map_err(refused)?;
         let manifest = &admitted.stated;
-        let (trust, publisher) = match &admitted.judged {
+        let (verdict, publisher) = match &admitted.judged {
             Judged::Trusted { publisher } => ("trusted", Some(publisher.clone())),
             Judged::Allowed => ("unverified", Some(manifest.publisher.clone())),
 
@@ -794,6 +844,11 @@ impl AdminService {
                 )));
             }
         };
+        let trust = crate::v1::contract::PluginTrustView::from_verification(
+            manifest.signature_present,
+            verdict,
+            &admitted.verification,
+        );
         if admitted.linked_serves {
             return Ok(crate::v1::contract::PluginInstallView {
                 file,
@@ -864,17 +919,26 @@ impl AdminService {
     ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
-    pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
+    pub(crate) fn inspect_plugin(
+        &self,
+        tarball: &[u8],
+        actor: &str,
+    ) -> Result<serde_json::Value, AdminError> {
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let cap = admission.max_tarball_bytes();
         check_inspect_tarball_size(tarball.len(), cap)?;
 
-        let (manifest, judged) = admission
-            .inspect(tarball, &self.app.plugins_cfg)
-            .map_err(refused)?;
-        Ok(inspect_plugin_view(manifest, judged, |kind| {
-            admission.restart_default(kind)
-        }))
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(tarball, &self.app.plugins_cfg, false, actor),
+            tarball,
+            actor,
+        )
+        .map_err(refused)?;
+        let trust = image_trust(&manifest, &judged, &verification);
+        let mut view =
+            inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
+        view["trust"] = serde_json::to_value(trust).expect("trust evidence serializes");
+        Ok(view)
     }
 
     /// Static inspection of the exact installed artifact named by a catalog URL. Caller holds
@@ -883,6 +947,7 @@ impl AdminService {
         &self,
         file: &str,
         expected: Option<&str>,
+        actor: &str,
     ) -> Result<serde_json::Value, AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
@@ -894,17 +959,22 @@ impl AdminService {
         )?;
         check_archive_preimage(expected, &bytes)?;
         let digest = busbar_contract::redacted::sha256_hex(&bytes);
-        let (manifest, judged) = admission
-            .inspect(&bytes, &self.app.plugins_cfg)
-            .map_err(refused)?;
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(&bytes, &self.app.plugins_cfg, true, actor),
+            &bytes,
+            actor,
+        )
+        .map_err(refused)?;
         let configuration = crate::v1::plugin_configuration::configuration(
             &manifest.kind,
             manifest.configuration.as_ref(),
             "installed_archive",
             !matches!(&judged, Judged::Rejected { .. }),
         );
+        let trust = image_trust(&manifest, &judged, &verification);
         let mut view =
             inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
+        view["trust"] = serde_json::to_value(trust).expect("trust evidence serializes");
         view["configuration"] =
             serde_json::to_value(configuration).expect("configuration metadata serializes");
         view["source"] = serde_json::json!("installed_archive");
@@ -2083,10 +2153,20 @@ pub(super) fn linked_plugin_view(
     view.valid = Some(true);
     match row.trust {
         busbar_contract::plugin_rows::Trust::Trusted { publisher, .. } => {
-            view.trust = Some("trusted");
+            view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
+                false,
+                "trusted",
+                &Default::default(),
+            ));
             view.publisher = Some(publisher);
         }
-        busbar_contract::plugin_rows::Trust::Allowed { .. } => view.trust = Some("unverified"),
+        busbar_contract::plugin_rows::Trust::Allowed { .. } => {
+            view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
+                false,
+                "unverified",
+                &Default::default(),
+            ))
+        }
     }
     view
 }
@@ -2109,7 +2189,11 @@ fn linked_configuration_view(stated: Stated) -> PluginView {
     view.version = Some(stated.version);
     view.interface_version = Some(stated.abi_version);
     view.publisher = Some(stated.publisher);
-    view.trust = Some("trusted");
+    view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
+        false,
+        "trusted",
+        &Default::default(),
+    ));
     view.valid = Some(true);
     view.has_schema = schema_url.is_some();
     view.schema_url = schema_url.map(|url| format!("{url}?source=linked_statement"));
@@ -2144,8 +2228,12 @@ fn validate_config_blocking(
         &plugins,
         busbar_kernel::config::grammar::Fetch::None,
         "config.validate",
+        rules.as_ref(),
     )?;
-    let deploy = crate::v1::json::typed_body(config, &grammar, parse)?;
+    let mut deploy = crate::v1::json::typed_body(config, grammar.grammar(), parse)?;
+    grammar
+        .attach(&mut deploy)
+        .map_err(AdminError::Validation)?;
     // A dry run never says yes to what apply refuses: the same pre-check, status and text.
     if let Some(refusal) =
         crate::v1::json::config_body_refusal(&deploy, &reference, "config.validate")
@@ -2319,4 +2407,21 @@ mod exact_usage_rollup_tests {
         };
         assert!(overflow.add(&row).is_err());
     }
+}
+
+fn image_trust(
+    manifest: &Stated,
+    judged: &Judged,
+    proof: &busbar_contract::plugin_rows::Verification,
+) -> crate::v1::contract::PluginTrustView {
+    let verdict = match judged {
+        Judged::Trusted { .. } => "trusted",
+        Judged::Allowed => "unverified",
+        Judged::Rejected { .. } => "rejected",
+    };
+    crate::v1::contract::PluginTrustView::from_verification(
+        manifest.signature_present,
+        verdict,
+        proof,
+    )
 }

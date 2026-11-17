@@ -153,13 +153,12 @@ pub(crate) struct NotaryEnd {
     pub(crate) stamped_through: u64,
     /// The last stamp staged (a staged stamp still commits with the journal's final flush).
     pub(crate) committed_through: u64,
-    /// The live signer handle, for the final page.
-    pub(crate) live: SignerHandle<Live>,
     /// Why stamping stopped before `stop()`, if it did.
     pub(crate) halted: Option<String>,
     /// How the Ephemeral journal cut ended.
     pub(crate) journal_cut: CutEnd,
-    /// Whether the final page was staged; absent when no final page was needed.
+    /// The final page (SEALING-FIX §3.6.3 step 3): `Some(true)` staged, `Some(false)` its sign failed
+    /// (`audit_final=signer_failed`), `None` when no line was left unstamped or stamping had halted.
     pub(crate) final_staged: Option<bool>,
 }
 
@@ -185,12 +184,6 @@ impl NotaryTask {
     #[must_use]
     pub(crate) fn exited(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.exited)
-    }
-
-    /// Whether the task has ended (a panic, or after `stop`).
-    #[must_use]
-    pub(crate) fn is_finished(&self) -> bool {
-        self.join.is_finished()
     }
 
     /// The age the stall alert fires at: ten pages, at least one second.
@@ -453,7 +446,6 @@ impl Notary {
         NotaryEnd {
             stamped_through: self.stamped_through,
             committed_through: self.committed_through,
-            live: self.live,
             halted: self.halted,
             journal_cut,
             final_staged,

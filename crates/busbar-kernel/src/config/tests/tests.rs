@@ -5,6 +5,33 @@ use super::*;
 use busbar_contract::yaml::ValueExt;
 
 #[test]
+fn require_if_match_belongs_directly_to_auth_and_survives_resolution() {
+    for (yaml, expected) in [
+        ("{}", None),
+        ("require_if_match: true", Some(true)),
+        ("require_if_match: false", Some(false)),
+        ("require_if_match: null", None),
+    ] {
+        let auth: AuthDeployCfg = busbar_contract::yaml::from_str(yaml).unwrap();
+        assert_eq!(auth.require_if_match, expected, "{yaml}");
+        let mut errors = Vec::new();
+        let resolved = resolve_auth(&auth, &IdentityProviders::new(), &mut errors);
+        assert_eq!(resolved.require_if_match, expected, "{yaml}");
+    }
+    for yaml in [
+        "policy: {require_if_match: true}",
+        "require_if_match: true\npolicy: {require_if_match: false}",
+        "require_if_match: 1",
+        "require_if_match: 'true'",
+    ] {
+        assert!(
+            busbar_contract::yaml::from_str::<AuthDeployCfg>(yaml).is_err(),
+            "{yaml}"
+        );
+    }
+}
+
+#[test]
 fn new_pool_strategy_is_structured_and_does_not_rebind_a_bare_hook() {
     let named: PoolCfg = busbar_contract::yaml::from_str("hooks: [operator-order]").unwrap();
     assert_eq!(named.policy, PoolPolicy::Weighted);
@@ -42,6 +69,7 @@ const CATALOG_PROTOCOL: &str = "proto-a";
 
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
+        authored: Default::default(),
         protocol: protocol.to_string(),
         base_url: base_url.to_string(),
         error_map: HashMap::new(),
@@ -59,6 +87,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
+        authored: Default::default(),
         api_key: crate::config::secret::descriptor_reference(env_var),
         protocol: None,
         base_url: None,
@@ -88,7 +117,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
 
         endpoint: Default::default(),
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
@@ -104,7 +132,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
-        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
@@ -112,7 +139,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
-        upstreams: None,
         advanced: AdvancedCfg::default(),
         plugins: Default::default(),
         security: None,
@@ -121,6 +147,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
+        records: Default::default(),
         audit: Default::default(),
     }
 }
@@ -285,6 +312,49 @@ fn current_reader_rejects_retired_observability_fields() {
             .map_err(crate::config::augment_config_error)
             .expect_err("retired root field");
         assert!(err.contains("unknown field") && err.contains(key), "{err}");
+    }
+}
+
+/// The pre-release `limits.migration_index_bytes`, `limits.migration_value_bytes`,
+/// `limits.datagram_line_memory_bytes`, `advanced.shutdown` and `advanced.governance` keys were
+/// removed before 1.6.0 shipped (fixed values replace them): a config that sets one is refused as an
+/// unknown key, never silently ignored.
+#[test]
+fn removed_pre_release_limits_and_drain_keys_are_refused_as_unknown() {
+    for (document, key) in [
+        (
+            "limits:\n  migration_index_bytes: 1048576\n",
+            "migration_index_bytes",
+        ),
+        (
+            "limits:\n  migration_value_bytes: 1048576\n",
+            "migration_value_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: 4096\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "limits:\n  datagram_line_memory_bytes: null\n",
+            "datagram_line_memory_bytes",
+        ),
+        (
+            "advanced:\n  shutdown:\n    drain_timeout: 30s\n",
+            "drain_timeout",
+        ),
+        (
+            "advanced:\n  governance:\n    max_pending_checkpoints: 7\n",
+            "governance",
+        ),
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\n{document}");
+        let err = deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty())
+            .expect_err("a removed pre-release key must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field") && msg.contains(key),
+            "expected an unknown-field error naming `{key}`; got: {msg}"
+        );
     }
 }
 
@@ -1396,6 +1466,7 @@ fn breaker_trip_default_matches_an_empty_config_object() {
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
+        require_if_match: None,
         signing_key: Some(crate::config::secret::descriptor_reference(
             "BUSBAR_T_DEBUG_SECRET",
         )),
@@ -1405,6 +1476,9 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         key_ttl: None,
         policy: Default::default(),
         login_limits: Default::default(),
+        verdict_cache: Default::default(),
+        outbound: Default::default(),
+        unknown_key_refresh_s: 30,
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -1419,8 +1493,9 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             )),
             browser_login: None,
             settings: serde_json::Map::new().into(),
-            limits: None,
             insecure_transport: None,
+            provisioning: None,
+            issued_kinds: None,
         },
     );
     deploy.tls = Some(TlsCfg {
@@ -1464,7 +1539,6 @@ models:
 "#;
     let deploy: DeployCfg =
         busbar_contract::yaml::from_str(yaml).expect("config without a limits block must parse");
-    assert_eq!(deploy.limits.datagram_line_memory_bytes, None);
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
@@ -1472,7 +1546,6 @@ models:
         &deploy.health,
         &deploy.routing,
     );
-    assert_eq!(l.datagram_line_memory_bytes, None);
     assert_eq!(
         l.upstream_request_timeout_secs,
         DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS
@@ -1519,61 +1592,6 @@ models:
     assert_eq!(l.default_probe_interval_secs, DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(l.default_policy_timeout_ms, DEFAULT_POLICY_TIMEOUT_MS);
-}
-
-#[test]
-fn datagram_line_memory_limit_is_opt_in_and_resolves_to_root() {
-    assert_eq!(LimitsCfg::default().datagram_line_memory_bytes, None);
-    assert_eq!(LimitsResolved::default().datagram_line_memory_bytes, None);
-    for (yaml, expected) in [
-        ("{}", None),
-        ("datagram_line_memory_bytes: null", None),
-        ("datagram_line_memory_bytes: 1", Some(1)),
-        ("datagram_line_memory_bytes: 12345", Some(12345)),
-    ] {
-        let document = format!("providers: {{}}\nmodels: {{}}\nlimits:\n  {yaml}\n");
-        let deploy = deploy_from_yaml_str(&document, &crate::config::Grammar::empty())
-            .expect("boot parser accepts the optional limit");
-        assert_eq!(deploy.limits.datagram_line_memory_bytes, expected);
-        let cfg = resolve(&deploy, &HashMap::new()).expect("resolve the real config");
-        assert_eq!(cfg.limits.datagram_line_memory_bytes, expected);
-    }
-
-    assert!(serde_json::to_value(LimitsCfg::default())
-        .unwrap()
-        .get("datagram_line_memory_bytes")
-        .is_none());
-}
-
-#[test]
-fn datagram_line_memory_limit_refuses_invalid_types_and_out_of_range_values() {
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "'1024'",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let yaml = format!("datagram_line_memory_bytes: {value}");
-        assert!(
-            busbar_contract::yaml::from_str::<LimitsCfg>(&yaml).is_err(),
-            "{yaml}"
-        );
-    }
-    for value in [
-        "-1",
-        "1.5",
-        "true",
-        "\"1024\"",
-        "[]",
-        "{}",
-        "18446744073709551616",
-    ] {
-        let json = format!(r#"{{"datagram_line_memory_bytes":{value}}}"#);
-        assert!(serde_json::from_str::<LimitsCfg>(&json).is_err(), "{json}");
-    }
 }
 
 #[test]
@@ -2706,8 +2724,8 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         assert_eq!(
             message,
             format!(
-                "auth.bogus_key: unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
-                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits` at line {line} \
+                "auth.bogus_key: unknown field `bogus_key`, expected one of `unknown_key_refresh_s`, `require_if_match`, `signing_key`, `chain`, \
+                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache`, `outbound` at line {line} \
                  column 3"
             )
         );
@@ -2741,19 +2759,19 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
         )
     };
     let error = parse("bogus_key: true\n").expect_err("unknown field");
-    // `oauth_as` and `credentials` are named among the document's fields, in 1.5.5's spelling
+    // `oauth_as` is named among the document's fields, in 1.5.5's spelling
     // (serde's backticked list). `config_version` is the 1.6.0 stamp (MIGRATE-ON-BOOT r42 §3, 257c).
     assert_eq!(
         error.to_string(),
         "bogus_key: unknown field `bogus_key`, expected one of `config_version`, `listen`, \
          `public_url`, `tls`, \
-         `admin_listen`, `config`, `providers_file`, `oauth_as`, `credentials`, `admin_tls`, \
+         `admin_listen`, `config`, `providers_file`, `oauth_as`, `admin_tls`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
-         `hooks`, `groups`, `rate_card`, `plugin_rate_cards`, `per_request_fee`, `store`, \
+         `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
-         `telemetry`, `audit` at line 3 column 1"
+         `telemetry`, `records`, `audit` at line 3 column 1"
     );
-    for field in ["oauth_as", "credentials"] {
+    for field in ["oauth_as"] {
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
         assert!(
@@ -2761,15 +2779,109 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
             "{duplicate}"
         );
     }
-    let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");
+    let empty = parse("oauth_as: null\n").expect("null optional sections");
     assert!(empty.oauth_as.is_none());
-    assert!(empty.credentials.at_rest.is_none());
-    let credentials = parse("credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n")
-        .expect("current credential schema");
-    assert!(credentials.credentials.at_rest.is_some());
-    let typo = parse("credentials:\n  unknowable: true\n").expect_err("strict credential schema");
-    assert!(typo.to_string().contains("unknown field `unknowable`"));
-    assert_eq!(typo.location().unwrap().line(), 4);
+}
+
+#[test]
+fn the_removed_credentials_section_is_refused_as_an_unknown_key() {
+    for tail in [
+        "credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n",
+        "credentials: {}\n",
+    ] {
+        let error = crate::config::deploy_from_yaml_str(
+            &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+            &crate::config::Grammar::empty(),
+        )
+        .expect_err("`credentials` is no longer a config key");
+        assert!(
+            error.to_string().contains("unknown field `credentials`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_1_5_5_shaped_config_still_parses() {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "listen: \"0.0.0.0:8080\"\nauth:\n  signing_key: { module: fixture-source, settings: { slot: SIGNING } }\nproviders: {}\nmodels: {}\n",
+        &crate::config::Grammar::empty(),
+    )
+    .expect("a 1.5.5-shaped config parses");
+    assert!(deploy.auth.is_some_and(|a| a.signing_key.is_some()));
+}
+
+fn parse_records(tail: &str) -> Result<DeployCfg, String> {
+    crate::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\n{tail}"),
+        &crate::config::Grammar::empty(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// RED (ADMIN-API-1.6 §3.5): `records:` is off by default, reads `user` and up to eight `labels`,
+/// and refuses a ninth label loudly, naming the key and the bound.
+#[test]
+fn records_labels_refuse_a_ninth_header() {
+    use crate::config::{RecordsCfg, RecordsUser};
+    let absent = parse_records("").expect("no records section");
+    assert_eq!(absent.records, RecordsCfg::default());
+    assert_eq!(absent.records.user, RecordsUser::Off);
+    assert!(absent.records.labels.is_empty());
+
+    let eight = parse_records(
+        "records:\n  user: pseudonymous\n  labels: [x-a, x-b, x-c, x-d, x-e, x-f, x-g, x-h]\n",
+    )
+    .expect("eight labels");
+    assert_eq!(eight.records.user, RecordsUser::Pseudonymous);
+    assert_eq!(eight.records.labels.len(), 8);
+    for (text, mode) in [
+        ("off", RecordsUser::Off),
+        ("plain", RecordsUser::Plain),
+        ("pseudonymous", RecordsUser::Pseudonymous),
+    ] {
+        let read = parse_records(&format!("records:\n  user: {text}\n")).expect(text);
+        assert_eq!(read.records.user, mode, "{text}");
+    }
+
+    let nine = parse_records("records:\n  labels: [x-a, x-b, x-c, x-d, x-e, x-f, x-g, x-h, x-i]\n")
+        .expect_err("a ninth label is refused");
+    assert!(
+        nine.contains("records.labels") && nine.contains("at most 8"),
+        "{nine}"
+    );
+}
+
+/// RED (ADMIN-API-1.6 §3.5): `records:` denies unknown fields like its siblings (no body paths),
+/// an unknown mode, a malformed or repeated header name, and a header that carries a credential.
+#[test]
+fn records_refuse_unknown_fields_and_bad_names() {
+    let unknown = parse_records("records:\n  user: plain\n  body_paths: [$.user]\n")
+        .expect_err("an unknown records field is refused");
+    assert!(unknown.contains("unknown field `body_paths`"), "{unknown}");
+    let mode = parse_records("records:\n  user: hashed\n").expect_err("an unknown mode");
+    assert!(mode.contains("hashed"), "{mode}");
+    for bad in ["''", "'x team'", "'x:team'"] {
+        let refused = parse_records(&format!("records:\n  labels: [{bad}]\n"))
+            .expect_err("not a header name");
+        assert!(refused.contains("records.labels"), "{bad}: {refused}");
+    }
+    let repeated =
+        parse_records("records:\n  labels: [x-team, X-Team]\n").expect_err("a header named twice");
+    assert!(repeated.contains("records.labels"), "{repeated}");
+    for credential in [
+        "authorization",
+        "Cookie",
+        "proxy-authorization",
+        "x-api-key",
+    ] {
+        let refused = parse_records(&format!("records:\n  labels: [{credential}]\n"))
+            .expect_err("a credential header is never sealed");
+        assert!(
+            refused.contains("records.labels"),
+            "{credential}: {refused}"
+        );
+    }
 }
 
 #[test]
@@ -3137,4 +3249,56 @@ fn audit_seal_every_is_whole_milliseconds_from_1_to_1000() {
         .expect_err("an unknown key under audit: is refused")
         .to_string();
     assert!(unknown.contains("sign_every"), "{unknown}");
+}
+
+#[test]
+fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
+    let trust: PluginsTrustCfg = busbar_contract::yaml::from_str(
+        "allow_untrusted: true\npublishers:\n- name: vendor\n  plugins: [example]\n  keys:\n  - public_key: deadbeef\n    revoked: true\n",
+    ).unwrap();
+    assert!(trust.allow_untrusted);
+    assert_eq!(trust.publishers[0].plugins, ["example"]);
+    assert!(trust.publishers[0].keys[0].revoked);
+    for old in ["allow_unsigned", "allow_third_party"] {
+        assert!(
+            busbar_contract::yaml::from_str::<PluginsTrustCfg>(&format!("{old}: true")).is_err()
+        );
+    }
+}
+
+#[test]
+fn shutdown_deregister_delay_is_a_bounded_document_duration() {
+    let default: AdvancedCfg = busbar_contract::yaml::from_str("{}").unwrap();
+    let view = busbar_contract::json::to_value(&default).unwrap();
+    assert_eq!(view["shutdown"]["deregister_delay"], "5s");
+    for (written, expected) in [("0s", "0s"), ("5s", "5s"), ("300s", "300s"), ("5m", "300s")] {
+        let value: AdvancedCfg =
+            busbar_contract::yaml::from_str(&format!("shutdown:\n  deregister_delay: {written}\n"))
+                .unwrap();
+        let view = busbar_contract::json::to_value(&value).unwrap();
+        assert_eq!(view["shutdown"]["deregister_delay"], expected);
+    }
+    for written in [
+        "301s",
+        "6m",
+        "-1s",
+        "0.5s",
+        "never",
+        "999999999999999999999999s",
+        "5",
+        "null",
+    ] {
+        let error = busbar_contract::yaml::from_str::<AdvancedCfg>(&format!(
+            "shutdown:\n  deregister_delay: {written}\n"
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("deregister_delay"), "{error}");
+    }
+    assert!(
+        busbar_contract::yaml::from_str::<crate::config::patch::AdvancedPatch>(
+            "shutdown:\n  deregister_delay: 0s\n"
+        )
+        .is_err(),
+        "the new field is document-editable, not a settings patch"
+    );
 }
