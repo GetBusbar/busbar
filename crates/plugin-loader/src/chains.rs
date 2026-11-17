@@ -117,7 +117,6 @@ impl Needs for DeniedNeeds {
 }
 
 use busbar_plugin_abi::host_side::pool::Pool;
-use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_OPEN;
 use busbar_plugin_abi::records::{
     tag, CoreCfgRec, MaskRec, MetricDecl, Rec, RecErr, Records, Reply, U64Rec, Writer,

@@ -232,7 +232,7 @@ serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
 # JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
-sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "f28e8916d67f17931708430348341254a113b0c8" }
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
