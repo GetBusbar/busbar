@@ -510,6 +510,36 @@ fn native_physical_body_rejects_unfunded_spare_capacity() {
 }
 
 #[test]
+fn native_physical_head_charges_unused_descriptor_backing() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.fields = Vec::with_capacity(8);
+    assert!(matches!(
+        conn.head(1, original, f.budget.try_enter(AdmissionClass::Data).unwrap(), None),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+    // A refused head has not occupied the stream or retained the request permit.
+    let (request, _owner) = arrive(&f, &conn, 1);
+    assert!(request.binding().check_live().is_ok());
+}
+
+#[test]
+fn native_physical_head_charges_spare_string_backing() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let mut original = head("/one");
+    original.authority = String::with_capacity(256);
+    original.authority.push_str("a");
+    assert!(matches!(
+        conn.head(1, original, f.budget.try_enter(AdmissionClass::Data).unwrap(), None),
+        Err(ArrivalRefusal::Capacity)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
 fn native_physical_incomplete_body_cannot_enter_completion() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
