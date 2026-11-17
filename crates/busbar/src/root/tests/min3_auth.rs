@@ -450,3 +450,172 @@ async fn native_admin_lease_survives_publication_during_replay_and_pins_actual_e
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn cancellation_before_verify_and_after_claim_cannot_create_execution() {
+    use busbar_kernel::auth::admin_verdict_for;
+    let (handle, app, owners, _) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let held = Arc::downgrade(&invocation.request);
+    {
+        let mut verify = std::pin::pin!(admin_verdict_for(invocation, &headers));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(verify.as_mut(), &mut cx).is_pending());
+    }
+    assert!(
+        held.upgrade().is_none(),
+        "cancelled preparation releases original request custody"
+    );
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    let pending = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    {
+        let mut complete = std::pin::pin!(pending.complete_admin());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(complete.as_mut(), &mut cx).is_pending());
+    }
+    assert!(pending.complete_admin().await.is_err());
+    assert_eq!(
+        owners.0.load(Ordering::SeqCst),
+        1,
+        "cancellation cannot start a second claim"
+    );
+}
+
+#[tokio::test]
+async fn independent_native_admin_requests_compete_at_final_replay() {
+    use busbar_kernel::auth::admin_verdict_for;
+    let (handle, app, owners, _) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let a = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    let b = admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await
+    .claim
+    .unwrap();
+    let (a, b) = tokio::join!(a.complete_admin(), b.complete_admin());
+    assert_ne!(a.is_ok(), b.is_ok());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn expired_invocation_deadline_refuses_before_replay_submission() {
+    let (handle, app, owners, _) = admin_fixture().await;
+    let mut invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    invocation.cx.deadline = std::time::Instant::now();
+    let verdict =
+        busbar_kernel::auth::admin_verdict_for(invocation, &axum::http::HeaderMap::new()).await;
+    assert!(verdict.claim.unwrap().complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn root_router_errand_reuses_completed_native_admission_without_second_verification() {
+    use crate::root::units_admin::{AdminDispatch, AdminRequest, RouterDispatch};
+    let (handle, app, owners, port) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let unit = invocation.id.request_id().get();
+    let verdict = busbar_kernel::auth::admin_verdict_for(invocation, &headers).await;
+    let execution = Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap());
+    let inner = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
+    let dispatch = RouterDispatch::new(
+        inner,
+        &tokio::runtime::Handle::current(),
+        Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
+    );
+    let request = AdminRequest {
+        method: "GET".into(),
+        path: "/api/v1/admin/audit".into(),
+        credential: None,
+        headers: vec![],
+        body: b"admin-body".to_vec(),
+        at: busbar_kernel::store::now(),
+        unit,
+    };
+    let resolved =
+        busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path).unwrap();
+    let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
+    let answer = dispatch
+        .execute_authorized(verb, &request, None, Some(&execution))
+        .await;
+    assert_eq!(answer.status, 200);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    let mut changed = request.clone();
+    changed.body = b"different body".to_vec();
+    assert_eq!(
+        dispatch
+            .execute_authorized(verb, &changed, None, Some(&execution))
+            .await
+            .status,
+        401
+    );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_identity_without_grants_stays_identified_and_cannot_claim() {
+    let (_, prior, owners, port) = admin_fixture().await;
+    let mut app = (*prior).clone();
+    app.role_bindings.clear();
+    let set = Arc::new(AuthSet {
+        instances: BTreeMap::from([("provider-42".into(), instance(42, port))]),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners.clone(),
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut app, set, epoch).unwrap();
+    let app = Arc::new(app);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
+    let verdict = busbar_kernel::auth::admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &axum::http::HeaderMap::new(),
+    )
+    .await;
+    assert!(matches!(
+        verdict.door,
+        busbar_kernel::auth::AdminDoor::Identified(_, _)
+    ));
+    assert!(!busbar_kernel::auth::admin_door_admits(
+        &verdict.door,
+        "GET",
+        "/api/v1/admin/audit"
+    ));
+    assert!(verdict.claim.unwrap().complete_admin().await.is_err());
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn missing_native_admin_coverage_refuses_candidate_construction() {
+    let (_, prior, owners, _) = admin_fixture().await;
+    let mut app = (*prior).clone();
+    let empty = Arc::new(AuthSet {
+        instances: BTreeMap::new(),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners,
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    assert!(crate::root::min3_admin_auth::install(&mut app, empty, epoch).is_err());
+}

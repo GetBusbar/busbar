@@ -110,19 +110,38 @@ pub(crate) trait AdminDispatch: Send + Sync {
     ) -> AdminAnswer {
         self.execute(verb, request).await
     }
+
+    async fn execute_authorized(
+        &self,
+        verb: KernelVerb,
+        request: &AdminRequest,
+        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        _execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    ) -> AdminAnswer {
+        match admission {
+            Some(admission) => self.execute_admitted(verb, request, admission).await,
+            None => self.execute(verb, request).await,
+        }
+    }
 }
 
 /// Host-owned request context, never part of the serialized administrative request.
 struct AdmittedDispatch {
     inner: Arc<dyn AdminDispatch>,
-    admission: busbar_kernel::inbound::RequestAdmission,
+    admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
 }
 
 #[async_trait::async_trait]
 impl AdminDispatch for AdmittedDispatch {
     async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
         self.inner
-            .execute_admitted(verb, request, &self.admission)
+            .execute_authorized(
+                verb,
+                request,
+                self.admission.as_ref(),
+                self.execution.as_ref(),
+            )
             .await
     }
 }
@@ -1861,7 +1880,7 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             if let Some(context) = &mut walk.effect_context {
                 context
                     .attach_execution(execution.clone())
-                    .map_err(|()| ReasonCode::Unauthenticated)?;
+                    .map_err(|_| ReasonCode::Unauthenticated)?;
             }
             walk.execution = Some(execution);
         }
@@ -1872,12 +1891,12 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             pending
                 .complete_admin()
                 .await
-                .map_err(|()| ReasonCode::Unauthenticated)?,
+                .map_err(|_| ReasonCode::Unauthenticated)?,
         );
         if let Some(context) = &mut walk.effect_context {
             context
                 .attach_execution(execution.clone())
-                .map_err(|()| ReasonCode::Unauthenticated)?;
+                .map_err(|_| ReasonCode::Unauthenticated)?;
         }
         walk.execution = Some(execution);
     }
@@ -1941,15 +1960,15 @@ pub(crate) async fn route(
     let granted = walk.granted.ok_or(ReasonCode::ScopeDenied)?;
     let request = &walk.request;
 
-    let dispatch: Arc<dyn AdminDispatch> = walk.admission.as_ref().map_or_else(
-        || Arc::clone(&binding.dispatch),
-        |admission| {
-            Arc::new(AdmittedDispatch {
-                inner: Arc::clone(&binding.dispatch),
-                admission: admission.clone(),
-            }) as Arc<dyn AdminDispatch>
-        },
-    );
+    let dispatch: Arc<dyn AdminDispatch> = if walk.admission.is_some() || walk.execution.is_some() {
+        Arc::new(AdmittedDispatch {
+            inner: Arc::clone(&binding.dispatch),
+            admission: walk.admission.clone(),
+            execution: walk.execution.clone(),
+        })
+    } else {
+        Arc::clone(&binding.dispatch)
+    };
 
     if mints_its_own_identity(verb) {
         walk.answer = Some(dispatch.execute(verb, request).await);

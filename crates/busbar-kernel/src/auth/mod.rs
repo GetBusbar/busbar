@@ -294,14 +294,16 @@ impl PendingClaim {
         )))
     }
 
-    pub async fn complete_admin(&self) -> Result<native_admin::ExecutionAdmission, ()> {
+    pub async fn complete_admin(
+        &self,
+    ) -> Result<native_admin::ExecutionAdmission, native_admin::AdmissionRefused> {
         match &self.0 {
             PendingKind::Native(pending) => pending.complete().await,
             PendingKind::Legacy { claim, gov } => claim
                 .win(gov.as_deref())
                 .await
                 .then(native_admin::ExecutionAdmission::legacy)
-                .ok_or(()),
+                .ok_or(native_admin::AdmissionRefused),
         }
     }
 
@@ -2481,9 +2483,42 @@ pub(crate) async fn auth_middleware(
                 crate::guest::Claimant::Clean(name) if name == "core")
                     && matches!(admission.selected_line().auth, crate::guest::LineAuth::None)
             });
-        let (door, strips, who) = if let Some(admission) =
-            inbound.as_ref().filter(|_| !deferred_core_admin)
-        {
+        let completed = req
+            .extensions()
+            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+            .filter(|e| e.native().is_some())
+            .cloned();
+        let (door, strips, who) = if let Some(execution) = completed {
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = axum::body::to_bytes(body, body_limit).await.map_err(|_| {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body exceeds configured limit",
+                )
+                    .into_response()
+            })?;
+            *req.body_mut() = Body::from(bytes.clone());
+            let (lease, prepared) = execution.native().ok_or_else(admin_unauthorized_response)?;
+            if !std::sync::Arc::ptr_eq(lease.generation(), &app)
+                || !execution.matches_http(
+                    req.method().as_str(),
+                    target,
+                    inbound_headers.unwrap_or_else(|| req.headers()),
+                    &bytes,
+                )
+            {
+                return Err(admin_unauthorized_response());
+            }
+            let door = execution
+                .door_for(lease.generation())
+                .ok_or_else(admin_unauthorized_response)?;
+            let strips = prepared
+                .identity()
+                .strip()
+                .map(|name| Strip::field(name.to_owned()))
+                .collect();
+            (door, strips, execution.who())
+        } else if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
             let verdict = admission.admin_verdict();
             if admin_door_admits(&verdict.door, req.method().as_str(), target)
                 && !admission.claim_admin_replay().await
@@ -2556,7 +2591,7 @@ pub(crate) async fn auth_middleware(
                     let execution = pending
                         .complete_admin()
                         .await
-                        .map_err(|()| admin_unauthorized_response())?;
+                        .map_err(|_| admin_unauthorized_response())?;
                     req.extensions_mut().insert(std::sync::Arc::new(execution));
                 }
             }
@@ -2576,7 +2611,7 @@ pub(crate) async fn auth_middleware(
         {
             effect_context
                 .attach_execution(execution.clone())
-                .map_err(|()| admin_unauthorized_response())?;
+                .map_err(|_| admin_unauthorized_response())?;
         }
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
