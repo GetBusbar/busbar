@@ -86,6 +86,7 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 pub(crate) struct NativePort {
     pub(crate) calls: AtomicUsize,
+    pub(crate) body_hashes: Mutex<Vec<Option<[u8; 32]>>>,
     seen: Mutex<Vec<(String, String, Option<String>, bool)>>,
 }
 fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
@@ -134,6 +135,7 @@ impl AuthPort for NativePort {
     ) -> BoxFut<'a, Result<OutboundAnswer, PortError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.body_hashes.lock().unwrap().push(req.body_sha256);
             self.seen.lock().unwrap().push((
                 req.method.into(),
                 req.url.into(),
@@ -202,6 +204,37 @@ fn input(scope: Option<&str>) -> UpstreamIn<'_> {
         caller_grant: None,
         min_valid_s: 0,
     }
+}
+
+#[test]
+fn native_scope_cache_key_preserves_sha256_bytes_and_identity() {
+    let port = Arc::new(NativePort::default());
+    let binding = native_binding(Arc::clone(&port), busbar_plugin_abi::auth::STYLE_SCOPE, 3);
+    for (scope, digest) in [
+        (
+            "",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "abc",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            "é\0a",
+            "2abae60aa04ead065b9e11ba3ef9a2291cb04c13a7ae09fac214d46b8db68d9f",
+        ),
+    ] {
+        let key = binding.cache_key(Some(scope));
+        assert_eq!(key.scope.as_slice(), hex::decode(digest).unwrap());
+        assert_eq!(
+            (key.auth_instance, key.upstream, key.caller),
+            (21, 3, [0; 32])
+        );
+    }
+    assert_eq!(binding.cache_key(None).scope, [0; 32]);
+    assert_ne!(binding.cache_key(None), binding.cache_key(Some("")));
+    let unscoped = native_binding(port, 0, 3);
+    assert_eq!(unscoped.cache_key(Some("abc")), binding.cache_key(None));
 }
 
 #[tokio::test]

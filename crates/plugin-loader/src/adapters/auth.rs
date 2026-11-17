@@ -19,7 +19,9 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Writer};
-use busbar_plugin_abi::types::{Bytes, Pair, Slice, Status, Str};
+#[cfg(test)]
+use busbar_plugin_abi::types::Pair;
+use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
 use crate::instance::ErrorBook;
 use busbar_ports::auth::{

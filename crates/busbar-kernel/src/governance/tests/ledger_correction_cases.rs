@@ -55,6 +55,7 @@ async fn metered_entry(store: &CoreStore, key: &VirtualKey, era: RawRateEra, now
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),
@@ -1344,6 +1345,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),

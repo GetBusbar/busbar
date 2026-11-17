@@ -193,8 +193,31 @@ async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
             .bytes(),
         ),
     });
-    let mut expected_body = first.candidate().clone();
-    expected_body.mutations = expected;
+    let body = first.candidate();
+    let expected_body = busbar_contract::persistence::Candidate {
+        id: body.id,
+        codec: body.codec,
+        predicates: body
+            .predicates
+            .iter()
+            .map(|predicate| busbar_contract::persistence::Predicate {
+                address: predicate.address.clone(),
+                expected: match &predicate.expected {
+                    busbar_contract::persistence::ExpectedValue::Absent => {
+                        busbar_contract::persistence::ExpectedValue::Absent
+                    }
+                    busbar_contract::persistence::ExpectedValue::Exact(value) => {
+                        busbar_contract::persistence::ExpectedValue::Exact(Secret::new(
+                            value.expose(&crate::seal::lend()).to_vec(),
+                        ))
+                    }
+                },
+            })
+            .collect(),
+        mutations: expected,
+        time: body.time,
+        result: Secret::new(body.result.expose(&crate::seal::lend()).to_vec()),
+    };
     let expected = busbar_contract::persistence::PreparedCandidate::new(expected_body).unwrap();
     assert_eq!(
         first.fingerprint(),

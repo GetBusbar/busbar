@@ -1133,6 +1133,7 @@ impl PlaneMoney {
             terminal: None,
             measurement: None,
             unread: None,
+            partitions: None,
             audit: self
                 .post
                 .checkpoint_facts(key)
