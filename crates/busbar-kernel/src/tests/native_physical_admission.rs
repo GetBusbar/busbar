@@ -758,8 +758,10 @@ fn native_physical_public_completion_cannot_follow_reset() {
 fn native_operator_prepared_routes_use_the_actual_admin_mount_surface() {
     let prepared = PreparedListener::new_admin(&app()).unwrap();
     let lines: Vec<_> = prepared.core_lines().collect();
-    assert!(lines.iter().any(|(path, method, auth)| *path == crate::auth::HEALTHZ_PATH
-        && *method == busbar_contract::abi::mechanism::route::RouteMethod::Get
-        && *auth == RouteAuth::None));
+    assert!(lines
+        .iter()
+        .any(|(path, method, auth)| *path == crate::auth::HEALTHZ_PATH
+            && *method == busbar_contract::abi::mechanism::route::RouteMethod::Get
+            && *auth == RouteAuth::None));
     assert!(!lines.iter().any(|(path, _, _)| *path == "/stats"));
 }
