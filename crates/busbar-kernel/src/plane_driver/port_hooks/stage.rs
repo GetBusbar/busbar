@@ -8,7 +8,7 @@ use super::super::hooks::{Constraint, HooksRan, Restrict};
 use super::super::port_serve::Drive;
 use super::super::port_session::{Answer, Calls, ClientSink, Effects, SessionError, Task};
 use super::super::port_upstream::Wants;
-use super::{call, CandidateView, Invocation, Projection, Selected, Selection};
+use super::{call, CandidateView, Invocation, Projection, RouteCounters, Selected, Selection};
 use crate::host_services::InvocationContext;
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{plane::PlaneIn, FactVal, PortError};
@@ -262,12 +262,13 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 .block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran))
                 .map_err(|_| unavailable(req.route, drive.refusals))?;
             if answer.verb == abi::VERB_REJECT {
-                return Err(SessionError::HookRefused(drive.refusals.for_hook(
+                return Err(rejected(
+                    &called,
+                    &answer,
                     req.route,
-                    &called.name,
-                    answer.reject_status,
-                    answer.message.as_deref(),
-                )));
+                    drive.refusals,
+                    stage.selected.counters.as_deref(),
+                ));
             }
             if answer.verb != abi::VERB_REWRITE || !called.prompt.can_rewrite() {
                 continue;
@@ -312,12 +313,13 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 outcome.map_err(|_| unavailable(req.route, drive.refusals))?;
             normalize(&mut answer, &stage.candidates);
             if answer.verb == abi::VERB_REJECT {
-                return Err(SessionError::HookRefused(drive.refusals.for_hook(
+                return Err(rejected(
+                    &called,
+                    &answer,
                     req.route,
-                    &called.name,
-                    answer.reject_status,
-                    answer.message.as_deref(),
-                )));
+                    drive.refusals,
+                    stage.selected.counters.as_deref(),
+                ));
             }
             judged.push((called, answer));
         }
@@ -332,6 +334,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     req.route,
                     drive.refusals,
                     &stage.candidates,
+                    stage.selected.counters.as_deref(),
                 )?;
             }
         }
@@ -355,6 +358,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     req.route,
                     drive.refusals,
                     &stage.candidates,
+                    stage.selected.counters.as_deref(),
                 )?;
             }
         }
@@ -373,6 +377,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     req.route,
                     drive.refusals,
                     &stage.candidates,
+                    stage.selected.counters.as_deref(),
                 )?;
             }
         }
@@ -390,6 +395,8 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 .retain(|candidate| kept.contains(&candidate.facts.idx));
             constraint.keep = Some(kept);
         }
+        let ordered = constraint.order.is_some() || constraint.prioritize.is_some();
+        let decided = constraint.policy.clone().filter(|_| ordered);
         if let Some(wants) = &wants {
             if !drive
                 .members
@@ -398,6 +405,9 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             {
                 return Err(SessionError::HookPrerequisite);
             }
+        }
+        if let (Some(counters), Some(decider)) = (stage.selected.counters.as_deref(), &decided) {
+            counters.selected(decider);
         }
         stage.taps(
             &stage.selected.taps.candidate,
@@ -428,16 +438,10 @@ fn apply(
     route: u32,
     refusals: &dyn crate::refusal::RefusalMap,
     candidates: &[CandidateView],
+    counters: Option<&RouteCounters>,
 ) -> Result<(), SessionError> {
     match answer.verb {
-        abi::VERB_REJECT => {
-            return Err(SessionError::HookRefused(refusals.for_hook(
-                route,
-                &call.name,
-                answer.reject_status,
-                answer.message.as_deref(),
-            )))
-        }
+        abi::VERB_REJECT => return Err(rejected(call, answer, route, refusals, counters)),
         abi::VERB_RESTRICT => constraint.restricts.push(Restrict {
             tags_any: answer
                 .restrict
@@ -466,7 +470,7 @@ fn apply(
                 } else {
                     constraint.prioritize = Some(order);
                 }
-                constraint.policy = Some(call.name.clone());
+                constraint.policy = Some(call.decider().clone());
             } else if answer.verb == abi::VERB_PREFER {
                 constraint.order = None;
             }
@@ -474,6 +478,27 @@ fn apply(
         _ => {}
     }
     Ok(())
+}
+
+/// A VERB_REJECT: the client refusal, counted under the rejecting call's deciding name at the
+/// refusal's status.
+fn rejected(
+    call: &super::Call,
+    answer: &busbar_ports::hook::HookAnswer,
+    route: u32,
+    refusals: &dyn crate::refusal::RefusalMap,
+    counters: Option<&RouteCounters>,
+) -> SessionError {
+    let refusal = refusals.for_hook(
+        route,
+        &call.name,
+        answer.reject_status,
+        answer.message.as_deref(),
+    );
+    if let Some(counters) = counters {
+        counters.rejected(call.decider(), refusal.status);
+    }
+    SessionError::HookRefused(refusal)
 }
 
 fn normalize(answer: &mut busbar_ports::hook::HookAnswer, candidates: &[CandidateView]) {
