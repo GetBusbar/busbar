@@ -441,6 +441,23 @@ mod on_unix {
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
+    fn failed_native_open_keeps_its_staged_identity() {
+        let bytes = b"invalid native image for retained staging identity";
+        let mut staged_path = None;
+        let opened = load_via_staged_file(bytes, "failed-open-custody", &mut |path| {
+            staged_path = Some(path.to_path_buf());
+        });
+        assert!(opened.is_err(), "the invalid image must not open");
+        let path = staged_path.expect("the real native open was attempted");
+        assert_eq!(
+            std::fs::read(path).expect("uncertain open must retain its staging identity"),
+            bytes
+        );
+        // The production owner intentionally keeps this name and pin until process exit.
+        // The ordinary dead-process staging sweep owns its eventual removal.
+    }
+
+    #[test]
     fn the_staged_bytes_are_the_verified_bytes() {
         let (verified, other) = two_libraries();
         clean_load_holds_the_verified_bytes(&verified);
