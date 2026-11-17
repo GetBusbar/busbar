@@ -63,7 +63,11 @@ pub fn resolve_strategy(
 }
 
 fn binding(word: &str, implicit: bool) -> StrategyBinding {
-    crate::off_path::hooks::strategy_binding(word, implicit)
+    StrategyBinding {
+        word: Box::from(word),
+        instance: Box::from(word),
+        implicit,
+    }
 }
 
 fn text(parts: &[&str]) -> ConfigRefused {

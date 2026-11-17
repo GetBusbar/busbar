@@ -2,18 +2,18 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::persistence::record_ops::HeldOp;
 pub(crate) use crate::persistence::test_backend::{attach, Backend};
-use busbar_contract::records::OpId;
 use futures::FutureExt;
 use std::sync::{atomic::Ordering, Mutex};
 
 fn raw(key: &[u8]) -> Vec<u8> {
     crate::host_records::record_key("instance", key)
 }
-fn request() -> conditional::Request {
+fn request(held: &HeldOp) -> conditional::Request {
     conditional::Request {
         version: conditional::VERSION,
-        op_id: OpId([7; 16]),
+        op_id: held.op_id(),
         predicates: vec![conditional::Predicate {
             schema: "schema".into(),
             key: raw(b"guard"),
@@ -79,9 +79,10 @@ async fn conditional_unknown_replays_exact_candidate_and_reconnect_receipt() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&store, "instance", ["schema"]).unwrap();
+    let held = store.record_op().await.unwrap();
     backend.lose_reply.store(true, Ordering::SeqCst);
-    let original = request();
-    let Outcome::Pending(pending) = rows.conditional(&original).await.unwrap() else {
+    let original = request(&held);
+    let Outcome::Pending(pending) = rows.conditional(&held, &original).await.unwrap() else {
         panic!("must retain unknown");
     };
     let mut changed = original.clone();
@@ -90,7 +91,7 @@ async fn conditional_unknown_replays_exact_candidate_and_reconnect_receipt() {
         key: raw(b"guard"),
     }];
     assert_eq!(
-        rows.conditional(&changed).await.unwrap(),
+        rows.conditional(&held, &changed).await.unwrap(),
         Outcome::OpIdConflict
     );
     assert_eq!(rows.retry(pending).await.unwrap(), Outcome::Applied);
@@ -102,15 +103,18 @@ async fn conditional_unknown_replays_exact_candidate_and_reconnect_receipt() {
     }
     let reconnected = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&reconnected, "instance", ["schema"]).unwrap();
-    assert_eq!(rows.conditional(&original).await.unwrap(), Outcome::Applied);
     assert_eq!(
-        rows.conditional(&changed).await.unwrap(),
+        rows.conditional(&held, &original).await.unwrap(),
+        Outcome::Applied
+    );
+    assert_eq!(
+        rows.conditional(&held, &changed).await.unwrap(),
         Outcome::OpIdConflict
     );
     assert_eq!(backend.state.lock().unwrap().sent.len(), 2);
     let private = HostRecords::host_private(&reconnected, "instance", ["schema"]).unwrap();
     assert_eq!(
-        private.conditional(&original).await.unwrap(),
+        private.conditional(&held, &original).await.unwrap(),
         Outcome::OpIdConflict
     );
 }
@@ -120,11 +124,15 @@ async fn cancellation_and_same_request_retain_custody_before_crossing() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&store, "instance", ["schema"]).unwrap();
+    let held = store.record_op().await.unwrap();
     backend.hang.store(true, Ordering::SeqCst);
-    assert!(rows.conditional(&request()).now_or_never().is_none());
+    assert!(rows
+        .conditional(&held, &request(&held))
+        .now_or_never()
+        .is_none());
     backend.hang.store(false, Ordering::SeqCst);
     assert_eq!(
-        rows.conditional(&request()).await.unwrap(),
+        rows.conditional(&held, &request(&held)).await.unwrap(),
         Outcome::Applied
     );
     let state = backend.state.lock().unwrap();
@@ -137,6 +145,7 @@ async fn atomic_range_translation_preserves_exact_raw_key_length_and_other_schem
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&store, "instance", ["schema", "other"]).unwrap();
+    let held = store.record_op().await.unwrap();
     for (schema, key) in [
         ("schema", b"ab".as_slice()),
         ("schema", b"abc"),
@@ -147,14 +156,14 @@ async fn atomic_range_translation_preserves_exact_raw_key_length_and_other_schem
             .await
             .unwrap();
     }
-    let mut conditional = request();
+    let mut conditional = request(&held);
     conditional.mutations = vec![conditional::Mutation::DeleteRange {
         schema: "schema".into(),
         prefix: raw(b"a"),
         exact_key_length: raw(b"ab").len() as u64,
     }];
     assert_eq!(
-        rows.conditional(&conditional).await.unwrap(),
+        rows.conditional(&held, &conditional).await.unwrap(),
         Outcome::Applied
     );
     assert!(rows.get("schema", &raw(b"ab")).await.unwrap().is_none());
@@ -227,20 +236,21 @@ async fn conditional_bounds_and_scope_refuse_before_commit_and_conflicts_write_n
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&store, "instance", ["schema"]).unwrap();
-    let mut invalid = request();
+    let held = store.record_op().await.unwrap();
+    let mut invalid = request(&held);
     invalid.mutations = vec![conditional::Mutation::Put {
         schema: "schema".into(),
         key: raw(b"guard"),
         value: vec![0; 513],
     }];
     assert_eq!(
-        rows.conditional(&invalid).await.unwrap_err(),
+        rows.conditional(&held, &invalid).await.unwrap_err(),
         Error::Invalid
     );
-    invalid = request();
+    invalid = request(&held);
     invalid.predicates[0].key = crate::host_records::record_key("other", b"guard");
     assert_eq!(
-        rows.conditional(&invalid).await.unwrap_err(),
+        rows.conditional(&held, &invalid).await.unwrap_err(),
         Error::Unauthorized
     );
     assert!(backend.state.lock().unwrap().sent.is_empty());
@@ -248,7 +258,7 @@ async fn conditional_bounds_and_scope_refuse_before_commit_and_conflicts_write_n
         .await
         .unwrap();
     assert_eq!(
-        rows.conditional(&request()).await.unwrap(),
+        rows.conditional(&held, &request(&held)).await.unwrap(),
         Outcome::ConditionConflict
     );
     assert!(!backend
@@ -258,10 +268,10 @@ async fn conditional_bounds_and_scope_refuse_before_commit_and_conflicts_write_n
         .rows
         .keys()
         .any(|at| at.namespace
-            == partition::namespace(RECORD_OPERATIONS, &[&request().op_id.0[..8]]).0));
+            == partition::namespace(RECORD_OPERATIONS, &[&request(&held).op_id.0[..8]]).0));
     rows.delete("schema", &raw(b"guard")).await.unwrap();
     assert_eq!(
-        rows.conditional(&request()).await.unwrap(),
+        rows.conditional(&held, &request(&held)).await.unwrap(),
         Outcome::Applied
     );
 }
@@ -271,7 +281,8 @@ async fn conditional_accepts_512_byte_values_and_many_tiny_mutations_without_ite
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
     let rows = HostRecords::authorized(&store, "instance", ["schema"]).unwrap();
-    let mut request = request();
+    let held = store.record_op().await.unwrap();
+    let mut request = request(&held);
     request.mutations = (0..600u32)
         .map(|n| conditional::Mutation::Put {
             schema: "schema".into(),
@@ -279,7 +290,10 @@ async fn conditional_accepts_512_byte_values_and_many_tiny_mutations_without_ite
             value: if n == 0 { vec![9; 512] } else { vec![9] },
         })
         .collect();
-    assert_eq!(rows.conditional(&request).await.unwrap(), Outcome::Applied);
+    assert_eq!(
+        rows.conditional(&held, &request).await.unwrap(),
+        Outcome::Applied
+    );
     assert_eq!(
         backend.state.lock().unwrap().sent[0]
             .candidate()
@@ -330,12 +344,17 @@ async fn unrelated_instance_schema_and_receipt_writes_preserve_scan_generation()
         ]
         .concat()
     );
-    let mut same_node = [8; 16];
-    same_node[8..].copy_from_slice(&[10; 8]);
-    let operations = [[8; 16], [9; 16], same_node];
-    for op in operations {
-        let mut conditional = request();
-        conditional.op_id = OpId(op);
+    // Receipts partition by generation: two mints of this store share one, a second store's
+    // generation (another writer process) is a different one (DES-264 §3.1).
+    let elsewhere = attach(backend.clone()).await;
+    let operations = [
+        store.record_op().await.unwrap(),
+        elsewhere.record_op().await.unwrap(),
+        store.record_op().await.unwrap(),
+    ];
+    for held in &operations {
+        let op = held.bytes();
+        let mut conditional = request(held);
         conditional.predicates[0].schema = "other".into();
         conditional.predicates[0].key = raw(&op);
         conditional.mutations = vec![conditional::Mutation::Put {
@@ -344,10 +363,11 @@ async fn unrelated_instance_schema_and_receipt_writes_preserve_scan_generation()
             value: vec![op[8]],
         }];
         assert_eq!(
-            rows.conditional(&conditional).await.unwrap(),
+            rows.conditional(held, &conditional).await.unwrap(),
             Outcome::Applied
         );
     }
+    let operations = operations.map(|held| held.bytes());
     let receipt_a = partition::namespace(RECORD_OPERATIONS, &[&operations[0][..8]]);
     let receipt_b = partition::namespace(RECORD_OPERATIONS, &[&operations[1][..8]]);
     assert_ne!(receipt_a, receipt_b);
@@ -386,7 +406,7 @@ async fn native_scoped_transactions_keep_large_secrets_and_replay_after_reconnec
     let records = ScopedStore::host_private(store, "instance", ["schema".to_string()]).unwrap();
     let value = vec![7; 2048];
     let request = scoped::Request {
-        op_id: [19; 16],
+        op: records.record_op().await.unwrap(),
         predicates: vec![scoped::Predicate {
             schema: "schema".into(),
             key: b"secret".to_vec(),

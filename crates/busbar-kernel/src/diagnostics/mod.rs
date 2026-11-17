@@ -739,11 +739,12 @@ diagnostics! {
         "A unit's drained usage report named a class that no installed plane declares as billable, no configured `units:` entry names, and is not one of the reserved four. The unit's one line is still written with every count, but its money is REFUSED rather than priced: a class nobody declared is never billed at zero and never dropped. Every read of the balance the line sits on refuses until it is explained.",
         "The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.";
 
-    /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// auth.chain is written empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// A configuration with no `auth:` block is refused with it at validation (#358).
     OPEN_RELAY_NO_AUTH = 8014, Governance, Actionable, "open-relay-no-auth", "1.6.0", false,
         "auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)",
-        "The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.",
-        "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
+        "The auth chain is written empty (`auth: { chain: [] }`, the operator's explicit open-relay acknowledgement), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. A configuration with no `auth:` block is refused with this code instead of booting: busbar never runs an open relay by omission, and the 1.5.5 upgrade writes no `auth:` block for you (it reports the missing block as an action item with the same remedy). Acceptable only for local development.",
+        "Add `auth: { chain: [] }` explicitly to run an open relay (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain (`auth: { chain: [keys] }` with virtual keys minted through the admin API, and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
 
     /// A stored recoverable credential opens under neither at-rest key, so it does not authenticate.
     CREDENTIAL_AT_REST_UNOPENABLE = 8023, Governance, Actionable, "credential-at-rest-unopenable", "1.6.0", false,
@@ -1915,6 +1916,12 @@ diagnostics! {
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
         "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
+
+    /// The host's own outbound framer could not render the request before any answer.
+    EGRESS_LOCAL_FRAMER_FAILED = 5052, Proxy, Actionable, "egress-local-framer-failed", "1.6.0", false,
+        "The local egress framer failed",
+        "The engine's local outbound framer could not render the request before any answer. The log identifies the pool, member and framing fault. The request is refused as an internal error without charging member health.",
+        "Inspect the framing fault and the named pool and member in the log. Report a reproducible local framing failure with the engine version and request shape, excluding credentials and secret content.";
 
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,

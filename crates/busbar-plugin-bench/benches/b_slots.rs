@@ -6,11 +6,10 @@
 //! `get` reference CAS and the guard's `release` CAS, sharded-slab 0.1.7 src/page/slot.rs), which I5 forbids on the
 //! session lookup; busbar's is one Acquire load of the slot's state word and a compare (0 RMWs).
 //!
-//! - **Lookups of live keys** (`B_SLOTS_LOOKUPS`, default 10,000,000), one thread, timed in batches of 1,000 (the
-//!   per-lookup cost is a few ns, below the clock's own): busbar's lookup is reached through `remove` with a
-//!   generation one bit away from the live one, which runs exactly the lookup (page, slot, Acquire load, compare)
-//!   and touches nothing; `get_mut` is the shim's `unsafe fn` and not callable here. sharded-slab's is `get` plus
-//!   the guard's drop.
+//! - **Generation-miss lookups** (`B_SLOTS_LOOKUPS`, default 10,000,000), one thread, timed in batches of 1,000:
+//!   busbar's lookup uses its unique handle's `take_if` with a generation one bit away from the live one.
+//!   This includes handle dispatch plus the production page/slot/Acquire/compare miss, and touches no value.
+//!   sharded-slab's comparison is a live `get` plus the guard's drop.
 //! - **Insert+remove pairs under contention**: 16 threads on one table (`B_SLOTS_PAIRS` per thread, default
 //!   1,000,000), each pair timed; throughput and the worst thread's median and p99.
 //!
@@ -32,14 +31,15 @@ fn main() {
     let pairs = env("B_SLOTS_PAIRS", 1_000_000);
 
     let slots: Slots<u64> = Slots::new();
-    let keys: Vec<(u32, u32)> = (0..LIVE as u64)
+    let mut keys: Vec<_> = (0..LIVE as u64)
         .map(|value| slots.insert(value).expect("insert"))
         .collect();
     report(
-        "B-SLOTS lookup, busbar Slots (Acquire load + compare, 0 RMW)",
+        "B-SLOTS generation miss, busbar OwnedSlot (handle + Acquire load + compare, 0 RMW)",
         batched(lookups, |i| {
-            let (index, generation) = keys[i % LIVE];
-            black_box(slots.remove(black_box(index), black_box(generation ^ 0x4000_0000)));
+            let owned = &mut keys[i % LIVE];
+            let (_, generation) = owned.identity().expect("live benchmark slot");
+            black_box(owned.take_if(black_box(generation ^ 0x4000_0000)));
         }),
     );
     assert_eq!(slots.count_live(), LIVE as u32, "a lookup touched nothing");
@@ -57,8 +57,8 @@ fn main() {
 
     report("clock (an empty timed call)", timed(pairs, || {}));
     contended("B-SLOTS insert+remove, busbar Slots", pairs, |value| {
-        let (index, generation) = slots.insert(value).expect("insert");
-        black_box(slots.remove(index, generation));
+        let owned = slots.insert(value).expect("insert");
+        black_box(owned.take());
     });
     contended(
         "B-SLOTS insert+remove, sharded_slab::Slab",

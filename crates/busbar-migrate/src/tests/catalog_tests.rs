@@ -100,7 +100,11 @@ fn a_catalog_key_1_5_5_ignored_is_dropped_into_a_new_catalog() {
 fn an_unchanged_catalog_plans_no_file() {
     let scratch = Scratch::new();
     scratch.file("providers.yaml", CATALOG_1_6);
-    let (report, handed) = upgrade(&scratch, "listen: x\nstore: {module: sqlite}\n", &facts());
+    let (report, handed) = upgrade(
+        &scratch,
+        "listen: x\nauth: {chain: [keys]}\nstore: {module: sqlite}\n",
+        &facts(),
+    );
     assert_eq!(handed, None);
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
@@ -110,7 +114,7 @@ fn an_unchanged_catalog_plans_no_file() {
     assert!(!scratch.dir().join("providers.busbar-1.6.yaml").exists());
     assert_eq!(
         std::fs::read_to_string(scratch.dir().join("config.yaml")).unwrap(),
-        "config_version: 1\nlisten: x\nstore: {module: sqlite}\n"
+        "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: sqlite}\n"
     );
 }
 

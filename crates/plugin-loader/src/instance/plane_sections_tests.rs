@@ -117,3 +117,27 @@ fn stdio_binds_exactly_one_line_plane() {
         "`--stdio`: several configured planes serve a line route: a2a, mcp"
     );
 }
+
+/// An HTTP route is any admitted plane route that is not ROUTE_LINE, ROUTE_RECOVERY or ROUTE_ADMIN
+/// (r34 l.3968-3978: line and recovery routes are never mounted on a listener; admin routes mount on
+/// the admin router). ROUTE_CATALOG and ROUTE_UPGRADE (an HTTP GET head, §12.27) are HTTP.
+#[test]
+fn an_http_route_is_any_data_listener_route() {
+    use busbar_plugin_abi::plane::{ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_RECOVERY, ROUTE_UPGRADE};
+    for flags in [0, ROUTE_CATALOG, ROUTE_UPGRADE] {
+        assert!(declares_http_route(&plane(&[flags])), "flags {flags}");
+    }
+    assert!(!declares_http_route(&plane(&[
+        ROUTE_LINE,
+        ROUTE_RECOVERY,
+        ROUTE_ADMIN
+    ])));
+    assert!(!declares_http_route(&plane(&[])), "no route, no HTTP");
+    assert!(
+        declares_http_route(&plane(&[ROUTE_LINE, 0])),
+        "a line plane may also serve HTTP"
+    );
+    let mut store = plane(&[0]);
+    store.kind = KindCode::Store;
+    assert!(!declares_http_route(&store), "only a plane serves routes");
+}
