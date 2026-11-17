@@ -970,3 +970,41 @@ async fn a_unit_completion_does_not_discard_an_actual_partial_line() {
     stop.send(()).unwrap();
     assert_eq!(service.await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn output_failure_cancels_a_global_waiter_without_local_units() {
+    let budget = ProcessAdmission::new(2);
+    let network = budget.try_enter(AdmissionClass::Data).unwrap();
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Error, IoOutcome::Ready);
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        run_io_with_limits(
+            TEST_CARRIER,
+            &b"unread\n"[..],
+            writer,
+            std::future::pending::<()>(),
+            |caller| {
+                caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                (
+                    |_| async {
+                        panic!("a network-owned slot does not admit stdio");
+                    },
+                    || {},
+                )
+            },
+            1024,
+            Arc::clone(&budget),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_ne!(code, 0);
+    assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(network);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_ok(),
+        "the cancelled waiter retained no permit"
+    );
+}
