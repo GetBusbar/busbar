@@ -55,3 +55,21 @@ pub trait CarrierProgressReader: Send + Sync {
     /// the writer. A fault must be checked even when that outer poll reports success.
     fn snapshot(&self) -> CarrierProgress;
 }
+
+/// Classification supplied at actual protocol serialization, before transport buffering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireClass {
+    /// Headers, trailers, framing, padding and connection control; never application payload.
+    Control,
+    /// Encoded application body or message payload, excluding its protocol envelope.
+    Payload,
+}
+
+/// Actual carrier operation required after a response's complete ordered wire prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionRequirement {
+    /// The finite prefix must be committed and its real carrier flush must succeed.
+    Flush,
+    /// In addition to flush, actual carrier shutdown must succeed (close-delimited output).
+    Shutdown,
+}

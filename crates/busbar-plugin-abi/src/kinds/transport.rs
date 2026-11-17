@@ -70,6 +70,27 @@ crate::kind! {
         pub struct StreamFlow {
             pub stream: u64,
         }
+        /// Ordered protocol output. Tail is nonempty serialized bytes; stream 0 is connection
+        /// CONTROL only. The serializer supplies identity, never the call that drained its output.
+        pub struct WirePart {
+            pub stream: u64,
+            pub class: u32,
+            pub _r: u32,
+        }
+        /// A response's serialization fence. No tail. It is not a delivery receipt: the host joins
+        /// actual carrier progress, checked flush/shutdown and producer/input retirement separately.
+        pub struct WireEnd {
+            pub stream: u64,
+            pub requirement: u32,
+            pub _r: u32,
+        }
+        /// Outbound response failure, distinct from inbound STREAM_RESET. Code is an opaque
+        /// protocol diagnostic, never a host stop reason or billing disposition. No tail.
+        pub struct ResponseAbort {
+            pub stream: u64,
+            pub code: u32,
+            pub _r: u32,
+        }
         /// Datagram out. Tail = payload. flags = DG_SECURED (core's DTLS layer for that path seals it).
         pub struct SendTo {
             pub path: u32,
@@ -170,6 +191,15 @@ crate::kind! {
             EVENT_PATH = 0x0117;
             /// R6b: an EV_KEYING `event` argument is exactly one record of this tag, body = KeyingRec + material.
             EVENT_KEYING = 0x0118;
+            /// WirePart + nonempty bytes, with exact serializer-owned stream/class attribution.
+            WIRE_PART = 0x0119;
+            /// WireEnd: no later response bytes may name this stream; audited release precedes its ending.
+            WIRE_END = 0x011A;
+            /// ResponseAbort: a protocol producer failed the outbound response, even after its input ended.
+            RESPONSE_ABORT = 0x011B;
+            /// StreamFlow: no serializer source can produce future bytes for this response. Distinct
+            /// from actual delivery; retain its binding until E_DELIVERY_SETTLED and input retirement.
+            RESPONSE_QUIESCENT = 0x011C;
             /// describe: D_PROTOCOL (text protocol name for UPGRADE targets, e.g. "websocket", "grpc").
             /// Round 9: 0x0180 (round 8's D_ALPN) is retired; the ALPN offer is per instance and per side (`offer`).
             D_PROTOCOL = 0x0181;
@@ -237,6 +267,13 @@ crate::kind! {
             E_RESET: u32 = 5;
             E_REFUSE: u32 = 6;
             E_CLOSE: u32 = 7;
+        /// Host-only reserved control; arg zero, bytes empty. May bypass a held normal feed to release
+        /// an existing terminal serialization barrier after exact host audit authorization. It does
+        /// not supply new response content, skip ordered bytes, or relax the E_END hold rule.
+            E_RELEASE: u32 = 8;
+        /// Host-only reserved control; arg zero, bytes empty. The host has already frozen delivery
+        /// terminality after settling actual carrier writes. This acknowledgement creates no receipt.
+            E_DELIVERY_SETTLED: u32 = 9;
             E_REFUSE_HEAD_SENT: u32 = 1 << 16;
         /// Round 16: E_CLOSE reasons (today's CLOSE_*, busbar-contract abi/transport/mod.rs:488-503, same
         /// numbers; CR_ because CLOSE_* names CloseRec.how here), and E_RESET's core code for a stall cut
@@ -254,6 +291,13 @@ crate::kind! {
             FB_SERVER: u64 = 1;
             FB_CLIENT: u64 = 2;
             FB_DATAGRAM: u64 = 4;
+        /// This framer supplies complete ordered output attribution and the reserved response lifecycle.
+        /// Without it a host cannot activate a path promising actual response delivery evidence.
+            FB_WIRE_PROVENANCE: u64 = 8;
+            WIRE_CONTROL: u32 = 1;
+            WIRE_PAYLOAD: u32 = 2;
+            COMPLETE_FLUSH: u32 = 1;
+            COMPLETE_SHUTDOWN: u32 = 2;
             DG_SECURED: u32 = 1;
             EV_PATH: u32 = 1;
             EV_KEYING: u32 = 2;
@@ -504,7 +548,7 @@ mod tests {
     use crate::types::{Bytes, KindCode, Str};
 
     /// Every transport tag, in table order.
-    const TAGS: [u16; 27] = [
+    const TAGS: [u16; 31] = [
         tag::WRITE,
         tag::CLOSE,
         tag::WAKE_AT,
@@ -530,15 +574,19 @@ mod tests {
         tag::STREAM_WRITABLE,
         tag::EVENT_PATH,
         tag::EVENT_KEYING,
+        tag::WIRE_PART,
+        tag::WIRE_END,
+        tag::RESPONSE_ABORT,
+        tag::RESPONSE_QUIESCENT,
         tag::D_PROTOCOL,
         tag::D_LISTENER_SLOT,
     ];
 
-    /// The call records are 0x0100..=0x0118 in table order; describe items keep their allocated numbers, and
+    /// The call records are 0x0100..=0x011C in table order; describe items keep their allocated numbers, and
     /// round 8's D_ALPN (0x0180) stays retired.
     #[test]
     fn the_tags_keep_their_numbers_and_d_alpn_stays_retired() {
-        assert!(TAGS[..25].iter().copied().eq(0x0100..=0x0118));
+        assert!(TAGS[..29].iter().copied().eq(0x0100..=0x011C));
         assert_eq!(tag::D_PROTOCOL, 0x0181);
         assert_eq!(tag::D_LISTENER_SLOT, 0x0182);
         assert!(!TAGS.contains(&0x0180));

@@ -489,6 +489,53 @@ fn walk(
         }
         let out = match rec.tag {
             tag::WRITE => TransportOut::Write(rec.body),
+            tag::WIRE_PART => {
+                let (part, bytes) = rec.pod_tail::<t::WirePart>()?;
+                reserved(part._r)?;
+                let class = busbar_ports::codec::transport::wire_class(part.class)?;
+                if bytes.is_empty()
+                    || (part.stream == 0
+                        && class == busbar_contract::response_delivery::WireClass::Payload)
+                {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::WirePart {
+                    stream: part.stream,
+                    class,
+                    bytes,
+                }
+            }
+            tag::WIRE_END => {
+                let end = rec.pod::<t::WireEnd>()?;
+                reserved(end._r)?;
+                if end.stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::WireEnd {
+                    stream: end.stream,
+                    requirement: busbar_ports::codec::transport::completion_requirement(
+                        end.requirement,
+                    )?,
+                }
+            }
+            tag::RESPONSE_ABORT => {
+                let abort = rec.pod::<t::ResponseAbort>()?;
+                reserved(abort._r)?;
+                if abort.stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::ResponseAbort {
+                    stream: abort.stream,
+                    code: abort.code,
+                }
+            }
+            tag::RESPONSE_QUIESCENT => {
+                let stream = stream(&rec)?;
+                if stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::ResponseQuiescent(stream)
+            }
             tag::CLOSE => {
                 let c = rec.pod::<t::CloseRec>()?;
                 reserved(c._r)?;
@@ -733,6 +780,17 @@ mod tests {
     fn label(o: &TransportOut<'_>) -> String {
         match o {
             TransportOut::Write(b) => format!("write {}", String::from_utf8_lossy(b)),
+            TransportOut::WirePart {
+                stream,
+                class,
+                bytes,
+            } => format!("wire {stream} {class:?} {}", String::from_utf8_lossy(bytes)),
+            TransportOut::WireEnd {
+                stream,
+                requirement,
+            } => format!("wire-end {stream} {requirement:?}"),
+            TransportOut::ResponseAbort { stream, code } => format!("abort {stream} {code}"),
+            TransportOut::ResponseQuiescent(stream) => format!("quiescent {stream}"),
             TransportOut::Close { abort } => format!("close abort={abort}"),
             TransportOut::WakeAt(ns) => format!("wake {ns}"),
             TransportOut::Upgrade { protocol } => format!("upgrade {protocol}"),

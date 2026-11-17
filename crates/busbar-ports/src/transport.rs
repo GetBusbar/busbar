@@ -4,6 +4,7 @@
 //! The transport port (IF §11.3): the frozen trait the connector drives, implemented over the kind's proxy by
 //! `adapters::transport::TransportAdapter`.
 
+use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
 use busbar_plugin_abi::records::Records;
 
 use crate::PortError;
@@ -12,6 +13,20 @@ pub type TransportSession = busbar_plugin_abi::kinds::transport::transport::Sess
 
 pub enum TransportOut<'o> {
     Write(&'o [u8]),
+    WirePart {
+        stream: u64,
+        class: WireClass,
+        bytes: &'o [u8],
+    },
+    WireEnd {
+        stream: u64,
+        requirement: CompletionRequirement,
+    },
+    ResponseAbort {
+        stream: u64,
+        code: u32,
+    },
+    ResponseQuiescent(u64),
     Close {
         abort: bool,
     },
