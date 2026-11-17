@@ -1376,6 +1376,10 @@ impl PredecessorFence {
     pub async fn run(&self, stop: tokio::sync::watch::Receiver<bool>) -> ExpiredPass {
         let stopped = || *stop.borrow();
         let mut pass = ExpiredPass::default();
+        // DES-331 §B5.2: no writer is closed on a restored Store until the restore is declared.
+        if super::restore::gate().quarantined() {
+            return pass;
+        }
         let scan = match self
             .identity
             .expired_writers(LEASE_TTL_MS, EXPIRED_PASS_MAX)
