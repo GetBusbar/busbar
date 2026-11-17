@@ -654,7 +654,7 @@ async fn get_usage_series(
             "invalid_request",
             Some("range_too_large"),
             "the range spans more UTC-day buckets than one read may",
-            &serde_json::json!({ "max_buckets": USAGE_MAX_BUCKETS }),
+            &busbar_contract::json::json!({ "max_buckets": USAGE_MAX_BUCKETS }),
         );
     }
     let mut group_by = Vec::new();

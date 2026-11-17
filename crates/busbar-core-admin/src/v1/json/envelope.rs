@@ -43,7 +43,7 @@ fn scrubbed(text: &str) -> String {
 
 /// The typed `details` of one error (section 1.2): the scope a refusal needed, or a plugin's text
 /// (`PluginTextDetails`, section 1.3), else the empty object.
-fn details_of(e: &AdminError, reason: Option<&str>) -> serde_json::Value {
+fn details_of(e: &AdminError, reason: Option<&str>) -> busbar_contract::json::Value {
     match e {
         AdminError::Forbidden { needed } => {
             busbar_kernel::admin::gate::scope_details(needed.as_str())
@@ -54,19 +54,19 @@ fn details_of(e: &AdminError, reason: Option<&str>) -> serde_json::Value {
             plugin_diag,
             condition,
         } => {
-            let mut details = serde_json::json!({
+            let mut details = busbar_contract::json::json!({
                 "text": text.as_deref().map(scrubbed),
                 "plugin_diag": plugin_diag.as_deref().map(scrubbed),
             });
             if *cond == Cond::PluginRejected {
-                details["condition"] = serde_json::json!(condition);
+                details["condition"] = busbar_contract::json::json!(condition);
             }
             details
         }
         _ if matches!(reason, Some("hook_no_ack" | "plugin_rejected")) => {
-            serde_json::json!({ "text": null, "plugin_diag": null })
+            busbar_contract::json::json!({ "text": null, "plugin_diag": null })
         }
-        _ => serde_json::json!({}),
+        _ => busbar_contract::json::json!({}),
     }
 }
 

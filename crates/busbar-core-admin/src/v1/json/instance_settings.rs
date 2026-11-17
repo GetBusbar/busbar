@@ -202,7 +202,7 @@ pub(super) async fn put(
             "invalid_request",
             Some("invalid_request"),
             "instance settings require one valid Idempotency-Key",
-            &json!({}),
+            &busbar_contract::json::json!({}),
         );
     }
     let expected = match super::if_match_version(&headers) {

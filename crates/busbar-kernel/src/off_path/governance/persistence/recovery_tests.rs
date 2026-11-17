@@ -2350,7 +2350,7 @@ async fn a_selection_won_by_another_candidate_is_discarded() {
         };
         *backend.steal_selection.lock().unwrap() = Some((
             address(&event.operation_id),
-            Secret::new(serde_json::to_vec(&winner).unwrap()),
+            Secret::new(busbar_contract::json::to_vec(&winner).unwrap()),
         ));
         let lost = recovery.persist(&event).await.unwrap_err();
         assert!(
@@ -2448,25 +2448,26 @@ fn origin_family() -> (RecoveryEvent, RecoveryEvent, RecoveryEvent) {
     let mut child = intent();
     child.operation_id = [9; 16];
     child.body_fingerprint = [8; 32];
-    let template = serde_json::json!({"physical":[1,2,3]});
+    let template = busbar_contract::json::json!({"physical":[1,2,3]});
     let mut parent = intent();
     parent.operation_id = [6; 16];
     parent.payload = b"{\"handoffs\":[]}".to_vec();
     let mut checkpoint = transition(&parent, RecoveryState::Applied);
-    checkpoint.payload = serde_json::to_vec(&serde_json::json!({"handoffs":[{
-        "operation_id": child.operation_id,
-        "kind": child.kind,
-        "body_fingerprint": child.body_fingerprint,
-        "first_sent_at_ms": child.first_sent_at_ms,
-        "payload": serde_json::to_vec(&template).unwrap()
-    }]}))
-    .unwrap();
+    checkpoint.payload =
+        busbar_contract::json::to_vec(&busbar_contract::json::json!({"handoffs":[{
+            "operation_id": child.operation_id,
+            "kind": child.kind,
+            "body_fingerprint": child.body_fingerprint,
+            "first_sent_at_ms": child.first_sent_at_ms,
+            "payload": busbar_contract::json::to_vec(&template).unwrap()
+        }]}))
+        .unwrap();
     let mut physical = template;
-    physical["origin"] = serde_json::json!({
+    physical["origin"] = busbar_contract::json::json!({
         "operation_id": checkpoint.operation_id,
         "event_fingerprint": checkpoint.fingerprint().unwrap()
     });
-    child.payload = serde_json::to_vec(&physical).unwrap();
+    child.payload = busbar_contract::json::to_vec(&physical).unwrap();
     (parent, checkpoint, child)
 }
 

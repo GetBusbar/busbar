@@ -90,7 +90,7 @@ fn mismatch() -> Response {
         "invalid_request",
         Some("cursor_mismatch"),
         "this `cursor` was issued for another operation or another set of filters",
-        &serde_json::json!({}),
+        &busbar_contract::json::json!({}),
     )
 }
 
@@ -102,7 +102,7 @@ pub(crate) fn expired(oldest_available: String) -> Response {
         "invalid_request",
         Some("cursor_expired"),
         "this `cursor` is older than the rows still held; restart from `oldest_available`",
-        &serde_json::json!({ "oldest_available": oldest_available }),
+        &busbar_contract::json::json!({ "oldest_available": oldest_available }),
     )
 }
 

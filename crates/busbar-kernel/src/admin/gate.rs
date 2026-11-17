@@ -95,7 +95,7 @@ pub fn err_json(e: &ApiError) -> Response {
         e.code(),
         e.reason(),
         &e.message(),
-        &serde_json::json!({}),
+        &busbar_contract::json::json!({}),
     )
 }
 
@@ -331,15 +331,15 @@ pub fn error_object(
     code: &str,
     reason: Option<&str>,
     message: &str,
-    details: &serde_json::Value,
+    details: &busbar_contract::json::Value,
     request_id: &str,
-) -> serde_json::Value {
+) -> busbar_contract::json::Value {
     let reason = if code == "internal" {
         None
     } else {
         reason.or_else(|| super::reasons::default_reason(code))
     };
-    serde_json::json!({
+    busbar_contract::json::json!({
         "code": code,
         "reason": reason,
         "message": message,
@@ -353,10 +353,10 @@ fn envelope_text(
     code: &str,
     reason: Option<&str>,
     message: &str,
-    details: &serde_json::Value,
+    details: &busbar_contract::json::Value,
     request_id: &str,
 ) -> String {
-    serde_json::json!({
+    busbar_contract::json::json!({
         "code": admin_diag(code).banner().to_string(),
         "error": error_object(code, reason, message, details, request_id),
     })
@@ -371,7 +371,7 @@ pub fn admin_envelope_body(code: &str, message: &str) -> String {
         code,
         None,
         message,
-        &serde_json::json!({}),
+        &busbar_contract::json::json!({}),
         &current_request_id(),
     )
 }
@@ -385,22 +385,22 @@ pub fn admin_envelope_body_with(
     message: &str,
     detail: Option<(&str, &str)>,
 ) -> String {
-    let mut details = serde_json::Map::new();
+    let mut details = busbar_contract::json::Map::new();
     if let Some((name, value)) = detail {
-        details.insert(name.to_owned(), serde_json::Value::from(value));
+        details.insert(name, value);
     }
     envelope_text(
         code,
         reason,
         message,
-        &serde_json::Value::Object(details),
+        &busbar_contract::json::Value::from(details),
         &current_request_id(),
     )
 }
 
 /// [`admin_envelope_body`] with the raiser's `reason` and typed `details`, built through the JSON
 /// facade end to end (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5): for answers whose `details` the raiser
-/// assembles as facade values, so no `serde_json` value is passed in.
+/// assembles as facade values, so no other JSON value is passed in.
 #[must_use]
 pub fn admin_envelope_body_details(
     code: &str,
@@ -430,7 +430,13 @@ pub fn admin_envelope_body_details(
 
 /// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
-    admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))
+    admin_error_envelope_with(
+        status,
+        code,
+        None,
+        message,
+        &busbar_contract::json::json!({}),
+    )
 }
 
 /// [`admin_error_envelope`] with the raiser's reason and typed details. The response carries
@@ -440,7 +446,7 @@ pub fn admin_error_envelope_with(
     code: &str,
     reason: Option<&str>,
     message: &str,
-    details: &serde_json::Value,
+    details: &busbar_contract::json::Value,
 ) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let request_id = current_request_id();
@@ -490,7 +496,7 @@ pub const KEYS_PATH: &str = "/api/v1/admin/keys";
 /// The typed `details` of reason `scope_insufficient` (section 1.3): the scope the refused call
 /// needed, and the verb (`null` until per-verb authorization, MR2).
 #[must_use]
-pub fn scope_details(needed_scope: &str) -> serde_json::Value {
+pub fn scope_details(needed_scope: &str) -> busbar_contract::json::Value {
     scope_details_for(needed_scope, None)
 }
 
@@ -499,8 +505,8 @@ pub fn scope_details(needed_scope: &str) -> serde_json::Value {
 pub(crate) fn scope_details_for(
     needed_scope: &str,
     needed_verb: Option<&str>,
-) -> serde_json::Value {
-    serde_json::json!({ "needed_scope": needed_scope, "needed_verb": needed_verb })
+) -> busbar_contract::json::Value {
+    busbar_contract::json::json!({ "needed_scope": needed_scope, "needed_verb": needed_verb })
 }
 
 /// The admin 403 for a credential whose scope is below `needed_scope`: code `forbidden`, reason
@@ -517,7 +523,7 @@ pub fn unauthorized_for(reason: &str) -> Response {
         "unauthorized",
         Some(reason),
         "missing or invalid admin credential (Bearer)",
-        &serde_json::json!({}),
+        &busbar_contract::json::json!({}),
     )
 }
 

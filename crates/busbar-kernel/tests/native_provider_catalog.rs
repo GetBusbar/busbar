@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::config::providers::CORE_PROVIDER_KEYS;
 use busbar_kernel::config::ModelCfg;
 
@@ -172,8 +173,8 @@ fn native_catalog_resolves_real_pool_members_and_direct_models_without_a_legacy_
     assert_eq!(param("reasoning"), Some("false"));
     assert_eq!(param("default_max_tokens"), Some("23"));
     assert_eq!(param("prompt_caching"), Some("false"));
-    let projection: serde_json::Value =
-        busbar_contract::json::parse_foreign(a.projection.as_bytes()).unwrap();
+    let projection: busbar_contract::json::Value =
+        busbar_contract::json::parse_value(a.projection.as_bytes()).unwrap();
     assert_eq!(projection["capabilities"][0]["models"][0], "wire-*");
     for key in CORE_PROVIDER_KEYS {
         assert!(projection.get(*key).is_none(), "{key}");

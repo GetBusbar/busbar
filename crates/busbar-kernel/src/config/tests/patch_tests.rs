@@ -146,7 +146,7 @@ fn hook_content_max_bytes_is_refused_as_an_unknown_limits_key() {
 
 #[test]
 fn hook_content_max_bytes_is_refused_by_the_admin_settings_patch() {
-    let err = serde_json::from_str::<LimitsPatch>(r#"{"hook_content_max_bytes":4096}"#)
+    let err = busbar_contract::json::parse_str::<LimitsPatch>(r#"{"hook_content_max_bytes":4096}"#)
         .expect_err("PUT /config/settings must refuse limits.hook_content_max_bytes")
         .to_string();
     assert!(
