@@ -1712,7 +1712,7 @@ pub(crate) fn token_exchange_binding(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+) -> Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String> {
     use busbar_contract::section::{
         AUDIENCE_KEY, DEFAULT_SUBJECT_TOKEN_TYPE, SUBJECT_TOKEN_KEY, SUBJECT_TOKEN_TYPE_KEY,
         TOKEN_EXCHANGE_KEY, TOKEN_URL_KEY,
@@ -1769,7 +1769,7 @@ pub(crate) fn token_exchange_binding(
             &settings,
         )
         .map_err(|e| format!("member '{entry}' {e}"))?;
-    Ok(Some(busbar_kernel::plane_driver::AuthBinding {
+    Ok(Some(busbar_kernel::plane_driver::ConfiguredAuthBinding {
         auth,
         handle,
         style_flags: decl.flags,
@@ -1784,7 +1784,7 @@ pub(crate) fn upstream_credential_binding(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+) -> Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String> {
     Ok(
         upstream_credential(member_name, registration, reach, scope)?.map(|(binding, per)| {
             let first = per.first_due(std::time::Instant::now(), busbar_kernel::retry::unit());
@@ -1802,7 +1802,13 @@ pub(crate) fn upstream_credential(
     registration: &busbar_contract::yaml::Value,
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
+) -> Result<
+    Option<(
+        busbar_kernel::plane_driver::ConfiguredAuthBinding,
+        Arc<PerHop>,
+    )>,
+    String,
+> {
     use busbar_contract::section::{
         CREDENTIAL_LEASE_TTL_KEY, CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY,
         PLACEMENT_BEARER, PLACEMENT_HEADER_KEY, UPSTREAM_CREDENTIAL_KEY,
@@ -1912,7 +1918,7 @@ pub(crate) fn upstream_credential(
     ));
     drop(credential);
     Ok(Some((
-        busbar_kernel::plane_driver::AuthBinding {
+        busbar_kernel::plane_driver::ConfiguredAuthBinding {
             auth,
             handle,
             style_flags: decl.flags,
@@ -2526,7 +2532,8 @@ pub(crate) fn bind_member_fetches(
 ) {
     let targeted = member_target_needs(served);
     for (member, route) in routes {
-        let Some(binding) = &route.auth else {
+        let Some(busbar_kernel::plane_driver::AuthBinding::Configured(binding)) = &route.auth
+        else {
             continue;
         };
 
@@ -2590,7 +2597,9 @@ pub(crate) fn member_routes(
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
-    use busbar_kernel::plane_driver::{resolve_member_needs, AuthBinding, MemberAuth, MemberRoute};
+    use busbar_kernel::plane_driver::{
+        resolve_member_needs, ConfiguredAuthBinding, MemberAuth, MemberRoute,
+    };
     struct Resolved<'p> {
         entry: String,
         name: String,
@@ -2754,7 +2763,7 @@ pub(crate) fn member_routes(
             let handle = auth
                 .open_outbound(PASSTHROUGH_STYLE, &[], &serde_json::json!({}))
                 .map_err(|e| format!("member '{entry}' {e}"))?;
-            Some(AuthBinding {
+            Some(ConfiguredAuthBinding {
                 auth,
                 handle,
                 style_flags: decl.flags,
@@ -2784,7 +2793,7 @@ pub(crate) fn member_routes(
                     .collect(),
                 need,
                 base_url,
-                auth,
+                auth: auth.map(busbar_kernel::plane_driver::AuthBinding::Configured),
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
@@ -2880,14 +2889,16 @@ pub(crate) fn member_routes(
                 need,
                 base_url: r.provider.base_url.clone(),
 
-                auth: Some(AuthBinding {
-                    auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
-                    handle,
-                    style_flags: decl.flags,
-                    points: busbar_contract::abi::auth::AuthPoints(decl.points),
-                    passthrough: false,
-                    per_request: None,
-                }),
+                auth: Some(busbar_kernel::plane_driver::AuthBinding::Configured(
+                    ConfiguredAuthBinding {
+                        auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
+                        handle,
+                        style_flags: decl.flags,
+                        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                        passthrough: false,
+                        per_request: None,
+                    },
+                )),
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 rides,

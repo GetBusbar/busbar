@@ -25,6 +25,16 @@ use crate::plane_driver::{CallerEnd, HeadFields};
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    Prepared(
+        &'static [(
+            &'static str,
+            busbar_plugin_abi::fallback_usage::EstimateValue,
+        )],
+    ),
+    UpMethod,
+    UpEnd,
+    AttemptUsage,
+    SelectedResource,
     ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
@@ -48,6 +58,53 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::Prepared(entries) => {
+                use busbar_plugin_abi::fallback_usage as wire;
+                let mut records = busbar_plugin_abi::records::Reply::new();
+                let entries: Vec<_> = entries
+                    .iter()
+                    .map(|(class, value)| wire::Estimate {
+                        class,
+                        value: *value,
+                    })
+                    .collect();
+                wire::write_prepared_estimates(
+                    &mut records,
+                    wire::SelectedResource {
+                        attempt: 1,
+                        exchange: 0,
+                        resource: "configured",
+                    },
+                    &entries,
+                )
+                .unwrap();
+                let record = busbar_plugin_abi::records::Records::new(records.as_bytes())
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                sink(PlaneOut::PreparedEstimates(
+                    wire::decode_prepared(record).unwrap(),
+                ));
+                continue;
+            }
+            It::UpMethod => PlaneOut::UpMethod("POST"),
+            It::UpEnd => PlaneOut::UpEnd,
+            It::AttemptUsage => {
+                PlaneOut::AttemptUsage(busbar_plugin_abi::fallback_usage::AttemptUsage {
+                    attempt: 1,
+                    class: "tokens",
+                    amount: 7,
+                    scale: 0,
+                    source: busbar_plugin_abi::fallback_usage::UsageSource::Reported,
+                })
+            }
+            It::SelectedResource => {
+                PlaneOut::SelectedResource(busbar_plugin_abi::fallback_usage::SelectedResource {
+                    attempt: 1,
+                    exchange: 0,
+                    resource: "configured",
+                })
+            }
             It::ResourceEcho => {
                 PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
                     invocation: 7,
@@ -117,6 +174,27 @@ fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
 }
 
 #[test]
+fn unadmitted_attempt_records_cannot_release_an_answer_prefix() {
+    for record in [It::AttemptUsage, It::SelectedResource] {
+        let script = Script {
+            request: vec![
+                It::Emit(1, b"held"),
+                It::Usage("tokens", 3, 0, SRC_REPORTED),
+                record,
+            ],
+            ..Script::default()
+        };
+        let effects = Emitted::default();
+        assert!(matches!(
+            Task::begin(&script, &req(), b"", &effects),
+            Err(SessionError::Violation(Violation::BadRecords))
+        ));
+        assert!(effects.0.lock().unwrap().is_empty());
+        assert!(script.dropped.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
 fn the_actual_resource_echo_is_retained_on_exchange_zero() {
     use busbar_plugin_abi::resource_admission::DescriptorEcho;
     let echo = DescriptorEcho {
@@ -177,6 +255,86 @@ fn an_unsolicited_upstream_echo_releases_neither_emits_nor_usage() {
 }
 
 /// A session handle that says when it was dropped (a drop without `end` is a cancel).
+#[test]
+fn complete_preparation_requires_every_declared_class_before_any_effect() {
+    use busbar_plugin_abi::fallback_usage::{self as wire, EstimateValue};
+    const COMPLETE: &[(&str, EstimateValue)] = &[
+        ("tokens", EstimateValue::Unknown),
+        (
+            "requests",
+            EstimateValue::Known {
+                amount: 1,
+                scale: 0,
+            },
+        ),
+    ];
+    const PARTIAL: &[(&str, EstimateValue)] = &[("tokens", EstimateValue::Unknown)];
+    for (entries, valid) in [(PARTIAL, false), (COMPLETE, true)] {
+        let script = Script {
+            facts: busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES,
+            classes: ["tokens", "requests"]
+                .into_iter()
+                .map(|class| busbar_ports::plane::UsageClass {
+                    class: class.into(),
+                    unit: 0,
+                    expected_units: None,
+                })
+                .collect(),
+            upstream_items: Mutex::new(VecDeque::from([vec![
+                It::Emit(1, b"held"),
+                It::SelectedResource,
+                It::Prepared(entries),
+                It::UpMethod,
+                It::UpEnd,
+            ]])),
+            ..Script::default()
+        };
+        let mut admission = busbar_plugin_abi::records::Reply::new();
+        wire::write_selected(
+            &mut admission,
+            wire::SelectedResource {
+                attempt: 1,
+                exchange: 0,
+                resource: "configured",
+            },
+        )
+        .unwrap();
+        let mut input = target();
+        input.admission = admission.as_bytes();
+        let effects = Emitted::default();
+        let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+        let result = task.upstream(&input, &effects);
+        assert_eq!(result.is_ok(), valid);
+        assert_eq!(!effects.0.lock().unwrap().is_empty(), valid);
+        if !valid {
+            assert!(!task.open());
+        }
+    }
+}
+
+#[test]
+fn later_forward_rejects_prior_attempt_owned_session_usage() {
+    let script = Script {
+        facts: busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
+        classes: vec![busbar_ports::plane::UsageClass {
+            class: "tokens".into(),
+            unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+            expected_units: None,
+        }],
+        attempt_classes: vec!["tokens".into()],
+        request: vec![It::Usage("tokens", 0, 0, SRC_REPORTED)],
+        pieces: Mutex::new(VecDeque::from([vec![It::Emit(1, b"held"), It::Forward]])),
+        ..Script::default()
+    };
+    let effects = Emitted::default();
+    let (mut task, _) = Task::begin(&script, &req(), b"", &effects).unwrap();
+    assert!(matches!(
+        task.piece(FROM_CORE, 0, 0, b"", &effects),
+        Err(SessionError::Violation(Violation::BadRecords))
+    ));
+    assert!(effects.0.lock().unwrap().is_empty());
+}
+
 struct Live(Arc<AtomicBool>);
 
 impl Drop for Live {
@@ -187,6 +345,9 @@ impl Drop for Live {
 
 #[derive(Default)]
 struct Script {
+    facts: u64,
+    classes: Vec<busbar_ports::plane::UsageClass>,
+    attempt_classes: Vec<Box<str>>,
     request: Vec<It>,
     pieces: Mutex<VecDeque<Vec<It>>>,
     end: Vec<It>,
@@ -208,6 +369,10 @@ fn refused() -> PortError {
 
 impl Calls for Script {
     type Session = Live;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (self.facts, &self.classes, &self.attempt_classes)
+    }
 
     fn request(
         &self,
