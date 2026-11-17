@@ -317,6 +317,8 @@ struct FeeState {
 struct FeeAccount {
     gov: Arc<GovState>,
     money: Arc<UnitMoney>,
+    // FEE-DEBT r1: the original native observer. Not a participant; never refunds or charges.
+    observer: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
     state: Mutex<FeeState>,
 }
 
@@ -347,13 +349,19 @@ impl Drop for FeeParticipation {
         };
         if result == Some(FeeResult::Refunded) {
             let m = &self.account.money;
-            self.account.gov.refund_charge(&m.charge);
+            let observer = self.account.observer.as_deref();
+            self.account.gov.refund_charge_observed(&m.charge, observer);
             if let FeeRefund::PlaneFeeUnits(fees) = &m.fee {
                 for unit in fees
                     .iter()
                     .filter_map(|c| m.classes.get(*c as usize))
                     .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
                 {
+                    // The extra fee-unit refund recomputes its chain targets rather than carrying
+                    // the legs actually charged, so an observed admission cannot claim it.
+                    if let Some(observer) = observer {
+                        observer.unresolved();
+                    }
                     self.account.gov.refund_fee_unit_in_era(
                         &m.cost,
                         &m.key,
@@ -695,6 +703,7 @@ impl PlaneMoney {
         let account = Arc::new(FeeAccount {
             gov: self.gov.clone(),
             money: money.clone(),
+            observer: None,
             state: Mutex::new(FeeState {
                 children: 0,
                 parent_refund: None,

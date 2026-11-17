@@ -99,6 +99,8 @@ impl Drop for AdmissionRollback {
 struct PendingAdmission {
     gov: Arc<GovState>,
     admission: Option<(Arc<UnitMoney>, Arc<AdmitGrant>)>,
+    // FEE-DEBT r1: the original nonparticipating observer, moved into the FeeAccount on install.
+    observer: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
 }
 
 impl PendingAdmission {
@@ -107,6 +109,7 @@ impl PendingAdmission {
         Self {
             gov,
             admission: Some((Arc::new(money), Arc::new(grant))),
+            observer: None,
         }
     }
 
@@ -122,8 +125,9 @@ impl PendingAdmission {
 impl Drop for PendingAdmission {
     fn drop(&mut self) {
         if let Some((_, grant)) = &self.admission {
-            self.gov.refund_charge(grant.charge());
-            self.gov.release_request(grant.charge());
+            let observer = self.observer.as_deref();
+            self.gov.refund_charge_observed(grant.charge(), observer);
+            self.gov.release_request_observed(grant.charge(), observer);
         }
         // The final grant reference then releases the actual concurrency and shutdown hold.
     }
@@ -391,17 +395,47 @@ impl PlaneMoney {
             fee,
             charge: Default::default(),
         };
-        let grant = self
-            .gov
-            .try_admit_planned(
-                &money.cost,
-                &money.key,
-                &money.pool,
-                money.arrived,
-                Some(&plan),
-            )
-            .map_err(NativeAdmissionError::Blocked)?;
-        let pending = PendingAdmission::new(self.gov.clone(), money, grant);
+        // FEE-DEBT r1: the native ordinary route funds its observer from the original request
+        // before the first charge; refusal leaves the admission gate closed.
+        let observer = match &ordinary {
+            Some((slot, _)) => Some(
+                crate::governance::fee_debt::FeeDebtObserver::reserve(&self.gov, slot.source())
+                    .map_err(|_| NativeAdmissionError::Declaration)?,
+            ),
+            None => None,
+        };
+        let grant = match &observer {
+            Some(observer) => self
+                .gov
+                .try_admit_observed(
+                    &money.cost,
+                    &money.key,
+                    &money.pool,
+                    money.arrived,
+                    Some(&plan),
+                    observer,
+                )
+                .map_err(|refused| match refused {
+                    crate::governance::fee_debt::ObservedAdmission::Blocked(blocked) => {
+                        NativeAdmissionError::Blocked(blocked)
+                    }
+                    crate::governance::fee_debt::ObservedAdmission::Observer(_) => {
+                        NativeAdmissionError::Declaration
+                    }
+                })?,
+            None => self
+                .gov
+                .try_admit_planned(
+                    &money.cost,
+                    &money.key,
+                    &money.pool,
+                    money.arrived,
+                    Some(&plan),
+                )
+                .map_err(NativeAdmissionError::Blocked)?,
+        };
+        let mut pending = PendingAdmission::new(self.gov.clone(), money, grant);
+        pending.observer = observer;
         let key = request.unit();
         self.install_native_pending_with(key, pending, |open| {
             let admitted = request
@@ -421,6 +455,7 @@ impl PlaneMoney {
             if let Some((slot, state)) = ordinary {
                 open.ordinary_terminal = Some(Arc::clone(slot));
                 state.request = Some(admitted.clone());
+                state.fee = open.fee.account.observer.clone();
             }
             Ok(admitted)
         })
@@ -491,6 +526,7 @@ impl PlaneMoney {
                 let account = Arc::new(FeeAccount {
                     gov: self.gov.clone(),
                     money: money.clone(),
+                    observer: pending.observer.clone(),
                     state: Mutex::new(FeeState {
                         children: 0,
                         parent_refund: None,

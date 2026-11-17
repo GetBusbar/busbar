@@ -125,6 +125,8 @@ impl Node {
         (InputError, Option<NativeNodeHandle>),
     > {
         let failure = |error| (error, None);
+        // The book that will own this entry's fee observer must receive original captures.
+        self.bind_fee_debt(billing);
         let ready = self
             .book
             .get()
@@ -663,5 +665,51 @@ impl Node {
             drop(native);
         }
         true
+    }
+}
+
+use busbar_kernel::governance::fee_debt::{
+    FeeAssociation, FeeCapture, FeeCursor, FeeDebtAssociate, ASSOCIATION_CANDIDATES,
+};
+
+/// FEE-DEBT r1: the original observer owner. One slice examines at most the adopted 64
+/// candidates within the capture's finite UnitKey horizon; it performs no Store I/O and is
+/// entered by the flusher only after every budget, money and checkpoint lock is released.
+impl FeeDebtAssociate for Node {
+    fn associate(&self, capture: &Arc<FeeCapture>, cursor: FeeCursor) -> FeeAssociation {
+        let guard = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(book) = guard.as_ref() else {
+            return FeeAssociation::Complete;
+        };
+        let upper = cursor.upper.unwrap_or_else(|| book.max_key());
+        let mut last = cursor.last;
+        for _ in 0..ASSOCIATION_CANDIDATES {
+            let Some((class, key)) = book.next(last, upper) else {
+                return FeeAssociation::Complete;
+            };
+            last = Some(key.get());
+            if let Some(RetainedUnit {
+                state: RetainedState::Native(native),
+                ..
+            }) = book.get(class, key)
+            {
+                native.ordinary.offer_fee_capture(capture);
+            }
+        }
+        FeeAssociation::Pending(FeeCursor {
+            last,
+            upper: Some(upper),
+        })
+    }
+}
+
+impl Node {
+    /// Bind this Node book as the fee producer's original observer owner, weakly.
+    pub(crate) fn bind_fee_debt(self: &Arc<Self>, billing: &PortBilling) {
+        let owner: Arc<dyn FeeDebtAssociate> = self.clone();
+        let _ = billing.bind_fee_debt_owner(Arc::downgrade(&owner));
     }
 }

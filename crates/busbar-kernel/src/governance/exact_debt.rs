@@ -493,6 +493,8 @@ pub(crate) struct BudgetFlushFlight {
     debt: std::sync::Mutex<FlightDebt>,
     runner: BudgetFlushRunner,
     durable: Option<super::raw_recovery::DurableUsageFlight>,
+    /// FEE-DEBT r1 original capture evidence, frozen under the source cell lock.
+    fee: Option<Arc<super::fee_debt::FeeCapture>>,
 }
 
 /// Serializes flush futures without blocking an executor thread. The guard also releases
@@ -671,9 +673,21 @@ impl GovState {
         if plain.is_zero() && dated.is_zero() {
             if let Some(original) = original {
                 *cell = original;
+                return None;
             }
-            return None;
+            return self.capture_fee_no_write(bucket, cell, window);
         }
+        // Freeze the original fee cut with the debt it covers: a later mutation cannot join it.
+        let fee = (!correcting && cell.fee_incarnation != 0).then(|| {
+            super::fee_debt::FeeCapture::frozen(
+                &self.fee_debt,
+                bucket,
+                cell.fee_incarnation,
+                window,
+                cell.fee_sequence,
+                false,
+            )
+        });
         let durable = if self.recovery_enabled() {
             let prepared = if correcting {
                 Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone()).and_then(
@@ -726,6 +740,7 @@ impl GovState {
             }),
             runner: BudgetFlushRunner::default(),
             durable,
+            fee,
         });
         self.budget_flushes
             .lock()
@@ -750,9 +765,60 @@ impl GovState {
                 park_window(&mut cell.rolled, window, deferred_plain.clone());
                 park_window(&mut cell.rolled_eras, window, deferred_dated.clone());
             }
+            if !correcting {
+                cell.fee_captured = cell.fee_sequence;
+            }
             cell.flushing += 1;
             *cell.flushing_windows.entry(window).or_default() += 1;
             cell.dirty = true;
+        });
+        Some(flight)
+    }
+
+    /// FEE-DEBT r1 honest no-write result: observed original mutations whose exact plain and
+    /// dated debt netted to zero inside this finite cut. The existing flight owner retains the
+    /// immutable capture; it performs no Store write and is never labelled Applied.
+    fn capture_fee_no_write(
+        &self,
+        bucket: &str,
+        cell: &mut BudgetCell,
+        window: u64,
+    ) -> Option<Arc<BudgetFlushFlight>> {
+        if cell.fee_obligations == 0
+            || cell.fee_incarnation == 0
+            || cell.fee_sequence <= cell.fee_captured
+        {
+            return None;
+        }
+        let fee = super::fee_debt::FeeCapture::frozen(
+            &self.fee_debt,
+            bucket,
+            cell.fee_incarnation,
+            window,
+            cell.fee_sequence,
+            true,
+        );
+        let flight = Arc::new(BudgetFlushFlight {
+            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            window,
+            debt: std::sync::Mutex::new(FlightDebt {
+                plain: ExactUsageDelta::default(),
+                dated: ExactUsageDelta::default(),
+                chunk: None,
+                finished: false,
+            }),
+            runner: BudgetFlushRunner::default(),
+            durable: None,
+            fee: Some(fee),
+        });
+        self.budget_flushes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((bucket.into(), window), flight.clone());
+        cell.mutate(|cell| {
+            cell.fee_captured = cell.fee_sequence;
+            cell.flushing += 1;
+            *cell.flushing_windows.entry(window).or_default() += 1;
         });
         Some(flight)
     }
@@ -766,15 +832,29 @@ impl GovState {
             Ok(running) => running,
             Err(message) => return (0, Some(RecordStoreError(message.into()))),
         };
+        // FEE-DEBT r1: associate the retained capture with its original observers before this
+        // flight can retire, with every budget, money and checkpoint lock released.
+        if let Some(fee) = &flight.fee {
+            self.fee_debt.associate(fee);
+        }
         let core = match self.core_store() {
             Ok(core) => core,
             Err(error) => return (0, Some(error)),
         };
         let mut confirmed = 0;
+        // Applied for fee evidence requires the actual original recovery child settled; an
+        // absorbed prerequisite's monetary payload has no settled proof here, so it stays
+        // unresolved rather than being labelled Applied by a kept Intent.
+        let mut fee_applied = true;
         if let Some(durable) = &flight.durable {
             if let Err(error) = self.drive_durable_usage_flight(durable).await {
                 return (0, Some(error));
             }
+            fee_applied = durable.prerequisite.is_none()
+                && durable.child.as_ref().is_none_or(|child| {
+                    self.recovery_event(child.operation_id)
+                        .is_some_and(|event| event.state == recovery::RecoveryState::Settled)
+                });
             let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
             debt.plain = ExactUsageDelta::default();
             debt.dated = ExactUsageDelta::default();
@@ -833,6 +913,12 @@ impl GovState {
                     }
                     drop(flights);
                     drop(cells);
+                    if let Some(fee) = &flight.fee {
+                        let deferred = flight.durable.as_ref().is_some_and(|durable| {
+                            !durable.deferred_plain.is_zero() || !durable.deferred_dated.is_zero()
+                        });
+                        fee.finish(fee_applied, deferred);
+                    }
                     if let Some(child) = flight
                         .durable
                         .as_ref()
