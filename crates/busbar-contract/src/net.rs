@@ -86,6 +86,8 @@ pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
         || o[0] == 0
         || (o[0] == 192 && o[1] == 0 && o[2] == 0)
         || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        // 240.0.0.0/4: reserved (RFC 1112 section 4), never a public destination.
+        || o[0] >= 240
 }
 
 /// TRUE for an IPv6 literal no busbar guard may connect to.
@@ -174,6 +176,12 @@ pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
         return Some(v4);
     }
     let seg = v6.segments();
+    // SIIT IPv4-translated `::ffff:0:a.b.c.d` (RFC 7915/RFC 6052 §2.1).
+    if seg[..4] == [0, 0, 0, 0] && seg[4] == 0xffff && seg[5] == 0 {
+        let [a, b] = seg[6].to_be_bytes();
+        let [c, d] = seg[7].to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
     if seg[0] == 0x2002 {
         let [a, b] = seg[1].to_be_bytes();
         let [c, d] = seg[2].to_be_bytes();

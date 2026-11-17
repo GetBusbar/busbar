@@ -33,12 +33,12 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::hook_calls::{Answered, HookCalls};
 use busbar_contract::hooks::{Candidate, PromptProjection, RoutingContext, RoutingRequest};
+use busbar_contract::json::{self, json, Value};
 use busbar_contract::services::{Caller, HookChildInvocation, Later, Ran, Stored};
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, Plugin};
 use busbar_plugin_loader::hook_door::HookInstance;
-use serde_json::{json, Value};
 
 use crate::frames::{input, json as json_blob, output};
 use crate::stats::Recorder;
@@ -83,7 +83,7 @@ fn default_settings() -> Value {
 fn settings(cfg: &Config) -> Result<Vec<u8>, String> {
     match &cfg.settings {
         Some(s) => Ok(s.clone()),
-        None => serde_json::to_vec(&default_settings()).map_err(|e| e.to_string()),
+        None => json::to_vec(&default_settings()).map_err(|e| e.to_string()),
     }
 }
 
