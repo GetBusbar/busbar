@@ -74,6 +74,10 @@ struct UnitEntry {
 }
 
 impl UnitEntry {
+    fn generic_effects_allowed(&self) -> bool {
+        self.data_gate.is_none() && self.effects_allowed()
+    }
+
     fn effects_allowed(&self) -> bool {
         self.admission_phase
             .as_ref()
@@ -252,7 +256,7 @@ impl UnitRecords {
         let mut shard = self.lock(unit);
         let entry = shard
             .get_mut(&unit)
-            .filter(|e| e.record.is_some() && e.effects_allowed())?;
+            .filter(|e| e.record.is_some() && e.generic_effects_allowed())?;
         Some(
             entry
                 .children
@@ -291,10 +295,28 @@ impl UnitRecords {
         }
     }
 
+    /// Generic host effects cannot borrow a descriptor-only DATA admission.
+    pub(crate) fn generic_effects_allowed(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+    ) -> bool {
+        let units = self.lock(unit);
+        units.get(&unit).is_some_and(|entry| {
+            entry.generic_effects_allowed()
+                && entry.record.is_some()
+                && entry
+                    .invocation_owner
+                    .as_ref()
+                    .is_none_or(|owner| owner == caller.incarnation())
+        })
+    }
+
     pub fn prepare_outbound(&self, unit: u64, prepared: crate::host_outbound::Prepared) -> bool {
         let mut shard = self.lock(unit);
         let Some(entry) = shard.get_mut(&unit).filter(|entry| {
-            entry.effects_allowed() && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
+            entry.generic_effects_allowed()
+                && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
         }) else {
             return false;
         };
@@ -309,7 +331,7 @@ impl UnitRecords {
     pub fn take_prepared(&self, unit: u64) -> Option<crate::host_outbound::Prepared> {
         self.lock(unit)
             .get_mut(&unit)
-            .filter(|entry| entry.effects_allowed())?
+            .filter(|entry| entry.generic_effects_allowed())?
             .prepared
             .take()
     }
@@ -318,7 +340,8 @@ impl UnitRecords {
     pub fn bind_outbound(&self, unit: u64, bound: crate::host_outbound::Bound) -> bool {
         let mut shard = self.lock(unit);
         let Some(entry) = shard.get_mut(&unit).filter(|entry| {
-            entry.effects_allowed() && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
+            entry.generic_effects_allowed()
+                && entry.record.as_ref().is_some_and(|r| r.principal.is_some())
         }) else {
             return false;
         };
@@ -329,7 +352,7 @@ impl UnitRecords {
     pub fn outbound(&self, unit: u64) -> Option<crate::host_outbound::Bound> {
         self.lock(unit)
             .get(&unit)
-            .filter(|entry| entry.effects_allowed())?
+            .filter(|entry| entry.generic_effects_allowed())?
             .outbound
             .clone()
     }
@@ -347,7 +370,7 @@ impl UnitRecords {
     pub fn take_ticket(&self, unit: u64) -> Option<Option<Vec<u8>>> {
         self.lock(unit)
             .get_mut(&unit)
-            .filter(|entry| entry.effects_allowed())?
+            .filter(|entry| entry.generic_effects_allowed())?
             .ticket
             .take()
     }
@@ -358,7 +381,7 @@ impl UnitRecords {
 
     pub fn staged(&self, unit: u64, stage: Arc<dyn UnitHookStage>) -> bool {
         match self.lock(unit).get_mut(&unit) {
-            Some(entry) if entry.record.is_some() && entry.effects_allowed() => {
+            Some(entry) if entry.record.is_some() && entry.generic_effects_allowed() => {
                 entry.stage.get_or_insert(stage);
                 true
             }
@@ -371,7 +394,7 @@ impl UnitRecords {
         let shard = self.lock(unit);
         let entry = shard
             .get(&unit)
-            .filter(|e| e.record.is_some() && e.effects_allowed())?;
+            .filter(|e| e.record.is_some() && e.generic_effects_allowed())?;
         entry.stage.clone()
     }
 
@@ -385,7 +408,7 @@ impl busbar_contract::conn::LendCredential for UnitRecords {
     fn lent(&self, unit: u64) -> Option<busbar_contract::SharedSecret> {
         self.lock(unit)
             .get(&unit)
-            .filter(|entry| entry.effects_allowed())?
+            .filter(|entry| entry.generic_effects_allowed())?
             .lent
             .as_ref()
             .map(crate::auth::CallerCredential::lend)

@@ -906,7 +906,7 @@ fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
     assert!(context
         .nest(
             &f.route.caller,
-            crate::host_services::NestAsk {
+            busbar_contract::services::NestAsk {
                 verb: "POST".into(),
                 target: "/other".into(),
                 body: vec![]

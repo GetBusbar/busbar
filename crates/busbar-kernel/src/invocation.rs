@@ -196,7 +196,7 @@ impl InvocationContext {
     /// Keep hook work on the exact retained generation's bounded executor, including after
     /// the request stops waiting for a tap or an expired call.
     pub(crate) fn offload_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
-        if !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
@@ -209,7 +209,7 @@ impl InvocationContext {
         nest: Nest,
         done: NestDone,
     ) -> Result<(), &'static str> {
-        if nest.parent != self.unit || !self.effects_allowed() {
+        if self.data_gate.is_some() || nest.parent != self.unit || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation
@@ -230,7 +230,7 @@ impl InvocationContext {
     }
 
     pub fn nest(&self, caller: &Caller, ask: NestAsk, done: NestDone) -> Result<(), &'static str> {
-        if !self.accepts(caller) || !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.accepts(caller) || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         let retained = self.clone();
