@@ -199,6 +199,8 @@ struct State {
     record_steps: VecDeque<RecordStep>,
     record_calls: Vec<RecordCall>,
     seen: Vec<Seen>,
+    #[cfg(test)]
+    open_limits: Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)>,
     released: u64,
 }
 
@@ -260,6 +262,13 @@ impl FakeNeeds {
 
     pub fn record_calls(&self) -> Vec<RecordCall> {
         self.lock().record_calls.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_limits(
+        &self,
+    ) -> Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)> {
+        self.lock().open_limits.clone()
     }
 
     fn state(&mut self) -> &mut State {
@@ -889,6 +898,8 @@ impl FakeNeeds {
         }
         {
             let mut state = self.lock();
+            #[cfg(test)]
+            state.open_limits.push((cx.name.to_owned(), cx.limits));
             state.seen.push(Seen {
                 op: "open",
                 dest: n.dest.to_owned(),

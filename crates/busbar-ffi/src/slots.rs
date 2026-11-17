@@ -196,6 +196,12 @@ impl<T: Send> Slots<T> {
     /// # Safety
     /// No other reference to this slot's value may be live while the result is: the caller is the one
     /// entry for this token (I6, which the host enforces with `&mut` handles).
+    /// Exclude `remove` and any other lookup for this identity until the returned borrow ends; a
+    /// matching generation is a freshness check, not a lock. The production callers are the session
+    /// and resume shims, whose host handle supplies exclusivity and retains the owning instance.
+    /// This function does not transfer ownership: end/cancel/completion or instance teardown drops
+    /// the value later. `UnsafeCell` permits per-slot access through a shared table, which a plain
+    /// shared Rust reference cannot express without the caller's exclusion proof.
     #[allow(clippy::mut_from_ref)] // `&mut` to a slot's value under the I6 contract above
     pub unsafe fn get_mut(&self, index: u32, generation: u32) -> Option<&mut T> {
         let slot = self.slot(index)?;
@@ -322,13 +328,20 @@ impl<P, S: Send, R, X: Send> Inst<P, S, R, X> {
 /// # Safety
 /// `inst` is the address `Inst::into_instance` returned for an `I` (exposed provenance), and nothing
 /// uses it again.
+/// It must be non-null, aligned, initialized, still allocated by `Box<I>` and not previously dropped.
+/// No entry may overlap teardown. For `Inst`, outstanding internal chain borrows end when its first
+/// field destructors run, before `plugin` is dropped; no external reference may be used during or
+/// after teardown. The caller is `shim::close` after the host's last `Instance` owner is released.
+/// If a field destructor panics, unwinding skips the allocation-free step below; the caller must not
+/// retry destruction of that partially dropped value. The outer shim contains the panic as FAULT.
 pub(crate) unsafe fn drop_inst<I>(inst: *const c_void) {
     let p = inst.cast::<I>().cast_mut();
     // SAFETY: by the contract `p` is the live, uniquely owned `I` from `Box::into_raw`; dropping it in place
     // through the raw pointer runs the field drops in order without invalidating the borrows the chain
     // futures hold until they are dropped first.
     unsafe { core::ptr::drop_in_place(p) };
-    // SAFETY: the same allocation, now dropped; as `MaybeUninit<I>` the Box frees it without a second drop.
+    // SAFETY: the same Box allocation, now dropped; MaybeUninit<I> has I's size and alignment, so the
+    // original allocator/layout are preserved. It frees storage without running I's destructor twice.
     drop(unsafe { Box::from_raw(p.cast::<core::mem::MaybeUninit<I>>()) });
 }
 

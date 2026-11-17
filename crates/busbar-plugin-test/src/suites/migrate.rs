@@ -6,13 +6,13 @@
 //! the registry (bind, inline steps, `decode_settled`, `unbind_refs`), driven by [`super::harness::Harness`].
 //!
 //! The cases, in order:
-//! 1. Open the older `bag` as its kind. `Settled { config, core_cfg }`: the open succeeds; the settled CONFIG
-//!    equals `config` (canonical JSON compare; `None` = the bag was canonical already, so no CONFIG or an echo of
-//!    the bag) and the CORE_CFG fragments equal `core_cfg` (section, name, JSON value). `Refused(code)`: the open
+//! 1. Open the case's `bag` as its kind with explicit purpose and limits. `Settled { config, core_cfg }`: the open
+//!    succeeds; the settled CONFIG equals `config` (canonical JSON compare; `None` = unchanged bag, permitting
+//!    absent CONFIG only on a Canonical case) and CORE_CFG fragments equal `core_cfg`. `Refused(code)`: the open
 //!    fails REFUSED `code`, nothing is settled and the plugin wrote nothing.
-//! 2. Fixed point: open the settled CONFIG (or the bag when none came back) again. It must open, answer no
-//!    CONFIG, and write nothing (current data costs one marker read and no write; a read is not countable
-//!    through `FakeNeeds`, a write is: `records()` is unchanged).
+//! 2. Fixed point: open the settled CONFIG (or the bag when none came back) again. It must open, answer either
+//!    no CONFIG or an equal JSON-tree echo, no CORE_CFG, and write nothing (current data costs one marker read
+//!    and no write; a read is not countable through `FakeNeeds`, a write is: `records()` is unchanged).
 //! 3. Newer: the canonical settings with their version marker raised must answer REFUSED R_VERSION whose text
 //!    starts `NEWER`, with no instance and nothing written. The marker is found generically, as the first of the
 //!    conventional numeric version keys at the top level of the canonical settings; a plugin that keeps its
@@ -25,8 +25,8 @@ use busbar_contract::json::{
 use busbar_plugin_abi::fail::refused;
 use busbar_plugin_abi::plugin::Plugin;
 
-use super::harness::{status_code, Harness};
-use super::MigrateExpect;
+use super::harness::{status_code, Harness, InstanceLimits, OpenError, OpenPurpose, OpenedPort};
+use super::{MigrateCase, MigrateExpect};
 use crate::fake_needs::FakeNeeds;
 
 /// The top-level numeric keys a settings bag conventionally carries its version in.
@@ -44,7 +44,7 @@ const NEWER: u64 = 1_000_000;
 
 pub(super) fn run(
     plugin: &'static Plugin,
-    bag: &[u8],
+    case: MigrateCase<'_>,
     needs: FakeNeeds,
     expect: MigrateExpect<'_>,
 ) {
@@ -54,11 +54,11 @@ pub(super) fn run(
     };
 
     match expect {
-        MigrateExpect::Refused(code) => refused_case(&harness, bag, code),
+        MigrateExpect::Refused(code) => refused_case(&harness, &case, code),
         MigrateExpect::Settled { config, core_cfg } => {
-            let canonical = settled_case(&harness, bag, config, core_cfg);
-            fixed_point_case(&harness, &canonical);
-            newer_case(&harness, &canonical);
+            let canonical = settled_case(&harness, &case, config, core_cfg);
+            fixed_point_case(&harness, &canonical, case.limits);
+            newer_case(&harness, &canonical, case.limits);
         }
     }
 }
@@ -96,9 +96,22 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn refused_case(harness: &Harness, bag: &[u8], code: u32) {
+fn open_case(
+    harness: &Harness,
+    name: &str,
+    bag: &[u8],
+    purpose: OpenPurpose,
+    limits: InstanceLimits,
+) -> Result<OpenedPort, OpenError> {
+    let mut spec = harness.spec(name, bag);
+    spec.purpose = purpose;
+    spec.limits = limits;
+    harness.open_spec(&spec)
+}
+
+fn refused_case(harness: &Harness, case: &MigrateCase<'_>, code: u32) {
     let before = harness.records();
-    let answer = harness.open_converting("migrate", bag);
+    let answer = open_case(harness, "migrate", case.bag, case.purpose, case.limits);
     let Err(error) = answer else {
         panic!("migrate: the bag opened; the expected answer is REFUSED {code}");
     };
@@ -121,11 +134,12 @@ fn refused_case(harness: &Harness, bag: &[u8], code: u32) {
 /// Case 1. Returns the canonical settings the next cases open: the settled CONFIG, or the bag.
 fn settled_case(
     harness: &Harness,
-    bag: &[u8],
+    case: &MigrateCase<'_>,
     config: Option<&[u8]>,
     core_cfg: &[(u32, &str, &[u8])],
 ) -> Vec<u8> {
-    let port = match harness.open_converting("migrate", bag) {
+    let bag = case.bag;
+    let port = match open_case(harness, "migrate", bag, case.purpose, case.limits) {
         Ok(port) => port,
         Err(error) => panic!("migrate: the older bag did not open: {error:?}"),
     };
@@ -153,6 +167,7 @@ fn settled_case(
             );
             got.config_json.to_vec()
         }
+        (None, None) if case.purpose == OpenPurpose::Canonical => bag.to_vec(),
         (None, None) => panic!("migrate: conversion requires CONFIG even for an unchanged bag"),
     };
 
@@ -187,17 +202,28 @@ fn settled_case(
 }
 
 /// Case 2: canonical settings are a fixed point, and a current open writes nothing.
-fn fixed_point_case(harness: &Harness, canonical: &[u8]) {
+fn fixed_point_case(harness: &Harness, canonical: &[u8], limits: InstanceLimits) {
     let records = harness.records();
-    let port = match harness.open("migrate-again", canonical) {
+    let port = match open_case(
+        harness,
+        "migrate-again",
+        canonical,
+        OpenPurpose::Canonical,
+        limits,
+    ) {
         Ok(port) => port,
         Err(error) => panic!("migrate: the canonical settings did not open again: {error:?}"),
     };
     drop(port);
     if let Some(again) = harness.settled("migrate-again") {
-        panic!(
-            "migrate: the canonical settings are not a fixed point; open answered CONFIG {} again",
-            lossy(&again.config_json)
+        assert_eq!(
+            json("the reopened CONFIG", &again.config_json),
+            json("the canonical input", canonical),
+            "migrate: the canonical settings are not a fixed point"
+        );
+        assert!(
+            again.core_cfg.is_empty(),
+            "migrate: canonical open answered CORE_CFG"
         );
     }
     assert_eq!(
@@ -222,12 +248,18 @@ fn newer_of(canonical: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Case 3: data newer than the plugin refuses R_VERSION, text `NEWER`, no instance, no write.
-fn newer_case(harness: &Harness, canonical: &[u8]) {
+fn newer_case(harness: &Harness, canonical: &[u8], limits: InstanceLimits) {
     let Some(newer) = newer_of(canonical) else {
         return;
     };
     let records = harness.records();
-    let Err(error) = harness.open("migrate-newer", &newer) else {
+    let Err(error) = open_case(
+        harness,
+        "migrate-newer",
+        &newer,
+        OpenPurpose::Canonical,
+        limits,
+    ) else {
         panic!(
             "migrate: settings marked newer than the plugin ({}) opened; expected REFUSED R_VERSION",
             lossy(&newer)
@@ -259,6 +291,89 @@ fn newer_case(harness: &Harness, canonical: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_plugin_abi::fail::Fail;
+    use busbar_plugin_abi::host::Host;
+    use busbar_plugin_abi::need::{need, ChainBytes};
+    use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
+    use busbar_plugin_abi::records::{settled, Full, Out};
+
+    struct LimitsFixture;
+    impl Open for LimitsFixture {
+        async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let connection = need::open(
+                "migration-limits.test:80",
+                need::Tls::None,
+                busbar_plugin_abi::need::egress::OPERATOR_INFRASTRUCTURE,
+            )
+            .await?;
+            need::close(connection.conn, false).await?;
+            let value: Value = config
+                .with(facade::parse_typed)
+                .map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            if value.get("v").and_then(Value::as_u64) != Some(2) {
+                return Err(Fail::refused_because(
+                    refused::R_VERSION,
+                    "NEWER: fixture version",
+                ));
+            }
+            Ok(Self)
+        }
+        fn check(_h: &Host, _config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#);
+        }
+        fn settled(&self, w: &mut Out<'_>) -> Result<(), Full> {
+            settled::config(w, br#"{"v":2}"#)
+        }
+    }
+    impl busbar_plugin_abi::Auth for LimitsFixture {}
+    busbar_plugin_abi::plugin!(Auth, LimitsFixture, name: "fixture-migration-limits");
+
+    #[test]
+    fn explicit_limits_reach_initial_fixed_point_newer_and_refused_open_callers() {
+        use super::super::harness::Accept;
+        use crate::fake_needs::ConnScript;
+
+        let mut needs = FakeNeeds::new();
+        for _ in 0..4 {
+            needs.conn("migration-limits.test:80", ConnScript::new().eof());
+        }
+        let harness = Harness::admit(PLUGIN.plugin(), needs).expect("fixture admission");
+        let limits = InstanceLimits {
+            timeout_ms: 1234,
+            connect_timeout_ms: 234,
+            max_inflight: 7,
+            accept: Accept(Accept::PLAINTEXT),
+        };
+        let case = MigrateCase {
+            bag: br#"{"v":2}"#,
+            purpose: OpenPurpose::ConvertUnstamped,
+            limits,
+        };
+        let canonical = settled_case(&harness, &case, None, &[]);
+        fixed_point_case(&harness, &canonical, limits);
+        newer_case(&harness, &canonical, limits);
+        refused_case(
+            &harness,
+            &MigrateCase {
+                bag: br#"{"v":3}"#,
+                purpose: OpenPurpose::Canonical,
+                limits,
+            },
+            refused::R_VERSION,
+        );
+        assert_eq!(
+            harness.needs().open_limits(),
+            vec![
+                ("migrate".to_owned(), limits),
+                ("migrate-again".to_owned(), limits),
+                ("migrate-newer".to_owned(), limits),
+                ("migrate".to_owned(), limits),
+            ]
+        );
+    }
 
     #[test]
     fn newer_raises_the_first_conventional_version_key() {

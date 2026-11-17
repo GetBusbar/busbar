@@ -8,7 +8,7 @@
 //! (platform.claude.com/docs/en/build-with-claude/structured-outputs), resolved here by the LLM
 //! plane's rule: the first `model_capabilities` rule whose `*` glob matches the wire model wins.
 
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 /// A `*` glob, the only wildcard `model_capabilities` takes (the LLM plane's `glob_match`).
 fn glob(pattern: &str, text: &str) -> bool {

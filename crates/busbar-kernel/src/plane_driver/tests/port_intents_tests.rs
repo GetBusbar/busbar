@@ -1620,7 +1620,7 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
         CONN_REFUSED
     );
     assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
-    let (verdict, items) = host.trust_state("github");
+    let (verdict, _, items) = host.trust_state("github");
     assert_ne!(verdict, DISTRUST_NONE);
     assert!(items.is_empty());
     assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);

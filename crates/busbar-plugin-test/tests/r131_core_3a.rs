@@ -100,10 +100,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "busbar-contract/tests/bounded_allocations.rs",
         "needs Watch::armed_here (!2305)",
     ),
-    (
-        "busbar-contract/tests/json_scanner.rs",
-        "needs cpu::thread_ns (!2305)",
-    ),
 ];
 
 #[test]

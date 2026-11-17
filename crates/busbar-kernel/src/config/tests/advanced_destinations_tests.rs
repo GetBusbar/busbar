@@ -61,7 +61,7 @@ fn allow_destinations_is_refused_as_an_unknown_key() {
 
 #[test]
 fn allow_destinations_is_refused_by_the_settings_patch() {
-    let err = busbar_contract::yaml::from_str::<super::super::patch::AdvancedPatch>(
+    let err = busbar_contract::yaml::from_str::<crate::config::patch::AdvancedPatch>(
         "allow_destinations: [127.0.0.1]\n",
     )
     .expect_err("the settings door refuses the deleted advanced key")

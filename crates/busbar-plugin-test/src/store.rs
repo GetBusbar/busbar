@@ -5,7 +5,7 @@
 //! The store adapter's test authority is installed internally and is never returned to callers.
 
 use crate::fake_needs::FakeNeeds;
-use crate::suites::harness::Harness;
+use crate::suites::harness::{Harness, OpenPurpose};
 use busbar_contract::plugin::TestKernelSeal;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
@@ -84,7 +84,15 @@ impl StoreHarness {
         self.inner.check_spec(&spec)
     }
     pub fn open(&self, case: &StoreCase) -> Result<StoreHandle, OpenError> {
+        self.open_for(case, OpenPurpose::Canonical)
+    }
+    /// Open an unstamped case with its explicit limits. CONFIG is required, including for unchanged bags.
+    pub fn open_converting(&self, case: &StoreCase) -> Result<StoreHandle, OpenError> {
+        self.open_for(case, OpenPurpose::ConvertUnstamped)
+    }
+    fn open_for(&self, case: &StoreCase, purpose: OpenPurpose) -> Result<StoreHandle, OpenError> {
         let mut spec = self.inner.spec(&case.name, &case.config);
+        spec.purpose = purpose;
         spec.limits = case.limits;
         self.inner.open_store_spec(&spec)
     }

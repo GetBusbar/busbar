@@ -4,7 +4,7 @@
 //! Tests for `refusal.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 /// The wire shape, from the one place it is written. 1.5.5's keys survive unchanged (the top-level
 /// pair, `error.code`, `error.message`: 1.5.5's `Error` schema is an open object, so the v1 rule is
