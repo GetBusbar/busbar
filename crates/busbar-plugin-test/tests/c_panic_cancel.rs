@@ -76,6 +76,7 @@ mod fixture {
     struct Fuse {
         armed: bool,
         slot: Option<u32>,
+        panics: bool,
     }
 
     impl Drop for Fuse {
@@ -100,8 +101,10 @@ mod fixture {
                         observed: watch::current_slot(),
                         watched: watched.get(),
                     });
-                FUSES_BLOWN.fetch_add(1, Ordering::SeqCst);
-                panic!("C-PANIC-CANCEL: a chain future's Drop panics during cancel");
+                if self.panics {
+                    FUSES_BLOWN.fetch_add(1, Ordering::SeqCst);
+                    panic!("C-PANIC-CANCEL: a chain future's Drop panics during cancel");
+                }
             }
         }
     }
@@ -138,6 +141,7 @@ mod fixture {
                 let mut fuse = Fuse {
                     armed: true,
                     slot: busbar_plugin_abi::host_side::watch::current_slot(),
+                    panics: true,
                 };
                 let req = Fetch {
                     method: "GET",
@@ -175,12 +179,13 @@ mod fixture {
             _h: &'static Host,
             _stream: u32,
             _delivery: u64,
-            _attempt: u32,
+            attempt: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
             let mut fuse = Fuse {
                 armed: true,
                 slot: busbar_plugin_abi::host_side::watch::current_slot(),
+                panics: attempt != 2,
             };
             let req = Fetch {
                 method: "POST",
@@ -437,4 +442,62 @@ fn a_panicking_chain_cancel_is_watched_and_quarantines_its_instance() {
         fixture::take_events().is_empty(),
         "the terminal refusal creates no second cancellation"
     );
+}
+
+/// Occupy the entire real output-loan stack, then cancel an independently parked chain.
+/// Cancellation has no output, so it must retain and restore the enclosing entry at this boundary.
+fn nested_output_entries(depth: usize, call: impl FnOnce()) {
+    if depth == 0 {
+        call();
+        return;
+    }
+    let mut output = busbar_plugin_abi::host_side::pool::Pool::global().acquire(4096);
+    busbar_plugin_abi::host_side::entry::guard(0x00FF_FFFE, 7, &mut output, |_| {
+        nested_output_entries(depth - 1, call);
+    })
+    .expect("the declared ACTIVE depth fits");
+}
+
+#[test]
+fn cancel_at_full_output_depth_restores_the_enclosing_watch_on_success_and_fault() {
+    use busbar_plugin_abi::host_side::watch;
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"nested cancellation"];
+    for (attempt, name) in [(2, "nested-cancel-ok"), (1, "nested-cancel-panic")] {
+        let port = open(&registry, &needs, &identity, name, b"{}");
+        fixture::take_events();
+        let mut future = port.deliver(
+            cx(),
+            busbar_plugin_abi::export::STREAM_LOGS,
+            1,
+            attempt,
+            &lines,
+        );
+        assert!(poll_once(&mut future, &waker).is_pending());
+        nested_output_entries(busbar_ffi::host::DEPTH, || {
+            drop(future);
+            assert_eq!(
+                watch::current_slot(),
+                Some(0x00FF_FFFE),
+                "cancel restores the enclosing owner"
+            );
+            let restored = std::cell::Cell::new(false);
+            watch::scan(
+                |slot, entry| {
+                    if slot == 0x00FF_FFFE && entry == 7 {
+                        restored.set(true);
+                    }
+                    (u32::MAX, 0)
+                },
+                |_, _, _, _| {},
+            );
+            assert!(
+                restored.get(),
+                "cancel restores the enclosing watch at full depth"
+            );
+        });
+        assert_guarded_cancel_before_release();
+    }
 }
