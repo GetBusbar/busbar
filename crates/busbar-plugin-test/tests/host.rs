@@ -9,6 +9,8 @@
 
 #[path = "fixtures/media_door.rs"]
 mod media_door;
+#[path = "fixtures/native_store.rs"]
+mod native_store;
 #[path = "fixtures/secret_door.rs"]
 mod secret_door;
 #[path = "fixtures/store_door.rs"]
@@ -51,6 +53,36 @@ fn the_store_fixture_opens_through_both_images() {
             assert_eq!(clock.unix_seconds, 41, "{image}");
         });
     });
+}
+
+/// The MIN-3 store fixture, linked and as its cdylib, opened through `Registry::open_store`: both images
+/// answer the same dataset and clock (the port of the old door store's both-images case).
+#[cfg(unix)]
+#[test]
+fn the_native_store_fixture_opens_through_both_images() {
+    use busbar_plugin_loader::test_host::{admit_bytes, cdylib_bytes, test_manifest};
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_plugin_test::store::{StoreCase, StoreHarness};
+
+    let linked = StoreHarness::admit(native_store::PLUGIN.plugin(), FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("linked: {r:?}"));
+    let bytes = cdylib_bytes("native_store_fixture");
+    let manifest = test_manifest(&bytes, &[]).unwrap_or_else(|r| panic!("cdylib stamp: {r:?}"));
+    let admitted = admit_bytes(&bytes, &manifest, "native-store-fixture")
+        .unwrap_or_else(|r| panic!("cdylib admission: {r:?}"));
+    let dropped = StoreHarness::admit_admitted(admitted, FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("cdylib: {r:?}"));
+    for (image, h) in [("linked", linked), ("cdylib", dropped)] {
+        let store = h
+            .open(&StoreCase::new("host-fixture-store", b"{}".to_vec()))
+            .unwrap_or_else(|e| panic!("{image}: {e:?}"));
+        let info = store.backend.info();
+        assert_eq!(info.dataset, DatasetId([1; 16]), "{image}");
+        let clock = h
+            .block_on(store.backend.clock(info.dataset))
+            .unwrap_or_else(|e| panic!("{image}: {e:?}"));
+        assert_eq!(clock.unix_seconds, 41, "{image}");
+    }
 }
 
 #[test]

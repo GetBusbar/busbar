@@ -207,6 +207,17 @@ impl<K: Kind> Image<K> {
     }
 }
 
+/// The bytes of the cdylib example `lib_name` (a MIN-3 image for [`admit_bytes`]), found where
+/// [`Image::cdylib`] looks.
+///
+/// # Panics
+/// When no such library exists (the panic names where it looked) or it cannot be read.
+#[must_use]
+pub fn cdylib_bytes(lib_name: &str) -> Vec<u8> {
+    let path = locate(lib_name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 fn locate(lib_name: &str) -> PathBuf {
     let file = crate::plugin_library_filename(lib_name);
     let var = format!(
