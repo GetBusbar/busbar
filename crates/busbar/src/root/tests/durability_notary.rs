@@ -311,6 +311,7 @@ async fn clean_stop_stamps_a_final_page() {
     seal_n(&quiet, 1, 3).await;
     stamped_through(&task, 3).await;
     let end = task.stop().await.unwrap();
+    assert_eq!(end.committed_through, 3);
     assert!(stamps(&quiet)
         .await
         .iter()
