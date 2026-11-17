@@ -301,7 +301,7 @@ impl http_body::Body for PipeBody {
 /// How a request that was not streamed ended: the refusal's items, or the items the session collected.
 fn finished(done: Result<Result<Served, ServeError>, tokio::task::JoinError>) -> PlaneResponse {
     match done {
-        Ok(Ok(Served::Refused(items))) => response_of(items),
+        Ok(Ok(Served::Refused(refused))) => response_of(refused.items),
         Ok(Ok(Served::Ran(ran))) => response_of(ran.client),
         Ok(Err(error)) => {
             tracing::warn!(?error, "a plane request failed");
@@ -738,7 +738,7 @@ async fn answer(
         if let Some(settle) = settle {
             match &served {
                 Ok(Served::Refused(items)) => {
-                    settle.finish(port_admin::joined(items.clone()).0, false)
+                    settle.finish(port_admin::joined(items.items.clone()).0, false)
                 }
                 Ok(Served::Ran(_)) => settle.finish(
                     match status.load(Ordering::Relaxed) {

@@ -265,7 +265,7 @@ impl NativeNests {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .ran = false;
-                reply.items(items);
+                reply.items(items.items);
             }
             Ok(Served::Ran(ran)) => {
                 reply.items(ran.client);
