@@ -50,8 +50,6 @@ pub mod header;
 pub mod host;
 #[cfg(feature = "host")]
 pub mod image;
-#[cfg(feature = "host")]
-pub mod lifecycle;
 pub mod raw;
 pub mod shim;
 pub mod slots;

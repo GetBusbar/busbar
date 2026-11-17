@@ -6,10 +6,6 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(test)]
-#[path = "tests/lifecycle_custody_tests.rs"]
-mod lifecycle_custody_tests;
-
 // THE ONE LOAD (LINT-RULES R23). Every dynamic library this process loads is opened here, by
 // `dlopen_on_worker`, and libloading is busbar-plugin-loader's alone (cargo-deny). Signed images
 // arrive through `load_library_from_bytes` under the native load guard; the standalone path loads
