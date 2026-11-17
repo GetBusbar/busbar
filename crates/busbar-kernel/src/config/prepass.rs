@@ -426,6 +426,10 @@ pub fn deploy_from_yaml_value(
 }
 
 #[cfg(test)]
+#[path = "tests/recognizer_tests.rs"]
+mod recognizer_tests;
+
+#[cfg(test)]
 #[path = "tests/plane_remainder_tests.rs"]
 mod plane_remainder_tests;
 
