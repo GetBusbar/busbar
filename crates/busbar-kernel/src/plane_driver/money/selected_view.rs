@@ -25,6 +25,7 @@ fn refused(message: &str) -> RecordStoreError {
 
 impl PlaneMoney {
     pub fn usage_view(&self, key: UnitKey) -> Option<Arc<UsageView>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         let mut all = self.shard(key);
         let open = all.get_mut(&key)?;
         if let Some(native) = &open.native {

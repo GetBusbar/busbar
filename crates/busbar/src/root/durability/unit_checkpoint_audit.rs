@@ -23,6 +23,8 @@ use super::Durability;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunningAudit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_identity: Option<SelectedAuditIdentity>,
     pub incarnation: u64,
     pub principal: String,
     pub op_class: String,
@@ -34,6 +36,15 @@ pub(crate) struct RunningAudit {
     pub rate_card: Option<[u8; 20]>,
     pub policy_epoch: u64,
     pub hooks: Vec<(String, String, bool)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SelectedAuditIdentity {
+    pub node: u64,
+    pub boot_nonce: [u8; 16],
+    pub user: Option<String>,
+    pub labels: Vec<(String, String)>,
 }
 
 fn error(message: impl ToString) -> RecordStoreError {
