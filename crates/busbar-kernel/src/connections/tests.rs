@@ -166,6 +166,8 @@ impl Upstreams for Table {
 fn upstream(name: &str, auth: Option<UpstreamAuth>) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
         name: name.into(),
+        resource: None,
+        allow_private: false,
         url: Some(format!("https://{name}.example").into()),
         command: None,
         tls: UpstreamTls {
