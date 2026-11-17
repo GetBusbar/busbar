@@ -5,8 +5,8 @@ use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Value};
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::sign::{SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 use busbar_kernel_audit::{
-    AuditVerifyingKey, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
-    DIGEST_RECIPE_V7,
+    AuditVerifyingKey, Fingerprint, DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4,
+    DIGEST_RECIPE_V6, DIGEST_RECIPE_V7, LINK_RECIPE, STAMP_DOMAIN,
 };
 use std::collections::BTreeMap;
 
@@ -15,12 +15,15 @@ const V4: &str = include_str!("../../../../../docs/audit-chain-digest-v4.md");
 const V5: &str = include_str!("../../../../../docs/audit-chain-digest-v5.md");
 const V6: &str = include_str!("../../../../../docs/audit-chain-digest-v6.md");
 const V7: &str = include_str!("../../../../../docs/audit-chain-digest-v7.md");
+const LINK: &str = include_str!("../../../../../docs/audit-link-v1.md");
+mod stamped;
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy)]
 enum Kind {
     Text,
     Number,
+    Bytes32,
 }
 
 fn text<'a>(value: &'a Value, member: &str) -> Result<&'a str> {
@@ -58,7 +61,7 @@ fn recipe(name: &str) -> Result<&'static str> {
         DIGEST_RECIPE_V4 => Ok(V4),
         DIGEST_RECIPE => Ok(V5),
         DIGEST_RECIPE_V6 => Ok(V6),
-        DIGEST_RECIPE_V7 => Ok(V7),
+        DIGEST_RECIPE_V7 | LINK_RECIPE => Ok(V7),
         _ => Err("unsupported audit digest recipe"),
     }
 }
@@ -66,7 +69,12 @@ fn recipe(name: &str) -> Result<&'static str> {
 fn envelope(value: &Value) -> Result<&str> {
     let name = text(value, "recipe")?;
     recipe(name)?;
-    if text(value, "signature_domain")? != SIGNATURE_DOMAIN {
+    let domain = if name == LINK_RECIPE {
+        STAMP_DOMAIN
+    } else {
+        SIGNATURE_DOMAIN
+    };
+    if text(value, "signature_domain")? != domain {
         return Err("unsupported audit signature domain");
     }
     if text(value, "algorithm")? != SIGNATURE_ALGORITHM {
@@ -93,6 +101,7 @@ fn fields(page: &str) -> Result<Vec<(&str, Kind)>> {
         let kind = match cells[2] {
             "text" => Kind::Text,
             "number" => Kind::Number,
+            "bytes32" => Kind::Bytes32,
             _ => return Err("the embedded digest field table is invalid"),
         };
         if position != fields.len() + 1 {
@@ -150,6 +159,14 @@ fn feed(digest: &mut Digest, value: &Value, kind: Kind) -> Result<()> {
         Kind::Number => {
             digest.num(decimal(value)?);
         }
+        Kind::Bytes32 => {
+            let raw = value.as_str().ok_or("a fingerprint is not a string")?;
+            if !raw.is_empty() && !hex(raw, 32) {
+                return Err("a fingerprint is not canonical lowercase hex");
+            }
+            let fp = Fingerprint::from_hex(raw).ok_or("invalid fingerprint")?;
+            digest.raw(&32u64.to_be_bytes()).raw(&fp.0);
+        }
     }
     Ok(())
 }
@@ -160,7 +177,10 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         None if default_recipe == DIGEST_RECIPE_V2 => DIGEST_RECIPE_V2,
         None => return Err("a record recipe is absent"),
     };
-    if name == DIGEST_RECIPE || name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
+    if matches!(
+        name,
+        DIGEST_RECIPE | DIGEST_RECIPE_V6 | DIGEST_RECIPE_V7 | LINK_RECIPE
+    ) {
         let present = text(record, "rate_card_key_present")?;
         let key = text(record, "rate_card_version")?;
         let valid_key = key.len() == 40
@@ -176,7 +196,7 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
             return Err("a keyed rate-card boundary has invalid presence or spelling");
         }
     }
-    if name == DIGEST_RECIPE_V6 || name == DIGEST_RECIPE_V7 {
+    if matches!(name, DIGEST_RECIPE_V6 | DIGEST_RECIPE_V7 | LINK_RECIPE) {
         for line in record
             .get("lines")
             .and_then(Value::as_array)
@@ -200,7 +220,8 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
         order.extend(tail);
     }
     let mut digest = Digest::new(Framing::LengthPrefixed);
-    let mut index = 0;
+    // The published link recipe puts content before its chain position and predecessor.
+    let mut index = if name == LINK_RECIPE { 2 } else { 0 };
     while index < order.len() {
         let (name, kind) = order[index];
         if let Some((group, _)) = name.split_once("[]") {
@@ -242,6 +263,15 @@ fn record_digest(record: &Value, default_recipe: &str) -> Result<String> {
                 kind,
             )?;
             index += 1;
+        }
+    }
+    if name == LINK_RECIPE {
+        for (field, kind) in fields(LINK)? {
+            feed(
+                &mut digest,
+                record.get(field).ok_or("a link member is absent")?,
+                kind,
+            )?;
         }
     }
     Ok(digest.finish())
@@ -312,6 +342,9 @@ fn matches_head(head: &Value, record: &Value) -> Result<()> {
 pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Result<Value> {
     let keys = trusted_keys(keys)?;
     let default_recipe = envelope(range)?;
+    if default_recipe == LINK_RECIPE {
+        return stamped::verify(&keys, range, head);
+    }
     let from = number(range, "from")?;
     let to = number(range, "to")?;
     if from == 0 || to < from {
@@ -326,6 +359,9 @@ pub(super) fn verify(keys: &Value, range: &Value, head: Option<&Value>) -> Resul
     }
     let mut previous = None;
     for (index, record) in records.iter().enumerate() {
+        if record.get("recipe").and_then(Value::as_str) == Some(LINK_RECIPE) {
+            return Err("a linked record requires a linked envelope and checked page authority");
+        }
         let seq = record_number(record, "seq")?;
         if seq != from + u64::try_from(index).map_err(|_| "record position overflow")? {
             return Err("records are not in consecutive requested order");
