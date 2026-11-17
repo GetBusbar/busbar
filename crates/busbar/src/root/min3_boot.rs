@@ -1536,7 +1536,6 @@ fn prepare_serving_owned(
         core,
         converting,
         normalization_source,
-        section_pools,
     } = ready;
     let channel_accounts = Arc::clone(&sources.channel_accounts);
     let before = &sources.instances;
@@ -1892,6 +1891,7 @@ pub(super) async fn finish_with_store(
         prefix,
         converting,
         normalization_source,
+        section_pools,
     } = ready;
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
