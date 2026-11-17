@@ -193,9 +193,12 @@ async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
             .bytes(),
         ),
     });
+    let mut expected_body = first.candidate().clone();
+    expected_body.mutations = expected;
+    let expected = busbar_contract::persistence::PreparedCandidate::new(expected_body).unwrap();
     assert_eq!(
-        first.candidate().mutations,
-        expected,
+        first.fingerprint(),
+        expected.fingerprint(),
         "one atomic candidate preserves every shared epoch/slot effect and the mark"
     );
     control::admit(&first).expect("the combined candidate obeys the control contract");
@@ -204,7 +207,7 @@ async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
     assert_eq!(sent.len(), 2, "the unknown attempt was replayed once");
     assert_eq!(sent[1].candidate().id, first.candidate().id);
     assert_eq!(sent[1].fingerprint(), first.fingerprint());
-    assert_eq!(sent[1].candidate().mutations, expected);
+    assert_eq!(sent[1].fingerprint(), expected.fingerprint());
     assert_eq!(store.fence_applies(dead), 1);
     assert_eq!(fence.retained(), 0);
     drop(fence);
