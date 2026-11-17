@@ -312,6 +312,7 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
         members,
         [
             "config_generation",
+            "crypto",
             "deployment_id",
             "incarnation",
             "node_id",
@@ -454,6 +455,21 @@ async fn process_state_crypto_members() {
         crypto["api"].as_u64(),
         Some(3),
         "api is the backend contract's API, 3 in 1.6.0: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["api"].as_u64(),
+        Some(u64::from(busbar_contract::crypto::API)),
+        "api is the linked backend's API: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["validation"].as_str(),
+        busbar_contract::crypto::VALIDATION,
+        "validation is the linked backend's VALIDATION: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["validated_mode"].as_bool(),
+        Some(busbar_contract::crypto::VALIDATED_MODE),
+        "validated_mode is the facade's one computation: {crypto:?}"
     );
     let validation = &crypto["validation"];
     assert!(

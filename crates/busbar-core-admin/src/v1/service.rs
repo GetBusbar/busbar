@@ -15,8 +15,8 @@ use busbar_kernel::state::App;
 
 use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
-    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoCrypto, InfoView, InfoWarning,
+    KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
     PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
     UsageWindow,
 };

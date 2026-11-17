@@ -3517,6 +3517,27 @@
         ],
         "type": "object"
       },
+      "InfoCrypto": {
+        "description": "`InfoView.crypto` (ADMIN-API-1.6-ONE-MODEL §10.1, E-17): the one validated-mode answer, the same\nvalues `core/process` `state.crypto` serves.",
+        "properties": {
+          "validated_mode": {
+            "description": "True only when the linked crypto backend states a validation; derived from that statement\nalone, never from the backend's name, a feature, an entitlement or configuration.",
+            "type": "boolean"
+          },
+          "validation": {
+            "description": "The linked backend's validation statement (a certificate reference), or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "validated_mode",
+          "validation"
+        ],
+        "type": "object"
+      },
       "InfoView": {
         "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
@@ -3579,6 +3600,10 @@
               "$ref": "#/components/schemas/InfoWarning"
             },
             "type": "array"
+          },
+          "crypto": {
+            "$ref": "#/components/schemas/InfoCrypto",
+            "description": "Whether this binary runs a validated crypto module, and the linked backend's validation\nstatement (E-17). The backend's name and module version are `core/process` `state.crypto`."
           }
         },
         "required": [
@@ -3586,7 +3611,8 @@
           "incarnation",
           "started_at_ms",
           "config_generation",
-          "warnings"
+          "warnings",
+          "crypto"
         ],
         "type": "object"
       },
@@ -7676,6 +7702,51 @@
         },
         "required": [
           "store"
+        ],
+        "type": "object"
+      },
+      "CoreState_process": {
+        "description": "The core/process instance's state.",
+        "properties": {
+          "crypto": {
+            "description": "The linked crypto backend.",
+            "properties": {
+              "api": {
+                "description": "The crypto backend contract version (3 in 1.6.0).",
+                "type": "integer"
+              },
+              "backend": {
+                "description": "The linked crypto backend's name (`software` in core; a private build's backend states its own).",
+                "type": "string"
+              },
+              "module": {
+                "description": "The linked crypto module's version.",
+                "type": "string"
+              },
+              "validated_mode": {
+                "description": "True only when the linked backend states a validation; the same value as /info crypto.validated_mode.",
+                "type": "boolean"
+              },
+              "validation": {
+                "description": "The linked backend's validation statement (a certificate reference), or null; the same value as /info crypto.validation.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "backend",
+              "module",
+              "api",
+              "validated_mode",
+              "validation"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "crypto"
         ],
         "type": "object"
       }

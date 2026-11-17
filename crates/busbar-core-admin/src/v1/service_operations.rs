@@ -131,6 +131,10 @@ impl AdminService {
                 .config_generation
                 .load(std::sync::atomic::Ordering::Acquire),
             warnings,
+            crypto: InfoCrypto {
+                validated_mode: busbar_contract::crypto::VALIDATED_MODE,
+                validation: busbar_contract::crypto::VALIDATION,
+            },
         })
     }
 

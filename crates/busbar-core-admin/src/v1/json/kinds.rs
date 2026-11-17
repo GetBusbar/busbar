@@ -847,6 +847,28 @@ pub(crate) const CORE_STATE_TRUST: &str = "CoreState_trust";
 /// The `core/durability` state schema's component name in the embedded document.
 pub(crate) const CORE_STATE_DURABILITY: &str = "CoreState_durability";
 
+/// The `core/process` state schema's component name in the embedded document.
+pub(crate) const CORE_STATE_PROCESS: &str = "CoreState_process";
+
+/// The `core/process` state (ADMIN-API-1.6-ONE-MODEL r3.3 section 10.1): `crypto` is exactly
+/// `{backend, module, api, validated_mode, validation}`, the linked crypto backend's `NAME`,
+/// `module_version()` and contract `API`, and the one validated-mode answer `/info.crypto` serves.
+fn process_state() -> Value {
+    use busbar_contract::crypto;
+    let mut state_crypto = Map::new();
+    state_crypto.insert("backend", Value::from(crypto::BACKEND));
+    state_crypto.insert("module", Value::from(crypto::module_version()));
+    state_crypto.insert("api", Value::from(crypto::API));
+    state_crypto.insert("validated_mode", Value::from(crypto::VALIDATED_MODE));
+    state_crypto.insert(
+        "validation",
+        crypto::VALIDATION.map_or_else(Value::new_null, Value::from),
+    );
+    let mut state = Map::new();
+    state.insert("crypto", Value::from(state_crypto));
+    Value::from(state)
+}
+
 /// The `core/durability` state (ADMIN-API-1.6-ONE-MODEL section 10.1): `store.persistence` is whether
 /// configuration changes made through the API are kept in the Store and survive a restart (`false`
 /// when the configuration is locked and API configuration changes are refused).
@@ -910,7 +932,8 @@ fn inline_refs(components: &Value, schema: &Value, depth: usize) -> Value {
 /// `state_schema`, `runtime`, `health`, `links`, `views`, `actions`. `state` and `state_schema`
 /// are the instance's own answer: core writes nothing into them, and before MIN-3 (plugins) and
 /// the core instances (MR15) there is none, so they are `null`. Core's trust subsystem answers its
-/// own (TRUST-ADMIN-PRODUCER-DESIGN r3 §3.4): the trust book's state, against `CoreState_trust`.
+/// own (TRUST-ADMIN-PRODUCER-DESIGN r3 §3.4): the trust book's state, against `CoreState_trust`;
+/// so do `core/durability` and `core/process` (ADMIN-API-1.6-ONE-MODEL §10.1).
 pub(crate) fn describe_of(app: &App, trust: Option<&TrustReadout>, instance: &Instance) -> Value {
     let Some(mut members) = list_row(app, trust, instance).into_object() else {
         return Value::new_null();
@@ -927,6 +950,9 @@ pub(crate) fn describe_of(app: &App, trust: Option<&TrustReadout>, instance: &In
     if instance.category == "core" && instance.id == "trust" {
         members.insert("state", super::trust_inventory::state(trust));
         members.insert("state_schema", embedded_schema(CORE_STATE_TRUST));
+    } else if instance.category == "core" && instance.id == "process" {
+        members.insert("state", process_state());
+        members.insert("state_schema", embedded_schema(CORE_STATE_PROCESS));
     } else if instance.category == "core" && instance.id == "durability" {
         members.insert("state", durability_state(app));
         members.insert("state_schema", embedded_schema(CORE_STATE_DURABILITY));

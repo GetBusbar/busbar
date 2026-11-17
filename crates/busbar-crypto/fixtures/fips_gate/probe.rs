@@ -19,4 +19,6 @@ fn main() {
     );
     println!("backend={}", busbar_crypto::BACKEND);
     println!("checked_hash={:?}", busbar_crypto::verification::Context::unrestricted().sha256(b"abc"));
+    println!("validation={:?}", busbar_crypto::VALIDATION);
+    println!("validated_mode={}", busbar_crypto::VALIDATED_MODE);
 }

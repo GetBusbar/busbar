@@ -375,6 +375,10 @@ instance IDs. Resolve a reported collision and update clients that select by ins
 | `kinds_revision` | The `/kinds` ETag |
 | `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
+`/info` gains `crypto` (`{validated_mode, validation}`). The crypto backend's name and module version,
+which `/healthz` showed as `crypto_module`, are the `core/process` instance's `state.crypto`
+(`{backend, module, api, validated_mode, validation}`, `/kinds/core/instances/process`).
+
 ## Usage and rate cards
 
 Review prices explicitly. Migration removes root `cache_write_utok: 0`, the 1.5.5 spelling of
