@@ -60,6 +60,9 @@ pub(crate) mod neutral;
 #[path = "serve_observations.rs"]
 mod observations;
 
+#[path = "native_nests.rs"]
+mod native_nests;
+
 #[cfg(test)]
 #[must_use]
 pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
@@ -1225,6 +1228,9 @@ pub(crate) struct Served {
     pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
     /// Complete native instance ownership of this serving generation.
     pub(crate) native: Option<Arc<crate::root::min3_boot::Booted>>,
+    /// Retain the actual opened fixture and its invocation admission for the serving lifetime.
+    #[cfg(test)]
+    pub(crate) native_fixture: Option<Arc<crate::root::min3_boot::fixture::PlaneFixture>>,
     /// What bills the requests those ports serve (their unit admission and settlement); `None` = no governance
     /// book, so a port request is not a billed unit (audit rows only).
     pub(crate) billing: Option<busbar_kernel::plane_driver::port_billing::PortBilling>,
@@ -1396,6 +1402,7 @@ impl std::ops::Deref for DataRoutes {
 impl DataRoutes {
     pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
         let snapshot = Arc::new(snapshot);
+        let native = Arc::new(native_nests::NativeNests::new(&snapshot)?);
         let kernel = snapshot
             .served
             .planes
@@ -1438,6 +1445,7 @@ impl DataRoutes {
                         kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
+                            native,
                             runtime,
                             detached: busbar_kernel::detached::worker_detached(),
                         }),
@@ -1572,6 +1580,7 @@ pub(crate) const NEST_UNREAD: &str = "the nested unit's reply could not be read"
 
 pub(crate) struct DoorNests {
     pub(crate) routes: Arc<DispatchSnapshot>,
+    native: Arc<native_nests::NativeNests>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
@@ -1589,14 +1598,21 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
             snapshot: Arc::clone(&self.routes),
             generation: Some(Arc::clone(context.generation())),
         });
-        let Some(bound) = routes.parent_of(&nest) else {
-            done(busbar_kernel::host_services::NestReply::Unserved(
-                NEST_PARENT_GONE,
-            ));
-            return;
-        };
-
+        let native = Arc::clone(&self.native);
         let child = async move {
+            if let Some(answer) = native
+                .dispatch(Arc::clone(&routes.snapshot), &context, &nest)
+                .await
+            {
+                done(answer);
+                return;
+            }
+            let Some(bound) = routes.parent_of(&nest) else {
+                done(busbar_kernel::host_services::NestReply::Unserved(
+                    NEST_PARENT_GONE,
+                ));
+                return;
+            };
             let _parent_context = context;
             let limits = nest.constraints.clone();
             let run = routes.nested(nest, bound);
