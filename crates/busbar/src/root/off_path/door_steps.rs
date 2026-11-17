@@ -424,12 +424,8 @@ pub(crate) struct DoorConfig {
     pub(crate) native_generation: Option<Arc<crate::root::min3_candidate::NativeGeneration>>,
     /// Exact candidate-native dispatchers; request lookup always uses its retained App.
     pub(crate) native_slots: crate::root::min3_physical::NativeSlots,
-    /// Candidate-owned physical handlers, constructed by its root rules before publication.
-    pub(crate) listener_routes: Option<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
     pub(crate) listeners: Result<crate::root::boot::ListenerNeeds, String>,
-    /// Effective root binds, independent of the boot catalog used by the early projection.
-    pub(crate) root_binds: Result<Vec<crate::root::loader::boot::InboundBind>, String>,
     /// The ordered configured data auth positions, resolved against this candidate's opened auths.
     pub(crate) data_chain: Vec<String>,
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
@@ -455,12 +451,10 @@ pub(crate) fn door_config(
     let config = DoorConfig {
         native_generation: None,
         native_slots: Default::default(),
-        listener_routes: None,
         listeners: sections
             .as_ref()
             .map_err(Clone::clone)
             .and_then(|sections| crate::root::boot::configured_listener_needs(cfg, sections)),
-        root_binds: crate::root::boot::configured_root_binds(cfg),
         data_chain: cfg
             .auth
             .as_ref()

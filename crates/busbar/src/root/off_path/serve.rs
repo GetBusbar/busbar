@@ -42,12 +42,6 @@ use crate::root::serve::*;
 /// The model catalog, in the map type the configuration (`RootCfg::models`) holds it as.
 pub(crate) type ModelCatalog = std::collections::HashMap<String, busbar_contract::config::ModelCfg>;
 
-/// The mounted plugin paths, in the set type the kernel's configuration check takes.
-pub(crate) type MountedPaths = std::collections::HashSet<String>;
-
-pub(crate) type PreparedListeners =
-    foldhash::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
-
 pub(crate) struct ApplyReach {
     pub(crate) providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
     pub(crate) auths: Arc<crate::root::door_steps::OutboundAuths>,

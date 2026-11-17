@@ -1679,13 +1679,6 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-pub(crate) type DataMounts = (
-    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
-    Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-);
-
 pub(crate) struct DoorRequest {
     pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) method: axum::http::Method,

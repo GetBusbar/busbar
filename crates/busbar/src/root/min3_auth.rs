@@ -85,10 +85,6 @@ impl AuthSet {
         NativeChain::data(epoch, instances, Arc::clone(&self.owners)).map_err(str::to_owned)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.instances.is_empty()
-    }
-
     /// The configured operator chain under the candidate's frozen bindings and current generation.
     pub(crate) fn operator_chain(
         &self,

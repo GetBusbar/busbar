@@ -604,25 +604,6 @@ pub(crate) fn configured_root_binds(
     Ok(binds)
 }
 
-pub(crate) fn candidate_listener_needs(
-    app: &busbar_kernel::state::App,
-    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    root: Vec<InboundBind>,
-) -> Option<Result<ListenerNeeds, String>> {
-    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
-    Some(
-        listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
-            listener_projection(
-                candidates,
-                &app.hook_registry,
-                &app.export_defs,
-                sections,
-                root,
-            )
-        }),
-    )
-}
-
 fn listener_projection(
     candidates: Vec<Candidate>,
     hooks: &std::collections::HashMap<String, busbar_kernel::config::HookCfg>,
