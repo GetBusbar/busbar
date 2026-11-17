@@ -212,6 +212,10 @@ pub(crate) mod min3_provider_plan;
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
 pub(crate) mod port_mount;
+/// `busbar --store-kit` (DES-STOREKIT r2): the kernel's store kit against one store pack; harness
+/// builds only.
+#[cfg(feature = "test-harness")]
+pub(crate) mod store_kit_run;
 // busbar:request-path
 #[cfg_attr(
     not(test),

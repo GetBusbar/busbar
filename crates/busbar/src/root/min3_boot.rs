@@ -1949,3 +1949,8 @@ mod settlement;
 #[cfg(test)]
 #[path = "tests/fixture_bootstrap.rs"]
 pub(crate) mod fixture;
+
+/// The store kit's open path (DES-STOREKIT r2 §2.1): S6's registry, Needs and seal; harness builds only.
+#[cfg(feature = "test-harness")]
+#[path = "min3_store_kit.rs"]
+pub(crate) mod store_kit;

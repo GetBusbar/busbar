@@ -23,6 +23,9 @@ const OPTION_CONFIG: &str = "--config";
 const OPTION_CONFIG_SHORT: &str = "-c";
 const OPTION_PROVIDERS: &str = "--providers";
 const OPTION_STDIO: &str = "--stdio";
+/// `--store-kit` (DES-STOREKIT r2): the harness build's store-kit runner; absent from a shipped build.
+#[cfg(feature = "test-harness")]
+const OPTION_STORE_KIT: &str = "--store-kit";
 const PATH_VALUES: &str = "configuration path flags require explicit values";
 
 const HELP_HEAD: &str = "
@@ -349,6 +352,8 @@ fn ordinary_cli_flags_of(argv: &Argv) -> Option<i32> {
         }
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
         Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
+        #[cfg(feature = "test-harness")]
+        Some(OPTION_STORE_KIT) => Some(super::store_kit_run::command(&argv.words[1..])),
         Some(other) => {
             eprintln!(
                 "[error] {}",
