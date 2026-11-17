@@ -25,8 +25,7 @@ impl Resolve for SharedResolver {
 
 /// All inputs are supplied before any native secret/store instance opens.
 pub struct NetworkInputs {
-    /// S0 runtime, retained for maintenance and HTTP connection drivers. Sockets and deadlines use
-    /// the process reactor (`io::register`).
+    /// S0 runtime, retained for registration, timers and HTTP connection drivers.
     pub runtime: tokio::runtime::Handle,
     /// Exact stage policy, frozen after own-listener publication.
     pub guard: FrozenGuard,
@@ -64,7 +63,7 @@ impl State {
             }
         });
         Arc::new(Self {
-            host_io: Arc::new(HostIo::new()),
+            host_io: Arc::new(HostIo::new_on(inputs.runtime.clone())),
             runtime: inputs.runtime,
             configs: Configs::new(inputs.trust),
             guard: inputs.guard,
@@ -112,7 +111,7 @@ impl BootstrapConnector {
     pub fn judge(&self) -> Judge<SharedResolver> {
         self.0.judge()
     }
-    /// Native host I/O on the process reactor.
+    /// Native host I/O on this stage's explicit runtime.
     #[must_use]
     pub fn host_io(&self) -> Arc<HostIo> {
         Arc::clone(&self.0.host_io)
@@ -138,7 +137,7 @@ impl ServingConnector {
     pub fn judge(&self) -> Judge<SharedResolver> {
         self.0.judge()
     }
-    /// Native host I/O on the process reactor.
+    /// Native host I/O on this stage's explicit runtime.
     #[must_use]
     pub fn host_io(&self) -> Arc<HostIo> {
         Arc::clone(&self.0.host_io)
