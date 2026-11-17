@@ -63,6 +63,61 @@ fn named_binding_preserves_the_opened_port_grants_and_error_policy() {
 }
 
 #[test]
+fn every_named_call_obeys_its_own_settled_instance_timeout() {
+    let mut guard = definition();
+    guard.on_error = "fallback".into();
+    let mut fallback = definition();
+    fallback.timeout_ms = 101;
+    let hooks = [("guard".into(), guard), ("fallback".into(), fallback)]
+        .into_iter()
+        .collect();
+    let mut guard_port = opened(1 << POINT_ROUTE, 0, &[]);
+    guard_port.timeout = std::time::Duration::from_millis(13);
+    let mut fallback_port = opened(1 << POINT_ROUTE, 0, &[]);
+    fallback_port.timeout = std::time::Duration::from_millis(19);
+    let ports = [
+        ("guard".into(), guard_port),
+        ("fallback".into(), fallback_port),
+    ]
+    .into_iter()
+    .collect();
+    let call = Calls {
+        hooks: &hooks,
+        opened: &ports,
+        words: &BTreeMap::new(),
+    }
+    .named("guard", POINT_ROUTE)
+    .unwrap();
+    assert_eq!(call.timeout.as_millis(), 13);
+    assert_eq!(call.fallbacks[0].timeout.as_millis(), 19);
+}
+
+#[test]
+fn missing_native_signal_encodings_refuse_the_named_attachment() {
+    for signal in [
+        crate::hooks::Signal::CandidateBreakerState,
+        crate::hooks::Signal::CandidateLatencyP95Ms,
+    ] {
+        let mut guard = definition();
+        guard.signals = vec![signal];
+        let hooks = [("guard".into(), guard)].into_iter().collect();
+        let ports = [("guard".into(), opened(1 << POINT_ROUTE, 0, &[]))]
+            .into_iter()
+            .collect();
+        let error = Calls {
+            hooks: &hooks,
+            opened: &ports,
+            words: &BTreeMap::new(),
+        }
+        .named("guard", POINT_ROUTE)
+        .err()
+        .expect("unsupported configured signal must refuse before publication");
+        assert!(error.contains("guard"), "{error}");
+        assert!(error.contains(signal.name()), "{error}");
+    }
+}
+
+#[test]
 fn missing_port_and_missing_point_refuse_by_configured_name() {
     let hooks = [("guard".into(), definition())].into_iter().collect();
     let mut ports = BTreeMap::new();
