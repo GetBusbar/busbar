@@ -296,12 +296,11 @@ pub(super) async fn apply(
                     patch: doc.document_patch.as_mut(), providers_patch: doc.providers_patch.as_mut(),
                     admission: source_admission.as_mut(),
                 },
-            ).map_err(|error| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
+            ).map_err(|_| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
                 AdminError::Conflict("operator source changed since the installed generation; reload and refresh before document edits".into())
             } else {
                 // Loader errors may quote malformed private settings. This public boundary
                 // reports validation, never the original source excerpt.
-                let _ = error;
                 AdminError::Validation("patched configuration failed document validation".into())
             })?;
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
