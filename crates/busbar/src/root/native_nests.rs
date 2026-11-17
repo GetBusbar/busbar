@@ -230,10 +230,10 @@ impl NativeNests {
         let result = seat
             .driver
             .serve(ServeIn {
+                request,
                 invocation: Some(invocation),
                 route,
                 http: HttpIn {
-                    request,
                     method: nest.ask.verb.clone(),
                     path: path.into(),
                     query: query.into(),
