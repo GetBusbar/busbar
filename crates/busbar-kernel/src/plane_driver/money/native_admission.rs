@@ -14,6 +14,16 @@ pub enum NativeAdmissionError {
     MissingChain,
     Blocked(LimitBlocked),
     Phase(AdmissionError),
+    Parent(ReasonCode),
+    Declaration,
+    SelectedTerminalRequired,
+    Custody(busbar_contract::records::RecordStoreError),
+}
+
+impl From<ReasonCode> for NativeAdmissionError {
+    fn from(reason: ReasonCode) -> Self {
+        Self::Parent(reason)
+    }
 }
 
 /// Until installation commits, only this owner refunds the newly acquired admission.
@@ -52,6 +62,168 @@ impl Drop for PendingAdmission {
 }
 
 impl PlaneMoney {
+    /// Bind the retained Task's declaration before the admitted phase can expose host effects.
+    /// Routing supplies its actual captured generation and complete reachable attempt ceiling;
+    /// neither value substitutes for the checked allocation or the original monetary grant.
+    pub fn admit_existing_selected(
+        self: &Arc<Self>,
+        request: CommittingRequest,
+        declaration: super::super::port_session::RequestDeclaration,
+        routing_generation: crate::registry::Generation,
+        attempt_limit: std::num::NonZeroU32,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<native_attempt::NativeRequestMoney, NativeAdmissionError> {
+        use crate::governance::unit_checkpoint::{
+            partitions::{Disposition, PartitionedUsageV1, SessionOrigin, MAX_PREPARATIONS},
+            SelectedActivationError,
+        };
+        if !request.is_live()
+            || !request.context().same_unit(declaration.context())
+            || !declaration.context().is_live()
+            || request.context().generation().routing_generation() != Some(routing_generation)
+        {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
+        }
+        if !declaration.selected() || attempt_limit.get() as usize > MAX_PREPARATIONS {
+            return Err(NativeAdmissionError::Declaration);
+        }
+        let declared = declaration.declaration();
+        let classes: Arc<[String]> = declaration
+            .classes()
+            .iter()
+            .map(|class| class.class.to_string())
+            .collect();
+        let declared_classes = classes.iter().cloned().collect();
+        let attempt_classes = classes
+            .iter()
+            .filter(|class| declared.is_attempt_class(class))
+            .cloned()
+            .collect();
+        let physical_classes = declared.physical_classes().map(str::to_owned).collect();
+        let instance = request.context().instance().to_owned();
+        let lane = format!("{instance}{PLANE_LANE_SEP}");
+        let plan = request
+            .cost()
+            .plan_chain(request.key())
+            .ok_or(NativeAdmissionError::MissingChain)?;
+        let money = UnitMoney {
+            key: request.key().clone(),
+            cost: request.cost().clone(),
+            pool: request.pool().to_owned(),
+            lane: lane.clone(),
+            classes,
+            arrived: request.arrived(),
+            mode,
+            fee,
+            charge: Default::default(),
+        };
+        let grant = self
+            .gov
+            .try_admit_planned(
+                &money.cost,
+                &money.key,
+                &money.pool,
+                money.arrived,
+                Some(&plan),
+            )
+            .map_err(NativeAdmissionError::Blocked)?;
+        let key = request.unit();
+        let pending = PendingAdmission::new(self.gov.clone(), money, grant);
+        self.install_native_pending_with(key, pending, |open| {
+            let parts = PartitionedUsageV1 {
+                version: 1,
+                request_pool: open.money.pool.clone(),
+                routing_generation: routing_generation.get(),
+                attempt_limit: attempt_limit.get(),
+                declared_classes,
+                attempt_classes,
+                physical_classes,
+                session_origin: SessionOrigin {
+                    instance,
+                    lane,
+                    provider: None,
+                },
+                fee: open.fee.selected_fee().0,
+                session: None,
+                attempts: Vec::new(),
+                far_end_answered: false,
+                caller_bytes_committed: false,
+                disposition: Disposition::Running,
+                final_target: None,
+            };
+            let snapshot = self
+                .selected_checkpoint_snapshot(key, open, parts)
+                .map_err(NativeAdmissionError::Custody)?;
+            self.gov
+                .activate_selected_checkpoint(snapshot, |accepted| {
+                    open.native =
+                        Some(native_attempt::NativeMoney::admitted(accepted, declaration));
+                    let admitted = request
+                        .admitted(
+                            open.money.clone(),
+                            open.grant
+                                .as_ref()
+                                .expect("new admission holds its grant")
+                                .clone(),
+                            self.gov.clone(),
+                            self.book.clone(),
+                            open.identity.clone(),
+                        )
+                        .map_err(NativeAdmissionError::Phase)?;
+                    Ok(native_attempt::NativeRequestMoney {
+                        money: self.clone(),
+                        request: admitted,
+                    })
+                })
+                .map_err(|error| match error {
+                    SelectedActivationError::Custody(error) => NativeAdmissionError::Custody(error),
+                    SelectedActivationError::Publish(error) => error,
+                })
+        })
+    }
+
+    /// Activate a child's own checked route while retaining its actual parent's monetary
+    /// scope, grant and fee participation. This path never acquires another admission.
+    pub fn admit_existing_child(
+        &self,
+        request: CommittingRequest,
+        parent: &ParentMoney,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        if !request.is_live() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
+        }
+        let unit = request.unit();
+        let lane = format!("{}{PLANE_LANE_SEP}", request.context().instance());
+        self.install_child_with(
+            parent,
+            unit,
+            lane,
+            classes,
+            fee,
+            |money, grant, identity| {
+                request
+                    .admitted_child(
+                        parent,
+                        money,
+                        grant,
+                        self.gov.clone(),
+                        self.book.clone(),
+                        identity,
+                    )
+                    .map_err(NativeAdmissionError::Phase)
+            },
+        )
+    }
+
     /// Complete the actual pre-money allocation. `begin` already won its one-shot phase before
     /// this method can acquire a grant; no numeric key or copied route metadata enters here.
     pub fn admit_existing(
@@ -63,6 +235,9 @@ impl PlaneMoney {
     ) -> Result<AdmittedRequest, NativeAdmissionError> {
         if !request.is_live() {
             return Err(NativeAdmissionError::NotLive);
+        }
+        if !request.accepts_governance(&self.gov) {
+            return Err(NativeAdmissionError::Phase(AdmissionError::Principal));
         }
         let plan = request
             .cost()
@@ -103,12 +278,30 @@ impl PlaneMoney {
     fn install_native_pending<R>(
         &self,
         key: UnitKey,
-        mut pending: PendingAdmission,
+        pending: PendingAdmission,
         activate: impl FnOnce(
             Arc<UnitMoney>,
             Arc<AdmitGrant>,
             Arc<()>,
         ) -> Result<R, NativeAdmissionError>,
+    ) -> Result<R, NativeAdmissionError> {
+        self.install_native_pending_with(key, pending, |open| {
+            activate(
+                open.money.clone(),
+                open.grant
+                    .as_ref()
+                    .expect("new admission holds its grant")
+                    .clone(),
+                open.identity.clone(),
+            )
+        })
+    }
+
+    fn install_native_pending_with<R>(
+        &self,
+        key: UnitKey,
+        mut pending: PendingAdmission,
+        activate: impl FnOnce(&mut Open) -> Result<R, NativeAdmissionError>,
     ) -> Result<R, NativeAdmissionError> {
         if !Arc::ptr_eq(&self.gov, &pending.gov) {
             return Err(NativeAdmissionError::NotLive);
@@ -142,9 +335,8 @@ impl PlaneMoney {
                     },
                     checkpoint_audit,
                 );
-                let identity = open.identity.clone();
                 all.insert(key, open);
-                match activate(money.clone(), grant.clone(), identity) {
+                match activate(all.get_mut(&key).expect("inserted under the same lock")) {
                     Ok(receipt) => {
                         pending.commit();
                         Ok(receipt)

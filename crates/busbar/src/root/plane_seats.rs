@@ -41,6 +41,7 @@ use busbar_contract::conn::{
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_core_connector::child_job::ContainedChild;
+use busbar_kernel::channels::budget::InstanceBudget;
 use busbar_kernel::channels::carrier::{ChannelDriver, Events};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::stdio::{
@@ -56,6 +57,7 @@ use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
+use busbar_kernel::plane_driver::request_admission::RequestRoutes;
 use busbar_kernel::plane_driver::route_input::HealthModeInput;
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_kernel::probe::{run_probers, ProbeCfg, ProbeMember, ProbeSchedule};
@@ -117,6 +119,8 @@ pub(crate) struct SeatShared {
     pub(crate) upstreams: BTreeMap<String, Arc<ConfiguredUpstreams>>,
     /// Auth-sealed model destinations and owned pool policy from this same candidate.
     pub(crate) catalogs: BTreeMap<String, Arc<CatalogSeat>>,
+    /// Root-retained stable instance accounts, shared with every serving/draining generation.
+    pub(crate) channel_budgets: BTreeMap<String, InstanceBudget>,
     pub(crate) signals: Arc<SignalRegistry>,
     pub(crate) secrets: Arc<dyn SpawnSecrets>,
     pub(crate) kernel: Arc<Kernel>,
@@ -127,6 +131,10 @@ pub(crate) struct SeatShared {
 
 /// What one seat runs over.
 pub(crate) struct SeatWiring {
+    /// The exact registration and catalog inventory used for this generation's request admission.
+    pub(crate) request_routes: Arc<RequestRoutes>,
+    /// Shared with the channel driver; original unit admission derives its account exactly once.
+    pub(crate) channel_budget: InstanceBudget,
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
@@ -741,6 +749,28 @@ fn probes_of(
     Some(Box::pin(run_probers(target, schedule, probers)))
 }
 
+/// Build the real channel driver over the retained account, never a generation-local replacement.
+fn channels_of(
+    shared: &SeatShared,
+    budget: InstanceBudget,
+    who: &Namespace,
+    port: Arc<dyn PlanePort>,
+    held: Option<Arc<dyn HeldHttp>>,
+) -> ChannelDriver {
+    let wires =
+        ProcessWires::new(Arc::clone(&shared.secrets), held).spawning(Arc::new(ContainedSpawn));
+    ChannelDriver::new(
+        who.instance,
+        budget,
+        Arc::new(wires),
+        Arc::new(PortDemuxer::new(port)),
+        Arc::clone(&shared.signals) as Arc<dyn SessionSignals>,
+        Arc::new(SeatEvents {
+            instance: Arc::clone(&who.name),
+        }),
+    )
+}
+
 /// Composes one seat's egress and carrier (see the module docs). `accept` is the instance's core-held
 /// `insecure_transport.accept` (`InstanceSpec.limits.accept`).
 ///
@@ -755,17 +785,39 @@ pub(crate) fn compose(
     port: Arc<dyn PlanePort>,
     rt: Handle,
 ) -> Result<SeatWiring, String> {
+    let channel_budget = shared
+        .channel_budgets
+        .get(instance)
+        .cloned()
+        .ok_or_else(|| format!("plane {instance}: no retained channel account was supplied"))?;
     let upstreams = shared.upstreams.get(instance).ok_or_else(|| {
         format!("plane {instance}: no declared registration table was built for this generation")
     })?;
-    let mut pool = SeatPool::of(instance, upstreams)?;
+    let registration = Arc::new(SeatPool::of(instance, upstreams)?);
+    let catalog = shared.catalogs.get(instance);
+    // No kind is inferred from instance/image vocabulary. Member-granted descriptors remain
+    // refused by candidate preparation until their explicit descriptor producer is connected.
+    let request_routes = Arc::new(
+        RequestRoutes::new(
+            instance,
+            None,
+            catalog.map(|catalog| Arc::clone(&catalog.plan)),
+            Some(Arc::clone(&registration)),
+        )
+        .map_err(|_| format!("plane {instance}: inconsistent request routing inventory"))?,
+    );
+    let mut pool = SeatPool {
+        pool: registration.pool.clone(),
+        pools: registration.pools.clone(),
+        routes: registration.routes.clone(),
+        members: registration.members.clone(),
+    };
     // Held HTTP channels receive only the registration domain, before model destinations join egress.
     let registration_needs = pool
         .members
         .iter()
         .map(|member| (member.upstream.clone(), member.need))
         .collect();
-    let catalog = shared.catalogs.get(instance);
     if let Some(catalog) = catalog {
         extend_catalog(instance, &mut pool, catalog)?;
     }
@@ -806,17 +858,7 @@ pub(crate) fn compose(
         }
         None => (None, None, None),
     };
-    let wires =
-        ProcessWires::new(Arc::clone(&shared.secrets), held).spawning(Arc::new(ContainedSpawn));
-    let channels = ChannelDriver::new(
-        who.instance,
-        Arc::new(wires),
-        Arc::new(PortDemuxer::new(Arc::clone(&port))),
-        Arc::clone(&shared.signals) as Arc<dyn SessionSignals>,
-        Arc::new(SeatEvents {
-            instance: Arc::from(instance),
-        }),
-    );
+    let channels = channels_of(shared, channel_budget.clone(), who, port, held);
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> =
         Arc::new(busbar_plugin_abi::host_side::host_vt::vt::mono);
     let carrier = PortCarrier::new(
@@ -828,6 +870,8 @@ pub(crate) fn compose(
         rt,
     );
     Ok(SeatWiring {
+        request_routes,
+        channel_budget,
         upstream,
         carrier: Arc::new(carrier),
         probes,

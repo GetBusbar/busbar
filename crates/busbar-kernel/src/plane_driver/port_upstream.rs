@@ -110,6 +110,17 @@ impl Candidate {
         model: &str,
         f: impl FnOnce(&TargetIn<'_>) -> R,
     ) -> R {
+        self.with_admission_target(attempt, dialect, model, &[], f)
+    }
+
+    pub(crate) fn with_admission_target<R>(
+        &self,
+        attempt: u32,
+        dialect: &str,
+        model: &str,
+        admission: &[u8],
+        f: impl FnOnce(&TargetIn<'_>) -> R,
+    ) -> R {
         let (dialect, model) = match &self.identity {
             TargetIdentity::Registration => (dialect, model),
             TargetIdentity::Model { dialect, model } => (dialect.as_ref(), model.as_ref()),
@@ -131,7 +142,7 @@ impl Candidate {
             upstream: &self.upstream,
             provider: &self.provider,
             params: &params,
-            admission: &[],
+            admission,
         })
     }
 }
@@ -420,6 +431,11 @@ pub fn run_attempts<K: Calls + ?Sized>(
     send: &mut dyn UpSend,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
+    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
+    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
+    if task.selected_attempts() || task.data().is_some() {
+        return Err(SessionError::NotDriven);
+    }
     let mut attempts = 0_u32;
     loop {
         let Some(member) = members.next(wants) else {

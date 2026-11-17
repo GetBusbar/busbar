@@ -34,10 +34,20 @@ use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
 use super::{CallerEnd, HeadFields};
 
+#[path = "port_prepared.rs"]
+mod prepared;
+pub(crate) use prepared::PreparedExchange;
+pub use prepared::RequestDeclaration;
+use prepared::{FrozenUsage, PreparationFacts};
+
 /// The plane's calls on one session, as a driver sees them. The port implements it; a test implements it over a
 /// script.
 pub trait Calls {
     type Session: Send + 'static;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (0, &[], &[])
+    }
 
     /// Declared resource kinds require the separate completed resource admission producer.
     fn resource_scoped(&self, _route: u32) -> bool {
@@ -94,6 +104,10 @@ pub trait Calls {
 
 impl Calls for dyn PlanePort {
     type Session = PlaneSession;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (self.facts(), self.usage_classes(), self.attempt_classes())
+    }
 
     fn resource_scoped(&self, route: u32) -> bool {
         !self.resource_kinds(route).is_empty()
@@ -337,6 +351,8 @@ pub struct ExMsgItem {
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
+    emitted: bool,
+    preparation: PreparationFacts,
     resource_echo: Option<ResourceEcho>,
     pub client: Vec<ToClient>,
     pub forward: Option<Forward>,
@@ -373,6 +389,9 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        None
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         None
     }
@@ -445,6 +464,9 @@ impl<'a> Buffered<'a> {
 }
 
 impl Effects for Buffered<'_> {
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.inner.data()
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         self.inner.admission()
     }
@@ -587,6 +609,23 @@ impl Answer {
         effects: &dyn Effects,
     ) -> Result<(), Violation> {
         match out {
+            PlaneOut::SelectedResource(selected) => {
+                if origin != Origin::Upstream {
+                    return Err(Violation::BadRecords);
+                }
+                self.preparation.selected(selected)?;
+            }
+            PlaneOut::PreparedEstimates(estimates) => {
+                if origin != Origin::Upstream {
+                    return Err(Violation::BadRecords);
+                }
+                self.preparation.estimates(estimates)?;
+            }
+            // A prepared exchange is not a committed attempt. Until the monetary consumer
+            // installs the actual transport-owned partition, these records have no owner.
+            PlaneOut::AttemptUsage(_) | PlaneOut::AttemptUsageEnd(_) => {
+                return Err(Violation::BadRecords);
+            }
             PlaneOut::ResourceEcho(echo) => {
                 if origin != Origin::Upstream || self.resource_echo.is_some() {
                     return Err(Violation::BadRecords);
@@ -669,7 +708,10 @@ impl Answer {
             PlaneOut::Conversation(bytes) => {
                 self.conversation = Some(busbar_contract::secure::SecureVec::from(bytes));
             }
-            PlaneOut::Emit { carrier, bytes } => effects.emit(carrier, bytes),
+            PlaneOut::Emit { carrier, bytes } => {
+                self.emitted = true;
+                effects.emit(carrier, bytes);
+            }
             PlaneOut::Finish => self.finish = true,
             PlaneOut::UpCarrier { carrier, outbound } => {
                 upstream_placed(origin)?;
@@ -1078,6 +1120,9 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
+    declaration: Arc<FrozenUsage>,
+    session_classes: std::collections::BTreeSet<String>,
     admitted: Option<(
         super::request_admission::AdmittedRequest,
         Arc<super::request_admission::RequestRoutes>,
@@ -1099,12 +1144,46 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
-        // Factual scope selection is not completed execution admission. Until the root
-        // supplies that opaque receipt, every session entrypoint refuses before request.
-        if calls.resource_scoped(req.route) {
+        let data = effects.data().cloned();
+        if let Some(data) = &data {
+            if !data.is_live()
+                || data.selected().request().route() != req.route
+                || req.request_id != data.binding().invocation().request_id().get()
+                || req.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
+                || req.identity != data.identity().identity_records()
+                || req.method != data.snapshot().method()
+                || req.path != data.snapshot().path()
+                || req.query != data.snapshot().query()
+                || body != data.snapshot().body()
+                || !req
+                    .headers
+                    .iter()
+                    .map(|field| (field.name.get(), field.value.get()))
+                    .eq(data.snapshot().headers())
+                || !effects
+                    .invocation()
+                    .is_some_and(|context| context.same_unit(data.context()))
+                || !calls.resource_scoped(req.route)
+            {
+                return Err(SessionError::NotDriven);
+            }
+        } else if calls.resource_scoped(req.route) {
+            // Factual resource selection alone never grants preparatory plugin dispatch.
             return Err(SessionError::NotDriven);
         }
         let buffered = Buffered::new(effects);
+        let origin = effects
+            .admission()
+            .and_then(|pending| pending.original_route())
+            .cloned();
+        if origin.as_ref().is_some_and(|origin| {
+            !effects
+                .invocation()
+                .is_some_and(|context| origin.accepts(context, req.route))
+        }) {
+            return Err(SessionError::NotDriven);
+        }
+        let declaration = FrozenUsage::of(calls, Some(req.route), origin)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1114,6 +1193,9 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            data,
+            declaration,
+            session_classes: std::collections::BTreeSet::new(),
             admitted: None,
             invocation,
             calls,
@@ -1135,6 +1217,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
         let buffered = Buffered::new(effects);
+        let declaration = FrozenUsage::of(calls, None, None)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1144,6 +1227,9 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            data: None,
+            declaration,
+            session_classes: std::collections::BTreeSet::new(),
             admitted: None,
             invocation,
             calls,
@@ -1161,12 +1247,24 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     pub fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
         self.invocation.as_ref()
     }
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.data.as_ref()
+    }
 
     pub(crate) fn bind_admission(
         &mut self,
         pending: &super::port_admission::Pending,
     ) -> Result<(), SessionError> {
         let admitted = pending.admitted().ok_or(SessionError::NotDriven)?;
+        if let Some(data) = &self.data {
+            let execution = data.execution().ok_or(SessionError::NotDriven)?;
+            if !execution.context().same_unit(admitted.request.context())
+                || execution.binding().check_executing().is_err()
+                || !data.is_live()
+            {
+                return Err(SessionError::NotDriven);
+            }
+        }
         if self.admitted.is_some()
             || !self
                 .invocation
@@ -1243,11 +1341,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 answer.take(out, Origin::End, once, &buffered);
             })
             .map_err(SessionError::Port)?;
-        let answer = answer.seal();
-        if let Some(v) = answer.violation {
-            return Err(SessionError::Violation(v));
-        }
-        self.keep_usage(&answer)?;
+        let answer = self.checked(answer)?;
         buffered.release();
         Ok(answer.seal())
     }
@@ -1277,6 +1371,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             .attempt
             .as_ref()
             .is_some_and(|a| a.verdict == ATT_DECLINE);
+        if let Err(violation) =
+            answer
+                .preparation
+                .validate(self.declaration.declaration(), target, declined)
+        {
+            answer.violation.get_or_insert(violation);
+        }
         if !declined && answer.resource_echo.as_ref().map(ResourceEcho::borrowed) != expected {
             answer.violation.get_or_insert(Violation::BadRecords);
         }
@@ -1288,6 +1389,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     /// The last USAGE per (class, source) any answer of this session stated (IF §12.4).
     pub fn usage(&self) -> &SessionUsage {
         &self.usage
+    }
+
+    pub(crate) fn selected_attempts(&self) -> bool {
+        self.declaration.declaration().facts()
+            & (busbar_plugin_abi::plane::FB_ATTEMPT_USAGE
+                | busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES)
+            != 0
     }
 
     /// Whether the session is still open.
@@ -1310,6 +1418,33 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     /// A violation drops the session, which cancels it; the plane is told nothing.
     fn checked(&mut self, answer: Answer) -> Result<Answer, SessionError> {
         let answer = answer.seal();
+        if self.data.as_ref().is_some_and(|data| !data.is_live()) {
+            self.session = None;
+            return Err(SessionError::NotDriven);
+        }
+        if self.data.is_some()
+            && (answer.emitted
+                || !answer.ex_msgs.is_empty()
+                || answer.detach.is_some()
+                || answer.wake_at.is_some()
+                || answer
+                    .client
+                    .iter()
+                    .any(|item| matches!(item, ToClient::Msg { .. }))
+                || answer
+                    .exchanges
+                    .iter()
+                    .any(|exchange| exchange.id != 0 || !exchange.msgs.is_empty())
+                || answer.intents.iter().any(|intent| {
+                    !matches!(
+                        intent,
+                        Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
+                    )
+                }))
+        {
+            self.session = None;
+            return Err(SessionError::NotDriven);
+        }
         if let (Some(forward), Some((admitted, routes))) = (&answer.forward, &self.admitted) {
             let wants = super::port_upstream::Wants::from_facts(&forward.wants);
             if !admitted.accepts_route(routes, wants.model.as_deref()) {
@@ -1321,10 +1456,33 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::Violation(v));
         }
+        let mut session_classes = self.session_classes.clone();
+        session_classes.extend(answer.usage.iter().map(|usage| usage.class.to_string()));
+        for intent in &answer.intents {
+            match intent {
+                Intent::Observe { counts, .. } => {
+                    session_classes.extend(counts.iter().map(|(class, _, _)| class.clone()))
+                }
+                Intent::ObsScope { require, .. } => session_classes.extend(require.iter().cloned()),
+                _ => {}
+            }
+        }
+        if self.once.forwarded
+            && session_classes.iter().any(|class| {
+                self.declaration
+                    .declaration()
+                    .validate_session_class(class)
+                    .is_err()
+            })
+        {
+            self.session = None;
+            return Err(SessionError::Violation(Violation::BadRecords));
+        }
         if let Err(error) = self.keep_usage(&answer) {
             self.session = None;
             return Err(error);
         }
+        self.session_classes = session_classes;
         Ok(answer.seal())
     }
 

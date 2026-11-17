@@ -132,7 +132,7 @@ fn lifetime_server(router: Router) -> (tokio::io::DuplexStream, tokio::task::Joi
     let (_stop, stop) = tokio::sync::watch::channel(false);
     let (live, _lived) = tokio::sync::mpsc::channel(1);
     let task = tokio::spawn(async move {
-        super::Served::new(router, None)
+        super::Served::new(super::test_storage(), router, None)
             .io(
                 server,
                 "127.0.0.1:1".parse().unwrap(),
@@ -389,17 +389,19 @@ async fn first_header_deadline_drops_blocked_write_io_and_its_admission() {
     let watcher = graceful.watcher();
     let (_stop, stop) = tokio::sync::watch::channel(false);
     let (live, _lived) = tokio::sync::mpsc::channel(1);
-    let server = tokio::spawn(super::Served::new(Router::new(), None).io(
-        super::AdmittedIo {
-            inner: BlockedWrites(server),
-            _hold: Some(Box::new(permit)),
-            _guard: None,
-        },
-        "127.0.0.1:1".parse().unwrap(),
-        bytes::Bytes::new(),
-        watcher,
-        super::Drain { stop, _live: live },
-    ));
+    let server = tokio::spawn(
+        super::Served::new(super::test_storage(), Router::new(), None).io(
+            super::AdmittedIo {
+                inner: BlockedWrites(server),
+                _hold: Some(Box::new(permit)),
+                _guard: None,
+            },
+            "127.0.0.1:1".parse().unwrap(),
+            bytes::Bytes::new(),
+            watcher,
+            super::Drain { stop, _live: live },
+        ),
+    );
     client
         .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
         .await

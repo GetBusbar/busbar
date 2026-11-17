@@ -241,6 +241,86 @@ async fn preparation_shares_verification_without_policy_or_replay_admission() {
 }
 
 #[tokio::test]
+async fn charged_snapshot_view_refuses_before_verify_and_then_uses_the_existing_cache() {
+    use crate::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let checks = Checks {
+        allow: AtomicBool::new(false),
+        claims: AtomicUsize::new(0),
+        issued: AtomicUsize::new(0),
+        epoch: AtomicUsize::new(1),
+    };
+    let services = AuthServices {
+        issued: &checks,
+        replay: &checks,
+        policy: &checks,
+    };
+    let port = Port {
+        calls: AtomicUsize::new(0),
+        issued: false,
+        stale: false,
+        plain: true,
+        refreshes: AtomicUsize::new(0),
+    };
+    let keys = KeyRefresh::new(Duration::from_secs(30));
+    let who = caller();
+    let instance = ChainInstance {
+        id: 1,
+        port: &port,
+        caller: &who,
+        keys: &keys,
+        holds: &[],
+    };
+    let cache = Verdicts::new(VerdictPolicy::default());
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let lease = budget.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "POST",
+            path: "/",
+            query: "",
+            query_present: false,
+            authority: "example",
+            headers: [("authorization", b"token".as_slice())].into_iter(),
+            peer: "peer",
+            tls_peer_cert: &[],
+            body: b"body",
+            now_s: 1000,
+        },
+        &lease,
+    )
+    .unwrap();
+    let occupied = lease.try_reserve(4096 - budget.used().0).unwrap();
+    assert!(matches!(
+        super::prepare_snapshot(&services, &cache, instance, cx(), &snapshot).await,
+        Err(PortError::Failed {
+            code: busbar_plugin_abi::fail::failed::F_UNAVAILABLE,
+            ..
+        })
+    ));
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+    drop(occupied);
+    for _ in 0..2 {
+        assert!(matches!(
+            super::prepare_snapshot(&services, &cache, instance, cx(), &snapshot).await,
+            Ok(Verdict::Identity(_))
+        ));
+    }
+    let legacy = snapshot.with_auth_input(super::Request::new).unwrap();
+    assert!(matches!(
+        super::prepare_owned(&services, &cache, instance, cx(), &legacy).await,
+        Ok(Verdict::Identity(_))
+    ));
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(checks.claims.load(Ordering::SeqCst), 0);
+    drop((snapshot, lease));
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[tokio::test]
 async fn denied_policy_does_not_consume_replay_and_successful_replay_is_uncached() {
     let checks = Checks {
         allow: AtomicBool::new(false),

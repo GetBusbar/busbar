@@ -550,6 +550,7 @@ pub(crate) fn mount_plane_route(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -577,6 +578,7 @@ pub(crate) fn mount_plane_route(
                     headers,
                     body,
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
@@ -616,6 +618,7 @@ pub(crate) fn mount_plane_session(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -642,6 +645,7 @@ pub(crate) fn mount_plane_session(
                     headers,
                     body: axum::body::Bytes::new(),
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
                     slot,
@@ -1126,29 +1130,8 @@ pub fn build_admin_router_on_with_dispatch_layer(
     server_timing_enabled: bool,
     dispatch_layer: DispatchLayer,
 ) -> Router {
-    let plugin_routes = handle.load().plugin_routes.clone();
-
-    let admin = crate::core_routes::CoreRouter::new()
-        .route(
-            crate::auth::HEALTHZ_PATH,
-            busbar_contract::abi::mechanism::route::RouteMethod::Get,
-            busbar_contract::abi::mechanism::route::RouteAuth::None,
-            endpoints::healthz,
-        )
-        .route(
-            crate::auth::LIVEZ_PATH,
-            busbar_contract::abi::mechanism::route::RouteMethod::Get,
-            busbar_contract::abi::mechanism::route::RouteAuth::None,
-            endpoints::livez,
-        )
-        .route(
-            crate::auth::READYZ_PATH,
-            busbar_contract::abi::mechanism::route::RouteMethod::Get,
-            busbar_contract::abi::mechanism::route::RouteAuth::None,
-            endpoints::readyz,
-        );
-    let (admin, admin_core_routes) = crate::admin::seam::mount_admin(admin).into_parts();
-    let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
+    let selected = handle.load();
+    let (admin, admin_core_routes) = crate::off_path::router::admin_routes(&selected.plugin_routes);
     apply_common_layers(
         dispatch_layer(admin),
         admin_core_routes,
@@ -1202,6 +1185,7 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
+    pub(crate) physical: Option<std::sync::Arc<crate::inbound::native::PhysicalPlan>>,
     pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     pub(crate) router: Router<std::sync::Arc<state::AppHandle>>,
     pub(crate) core_routes: crate::core_routes::CoreRouteTable,
@@ -1221,6 +1205,22 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Actual declarations mounted in this exact prepared router; this view grants no execution.
+    pub fn core_lines(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &str,
+            busbar_contract::abi::mechanism::route::RouteMethod,
+            busbar_contract::abi::mechanism::route::RouteAuth,
+        ),
+    > {
+        self.core_routes
+            .routes()
+            .iter()
+            .map(|route| (route.path.as_str(), route.method, route.auth))
+    }
+
     /// Complete root-owned routes and their authentication declarations together before publication.
     pub fn with_core_routes(
         mut self,

@@ -13,6 +13,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub mod protected_reply;
+
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -347,7 +349,9 @@ pub fn decode_answer(
         recs,
         &mut |_: PlaneOut<'_>| {},
     )?;
-    if call == Call::Upstream {
+    if call == Call::Upstream
+        && declaration.facts() & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+    {
         declaration
             .validate_preparation(selected, recs)
             .map_err(fault)?;
@@ -1488,6 +1492,11 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             });
         }
         let max_out = self.live()?.min(byte_limit);
+        let max_out = if mode == p::RESOURCE_SELECT {
+            max_out.min(resources::MAX_SELECTION_BYTES)
+        } else {
+            max_out
+        };
         let req = plane_req(req);
         sync_bufs(max_out, |_, out| {
             let answer = self
@@ -1544,10 +1553,14 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
-        let selected = attempt_wire::selected_from_admission(tgt.admission)
-            .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?;
         let enabled =
             self.proxy.instance().facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0;
+        let selected = if enabled {
+            attempt_wire::selected_from_admission(tgt.admission)
+                .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?
+        } else {
+            None
+        };
         if (enabled && selected.is_none())
             || selected.is_some_and(|selected| selected.attempt != tgt.attempt)
         {
@@ -1577,6 +1590,28 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
+    }
+
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        self.live()?;
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let (answer, len) = s
+            .piece_fixed(out, from, exchange, flags, bytes)
+            .map_err(PortError::Call)?;
+        // Same whole-answer validation and failure translation as pooled piece. No effect escapes
+        // until the caller classifies the validated fixed backing and admits its complete answer.
+        self.finish(Call::Piece(from), &answer, &mut |_| {})?;
+        Ok(len)
     }
 
     fn rewrite(

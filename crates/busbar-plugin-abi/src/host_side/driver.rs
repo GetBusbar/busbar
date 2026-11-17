@@ -591,6 +591,19 @@ pub(crate) fn step<R>(
     out.lend(call)
 }
 
+/// One synchronous entry on caller-owned, fixed output storage. Uses the same owner and watchdog guards
+/// as `step`; the loan cannot grow, escape the callback, or transfer the lender's allocation.
+pub(crate) fn step_fixed<R>(
+    slot: u32,
+    entry: u8,
+    out: &mut [u8],
+    call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> R,
+) -> Option<R> {
+    let _owner = crate::host_side::entry::Owning::set(slot);
+    let _watched = Watched::enter(slot, entry);
+    OutLease::with_fixed(out, call)
+}
+
 /// At most this many Needs in one step (§6.1); more is FAULT.
 const MAX_NEEDS: usize = 64;
 

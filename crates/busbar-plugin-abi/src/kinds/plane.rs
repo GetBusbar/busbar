@@ -24,6 +24,8 @@ crate::kind! {
         /// (§12.23): non-zero exactly on a ROUTE_LINE route, the same value for every line of one carrier,
         /// never reused in the process; 0 elsewhere. work = the durable-work reference core is recovering
         /// (§12.24): non-empty exactly when flags has RQ_RECOVERY (the text a WORK_OPEN answered).
+        /// Pure `select_resources` is pre-authentication: auth is 0, identity/ticket_record are empty,
+        /// carrier is 0 and work is empty. The request bytes and host-selected route remain exact.
         pub struct PlaneReq<'a> {
             pub route: u32,
             pub flags: u32,
@@ -1298,6 +1300,32 @@ crate::kind! {
                     use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
+                        self.session.call4(
+                            |vt| &vt.piece,
+                            (
+                                Arg::u32(from),
+                                Arg::u32(exchange),
+                                Arg::u32(flags),
+                                Arg::bytes(Bytes::new(bytes)),
+                            ),
+                            lease,
+                        )
+                    })
+                }
+
+                /// One piece on previously charged fixed output storage. The input is borrowed for this call;
+                /// this does not select a command or establish admission/lease authority.
+                pub fn piece_fixed<'o>(
+                    &mut self,
+                    buf: &'o mut [u8],
+                    from: u32,
+                    exchange: u32,
+                    flags: u32,
+                    bytes: &[u8],
+                ) -> Result<(crate::host_side::answer::Answer<'o>, usize), crate::fail::CallError> {
+                    use crate::plugin::__rt::Arg;
+                    use crate::types::Bytes;
+                    crate::host_side::proxy::sync_fixed(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
                         self.session.call4(
                             |vt| &vt.piece,
                             (

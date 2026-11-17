@@ -198,6 +198,7 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
@@ -207,6 +208,8 @@ pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
 pub(crate) mod min3_candidate_secrets;
+pub(crate) mod min3_framers;
+pub(crate) mod min3_physical;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.

@@ -57,6 +57,8 @@ pub struct UnitRecord {
 /// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
 struct UnitEntry {
+    signed_authority: Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>>,
+    data_gate: Option<Arc<crate::auth::native_data::NativeDataEffectGate>>,
     admission_phase: Option<Arc<crate::plane_driver::request_admission::AdmissionPhase>>,
     invocation_owner: Option<busbar_contract::services::Incarnation>,
     child_ancestry: Vec<Arc<str>>,
@@ -77,6 +79,10 @@ impl UnitEntry {
         self.admission_phase
             .as_ref()
             .is_some_and(|phase| phase.effects_allowed())
+            && self
+                .data_gate
+                .as_ref()
+                .is_none_or(|gate| gate.effects_allowed())
     }
 }
 
@@ -108,6 +114,7 @@ impl UnitRecords {
     pub fn admitted(&self, unit: u64, record: UnitRecord) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
         entry.invocation_owner = None;
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
@@ -124,6 +131,7 @@ impl UnitRecords {
     ) {
         let mut units = self.lock(unit);
         let entry = units.entry(unit).or_default();
+        entry.signed_authority = None;
         entry.invocation_owner = Some(caller.incarnation().clone());
         entry.admission_phase = Some(Arc::new(
             crate::plane_driver::request_admission::AdmissionPhase::admitted(),
@@ -155,6 +163,100 @@ impl UnitRecords {
             ..Default::default()
         });
         true
+    }
+
+    /// Consume one actual signed verification into a fresh unit, deriving its principal here.
+    /// No caller-supplied key or existing context may be paired with this authority.
+    pub fn pre_admitted_signed_for(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        authority: crate::auth::SignedRequestAuthority,
+        depth: u32,
+    ) -> bool {
+        if unit == 0 {
+            return false;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return false;
+        };
+        let Some(authority) = authority.claim() else {
+            return false;
+        };
+        slot.insert(UnitEntry {
+            record: Some(Arc::new(UnitRecord {
+                principal: Some(authority.original_key().clone()),
+                depth,
+            })),
+            signed_authority: Some(authority),
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            ..Default::default()
+        });
+        true
+    }
+
+    pub(crate) fn invocation_signed_authority(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Arc<crate::governance::current_credential::VerifiedKeyAuthority>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        entry.signed_authority.clone()
+    }
+
+    /// DATA registration installs its closed physical gate in the same vacant-entry transaction.
+    pub(crate) fn pre_admitted_data(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: UnitRecord,
+        gate: Arc<crate::auth::native_data::NativeDataEffectGate>,
+    ) -> Option<Arc<UnitRecord>> {
+        if unit == 0 || record.principal.is_none() {
+            return None;
+        }
+        let mut units = self.lock(unit);
+        let std::collections::hash_map::Entry::Vacant(slot) = units.entry(unit) else {
+            return None;
+        };
+        let record = Arc::new(record);
+        slot.insert(UnitEntry {
+            invocation_owner: Some(caller.incarnation().clone()),
+            admission_phase: Some(Arc::new(
+                crate::plane_driver::request_admission::AdmissionPhase::pending(),
+            )),
+            record: Some(record.clone()),
+            data_gate: Some(gate),
+            ..Default::default()
+        });
+        Some(record)
+    }
+
+    pub(crate) fn invocation_data_gate(
+        &self,
+        unit: u64,
+        caller: &busbar_contract::services::Caller,
+        record: &Arc<UnitRecord>,
+    ) -> Option<Option<Arc<crate::auth::native_data::NativeDataEffectGate>>> {
+        let units = self.lock(unit);
+        let entry = units.get(&unit)?;
+        if entry.invocation_owner.as_ref()? != caller.incarnation()
+            || !Arc::ptr_eq(entry.record.as_ref()?, record)
+        {
+            return None;
+        }
+        Some(entry.data_gate.clone())
     }
 
     pub(crate) fn invocation_phase(
