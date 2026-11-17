@@ -32,6 +32,9 @@ const UNITCP: &[u8] = b"busbar.unitcp.v1";
 const JOURNAL: &[u8] = b"busbar.journal4\0";
 const INJECTED: &[u8] = b"a27c concurrent request-path append";
 
+#[path = "unit_checkpoint_selected_tests.rs"]
+mod selected_partitions;
+
 /// What the interposer does with a running-unit checkpoint candidate.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
