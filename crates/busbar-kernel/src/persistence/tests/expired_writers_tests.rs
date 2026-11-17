@@ -347,6 +347,7 @@ impl Store {
     }
 
     fn decide(&self, prepared: &PreparedCandidate, fence: bool) -> Result<Decision, Failure> {
+        control::admit(prepared)?;
         let hook = if fence { self.armed_hook() } else { None };
         let mut state = self.lock();
         let candidate = prepared.candidate();
@@ -416,6 +417,18 @@ impl Store {
                     exact_key_length,
                 } => {
                     state.bump(namespace.0);
+                    if *namespace == control::SLOT_NS {
+                        let writer: [u8; 16] = prefix.as_slice().try_into().unwrap();
+                        assert_eq!(*exact_key_length, 20);
+                        let State { receipts, sent, .. } = &mut *state;
+                        receipts.retain(|operation, _| {
+                            !sent.iter().any(|prepared| {
+                                let id = prepared.candidate().id;
+                                id.writer == writer && id.operation == *operation
+                            })
+                        });
+                        continue;
+                    }
                     state.rows.retain(|at, _| {
                         !(at.namespace == namespace.0
                             && at.key.starts_with(prefix)
@@ -638,7 +651,7 @@ async fn adoption_retirement_preserves_every_declared_epoch_and_slot_effect() {
         assert!(candidate.mutations.iter().any(|mutation| matches!(
             mutation,
             Mutation::DeleteRange { namespace, prefix, exact_key_length }
-                if *namespace == control::SLOT_NS && prefix == &target && *exact_key_length == 20
+                if *namespace == control::SLOT_NS && prefix.as_slice() == target.as_slice() && *exact_key_length == 20
         )));
         for epoch in old.live() {
             let address = control::epoch_row(target, epoch);
