@@ -177,7 +177,7 @@ async fn remote_rotation_then_cancellation_never_reuses_the_predecessor() {
     let task = tokio::spawn(async move { permit.mint(task_port.as_ref(), cx(), request()).await });
     port.entered.notified().await;
     task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     assert!(a.load(&key()).await.is_err());
     assert!(b.acquire_mint(&epoch).await.is_err());
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
