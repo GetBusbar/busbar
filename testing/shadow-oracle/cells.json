@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2534,
+    "total": 2532,
     "by_plane": {
       "a2a": 468,
-      "core": 951,
+      "core": 949,
       "llm": 203,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 276,
+      "admin.ops": 274,
       "admin.plugins": 7,
       "auth.lifecycle": 4,
       "billing": 16,
@@ -7096,38 +7096,6 @@
       "request": {
         "method": "GET",
         "path": "/api/v1/admin/ledger/migration",
-        "headers": {},
-        "body": null,
-        "auth": "none",
-        "listener": "admin"
-      },
-      "why": "no credential -> 401 envelope"
-    },
-    {
-      "id": "admin.ops|GetLedgerOpenapiJson|ok",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/ledger/openapi.json",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "200: the one administrative OpenAPI document, the same bytes GET /openapi.json serves (normalise info.version). 1.6.0-additive: the published 1.5.5 binary has n"
-    },
-    {
-      "id": "admin.ops|GetLedgerOpenapiJson|unauth",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "GET",
-        "path": "/api/v1/admin/ledger/openapi.json",
         "headers": {},
         "body": null,
         "auth": "none",
