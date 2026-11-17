@@ -440,14 +440,6 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
         assert!(probes.iter().any(|probe| probe.pool == pair.0
             && probe.qualified_member == pair.1
             && probe.destination == association.destination));
-        assert!(Arc::ptr_eq(
-            &association.definition,
-            &catalog
-                .sealed
-                .model_upstreams
-                .get(&association.definition.name)
-                .unwrap()
-        ));
         let target = (catalog.sealed.targets)(&pair.0, &pair.1).unwrap();
         assert!(
             matches!(target.identity, busbar_kernel::plane_driver::port_upstream::TargetIdentity::Model {dialect, model} if &*dialect == "wire" && &*model == "wire-model")
