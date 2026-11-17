@@ -269,3 +269,19 @@ fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
     assert_eq!(ledger.poll_control(&mut cx), Poll::Ready(DeliveryControl::Settled { stream: 1 }));
     assert_eq!(response.watch.snapshot().terminal, Some(DeliveryTerminal::Complete));
 }
+
+#[test]
+fn carrier_fault_prevents_new_admission_and_pending_release_before_retirement() {
+    let mut ledger = ledger(2, 2);
+    let response = ledger.admit(key(1)).unwrap();
+    response.release.freeze(key(1), 1).unwrap();
+    response.release.publish(key(1), 1).unwrap();
+    let mut last = progress(0, 0, 0);
+    last.fault = Some(CarrierFault::Io);
+    assert!(ledger.observe(last).is_err());
+    assert!(ledger.admit(key(2)).is_err());
+    assert_eq!(ledger.next_control(), None);
+    assert!(response.watch.snapshot().terminal.is_none());
+    ledger.retire_carrier(last, ResponseStop::Carrier(CarrierFault::Io));
+    assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
+}

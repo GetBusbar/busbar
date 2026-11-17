@@ -336,6 +336,7 @@ impl DeliveryLedger {
         let identity = (key.node, key.incarnation, key.connection_generation);
         if self.retired
             || self.poisoned
+            || self.observed.fault.is_some()
             || key.stream <= self.last_stream
             || key.connection_generation == 0
             || self.identity.is_some_and(|old| old != identity)
@@ -421,7 +422,12 @@ impl DeliveryLedger {
                     return Some(DeliveryControl::Cancel { stream, reason });
                 }
             }
-            if state.release_pending && state.snapshot.terminal.is_none() {
+            if state.release_pending
+                && state.snapshot.terminal.is_none()
+                && !self.retired
+                && !self.poisoned
+                && self.observed.fault.is_none()
+            {
                 state.release_pending = false;
                 state.released = true;
                 return Some(DeliveryControl::Release { stream });
