@@ -157,6 +157,7 @@ fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
 
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
+        resource: None,
         reasoning: None,
         prompt_caching: None,
         max_requests: -1,
@@ -3598,6 +3599,7 @@ fn group(
 
 fn limit_requests_per_minute(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Requests,
         amount,
         per: Some(busbar_kernel::config::groups::LimitWindow::Minute),

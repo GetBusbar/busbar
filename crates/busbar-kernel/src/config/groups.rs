@@ -43,8 +43,35 @@ pub fn validate_groups(
 ) {
     let mut identities: BTreeMap<String, (&str, &str, Option<&ScopeRef>)> = BTreeMap::new();
     for (name, group) in groups {
+        for (field, limits) in std::iter::once(("limits", group.limits.as_slice())).chain(
+            group
+                .child_default
+                .iter()
+                .map(|template| ("child_default.limits", template.limits.as_slice())),
+        ) {
+            let mut selected_ids = std::collections::BTreeSet::new();
+            for limit in limits {
+                if let Some(selected) = &limit.selected {
+                    if !valid_selected_identifier(name) {
+                        errors.push(coded::config_group_invalid(format!("groups.{name}.{field}: selected-resource group identity must be 1..=128 UTF-8 bytes without controls")).into());
+                    }
+                    if !selected_ids.insert(selected.id()) {
+                        errors.push(
+                            coded::config_group_invalid(format!(
+                                "groups.{name}.{field}: duplicate selected rule id `{}`",
+                                selected.id()
+                            ))
+                            .into(),
+                        );
+                    }
+                    if !limit.valid_selected_shape() {
+                        errors.push(coded::config_group_invalid(format!("groups.{name}.{field}: invalid selected-resource limit combination")).into());
+                    }
+                }
+            }
+        }
         for limit in &group.limits {
-            if limit.metric == LimitMetric::Concurrent {
+            if limit.metric == LimitMetric::Concurrent || limit.selected.is_some() {
                 continue;
             }
             let Some(window) = limit.per else { continue };
@@ -311,6 +338,63 @@ pub struct LimitCfg {
     /// The scope a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
     /// Same wire treatment as `scope`: the YAML key stays `downgrade_to: <pool-name>`.
     pub downgrade_to: Option<ScopeRef>,
+    /// Process-local per-key selected-resource policy, separate from monetary buckets.
+    pub selected: Option<SelectedLimitCfg>,
+}
+
+/// The configured identity of a selected-resource rule. Construction validates the wire grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLimitCfg {
+    id: Box<str>,
+    instance: Box<str>,
+    resource: Box<str>,
+}
+
+pub fn valid_selected_identifier(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+}
+
+impl SelectedLimitCfg {
+    fn parse(id: String, selector: String) -> Result<Self, &'static str> {
+        let Some((instance, resource)) = selector.split_once('/') else {
+            return Err("upstream_resource must name instance/resource");
+        };
+        if !valid_selected_identifier(&id)
+            || !valid_selected_identifier(instance)
+            || !valid_selected_identifier(resource)
+        {
+            return Err("selected rule id, instance and resource must each be 1..=128 UTF-8 bytes without controls");
+        }
+        Ok(Self {
+            id: id.into(),
+            instance: instance.into(),
+            resource: resource.into(),
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    pub fn selector(&self) -> String {
+        format!("{}/{}", self.instance, self.resource)
+    }
+}
+
+impl LimitCfg {
+    pub(crate) fn valid_selected_shape(&self) -> bool {
+        self.selected.is_some()
+            && matches!(self.metric, LimitMetric::Requests | LimitMetric::Tokens)
+            && self.per == Some(LimitWindow::Minute)
+            && self.scope.is_none()
+            && self.on_exhaust.is_none()
+            && self.downgrade_to.is_none()
+    }
 }
 
 /// The budget-exhaustion behavior a limit may declare (see [`LimitCfg::on_exhaust`]).
@@ -346,6 +430,10 @@ const LIMIT_KEYS: &[&str] = &[
     "pool",
     "on_exhaust",
     "downgrade_to",
+    "id",
+    "upstream_resource",
+    "per_key",
+    "enforcement",
 ];
 
 /// Writes every metric name, 1.5.5's four first, joined by `sep`.
@@ -402,6 +490,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 let mut pool: Option<String> = None;
                 let mut on_exhaust: Option<OnExhaust> = None;
                 let mut downgrade_to: Option<String> = None;
+                let mut id: Option<String> = None;
+                let mut resource: Option<String> = None;
+                let mut per_key: Option<bool> = None;
+                let mut enforcement: Option<String> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     if let Some(m) = LimitMetric::from_key(&key) {
@@ -420,6 +512,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         "pool" => once(&mut map, &mut pool, "pool")?,
                         "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
                         "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
+                        "id" => once(&mut map, &mut id, "id")?,
+                        "upstream_resource" => once(&mut map, &mut resource, "upstream_resource")?,
+                        "per_key" => once(&mut map, &mut per_key, "per_key")?,
+                        "enforcement" => once(&mut map, &mut enforcement, "enforcement")?,
                         other => return Err(de::Error::unknown_field(other, LIMIT_KEYS)),
                     }
                 }
@@ -430,6 +526,30 @@ impl<'de> Deserialize<'de> for LimitCfg {
                     msg.push(')');
                     return Err(de::Error::custom(msg));
                 };
+
+                if id.is_some() || resource.is_some() || per_key.is_some() || enforcement.is_some()
+                {
+                    let (Some(id), Some(resource), Some(true), Some("process")) =
+                        (id, resource, per_key, enforcement.as_deref())
+                    else {
+                        return Err(de::Error::custom("selected-resource limits require id, upstream_resource, per_key: true and enforcement: process together"));
+                    };
+                    let selected =
+                        SelectedLimitCfg::parse(id, resource).map_err(de::Error::custom)?;
+                    let row = LimitCfg {
+                        metric,
+                        amount,
+                        per,
+                        scope: pool.map(ScopeRef::pool),
+                        on_exhaust,
+                        downgrade_to: downgrade_to.map(ScopeRef::pool),
+                        selected: Some(selected),
+                    };
+                    if !row.valid_selected_shape() {
+                        return Err(de::Error::custom("selected-resource limits require requests or tokens per minute and forbid pool, on_exhaust and downgrade_to"));
+                    }
+                    return Ok(row);
+                }
 
                 if metric == LimitMetric::Concurrent && pool.is_some() {
                     return Err(de::Error::custom(
@@ -480,6 +600,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
+                        selected: None,
                     }),
                     (_, None) => Err(de::Error::custom(format!(
                         "a `{}` limit requires a `per:` window \
@@ -493,6 +614,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: pool.map(ScopeRef::pool),
                         on_exhaust,
                         downgrade_to: downgrade_to.map(ScopeRef::pool),
+                        selected: None,
                     }),
                 }
             }
@@ -513,7 +635,8 @@ impl Serialize for LimitCfg {
             + usize::from(self.per.is_some())
             + usize::from(self.scope.is_some())
             + usize::from(self.on_exhaust.is_some())
-            + usize::from(self.downgrade_to.is_some());
+            + usize::from(self.downgrade_to.is_some())
+            + 4 * usize::from(self.selected.is_some());
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry(self.metric.as_str(), &self.amount)?;
         if let Some(window) = self.per {
@@ -528,6 +651,12 @@ impl Serialize for LimitCfg {
         }
         if let Some(to) = &self.downgrade_to {
             map.serialize_entry("downgrade_to", &to.value)?;
+        }
+        if let Some(selected) = &self.selected {
+            map.serialize_entry("id", selected.id())?;
+            map.serialize_entry("upstream_resource", &selected.selector())?;
+            map.serialize_entry("per_key", &true)?;
+            map.serialize_entry("enforcement", "process")?;
         }
         map.end()
     }

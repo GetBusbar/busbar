@@ -51,6 +51,7 @@ fn resolve_card_fee(
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per,

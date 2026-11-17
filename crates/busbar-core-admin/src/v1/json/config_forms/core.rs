@@ -36,6 +36,31 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
         }
         branches.push(branch);
     }
+    for metric in ["requests", "tokens"] {
+        let mut branch = object(json!({
+            metric:unsigned(),
+            "per":{"const":"minute"},
+            "id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$"},
+            "upstream_resource":{"type":"string","minLength":3,"maxLength":257,"pattern":"^[^/\\u0000-\\u001F\\u007F-\\u009F]+/[^\\u0000-\\u001F\\u007F-\\u009F]+$"},
+            "per_key":{"const":true},
+            "enforcement":{"const":"process"}
+        }));
+        branch["required"] = json!([
+            metric,
+            "per",
+            "id",
+            "upstream_resource",
+            "per_key",
+            "enforcement"
+        ]);
+        branch["x-busbar-runtime-validation"] = json!([
+            "Each id, instance and resource is at most 128 UTF-8 bytes; maxLength counts characters",
+            "Instance/resource exists in this generation's actual configured targets",
+            "Rule ids are unique within each group across metrics; at most 32 applicable ancestor rows",
+            "Selected token rules require admitted attempt accounting and token declarations"
+        ]);
+        branches.push(branch);
+    }
     defs.insert("Limit".into(), json!({"oneOf":branches,"description":"Exactly one unsigned u64 metric key. Budget is in cents; other units follow the named metric.","x-busbar-runtime-validation":["pool references must exist","downgrade_to must differ from pool","enforcement bucket identities must be unambiguous"]}));
     let limits = json!({"type":"array","items":reference("Limit"),"default":[]});
     defs.insert("ChildDefault".into(), object(json!({"limits":limits})));

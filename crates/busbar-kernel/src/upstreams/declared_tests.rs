@@ -8,7 +8,7 @@ use super::{core_field_paths, core_secret_paths, declared, Upstreams};
 fn consumed_core_prefixes_exclude_plugin_lift_authority() {
     let config = json!({"a/b": {"s": {"auth": {"bearer": "literal"}, "custom": "literal"}}});
     let paths = core_field_paths(&config, &["/a~1b/*"]).unwrap();
-    assert_eq!(paths.len(), 6);
+    assert_eq!(paths.len(), 7);
     for key in [
         "url",
         "command",
@@ -16,6 +16,7 @@ fn consumed_core_prefixes_exclude_plugin_lift_authority() {
         "auth",
         "upstream_credentials",
         "allow_private",
+        "resource",
     ] {
         assert!(paths.contains(&format!("/a~1b/s/{key}")));
     }

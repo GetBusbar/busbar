@@ -45,6 +45,7 @@ fn removed_pre_release_limits_and_drain_keys_are_refused_at_the_settings_door() 
 
 fn budget(cents: u64) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount: cents,
         per: Some(LimitWindow::Month),

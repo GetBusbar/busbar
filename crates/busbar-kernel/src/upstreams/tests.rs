@@ -71,6 +71,7 @@ fn bearer() -> UpstreamCfg {
             cache_max_s: None,
         }),
         upstream_credentials: None,
+        resource: None,
     }
 }
 
@@ -211,6 +212,7 @@ fn a_stdio_upstream_refuses_auth_upstream_credentials_and_tls() {
     );
 
     let creds = UpstreamCfg {
+        resource: None,
         auth: None,
         upstream_credentials: Some(UpstreamCreds::Own),
     };
