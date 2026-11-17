@@ -2373,3 +2373,31 @@ fn r0_progress_row_has_a_fixed_layout_and_refuses_anything_else() {
     assert_eq!(first_start::R0Progress::decode(&long), None);
     assert_eq!(first_start::R0Progress { version: 2, ..row }.encode(), None);
 }
+
+// ---- #319 r4 §5: record-format admission -----------------------------------------------------
+
+/// #319 r4 §5: a Current manifest beside a record-format step cursor is contradictory evidence (a
+/// step under way whose flip did not delete its cursor, or a cursor written without its tail).
+/// Admission refuses it before any write; it never ignores or deletes the cursor.
+#[tokio::test]
+async fn a_current_manifest_with_a_migration_cursor_is_refused() {
+    let backend = Arc::new(Backend::default());
+    admitted(&mut startup(&backend, true)).await;
+    let cursor = Address {
+        namespace: witness::FORMAT_NAMESPACE.0,
+        key: b"step".to_vec(),
+    };
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .insert(cursor.clone(), Secret::new(b"leftover".to_vec()));
+    let before = backend.0.lock().unwrap().sends.len();
+    assert_eq!(
+        startup(&backend, false).advance().await,
+        Err(Error::Corrupt)
+    );
+    assert_eq!(backend.0.lock().unwrap().sends.len(), before);
+    assert!(backend.0.lock().unwrap().rows.contains_key(&cursor));
+}

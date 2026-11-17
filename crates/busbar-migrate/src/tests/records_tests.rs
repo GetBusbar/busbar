@@ -1175,3 +1175,145 @@ fn a_short_import_page_is_not_the_end_of_import() {
     assert_eq!(report.rows[usize::from(table::AUDIT)], 5);
     assert!(mem.import().is_empty(), "IMPORT drained");
 }
+
+/// The initial v1 cursor of a one-namespace step, as the kernel's opening writes it.
+fn initial_cursor_bytes() -> Vec<u8> {
+    cells::value(&[
+        Cell::Int(1),
+        Cell::Int(0),
+        Cell::Int(0),
+        Cell::Blob(b""),
+        Cell::Blob(&[0; 8]),
+    ])
+}
+
+/// A format-1 store the kernel's admission already opened for the step to 2: manifest (1, 2) and
+/// the step's initial cursor (#319 r4 §6).
+fn opened_store(rows: usize) -> Mem {
+    let mem = evolve_store(rows, 1, 2);
+    mem.put(MANIFEST_NS, CURSOR_KEY.to_vec(), initial_cursor_bytes());
+    mem
+}
+
+/// #319 r4 §6: opening a step is the kernel's one atomic transaction (dataset epoch, tail, cursor
+/// and migration owner together). The driver never registers or opens a step itself: an unopened
+/// older manifest is VERIFY before any call to the store.
+#[test]
+fn the_driver_never_opens_a_step_itself() {
+    let mem = evolve_store(3, 1, 0);
+    assert_eq!(evolve_once(&mem, FIXTURE, 2).unwrap_err().word(), "VERIFY");
+    assert_eq!(
+        (mem.commits.get(), mem.registers.get(), mem.scans.get()),
+        (0, 0, 0)
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 0));
+}
+
+/// #319 r4 §9: the final publication carries the kernel's fresh registrar and dataset epoch, so the
+/// driver never writes a Current manifest through an ordinary page commit.
+#[test]
+fn the_final_publication_is_not_an_ordinary_commit() {
+    let mem = opened_store(5);
+    let mut store = Capped::new(&mem, PAGE);
+    store.intermediate = Some(2);
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(5)));
+    assert!(
+        !store.published_intermediate.get(),
+        "an ordinary commit published the Current manifest"
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+}
+
+/// A store that refuses (never-uncertain, nothing applied) any commit carrying more than
+/// `max` converted rows, recording the size of every candidate it was sent.
+struct Refusing<'a> {
+    mem: &'a Mem,
+    max: usize,
+    sizes: RefCell<Vec<usize>>,
+}
+
+impl Refusing<'_> {
+    fn rows_in(c: &Candidate) -> usize {
+        c.put.iter().filter(|(ns, _, _)| *ns == DATA_NS).count()
+    }
+}
+
+/// #319 r4 §7.2: a refused page shrinks to its first half, as fresh candidates, down to one
+/// complete row; every row is still converted, no applied candidate exceeds what the store took,
+/// and the audit counts every row once.
+#[test]
+fn a_refused_page_halves_to_complete_rows_and_converts_everything() {
+    let mem = opened_store(9);
+    let store = Refusing {
+        mem: &mem,
+        max: 2,
+        sizes: RefCell::new(Vec::new()),
+    };
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9
+        }]
+    );
+    assert_eq!(
+        store.sizes.borrow().first(),
+        Some(&9),
+        "the first candidate carries the whole page"
+    );
+}
+
+/// #319 r4 §7.2: a store that refuses even one row stops the conversion after 1 + floor(log2 n)
+/// sizing candidates (9, 4, 2, 1), as STORE, with the cursor and the tail exactly as committed.
+#[test]
+fn a_one_row_refusal_stops_after_bounded_halving() {
+    let mem = opened_store(9);
+    let store = Refusing {
+        mem: &mem,
+        max: 0,
+        sizes: RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        evolve_through(&store, &mem, FIXTURE, 2).unwrap_err().word(),
+        "STORE"
+    );
+    assert_eq!(*store.sizes.borrow(), vec![9, 4, 2, 1]);
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
+    assert_eq!(
+        mem.rows
+            .borrow()
+            .get(&(MANIFEST_NS.0, CURSOR_KEY.to_vec()))
+            .cloned(),
+        Some(initial_cursor_bytes())
+    );
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"v"));
+}
+
+impl RecordStore for Refusing<'_> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        self.mem.scan(ns, after, limit)
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.mem.read(ns, key)
+    }
+
+    fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
+        let rows = Self::rows_in(&c);
+        if rows > 0 {
+            self.sizes.borrow_mut().push(rows);
+        }
+        if rows > self.max {
+            return Err(StoreFail("refused".to_owned()));
+        }
+        self.mem.commit(c)
+    }
+
+    fn register(&self) -> Result<(), StoreFail> {
+        self.mem.register()
+    }
+}
