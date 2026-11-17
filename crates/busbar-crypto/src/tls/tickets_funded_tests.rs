@@ -88,12 +88,16 @@ fn connect(
     for _ in 0..100 {
         let mut wire = Vec::new();
         client.write_tls(&mut wire).unwrap();
-        server.read_tls(&mut wire.as_slice()).unwrap();
-        server.process_new_packets()?;
+        if !wire.is_empty() {
+            server.read_tls(&mut wire.as_slice()).unwrap();
+            server.process_new_packets()?;
+        }
         wire.clear();
         server.write_tls(&mut wire).unwrap();
-        client.read_tls(&mut wire.as_slice()).unwrap();
-        client.process_new_packets()?;
+        if !wire.is_empty() {
+            client.read_tls(&mut wire.as_slice()).unwrap();
+            client.process_new_packets()?;
+        }
         if !client.is_handshaking()
             && !server.is_handshaking()
             && !client.wants_write()
