@@ -132,7 +132,7 @@ fn bound_read_grammar(
 ) -> Result<Grammar, String> {
     // Use the document reader's canonical instance binding, including shorthand alias rules.
     let bound = read.bind_secret_instances(configured)?;
-    if &bound != typed {
+    if !bound.same_authority(typed) {
         return Err("native candidate grammar does not belong to its admitted image read".into());
     }
     Ok(bound)
