@@ -1113,20 +1113,11 @@ fn physical_admin_http(
 ) {
     let carrier = f.pending.take().unwrap().into_admin().unwrap();
     let snapshot = f.binding.snapshot().unwrap();
-    let mut request = axum::http::Request::builder()
-        .method(snapshot.method())
-        .uri(snapshot.target())
-        .extension(carrier.clone())
-        .extension(snapshot.request().clone())
-        .extension(snapshot.clone())
-        .body(axum::body::Body::from(snapshot.body_bytes()))
-        .unwrap();
-    for (name, value) in snapshot.header_values() {
-        request.headers_mut().append(
-            axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
-            axum::http::HeaderValue::from_maybe_shared(value).unwrap(),
-        );
-    }
+    let mut request =
+        busbar_kernel::inbound::http_projection::HttpProjection::from_snapshot(snapshot.clone())
+            .unwrap()
+            .into_request(axum::body::Body::from(snapshot.body_bytes()));
+    request.extensions_mut().insert(carrier.clone());
     (request, carrier)
 }
 
