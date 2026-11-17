@@ -763,8 +763,8 @@ fn route_policy_false_in_the_overlay_migrates_away_and_is_reported() {
         r#"{"version":1,"root":{"advanced":{"response_headers":{"server_timing":false,"route_policy":false}}}}"#,
     );
     let plan = planned(&path).unwrap();
-    let planned = tree(plan.planned());
-    let headers = planned.at("advanced").at("response_headers");
+    let migrated = tree(plan.planned());
+    let headers = migrated.at("advanced").at("response_headers");
     assert!(headers.get("route_policy").is_none(), "{}", plan.planned());
     assert!(
         plan.report()

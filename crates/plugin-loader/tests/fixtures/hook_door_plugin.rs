@@ -35,15 +35,7 @@ pub const ROUTED_TAIL: &Tail =
 
 pub const NAME: &str = "both-ways-hook";
 
-pub const BROKEN_NAME: &str = "both-ways-hook-broken";
-
 pub const ORDERING_NAME: &str = "both-ways-hook-ordering";
-
-pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
-
-pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
-
-pub const CONFIGURABLE_NAME: &str = "both-ways-hook-configurable";
 
 pub const REJECT_STATUS: u16 = 429;
 
@@ -109,32 +101,6 @@ impl Gate {
 static CAP_CROSSINGS: std::sync::Mutex<(bool, u32)> = std::sync::Mutex::new((false, 0));
 static CAP_RELEASE: std::sync::Condvar = std::sync::Condvar::new();
 
-pub struct BlockedCalls;
-
-impl BlockedCalls {
-    pub fn hold() -> Self {
-        *CAP_CROSSINGS.lock().unwrap() = (false, 0);
-        Self
-    }
-}
-
-impl BlockedCalls {
-    pub fn entered(&self) -> u32 {
-        CAP_CROSSINGS.lock().unwrap().1
-    }
-
-    pub fn release(&self) {
-        CAP_CROSSINGS.lock().unwrap().0 = true;
-        CAP_RELEASE.notify_all();
-    }
-}
-
-impl Drop for BlockedCalls {
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
 pub struct Decide;
 
 impl SafeSlot for Decide {
@@ -173,24 +139,6 @@ impl SafeSlot for Decide {
     }
 }
 
-pub struct DecideBroken;
-
-impl SafeSlot for DecideBroken {
-    type Kind = busbar_contract::plugin::markers::HookKind;
-    type In = DecideIn;
-    type Out = DecideOut;
-    type State = Held<Gate>;
-
-    fn call(
-        _: Instance<'_, Held<Gate>, Self::Kind>,
-        _: Lent<'_, DecideIn>,
-        mut out: Out<'_, DecideOut>,
-    ) -> Outcome {
-        out.set(|o| &o.verbs, VERB_PREFER | VERB_REJECT);
-        Outcome::Ready
-    }
-}
-
 pub struct DecideOrders;
 
 impl SafeSlot for DecideOrders {
@@ -206,23 +154,6 @@ impl SafeSlot for DecideOrders {
     ) -> Outcome {
         out.set(|o| &o.verbs, VERB_PREFER);
         Outcome::Ready
-    }
-}
-
-pub struct DecidePanics;
-
-impl SafeSlot for DecidePanics {
-    type Kind = busbar_contract::plugin::markers::HookKind;
-    type In = DecideIn;
-    type Out = DecideOut;
-    type State = Held<Gate>;
-
-    fn call(
-        _: Instance<'_, Held<Gate>, Self::Kind>,
-        _: Lent<'_, DecideIn>,
-        _: Out<'_, DecideOut>,
-    ) -> Outcome {
-        panic!("the panicking hook fixture's decide panics")
     }
 }
 
@@ -440,54 +371,6 @@ pub mod conforming {
     ), super::Decide, super::Configure, super::Serve);
 }
 
-pub mod broken {
-    hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
-        busbar_contract::abi::sdk::door::statement(super::BROKEN_NAME, "1.6.0", super::MAX_INFLIGHT),
-        super::ROUTED_TAIL,
-    ), super::DecideBroken);
-}
-
 pub mod ordering {
     hook_door!(super::ORDERING_NAME, super::DecideOrders);
-}
-
-pub mod untailed {
-    pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
-        use busbar_contract::abi::mechanism::door::{Door, DoorParts, Statement};
-        const STATEMENT: Statement = busbar_contract::abi::sdk::door::stamp::<
-            busbar_contract::abi::hook::Ops,
-        >(busbar_contract::abi::sdk::door::statement(
-            super::UNTAILED_NAME,
-            "1.6.0",
-            super::MAX_INFLIGHT,
-        ));
-        // SAFETY: the complete conforming table and replacement Statement remain live
-        // for the process. The deliberately absent tail is an invalid foreign ABI
-        // declaration for the host's rejection test, not an SDK-authored registration.
-        Box::leak(Box::new(unsafe {
-            Door::__from_parts(DoorParts {
-                statement: &STATEMENT,
-                ..super::conforming::door().parts()
-            })
-        }))
-    }
-}
-
-pub mod panicking {
-    hook_door!(super::PANICKING_NAME, super::DecidePanics);
-}
-
-pub mod configurable {
-    hook_door!(
-        @statement busbar_contract::abi::sdk::hook::statement_with_tail(
-            busbar_contract::abi::sdk::door::statement(
-                super::CONFIGURABLE_NAME,
-                "1.6.0",
-                super::MAX_INFLIGHT,
-            ),
-            super::TAIL,
-        ),
-        super::Decide,
-        super::Configure
-    );
 }

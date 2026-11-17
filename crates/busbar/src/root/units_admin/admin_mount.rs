@@ -631,8 +631,6 @@ impl RouterDispatch {
     }
 }
 
-pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
-
 pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()

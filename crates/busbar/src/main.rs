@@ -607,6 +607,10 @@ async fn run(
         busbar_kernel::appbuild::IGNORE_OVERLAY_FLAG
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    if argv.restore_quarantine {
+        busbar_kernel::persistence::restore::LAUNCH_FLAG
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     let principal_transition =
         root::principal_transition::command(argv).unwrap_or_else(|error| die(error));
     if let Some(command) = principal_transition.as_ref() {
@@ -1045,7 +1049,12 @@ async fn run(
         );
     }
 
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        crypto_backend = busbar_contract::crypto::BACKEND,
+        crypto_module = busbar_contract::crypto::module_version(),
+        "busbar starting"
+    );
 
     if config_locked {
         tracing::info!(

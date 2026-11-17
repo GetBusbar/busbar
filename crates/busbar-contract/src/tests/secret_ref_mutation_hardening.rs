@@ -3,13 +3,14 @@
 
 //! Mutation-hardening additions for `busbar_contract::secret_ref` (the former `busbar-secret-ref`
 
+use crate::json::JsonContainerTrait as _;
 use crate::SecretRef;
 
 /// Source settings may contain credentials even when they look like descriptors.
 #[test]
 fn secret_ref_settings_retain_authoring_data_without_debug_disclosure() {
     let distinctive_marker = "DISTINCTIVE_OPAQUE_SOURCE_SETTING";
-    let reference: SecretRef = serde_json::from_value(serde_json::json!({
+    let reference: SecretRef = crate::json::from_value(&crate::json::json!({
         "module":"declared-source", "settings":{"slot":distinctive_marker}
     }))
     .unwrap();
@@ -18,7 +19,7 @@ fn secret_ref_settings_retain_authoring_data_without_debug_disclosure() {
         !debug.contains(distinctive_marker),
         "opaque source settings leaked: {debug}"
     );
-    let wire = serde_json::to_value(reference.writing()).unwrap();
+    let wire = crate::json::to_value(&reference.writing()).unwrap();
     assert_eq!(wire["settings"]["slot"], distinctive_marker);
     assert_eq!(wire["settings"].as_object().unwrap().len(), 1);
 }
@@ -44,9 +45,9 @@ fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_sm
 #[test]
 fn secret_ref_serialization_preserves_the_exact_authored_reference() {
     let authored =
-        serde_json::json!({"module":"declared-source", "settings":{"slot":"distinctive-marker"}});
-    let reference: SecretRef = serde_json::from_value(authored.clone()).unwrap();
-    let wire = serde_json::to_value(reference.writing()).unwrap();
+        crate::json::json!({"module":"declared-source", "settings":{"slot":"distinctive-marker"}});
+    let reference: SecretRef = crate::json::from_value(&authored).unwrap();
+    let wire = crate::json::to_value(&reference.writing()).unwrap();
     assert_eq!(wire, authored);
     assert_eq!(wire.as_object().unwrap().len(), 2);
     assert!(!format!("{reference:?}").contains("distinctive-marker"));

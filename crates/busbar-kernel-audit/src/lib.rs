@@ -119,6 +119,10 @@ pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkConte
 pub mod grant;
 /// Common chain decoding and integrity checks, including certificate rows.
 pub mod linked_record;
+// The linked-window rules (SEALING-FIX r20 §3.7) over source traits: the offline verifier reads a
+// published range through them, a declared restore (DES-331 §B3.1) an exported tail. Off the
+// request path.
+pub mod linked_walk;
 // busbar:request-path
 #[cfg_attr(
     not(test),

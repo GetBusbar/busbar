@@ -87,7 +87,7 @@ pub fn login_presentation(extensions: &[u8]) -> Result<Option<LoginPresentation>
             return Err("duplicate or oversized auth login presentation");
         }
         let presentation: LoginPresentation =
-            serde_json::from_slice(value).map_err(|_| "malformed auth login presentation JSON")?;
+            crate::json::parse(value).map_err(|_| "malformed auth login presentation JSON")?;
         presentation.validate()?;
         out = Some(presentation);
     }
@@ -250,7 +250,7 @@ mod tests {
             &vec![b' '; MAX_PRESENTATION_BYTES + 1]
         )]))
         .is_err());
-        let json = serde_json::to_vec(&declaration("M0 0L1 1")).unwrap();
+        let json = crate::json::to_vec(&declaration("M0 0L1 1")).unwrap();
         assert!(login_presentation(&encode(&[
             (EXT_LOGIN_PRESENTATION, &json),
             (EXT_LOGIN_PRESENTATION, &json)

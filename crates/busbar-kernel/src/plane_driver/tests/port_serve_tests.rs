@@ -1100,3 +1100,296 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         "the response stage fires once"
     );
 }
+
+/// Counts every counter the stage registers, by name and label set.
+#[derive(Default)]
+struct Counted(Mutex<std::collections::BTreeMap<String, Arc<std::sync::atomic::AtomicU64>>>);
+
+impl Counted {
+    fn get(&self, series: &str) -> u64 {
+        self.0
+            .lock()
+            .unwrap()
+            .get(series)
+            .map_or(0, |n| n.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl metrics::Recorder for Counted {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        let labels = key
+            .labels()
+            .map(|l| format!("{}={}", l.key(), l.value()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let cell = Arc::clone(
+            self.0
+                .lock()
+                .unwrap()
+                .entry(format!("{}{{{labels}}}", key.name()))
+                .or_default(),
+        );
+        metrics::Counter::from_arc(cell)
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// DES-NATIVE-HOOKS-PARITY r3 §C: a pool walk's counters are bound with the walk, and the stage
+/// reconcile moves them. `busbar_route_policy_selections_total` counts the deciding name (the
+/// strategy word of a bound strategy, else the hook name) when an order is installed;
+/// `busbar_route_policy_rejections_total` counts a VERB_REJECT at the client refusal's status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn route_policy_selections_and_rejections_counters_move() {
+    use crate::config::{PromptAccess, UserAccess};
+    use crate::plane_driver::hooks::{CandidateFacts, Candidates, Constraint};
+    use crate::plane_driver::port_hooks::tests::{configured, Fixture};
+    use crate::plane_driver::port_hooks::{
+        Binder, Call, Invocation, RouteCounters, Selected, Selection,
+    };
+    use crate::plane_driver::port_upstream::Wants;
+    use busbar_plugin_abi::kinds::hook::hook as abi;
+    use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
+    use busbar_ports::CallCx;
+
+    struct Answers(HookAnswer);
+    impl HookPort for Answers {
+        fn points(&self) -> u32 {
+            1 << abi::POINT_ROUTE
+        }
+        fn facts(&self) -> u64 {
+            0
+        }
+        fn on<'a>(&'a self, _: CallCx, _: u32, _: &'a HookView<'a>) -> HookCall<'a> {
+            HookCall::Done(Ok(self.0.clone()))
+        }
+    }
+    fn answer(verb: u32, order: Vec<u32>, reject_status: Option<u16>) -> HookAnswer {
+        HookAnswer {
+            verb,
+            reject_status,
+            order,
+            restrict: Vec::new(),
+            message: None,
+            rewrite: None,
+        }
+    }
+    struct Bound(Selected);
+    impl Binder for Bound {
+        fn active(&self, _: u32) -> bool {
+            true
+        }
+        fn enforcing(&self, _: u32) -> bool {
+            true
+        }
+        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
+            Ok(self.0.clone())
+        }
+    }
+    struct Hooked {
+        invocation: Invocation,
+        context: crate::host_services::InvocationContext,
+    }
+    impl Effects for Hooked {
+        fn hooks(&self) -> Option<&Invocation> {
+            Some(&self.invocation)
+        }
+        fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+            Some(&self.context)
+        }
+        fn emit(&self, _: u64, _: &[u8]) {}
+    }
+    /// The pool walk the hooks see: two members, and the constraint the reconcile installs.
+    #[derive(Default)]
+    struct Ranked {
+        queue: VecDeque<Candidate>,
+        constrained: Option<Constraint>,
+    }
+    impl Members for Ranked {
+        fn hook_scope(&mut self, _: &Wants) -> Option<crate::plane_driver::RoutedScope> {
+            Some(crate::plane_driver::RoutedScope {
+                pool: "pool".into(),
+                container: String::new(),
+            })
+        }
+        fn hook_candidates(&mut self, _: &Wants) -> Option<Candidates> {
+            Some(Candidates {
+                pool: "pool".into(),
+                members: (0..2)
+                    .map(|idx| CandidateFacts {
+                        idx,
+                        ..CandidateFacts::default()
+                    })
+                    .collect(),
+            })
+        }
+        fn hook_lane(&mut self, _: &Wants, index: usize) -> Option<String> {
+            Some(format!("lane-{index}"))
+        }
+        fn hook_constrain(&mut self, _: &Wants, constraint: Constraint) -> bool {
+            self.constrained = Some(constraint);
+            true
+        }
+        fn next(&mut self, _: &Wants) -> Option<Candidate> {
+            self.queue.pop_front()
+        }
+        fn declined(&mut self, _: &Candidate) {}
+        fn failed(&mut self, _: &Candidate, _: &Failure) {}
+        fn served(&mut self, _: &Candidate) {}
+    }
+
+    let fixture = Fixture::new();
+    let gate_name: Arc<str> = Arc::from("configured-name");
+    let preferring = configured(
+        Arc::new(Answers(answer(abi::VERB_PREFER, vec![1, 0], None))),
+        PromptAccess::No,
+        UserAccess::No,
+    );
+    let rejecting = configured(
+        Arc::new(Answers(answer(abi::VERB_REJECT, Vec::new(), Some(409)))),
+        PromptAccess::No,
+        UserAccess::No,
+    );
+    let strategy = Arc::new(Call {
+        name: Arc::from("ranking-instance"),
+        port: Arc::new(Answers(answer(abi::VERB_PREFER, vec![0, 1], None))),
+        timeout: std::time::Duration::from_secs(1),
+        prompt: PromptAccess::No,
+        user: UserAccess::No,
+        signals: crate::hooks::RequestedSignals::default(),
+        on_error: crate::config::PolicyOnError::Weighted,
+        on_empty: crate::config::PolicyOnError::Reject,
+        fallbacks: Vec::new(),
+        strategy: Some(Arc::from("cheapest")),
+    });
+    let base = fixture.selected.clone();
+    let context = fixture.context.clone();
+    let counted = tokio::task::spawn_blocking(move || {
+        let counted = Counted::default();
+        metrics::with_local_recorder(&counted, || {
+            let counters = Arc::new(RouteCounters::bind(
+                "pool",
+                [&preferring, &rejecting, &strategy],
+            ));
+            let session = |gates: Vec<Arc<Call>>, policy: Option<Arc<Call>>| {
+                let mut selected = base.clone();
+                selected.gates = gates;
+                selected.policy = policy;
+                selected.counters = Some(Arc::clone(&counters));
+                let effects = Hooked {
+                    invocation: Invocation {
+                        binder: Arc::new(Bound(selected)),
+                        principal: None,
+                        now_s: 1,
+                        classes: Vec::new(),
+                        journal: None,
+                        unit: UnitKey::new(7),
+                    },
+                    context: context.clone(),
+                };
+                let plane = forwarding();
+                let store = Store;
+                let resolver = Resolver::new(&store, Some([1; 32]));
+                let refusals = CoreRefusals::new();
+                let books = Log::default();
+                let mut walk = Ranked {
+                    queue: VecDeque::from([candidate()]),
+                    ..Ranked::default()
+                };
+                let mut far = Far;
+                let result = run_session(
+                    &plane,
+                    &req(),
+                    b"{}",
+                    Drive {
+                        resolver: &resolver,
+                        members: Some(&mut walk),
+                        send: Some(&mut far),
+                        dialect: "openai",
+                        refusals: &refusals,
+                        effects: &effects,
+                        books: &books,
+                        carrier: None,
+                    },
+                );
+                (result.map(|_| ()), walk.constrained)
+            };
+
+            let (ran, constrained) = session(vec![preferring.clone()], None);
+            ran.expect("a gate's order is served");
+            let constrained = constrained.expect("the reconcile installs the gate's order");
+            assert_eq!(constrained.order, Some(vec![1, 0]));
+            assert_eq!(constrained.policy.as_deref(), Some(&*gate_name));
+
+            let (ran, constrained) = session(Vec::new(), Some(strategy.clone()));
+            ran.expect("the strategy's order is served");
+            let constrained = constrained.expect("the reconcile installs the strategy's order");
+            assert_eq!(constrained.order, Some(vec![0, 1]));
+            assert_eq!(
+                constrained.policy.as_deref(),
+                Some("cheapest"),
+                "a bound strategy decides under its word, not its instance name"
+            );
+
+            match session(vec![rejecting.clone()], None).0 {
+                Err(SessionError::HookRefused(refusal)) => assert_eq!(refusal.status, 409),
+                other => panic!("{other:?}"),
+            }
+        });
+        counted
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        counted.get("busbar_route_policy_selections_total{policy=configured-name,pool=pool}"),
+        1,
+        "the gate's installed order is one selection"
+    );
+    assert_eq!(
+        counted.get("busbar_route_policy_selections_total{policy=cheapest,pool=pool}"),
+        1,
+        "the strategy's installed order is one selection under its word"
+    );
+    assert_eq!(
+        counted.get(
+            "busbar_route_policy_rejections_total{policy=configured-name,pool=pool,status=409}"
+        ),
+        1,
+        "the gate's VERB_REJECT is one rejection at its status"
+    );
+    assert_eq!(
+        counted.get("busbar_route_policy_selections_total{policy=ranking-instance,pool=pool}"),
+        0,
+        "a strategy is never counted under its instance name"
+    );
+}

@@ -13,6 +13,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
+#[path = "conditional.rs"]
+mod conditional;
+pub use conditional::{ConditionalAppend, ConditionalOutcome};
 #[path = "cut.rs"]
 mod cut;
 pub use cut::{CutProgress, JournalCut};
@@ -179,6 +182,7 @@ struct State {
     records: usize,
     bytes: usize,
     failed: Option<RuntimeError>,
+    conditional: Option<conditional::Slot>,
     /// Where each frame of this node's journal sits: `(first_ordinal, first_sequence)` per run of
     /// contiguous sequences, built by the open replay (one segment per custody bridge, usually
     /// one). Live appends are contiguous, so the last segment covers them (W1 step 2).
@@ -283,6 +287,7 @@ impl RuntimeJournal {
                 records: 0,
                 bytes: 0,
                 failed: None,
+                conditional: None,
                 seq_map,
                 cut,
             }),
@@ -406,6 +411,9 @@ impl RuntimeJournal {
         }
         if let Some(error) = state.failed {
             return Some(format!("native journal custody failed: {error:?}"));
+        }
+        if state.conditional.is_some() {
+            return Some("native journal conditional publication is pending".into());
         }
         (state.records >= self.budget.records || state.bytes >= self.budget.bytes)
             .then(|| "native journal custody buffer is full".into())
@@ -539,6 +547,9 @@ impl RuntimeJournal {
         }
         if let Some(error) = state.failed {
             return Err(error);
+        }
+        if state.conditional.is_some() {
+            return Err(RuntimeError::Pending);
         }
         let next_records = state
             .records
@@ -721,12 +732,15 @@ impl RuntimeJournal {
     }
 
     pub async fn flush(&self) -> std::result::Result<(), RuntimeError> {
-        let target = self
-            .state
-            .lock()
-            .map_err(|_| RuntimeError::Corrupt)?
-            .next_ticket
-            .saturating_sub(1);
+        let target = {
+            let state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+            if state.conditional.is_some() {
+                // The root owner must install conditional canonical publication
+                // before its barrier can be released; flush cannot invent it.
+                return Err(RuntimeError::Pending);
+            }
+            state.next_ticket.saturating_sub(1)
+        };
         self.drive_through(target).await
     }
 
