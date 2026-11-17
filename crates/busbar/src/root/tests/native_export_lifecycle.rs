@@ -21,6 +21,7 @@ struct NativeExport {
     observers: Arc<ExportObservers>,
     _generation: ExportGeneration,
     serving: ServingFixture,
+    startup: Option<busbar_kernel::persistence::startup::Startup>,
     rules: Arc<dyn RootRules>,
     plugins: PluginsCfg,
     document: serde_json::Value,
@@ -77,7 +78,35 @@ impl NativeExport {
         let fixture = super::open(&cfg, &plugins, policy)
             .await
             .expect("native S5/Store fixture opens");
-        let (admitted, serving) = fixture.admit_serving().await;
+        // Keep the actual admission owner for root finish, rather than dropping Startup after
+        // extracting its CoreStore as the serving-only fixture helper does.
+        let mut startup = busbar_kernel::persistence::startup::Startup::new(
+            fixture.backend,
+            busbar_kernel::persistence::facade::Limits {
+                pending_operations: 1024,
+                conflict_retries: 8,
+                scan_items: 128,
+                scan_bytes: 1024 * 1024,
+            },
+            true,
+        )
+        .unwrap();
+        loop {
+            use busbar_kernel::persistence::startup::Progress;
+            match startup
+                .advance()
+                .await
+                .expect("actual native Store admission")
+            {
+                Progress::Advanced => {}
+                Progress::Admitted => break,
+                other => panic!("native Export fixture did not admit: {other:?}"),
+            }
+        }
+        let serving = ServingFixture {
+            owners: fixture.owners,
+            core: startup.store().unwrap(),
+        };
         let observers = ExportObservers::new();
         let reservation = observers.reserve([name.clone()]).unwrap();
         let built = &serving.owners.built;
@@ -139,7 +168,8 @@ impl NativeExport {
             observers,
             _generation: generation,
             serving,
-            rules: admitted.rules,
+            startup: Some(startup),
+            rules: fixture.rules,
             plugins,
             document,
             name,
@@ -577,6 +607,85 @@ impl busbar_ports::export::ExportPort for NativeWitness {
 }
 
 impl NativeExport {
+    async fn write_probe(&self) -> Result<(), String> {
+        self.serving
+            .core
+            .identity()
+            .put_key(&busbar_contract::records::VirtualKey {
+                id: format!(
+                    "native-export-writer-probe-{}",
+                    busbar_kernel::door::op_id().counter()
+                ),
+                enabled: true,
+                ..Default::default()
+            })
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    async fn finish_native(&mut self, budget: Duration) -> i32 {
+        use crate::root::shutdown::{
+            DrainClock, ExportRetry, PostServe, ShutdownDrain, ShutdownSignals,
+        };
+        self.persist(&self.document).unwrap();
+        let (app, limits) = self.application(&self.document, None).await;
+        limits.stage_boot();
+        crate::root::door_steps::tests::boot_fixture_prices(&app).await;
+        limits.keep().await.unwrap();
+        let cfg = Self::config(&self.document, &self.plugins);
+        let exports = busbar_kernel::export::plugin::open_prepared(
+            &cfg.export,
+            &self.pumps.as_ref().unwrap().calls(),
+            app.amendments.clone(),
+        )
+        .unwrap();
+        let app = Arc::new(
+            busbar_kernel::export::plugin::assemble_routes(app, &cfg.export, Vec::new(), exports)
+                .unwrap(),
+        );
+        busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
+        let observers = self.observers.clone();
+        let post = PostServe {
+            admin: None,
+            lines: None,
+            threads: Vec::new(),
+            work_recovery: tokio::spawn(async {}),
+            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            exports: self.pumps.take().expect("one root pump owner"),
+            export_captures: app.exports.clone(),
+            export_observer_retry: ExportRetry::start(observers.clone()),
+            export_observers: observers,
+            control_drain: Box::pin(async {}),
+            node_lease: None,
+            flusher: None,
+            governance: app.governance.clone(),
+            late: crate::root::serve::Services::bootstrap(),
+            book: None,
+            startup: self
+                .startup
+                .take()
+                .expect("the exact admitted native writer"),
+            predecessor: None,
+        };
+        let drain = ShutdownDrain::new(DrainClock::new(budget));
+        let (workers, safety) = tokio::sync::watch::channel(false);
+        let (listeners, _) = tokio::sync::broadcast::channel(1);
+        drain.start_deregister(
+            Duration::ZERO,
+            Arc::new(busbar_kernel::endpoints::ProbeState::new(None)),
+            ShutdownSignals {
+                safety,
+                support: workers.clone(),
+                workers,
+                listeners,
+            },
+        );
+        tokio::time::timeout(WAIT, crate::root::shutdown::finish(post, &drain))
+            .await
+            .expect("actual root finish respects its one shutdown budget")
+    }
+
     async fn application(
         &self,
         document: &serde_json::Value,
