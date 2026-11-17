@@ -16,6 +16,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::plane_calls::{
     Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
+use busbar_contract::services::{Caller, HostServices as _, Ran, Stored, TrustKeyRef};
 
 use super::*;
 use crate::plane_driver::AuditSink;
@@ -32,6 +33,20 @@ struct Echo {
     status: AtomicU32,
     /// The audit outcome it reports for the route's own row (`0`: none).
     audit: AtomicU32,
+    /// When set, `serve` relays one trust decision through the plugin trust-decision interface
+    /// (`trust.decide`) under the request's ticket, as a plane admin route does (r3 G10, R8).
+    relay: Mutex<Option<Relay>>,
+}
+
+/// The trust decision a relaying [`Echo`] makes for its counterparty, and where it sends the
+/// kernel's answer.
+struct Relay {
+    services: Arc<crate::host_services::KernelServices>,
+    caller: Caller,
+    counterparty: String,
+    expected: Option<String>,
+    approve: bool,
+    answers: tokio::sync::mpsc::UnboundedSender<Stored>,
 }
 
 const READY: Answered = Answered {
@@ -147,7 +162,33 @@ impl PlaneCalls for Echo {
     }
     fn recycle(&self, _: Ticket) {}
     fn drop_client(&self, _: Ticket) {}
-    fn serve(&self, _: Ticket, i: ServeIn, mut o: ServeOut, _: Lent) -> Box<dyn ServeInFlight> {
+    fn serve(
+        &self,
+        ticket: Ticket,
+        i: ServeIn,
+        mut o: ServeOut,
+        _: Lent,
+    ) -> Box<dyn ServeInFlight> {
+        if let Some(relay) = self.relay.lock().unwrap().as_ref() {
+            let answers = relay.answers.clone();
+            let key = TrustKeyRef {
+                counterparty: &relay.counterparty,
+                item: None,
+            };
+            let ran = relay.services.trust_decide(
+                &relay.caller,
+                ticket,
+                key,
+                relay.expected.as_deref(),
+                relay.approve,
+                Box::new(move |stored| {
+                    let _ = answers.send(stored);
+                }),
+            );
+            if let Ran::Now(stored) = ran {
+                let _ = relay.answers.send(stored);
+            }
+        }
         // SAFETY: the driver's target and `fields_len` head fields, live for the crossing. An empty
         // head crosses as a null pointer (`FieldList::as_ptr`), which no slice may be built over.
         let target = unsafe { text(i.target) };
@@ -386,4 +427,400 @@ async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
     assert_eq!(rows.len(), 1, "the applied mutation is audited: {rows:?}");
     assert_eq!(rows[0].resource, "unrendered:a");
     assert_eq!(rows[0].outcome, busbar_contract::vocab::OUTCOME_APPLIED);
+}
+
+/// The plane caller an instance's served requests are keyed by.
+fn a_plane(instance: &str) -> Caller {
+    Caller::for_test(
+        Arc::from(instance),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    )
+}
+
+/// A kernel with a host pool admitting `instance` with one counterparty, `peer`, sighted at `h1`;
+/// with `custody`, its trust decisions are kept in a bound decision record (r3 §6).
+async fn a_trust_kernel(
+    instance: &str,
+    custody: bool,
+) -> Arc<crate::host_services::KernelServices> {
+    use busbar_contract::abi::host::service as svc;
+    let k = crate::host_services::KernelServices::new().with_pool(Arc::new(
+        crate::host_services::BlockingPool::new(tokio::runtime::Handle::current(), 8),
+    ));
+    let k = if custody {
+        k.with_test_custody().await
+    } else {
+        k
+    };
+    k.admit(
+        instance,
+        crate::host_services::InstanceFacts {
+            trust: vec![(
+                "peer".to_string(),
+                crate::trust::section::TrustEntry {
+                    pin: None,
+                    policy: crate::trust::reverify::Policy {
+                        ttl_ms: 0,
+                        recovery_backoff_ms: 0,
+                    },
+                    approved: Default::default(),
+                },
+            )],
+            ..crate::host_services::InstanceFacts::default()
+        },
+    )
+    .await
+    .expect("admitted");
+    let (sent, settled) = tokio::sync::oneshot::channel();
+    let sighted = match k.trust_sight(
+        &a_plane(instance),
+        "peer",
+        "h1",
+        Box::new(move |stored| {
+            let _ = sent.send(stored);
+        }),
+    ) {
+        Ran::Now(stored) => stored,
+        Ran::Later => settled.await.expect("the sighting settles"),
+    };
+    assert_eq!(sighted.value, svc::TRUST_NEW);
+    Arc::new(k)
+}
+
+/// [`Echo`] published as `instance` with a mutating admin route `POST /{instance}/{name}/decide`
+/// and a read route `GET /{instance}/{name}/peek`, its records keyed by its plane caller.
+fn a_relaying_plane(
+    instance: &str,
+    services: &Arc<crate::host_services::KernelServices>,
+) -> (ServeTables, Arc<Echo>) {
+    let echo = Arc::new(Echo::default());
+    let tables = ServeTables::default();
+    let route = |verb: &str, at: &str| ServeRoute {
+        verb: verb.to_string(),
+        target: format!("/{instance}/{{name}}/{at}"),
+        flags: 0,
+        audit_verb: String::new(),
+    };
+    tables
+        .publish(
+            ServeTable {
+                instance: instance.to_string(),
+                audit_kind: "relay".to_string(),
+                calls: echo.clone(),
+                caps: BufferCaps::default(),
+                routes: vec![route("POST", "decide"), route("GET", "peek")],
+                records: Some((Arc::clone(services), a_plane(instance))),
+            },
+            &[],
+        )
+        .expect("publishes");
+    (tables, echo)
+}
+
+/// One admin request at `path` (relative to the admin mount) as the inner router receives it after
+/// the admin gate admitted `op`: with `authority`, the trust decision authority the gate built
+/// from its own verdict; `None`, none.
+async fn relayed(
+    (tables, echo): &(ServeTables, Arc<Echo>),
+    instance: &str,
+    services: &Arc<crate::host_services::KernelServices>,
+    (method, path): (&str, &str),
+    authority: Option<crate::host_services::TrustDecisionAuthority>,
+    (expected, approve): (Option<&str>, bool),
+    request_id: &str,
+) -> Stored {
+    let (answers, mut answered) = tokio::sync::mpsc::unbounded_channel();
+    *echo.relay.lock().unwrap() = Some(Relay {
+        services: Arc::clone(services),
+        caller: a_plane(instance),
+        counterparty: "peer".to_string(),
+        expected: expected.map(str::to_string),
+        approve,
+        answers,
+    });
+    let mut req = axum::http::Request::builder()
+        .method(method)
+        .uri(format!("{}{path}", crate::admin::gate::ADMIN_PREFIX))
+        .body(Body::empty())
+        .expect("a request");
+    req.extensions_mut().insert(AuthPrincipal(Some(
+        busbar_contract::auth::Principal::from_id("op"),
+    )));
+    if let Some(authority) = authority {
+        req.extensions_mut().insert(authority);
+    }
+    let response = crate::admin::gate::with_request_id(request_id.to_string(), tables.answer(req))
+        .await
+        .expect("the instance names the route");
+    assert_eq!(response.status(), 200, "the plane answered its route");
+    *echo.relay.lock().unwrap() = None;
+    answered
+        .recv()
+        .await
+        .expect("the kernel answers the plugin's decision")
+}
+
+/// The authority the admin gate builds for a full grant ([`crate::auth::trust_decision_authority`]).
+fn a_full_grant() -> crate::host_services::TrustDecisionAuthority {
+    crate::auth::trust_decision_authority(&crate::auth::AdminDoor::Identified(
+        busbar_contract::auth::Principal::from_id("op"),
+        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+    ))
+    .expect("a full grant decides")
+}
+
+/// The authority the admin gate builds for a console whose non-empty `verbs` list names
+/// `trust_revoke` and not `trust_approve` (asserted through the closed verb table in core-admin's
+/// `trust_authority_verb_list_tests`; the kernel alone holds no verb table).
+fn a_revoke_only_grant() -> crate::host_services::TrustDecisionAuthority {
+    crate::host_services::TrustDecisionAuthority {
+        principal: "revoker".to_string(),
+        approve: false,
+        revoke: true,
+    }
+}
+
+fn pinned(k: &crate::host_services::KernelServices, instance: &str) -> Option<String> {
+    k.trust_rows()
+        .into_iter()
+        .find(|r| r.key() == format!("{instance}/peer"))
+        .and_then(|r| r.approved)
+}
+
+/// The typed trust rows written for plane `instance`'s decisions, oldest first.
+async fn typed_rows(instance: &str) -> Vec<crate::audit_ring::AuditEntry> {
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("the audit rows are confirmed");
+    let mut rows: Vec<_> = crate::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 64, None, Some(&format!("plane:{instance}")))
+        .into_iter()
+        .filter(|row| row.action.starts_with("trust_"))
+        .collect();
+    rows.reverse();
+    rows
+}
+
+/// G10 (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2 (a)–(c), conditions B-C1 and B-C2): a decision a plane
+/// admin route relays through the plugin trust-decision interface needs the gate's authority for
+/// that ruling, is attributed `Instance{instance, principal}`, approves only at a reviewed digest,
+/// revokes without one, and writes one typed row whose `request_id` is the admin request's.
+#[tokio::test]
+async fn plane_relayed_decision_is_gated_attributed_and_strict() {
+    use busbar_contract::abi::host::service as svc;
+    use busbar_contract::json::JsonValueTrait as _;
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let instance = "g10-relay";
+    let k = a_trust_kernel(instance, true).await;
+    let plane = a_relaying_plane(instance, &k);
+    let decide = ("POST", "/g10-relay/peer/decide");
+
+    let no_grant = relayed(
+        &plane,
+        instance,
+        &k,
+        decide,
+        None,
+        (Some("h1"), true),
+        "r_g10-a",
+    )
+    .await;
+    assert_eq!(
+        no_grant.outcome,
+        AbiOutcome::Refused,
+        "no authority, no decision"
+    );
+    let wrong_ruling = relayed(
+        &plane,
+        instance,
+        &k,
+        decide,
+        Some(a_revoke_only_grant()),
+        (Some("h1"), true),
+        "r_g10-b",
+    )
+    .await;
+    assert_eq!(
+        wrong_ruling.outcome,
+        AbiOutcome::Refused,
+        "an authority without trust_approve approves nothing"
+    );
+    assert_eq!(pinned(&k, instance), None, "nothing was approved");
+
+    let unreviewed = relayed(
+        &plane,
+        instance,
+        &k,
+        decide,
+        Some(a_full_grant()),
+        (None, true),
+        "r_g10-c",
+    )
+    .await;
+    assert_eq!(
+        unreviewed.value,
+        svc::UNDECIDED_STALE,
+        "no key-only approve"
+    );
+    assert_eq!(pinned(&k, instance), None);
+
+    let approved = relayed(
+        &plane,
+        instance,
+        &k,
+        decide,
+        Some(a_full_grant()),
+        (Some("h1"), true),
+        "r_g10-approve",
+    )
+    .await;
+    assert_eq!(approved.value, svc::TRUST_DECIDED_SERVING);
+    assert_eq!(pinned(&k, instance).as_deref(), Some("h1"));
+
+    let revoked = relayed(
+        &plane,
+        instance,
+        &k,
+        decide,
+        Some(a_revoke_only_grant()),
+        (None, false),
+        "r_g10-revoke",
+    )
+    .await;
+    assert_eq!(
+        revoked.value,
+        svc::TRUST_DECIDED_PENDING,
+        "a revoke needs no reviewed digest"
+    );
+    assert!(
+        k.trust_judge(
+            instance,
+            &crate::trust::book::TrustFacts {
+                counterparty: "peer",
+                item: None,
+                digest: None,
+            },
+        )
+        .is_err(),
+        "revoked, it no longer serves"
+    );
+    plane.0.withdraw(instance);
+
+    let rows = typed_rows(instance).await;
+    let seen: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.action.as_str(),
+                row.outcome.as_str(),
+                row.principal.as_str(),
+                row.request_id.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("trust_approve", "rejected", "op", Some("r_g10-c")),
+            ("trust_approve", "applied", "op", Some("r_g10-approve")),
+            ("trust_revoke", "applied", "revoker", Some("r_g10-revoke")),
+        ],
+        "one typed row per decision attempted under a grant, each carrying its admin request's id"
+    );
+    for (row, principal) in rows.iter().zip(["op", "op", "revoker"]) {
+        let data = busbar_contract::json::parse_value(row.data.as_str().as_bytes())
+            .expect("the typed row's data is JSON");
+        assert_eq!(data["decided_by"]["kind"].as_str(), Some("instance"));
+        assert_eq!(data["decided_by"]["instance"].as_str(), Some(instance));
+        assert_eq!(data["decided_by"]["principal"].as_str(), Some(principal));
+    }
+}
+
+/// G10 (r3 §4.1, condition A-C1): a plane-relayed decision on a kernel with no bound decision
+/// record is refused as unkept, is never applied in memory only, and is audited once.
+#[tokio::test]
+async fn plane_relayed_decision_without_custody_is_never_applied_in_memory() {
+    use busbar_contract::json::JsonValueTrait as _;
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let instance = "g10-unbound";
+    let k = a_trust_kernel(instance, false).await;
+    let plane = a_relaying_plane(instance, &k);
+    let before = k.trust_rows();
+    let unkept = relayed(
+        &plane,
+        instance,
+        &k,
+        ("POST", "/g10-unbound/peer/decide"),
+        Some(a_full_grant()),
+        (Some("h1"), true),
+        "r_g10-unbound",
+    )
+    .await;
+    plane.0.withdraw(instance);
+    assert_eq!(
+        unkept.outcome,
+        AbiOutcome::Failed,
+        "the decision cannot be kept"
+    );
+    assert_eq!(k.trust_rows(), before, "nothing changed in memory");
+    let rows = typed_rows(instance).await;
+    let [row] = rows.as_slice() else {
+        panic!("one typed row: {rows:?}");
+    };
+    assert_eq!(
+        (row.action.as_str(), row.outcome.as_str()),
+        ("trust_approve", "rejected")
+    );
+    let data = busbar_contract::json::parse_value(row.data.as_str().as_bytes())
+        .expect("the typed row's data is JSON");
+    assert_eq!(data["reason"].as_str(), Some("service_unavailable"));
+}
+
+/// R8 (r3 §4.2a, condition B-C1), end to end through a plane admin route: a request the gate lent
+/// no trust authority, one whose authority does not admit `trust_approve`, and a read route under a
+/// full authority all reach the plane, and the plugin's approve through the trust-decision
+/// interface is refused every time; nothing changes and no decision is audited.
+#[tokio::test]
+async fn plane_route_without_trust_verbs_cannot_decide() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let instance = "r8-relay";
+    let k = a_trust_kernel(instance, true).await;
+    let plane = a_relaying_plane(instance, &k);
+    let before = k.trust_rows();
+    for (route, authority, why) in [
+        (
+            ("POST", "/r8-relay/peer/decide"),
+            None,
+            "no admission-grant extension reached the inner router",
+        ),
+        (
+            ("POST", "/r8-relay/peer/decide"),
+            Some(a_revoke_only_grant()),
+            "the verbs list admits the route but not trust_approve",
+        ),
+        (
+            ("GET", "/r8-relay/peer/peek"),
+            Some(a_full_grant()),
+            "a read route lends no trust authority",
+        ),
+    ] {
+        let decided = relayed(
+            &plane,
+            instance,
+            &k,
+            route,
+            authority,
+            (Some("h1"), true),
+            "r_r8",
+        )
+        .await;
+        assert_eq!(decided.outcome, AbiOutcome::Refused, "{why}");
+        assert_eq!(k.trust_rows(), before, "{why}: nothing changes");
+    }
+    plane.0.withdraw(instance);
+    assert_eq!(pinned(&k, instance), None);
+    assert!(
+        typed_rows(instance).await.is_empty(),
+        "no decision was made to audit"
+    );
 }
