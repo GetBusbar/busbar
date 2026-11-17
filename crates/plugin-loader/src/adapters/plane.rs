@@ -13,6 +13,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub mod protected_reply;
+
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
