@@ -101,19 +101,54 @@ mod final_insert_retirement_tests;
 #[path = "declared_timeout_tests.rs"]
 mod declared_timeout_tests;
 
-/// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
+/// A fixture judge admitting only the tests' exact private far ends over the normal literal guard.
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
-    let allow = ["127.0.0.1", "::1", "\x310.1.2.3"]
-        .map(str::to_owned)
-        .to_vec();
-    std::sync::Arc::new(crate::LiteralsOnly(
-        crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
-            block_private_addresses: true,
-            allow,
-            ..busbar_kernel::config::Destinations::default()
-        })
-        .expect("the loopback allowlist"),
-    ))
+    struct FixtureLiterals {
+        guard: crate::LiteralsOnly,
+        admitted: [std::net::IpAddr; 3],
+    }
+
+    impl crate::DialJudge for FixtureLiterals {
+        fn judge_dial(
+            &self,
+            dest: &str,
+            class: u32,
+            done: crate::Judged,
+        ) -> Option<Result<std::net::SocketAddr, crate::Verdict>> {
+            if let Some(addr) = crate::socket::address_of(dest) {
+                if self.admitted.contains(&addr.ip()) {
+                    return Some(Ok(addr));
+                }
+            }
+            self.guard.judge_dial(dest, class, done)
+        }
+
+        fn judge_dial_reaching(
+            &self,
+            dest: &str,
+            class: u32,
+            done: crate::Judged,
+        ) -> Option<Result<std::net::SocketAddr, crate::Verdict>> {
+            if let Some(addr) = crate::socket::address_of(dest) {
+                if self.admitted.contains(&addr.ip()) {
+                    return Some(Ok(addr));
+                }
+            }
+            self.guard.judge_dial_reaching(dest, class, done)
+        }
+    }
+
+    std::sync::Arc::new(FixtureLiterals {
+        guard: crate::LiteralsOnly(
+            crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+                block_private_addresses: true,
+                ..busbar_kernel::config::Destinations::default()
+            })
+            .expect("the fixture literal guard"),
+        ),
+        admitted: ["127.0.0.1", "::1", "\x310.1.2.3"]
+            .map(|addr| addr.parse().expect("a fixture IP literal")),
+    })
 }
 
 /// A far end on loopback: the bound listener, and the address a need dials to reach it.

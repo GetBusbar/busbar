@@ -71,7 +71,7 @@ fn named_secret_is_bound_before_the_document_reads_shorthand() {
     let bound = deploy.grammar.get().unwrap();
     assert!(bound.secret_instances.contains_key("selected"));
     assert!(!bound.secret_instances.contains_key("fixture-word"));
-    assert_eq!(bound.sugars.iter().next().unwrap().module, "selected");
+    assert_eq!(bound.sugars.iter().next().unwrap().module(), "selected");
 }
 
 #[test]
