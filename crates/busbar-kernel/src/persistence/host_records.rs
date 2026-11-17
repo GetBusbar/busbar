@@ -298,7 +298,9 @@ impl<'a> HostRecords<'a> {
 
     async fn write(&self, mutation: Mutation) -> Result<Outcome> {
         let candidate = self.candidate(vec![], vec![mutation])?;
-        outcome(self.store.submit(candidate).await?)
+        // Owned by this handle's domain (if bound) before the first crossing: a canceled plain
+        // write stays discoverable to its owner's maintenance, as a conditional one does.
+        outcome(self.store.submit_in(candidate, self.domain).await?)
     }
 
     fn candidate(

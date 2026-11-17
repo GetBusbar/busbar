@@ -38,9 +38,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS, 
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ValidateIn};
 use busbar_contract::abi::sdk::auth_outbound::{EXT_SEALED_FIELDS, SEALED_FIELDS_V1};
+use busbar_contract::json::{self, json, JsonValueTrait, Value};
 use busbar_plugin_loader::dispatch::kinds::auth::{Auth, AuthFacts};
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, Plugin};
-use serde_json::{json, Value};
 
 use crate::frames::{abi, input, json as json_blob, output};
 use crate::stats::Recorder;
@@ -95,18 +95,18 @@ fn secret(b: &[u8]) -> Blob {
 /// Open the instance (`validate`, `open`) and bind the style (`open_outbound`), as core does.
 fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     let settings: Value = match &cfg.settings {
-        Some(s) => serde_json::from_slice(s).map_err(|e| format!("auth settings: {e}"))?,
+        Some(s) => json::parse_value(s).map_err(|e| format!("auth settings: {e}"))?,
         None => default_settings(),
     };
-    let instance = serde_json::to_vec(settings.get("instance").unwrap_or(&json!({})))
-        .map_err(|e| e.to_string())?;
+    let instance =
+        json::to_vec(settings.get("instance").unwrap_or(&json!({}))).map_err(|e| e.to_string())?;
     let style = settings
         .get("style")
-        .and_then(Value::as_str)
+        .and_then(|v| v.as_str())
         .unwrap_or("bearer")
         .to_string();
-    let binding = serde_json::to_vec(settings.get("binding").unwrap_or(&json!({})))
-        .map_err(|e| e.to_string())?;
+    let binding =
+        json::to_vec(settings.get("binding").unwrap_or(&json!({}))).map_err(|e| e.to_string())?;
 
     let d = crate::dispatcher();
     let plugin = crate::load::<Auth>(target, crate::bind(&d, "bench-auth", ConnTable::NoNeeds))?;
