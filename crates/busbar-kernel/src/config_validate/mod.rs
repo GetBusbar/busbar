@@ -964,26 +964,6 @@ fn judge_with_plugins(
         }
     }
 
-    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    if cfg.endpoint_resource(endpoint_section).is_some()
-        && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
-    {
-        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
-        let key = decl.map(|d| d.key).unwrap_or("endpoint");
-        let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
-        errors.push(
-            coded::config_plane_open_to_anonymous(format!(
-            "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
-             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
-             runs with WILDCARD grants over every registered subject on that plane. It also leaves \
-             `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. \
-             Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth plugin), or \
-             remove the `{key}:` block if this deployment is not a {noun}."
-        ))
-            .into(),
-        );
-    }
-
     if let Some(auth) = &cfg.auth {
         for entry in &auth.chain {
             let name = entry.module.as_str();

@@ -1393,7 +1393,7 @@ fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
 /// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
 /// outbound styles, and the start registry the dropped-in images and auth rows are read from.
 pub(crate) struct Registered<'a> {
-    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) planes: Vec<(String, Option<String>)>,
     pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
@@ -1409,7 +1409,7 @@ fn registered() -> Option<Registered<'static>> {
                 Origin::Linked(_) => None,
                 Origin::Dropped { file, .. } => Some(file.clone()),
             };
-            (c.name.clone(), c.verbs.clone(), file)
+            (c.name.clone(), file)
         })
         .collect();
     let linked_styles = crate::LINKED
@@ -1479,13 +1479,36 @@ pub(crate) fn classify_against(
             }
         };
     let mut known = std::collections::BTreeSet::new();
-    for (name, sections, file) in &registered.planes {
+    for (name, file) in &registered.planes {
         known.insert(name.clone());
         let (image, standing) = match file {
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+        // The instance name this plane was bound under at its admission: the running registry's
+        // recorded manifest alias, else its identity (r34 section 12.23 rule 1). It is never
+        // guessed: a plane the running registry does not record is judged NotAdmitted, naming the
+        // missing field.
+        let recorded = registered.start.and_then(|start| {
+            start
+                .loadable()
+                .iter()
+                .find(|row| row.manifest.kind == "plane" && row.is_module(name))
+                .map(|row| match row.manifest.alias.as_str() {
+                    "" => name.clone(),
+                    alias => alias.to_owned(),
+                })
+        });
+        let (instance, standing) = match recorded {
+            Some(instance) => (instance, standing),
+            None => (
+                name.clone(),
+                Standing::NotAdmitted(format!(
+                    "the running registry records no instance name (manifest `alias`) for plane `{name}`"
+                )),
+            ),
+        };
+        push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1527,11 +1550,14 @@ pub(crate) fn classify_against(
                 &image,
                 &Standing::Unregistered,
             );
-        } else if let Ok(Some(candidate)) = row.candidate() {
-            let sections = candidate.verbs;
+        } else if let Ok(Some(_)) = row.candidate() {
+            let instance = match row.manifest.alias.as_str() {
+                "" => row.manifest.name.clone(),
+                alias => alias.to_owned(),
+            };
             push(
                 ItemKind::Section,
-                sections,
+                vec![instance],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,
