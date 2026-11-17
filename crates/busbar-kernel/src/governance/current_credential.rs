@@ -26,6 +26,11 @@ impl VerifiedKeyAuthority {
         self.original
     }
 
+    /// Preserve the exact identity-cache owner when joining the original request to money.
+    pub(crate) fn belongs_to(&self, governance: &GovState) -> bool {
+        Arc::ptr_eq(&self.domain, &governance.denylist)
+    }
+
     /// Read current standing without verification, refresh, replay or monetary admission.
     /// The caller supplies the audience from its actual current route, and must separately
     /// establish the original request and current target binding before using this result.
@@ -35,7 +40,7 @@ impl VerifiedKeyAuthority {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Option<Arc<VirtualKey>> {
-        if !Arc::ptr_eq(&self.domain, &current.denylist) {
+        if !self.belongs_to(current) {
             return None;
         }
         let material = current.signing_material()?;

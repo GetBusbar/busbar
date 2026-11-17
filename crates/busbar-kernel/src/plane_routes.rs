@@ -157,6 +157,8 @@ pub struct PlaneReqCtx {
 
     pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
 
+    pub signed_authority: Option<crate::auth::SignedRequestAuthority>,
+
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 
     pub caller_credential: Option<crate::auth::CallerCredential>,
