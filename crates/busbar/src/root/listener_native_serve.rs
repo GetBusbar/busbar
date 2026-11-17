@@ -23,7 +23,7 @@ pub(super) enum HeldRequest {
 }
 enum ResponseFinished {
     Delivered(super::delivery::CompletedResponse),
-    Retired(Arc<StreamOwner>),
+    InputRetired(Arc<StreamOwner>),
 }
 
 async fn retire_held(held: HeldRequest, receipt: NativeCarrierRetired) -> ResponseFinished {
@@ -35,9 +35,15 @@ async fn retire_held(held: HeldRequest, receipt: NativeCarrierRetired) -> Respon
             debug_assert!(audit.is_confirmed());
             drop(audit);
         }
-        HeldRequest::Physical(refusal) => drop(refusal),
+        HeldRequest::Physical(refusal) => {
+            // No queued audit original exists, and output retirement does not resolve the
+            // failed transfer. Keep the actual decision/owner in this supervised request.
+            // A future typed NoEffect retry must move this owner, never reconstruct a guard.
+            std::future::pending::<()>().await;
+            drop(refusal);
+        }
     }
-    ResponseFinished::Retired(receipt.owner)
+    ResponseFinished::InputRetired(receipt.owner)
 }
 
 /// Observation of this original carrier's completed driver and retired actual writer.
@@ -348,7 +354,7 @@ async fn supervise(
                         }
                         if let Err(error) = completed.result { failure.get_or_insert(error); }
                     },
-                    Some(Ok(ResponseFinished::Retired(owner))) => {
+                    Some(Ok(ResponseFinished::InputRetired(owner))) => {
                         if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
                     },
                     Some(Err(error)) => {
