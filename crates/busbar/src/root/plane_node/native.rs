@@ -5,7 +5,8 @@
 
 use std::sync::{Arc, Weak};
 
-use busbar_contract::caps::CallId;
+use busbar_contract::caps::{Abort, CallId, Outcome, ReasonCode, StepName};
+use busbar_contract::response_delivery::{DeliverySnapshot, DeliveryTerminal};
 use busbar_contract::storage::StorageCredit;
 use busbar_contract::UnitKey;
 use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
@@ -13,13 +14,19 @@ use busbar_kernel::inbound::native::StreamOwner;
 use busbar_kernel::limits::process_admission::AdmissionClass;
 use busbar_kernel::plane_driver::port::Unit;
 use busbar_kernel::plane_driver::port_billing::{NativeOrdinaryTerminalSlot, PortBilling};
-use busbar_kernel::teller::native_data_audit::NativeAuditOwner;
+use busbar_kernel::teller::native_data_audit::{NativeAuditOwner, NativeAuditTerminal};
 
 use super::{Node, NodeEndPost, RetainedState, RetainedUnit};
 use crate::root::listener_native::{InputError, NativeCarrierRetired};
 
 pub(super) struct NativeUnit {
-    owner: NativeAuditOwner,
+    // Live until the work/delivery join freezes it; then `terminal` keeps the same owner.
+    owner: Option<NativeAuditOwner>,
+    terminal: Option<NativeAuditTerminal>,
+    // Physical retirement proof: the delivered terminal snapshot, or W04's carrier receipt.
+    delivered: bool,
+    frozen: Option<crate::root::durability::FrozenNativeAudit>,
+    journal_confirmed: bool,
     stream: Arc<StreamOwner>,
     post: Arc<NodeEndPost>,
     pending: Option<Arc<NativeDataPending>>,
@@ -79,7 +86,11 @@ impl NativeNodeHandle {
 
     pub(crate) fn bind_pending(&self, pending: Arc<NativeDataPending>) -> Result<(), InputError> {
         self.with_native(|native| {
-            if native.pending.is_some() || !native.owner.invocation().same_unit(pending.context()) {
+            let owned = native
+                .owner
+                .as_ref()
+                .is_some_and(|owner| pending.owned_by(owner));
+            if native.pending.is_some() || !owned {
                 return Err(InputError::Invalid);
             }
             native.pending = Some(pending);
@@ -169,7 +180,11 @@ impl Node {
             RetainedUnit {
                 call,
                 state: RetainedState::Native(NativeUnit {
-                    owner,
+                    owner: Some(owner),
+                    terminal: None,
+                    delivered: false,
+                    frozen: None,
+                    journal_confirmed: false,
                     stream,
                     post,
                     pending: None,
@@ -191,12 +206,15 @@ impl Node {
             unreachable!()
         };
         let held = |error| (error, Some(handle.clone()));
-        native
+        let owner = native
             .owner
+            .as_mut()
+            .expect("the just-installed entry holds its live owner");
+        owner
             .enter(&self.inflight, &self.door, arrived.ms())
             .map_err(|_| held(InputError::Invalid))?;
         let unit = billing
-            .allocated_data_audited(allocation, &native.owner, classes)
+            .allocated_data_audited(allocation, owner, classes)
             .map_err(|_| held(InputError::Invalid))?;
         let principal = allocation
             .context()
@@ -211,11 +229,10 @@ impl Node {
         native.post.checkpoint_identity(
             key,
             busbar_contract::caps::OpClassId::new("data"),
-            native.owner.context().origin,
+            owner.context().origin,
         );
-        if let Some(slot) = native.owner.slot() {
-            self.ticket_custody
-                .bind_source(native.owner.context(), slot);
+        if let Some(slot) = owner.slot() {
+            self.ticket_custody.bind_source(owner.context(), slot);
         }
         Ok((handle, unit, ordinary))
     }
@@ -334,5 +351,313 @@ impl OriginalPageReceiver for Node {
             }
         }
         PageDelivery::Pending(position)
+    }
+}
+
+/// HELD (adopted ordinary receipt r2): the original per-fee Applied producer is unresolved and
+/// under separate review. No checkpoint receipt, FeeAccount completion or global zero may stand
+/// in for it, so an admitted native entry stays installed until that producer exists.
+const ORIGINAL_FEE_APPLIED_PRODUCER: bool = false;
+
+/// The adopted bound on candidates one native pulse examines, irrelevant entries included.
+pub(crate) const NATIVE_PULSE_CANDIDATES: usize = 64;
+
+impl NativeNodeHandle {
+    /// Registered output: its genuine terminal reader snapshot is the physical retirement proof.
+    /// A successfully delivered stream retires at delivery and receives no carrier notice.
+    pub(crate) fn delivered(
+        &self,
+        snapshot: &DeliverySnapshot,
+        work_ran: bool,
+        work_failed: bool,
+    ) -> Result<(), InputError> {
+        let outcome = match snapshot.terminal.as_ref().ok_or(InputError::Invalid)? {
+            DeliveryTerminal::Complete if work_ran && !work_failed => Outcome::Completed,
+            DeliveryTerminal::Complete => {
+                Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable)
+            }
+            DeliveryTerminal::Failed(_) => Outcome::Aborted(Abort::Kernel {
+                reason: ReasonCode::ClientGone,
+            }),
+        };
+        self.with_native(|native| {
+            native.freeze_terminal(outcome, snapshot.first_payload_written)?;
+            native.delivered = true;
+            Ok(())
+        })
+    }
+
+    /// Output that never registered: W04's opaque carrier receipt (`carrier_retired`) plus the
+    /// joined Task is the physical proof. No payload reached the client.
+    pub(crate) fn unregistered(&self, work_ran: bool, work_failed: bool) -> Result<(), InputError> {
+        let outcome = if work_failed || !work_ran {
+            Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable)
+        } else {
+            Outcome::Aborted(Abort::Kernel {
+                reason: ReasonCode::ClientGone,
+            })
+        };
+        self.with_native(|native| native.freeze_terminal(outcome, false))
+    }
+}
+
+impl NativeUnit {
+    /// The first terminal election freezes the original owner; later callers cannot replace it.
+    fn freeze_terminal(&mut self, outcome: Outcome, first_payload: bool) -> Result<(), InputError> {
+        if self.terminal.is_some() {
+            return Ok(());
+        }
+        let owner = self.owner.take().ok_or(InputError::Invalid)?;
+        match owner.into_terminal(outcome, first_payload) {
+            Ok(terminal) => {
+                self.terminal = Some(terminal);
+                Ok(())
+            }
+            Err((owner, _)) => {
+                self.owner = Some(owner);
+                Err(InputError::Invalid)
+            }
+        }
+    }
+
+    fn physical_retired(&self) -> bool {
+        self.delivered || self.carrier.is_some()
+    }
+
+    /// The original money owner's report, borrowed from the transferred ordinary terminal.
+    /// Lines are named by the Open's own meter classes; nothing is repriced or re-admitted.
+    fn ordinary_report(&self) -> Option<super::Report> {
+        let busbar_kernel::plane_driver::UsageView::Legacy {
+            lane,
+            attribution,
+            usage,
+        } = self.ordinary.ordinary_usage()?
+        else {
+            return None;
+        };
+        let classes = self.ordinary.ordinary_classes()?;
+        let mut usage_units = std::collections::BTreeMap::new();
+        for (class, sum) in usage.by_class() {
+            let Some(name) = classes.get(class as usize) else {
+                continue;
+            };
+            let count = sum?;
+            if count.is_zero() {
+                continue;
+            }
+            let total = usage_units
+                .entry(name.clone())
+                .or_insert(busbar_contract::Count::ZERO);
+            *total = total.checked_add(count).ok()?;
+        }
+        Some(super::Report {
+            usage: busbar_contract::billing::ExactUsage { usage_units },
+            // The native ordinary route admits with no plane fee units.
+            fee_count: 0,
+            lane,
+            attribution,
+        })
+    }
+}
+
+fn native_mut(
+    book: &mut Option<super::terminal_book::TerminalBook>,
+    class: AdmissionClass,
+    key: UnitKey,
+    call: CallId,
+) -> Option<&mut NativeUnit> {
+    let entry = book.as_mut()?.get_mut(class, key)?;
+    if entry.call != call {
+        return None;
+    }
+    match &mut entry.state {
+        RetainedState::Native(native) => Some(native),
+        _ => None,
+    }
+}
+
+impl Node {
+    /// One bounded native pulse driven by the retained process upkeep. It examines at most the
+    /// adopted 64 candidates, resuming from `cursor` across pulses; no retry queue or timer.
+    pub(crate) async fn drive_native(&self, cursor: &mut Option<u64>) -> usize {
+        let Some(durability) = self.book.get().cloned() else {
+            return 0;
+        };
+        let mut candidates = [None; NATIVE_PULSE_CANDIDATES];
+        {
+            let guard = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(book) = guard.as_ref() else {
+                return 0;
+            };
+            let upper = book.max_key();
+            for candidate in &mut candidates {
+                let Some((class, key)) = book.next(*cursor, upper) else {
+                    *cursor = None;
+                    break;
+                };
+                *cursor = Some(key.get());
+                if let Some(entry) = book.get(class, key) {
+                    if matches!(entry.state, RetainedState::Native(_)) {
+                        *candidate = Some((class, key, entry.call));
+                    }
+                }
+            }
+        }
+        let mut retired = 0;
+        for (class, key, call) in candidates.into_iter().flatten() {
+            if self.advance_native(&durability, class, key, call).await {
+                retired += 1;
+            }
+        }
+        retired
+    }
+
+    /// Advance one original entry. Every failure leaves it installed with its exact custody;
+    /// it is rejoined by class, key and original call after each unlocked step.
+    async fn advance_native(
+        &self,
+        durability: &Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+        class: AdmissionClass,
+        key: UnitKey,
+        call: CallId,
+    ) -> bool {
+        // Money transfer, frozen inputs and journal stage: synchronous, under the entry lock.
+        let unconfirmed = {
+            let mut guard = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(native) = native_mut(&mut guard, class, key, call) else {
+                return false;
+            };
+            let Some(terminal) = native.terminal.as_ref() else {
+                return false;
+            };
+            let admitted = terminal.admission().is_some();
+            if admitted {
+                // Lock order Node entry -> slot -> money -> checkpoint. Failure retains intent.
+                let _ = native.billing.drive_ordinary_terminal(&native.ordinary);
+            }
+            if native.frozen.is_none() && native.staged.is_none() {
+                let report = if admitted {
+                    let Some(report) = native.ordinary_report() else {
+                        return false;
+                    };
+                    Some(report)
+                } else {
+                    None
+                };
+                let facts = native.post.lock(key);
+                let Some(open) = facts.get(&key) else {
+                    return false;
+                };
+                match crate::root::durability::FrozenNativeAudit::prepare(
+                    (),
+                    durability,
+                    terminal.pass(),
+                    |_| self.freeze_native_inputs(terminal, open, report.as_ref()),
+                ) {
+                    Ok((frozen, ())) => native.frozen = Some(frozen),
+                    Err(refused) => {
+                        tracing::error!(unit = key.get(), why = ?refused.why,
+                            "native audit input refused; original custody retained");
+                        return false;
+                    }
+                }
+            }
+            if native.staged.is_none() {
+                let Some(frozen) = native.frozen.as_ref() else {
+                    return false;
+                };
+                if crate::root::durability::Durability::stage_native(
+                    durability,
+                    frozen,
+                    terminal.pass(),
+                    &self.durability_token,
+                    &mut native.staged,
+                )
+                .is_err()
+                {
+                    return false;
+                }
+            }
+            if native.journal_confirmed {
+                None
+            } else {
+                native.staged.clone()
+            }
+        };
+        // Drive only the retained original journal run, outside every lock.
+        if let Some(staged) = unconfirmed {
+            if staged.confirm_journal().await.is_err() {
+                return false;
+            }
+            let mut guard = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(native) = native_mut(&mut guard, class, key, call) else {
+                return false;
+            };
+            if !native
+                .staged
+                .as_ref()
+                .is_some_and(|held| held.line() == staged.line())
+            {
+                return false;
+            }
+            native.journal_confirmed = true;
+        }
+        // Every original join, then the single retirement of this exact entry.
+        let removed = {
+            let mut guard = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(native) = native_mut(&mut guard, class, key, call) else {
+                return false;
+            };
+            let Some(terminal) = native.terminal.as_ref() else {
+                return false;
+            };
+            let money = if terminal.admission().is_some() {
+                native
+                    .billing
+                    .ordinary_checkpoint_confirmed(&native.ordinary)
+                    .unwrap_or(false)
+                    && ORIGINAL_FEE_APPLIED_PRODUCER
+            } else {
+                true
+            };
+            let notary = native
+                .staged
+                .as_ref()
+                .zip(native.original_receipt.as_ref())
+                .is_some_and(|(staged, receipt)| receipt.confirms(staged));
+            if !(money && notary && native.journal_confirmed && native.physical_retired()) {
+                return false;
+            }
+            if native
+                .terminal
+                .as_mut()
+                .is_none_or(|terminal| terminal.complete(&self.gauge).is_err())
+            {
+                return false;
+            }
+            guard.as_mut().and_then(|book| book.remove(class, key))
+        };
+        // Releases happen after the book lock; the original facts retire with the entry.
+        if let Some(RetainedUnit {
+            state: RetainedState::Native(native),
+            ..
+        }) = removed
+        {
+            native.post.close(key);
+            drop(native);
+        }
+        true
     }
 }

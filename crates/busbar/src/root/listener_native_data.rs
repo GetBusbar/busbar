@@ -109,6 +109,8 @@ impl DataSettlement {
         } else {
             false
         };
+        // Never registered: W04's carrier receipt is the physical half of this terminal.
+        self.node.unregistered(self.ran, failed)?;
         let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
         if admitted.selected.is_some() {
             return Err(InputError::Invalid);
@@ -154,6 +156,8 @@ impl DataSettlement {
         }
         let mut end = end_of(u32::from(self.status), self.ran);
         end.cut = matches!(snapshot.terminal, Some(DeliveryTerminal::Failed(_)));
+        // Delivered output retired at delivery: the verified snapshot is the physical proof.
+        self.node.delivered(snapshot, self.ran, work_failed)?;
         // This first cohort uses the adopted ordinary DATA callback. Selected activation
         // requires its finite route ceiling and actual Node audit admission producer.
         if admitted.selected.is_some() {
@@ -671,6 +675,8 @@ pub(super) async fn prepare(
                 .ok()
                 .and_then(Result::ok)
                 .is_some_and(|served| matches!(served.into_parts().0, Served::Ran(_)));
+            // No response was published: freeze the original terminal for the Node join.
+            native_node.unregistered(ran, false)?;
             if let Some(admitted) = pending.admitted() {
                 // Record the original intent; the Node-owned slot transfers the exact Open.
                 ordinary
