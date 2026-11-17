@@ -204,6 +204,22 @@ config; explicit `{ env: NAME }` secret references still resolve environment val
 `RUST_LOG` and the `TOKIO_WORKER_THREADS` fallback remain available. `BUSBAR_DATA_DIR` is still
 used for registry data; it does not restore the retired journal.
 
+### A configuration with no `auth:` block
+
+1.5.5 booted a configuration with no `auth:` block (or an empty one) as an open relay: every
+caller that could reach the listener used the configured provider credentials, with only a
+banner. 1.6.0 never boots an open relay by omission: it refuses a configuration with no `auth:`
+block (BUSBAR-8014).
+
+The one-time upgrade does not write an `auth:` block for you. It reports the missing block as an
+action item (BUSBAR-8014) and the first 1.6.0 boot refuses it. Both give the same remedy: add
+`auth: { chain: [] }` explicitly to run an open relay, or configure a chain
+(`auth: { chain: [keys] }` with virtual keys minted through the admin API).
+
+`auth: { chain: [] }` is the one explicit open-relay acknowledgement. It is bannered on stderr and
+logged at ERROR at every boot, and audited as `open_relay` in the `node.boot` event. The MCP
+plane refuses to boot behind it.
+
 ### Grants and hooks
 
 The migrator adds `auth.role_bindings.<provider>."*": {}` for non-key providers in `auth.chain`

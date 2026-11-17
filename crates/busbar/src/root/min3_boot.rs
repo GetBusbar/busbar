@@ -580,10 +580,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         config,
         limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
     });
-    out.extend(plane_instances(
-        planes,
-        &super::door_steps::raw_sections(cfg),
-    )?);
+    out.extend(plane_instances(planes, &cfg.instance_sections())?);
     out.extend(hooks::configured(cfg)?);
     let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
     providers.sort_by_key(|(name, _)| *name);
