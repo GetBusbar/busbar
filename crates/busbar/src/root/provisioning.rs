@@ -130,6 +130,7 @@ pub(crate) fn mounts(
     app: &busbar_kernel::state::App,
     epoch: u64,
     body_cap: usize,
+    call_budget: std::time::Duration,
     request_ids: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<Vec<Arc<super::provisioning_mount::ProvisionMount>>, String> {
     use super::provisioning_mount::{ClientPolicy, ProvisionMount};
@@ -179,11 +180,64 @@ pub(crate) fn mounts(
             },
             credential_headers,
             body_cap,
-            timeout: std::time::Duration::from_millis(u64::from(opened.limits.timeout_ms)),
+            timeout: if opened.limits.timeout_ms == 0 {
+                call_budget
+            } else {
+                call_budget.min(std::time::Duration::from_millis(u64::from(
+                    opened.limits.timeout_ms,
+                )))
+            },
             request_ids: Arc::clone(&request_ids),
         }));
     }
     Ok(mounts)
+}
+
+/// The same exact paths and methods feed physical selection and the core router's policy table.
+pub(crate) fn route_lines(
+    mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
+) -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    use busbar_contract::abi::mechanism::route::RouteAuth;
+    mounts
+        .iter()
+        .flat_map(|mount| {
+            super::off_path::serve::METHODS
+                .into_iter()
+                .map(move |method| {
+                    (
+                        busbar_core_admin::provision::mount_path(&mount.name),
+                        method,
+                        RouteAuth::None,
+                    )
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn mount_routes(
+    mut router: busbar_kernel::core_routes::CoreRouter,
+    mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
+) -> busbar_kernel::core_routes::CoreRouter {
+    use busbar_contract::abi::mechanism::route::RouteAuth;
+    for mount in mounts {
+        for method in super::off_path::serve::METHODS {
+            let mounted = Arc::clone(mount);
+            router = router.route(
+                busbar_core_admin::provision::mount_path(&mount.name),
+                method,
+                RouteAuth::None,
+                move |request: axum::extract::Request| {
+                    let mounted = Arc::clone(&mounted);
+                    async move { mounted.handle(request).await }
+                },
+            );
+        }
+    }
+    router
 }
 
 #[cfg(test)]

@@ -2430,3 +2430,90 @@ async fn a_line_arrival_carries_its_carrier_id_in_the_typed_field() {
     let (_, line, _) = routes.arrived_on_line(0, 1, session_custody_request(&g, "/open"), session);
     assert_eq!(line.carrier, 7);
 }
+
+#[tokio::test]
+async fn nested_frame_carries_the_same_admitted_request_after_parent_retirement() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut g = governed("nested-request-lease", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let budget = ProcessAdmission::with_limits(2, 32, 8);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let mut parent_credit = request.try_reserve(1).unwrap();
+    routes.frames_lock().insert(
+        991,
+        super::DispatchFrame {
+            app: Arc::clone(&g.app),
+            request,
+        },
+    );
+    let parent = super::UnitFrame {
+        routes: &routes,
+        unit: 991,
+    };
+    let child = routes.frames_lock().get(&991).unwrap().clone();
+    assert!(Arc::ptr_eq(&child.app, &g.app));
+    assert_eq!(child.request.class(), AdmissionClass::Data);
+    let child_credit = child.request.try_reserve(1).unwrap();
+    assert!(
+        parent_credit.try_merge(child_credit).is_ok(),
+        "child credit must have the identical originating request"
+    );
+    drop(parent_credit);
+    drop(parent);
+    assert!(routes.frames_lock().is_empty());
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "child retains the single Data admission"
+    );
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    drop(operator);
+    drop(child);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[tokio::test]
+async fn cancelled_nested_frame_does_not_retire_its_retained_input_lease() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let mut g = governed("cancelled-nested-request-lease", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let budget = ProcessAdmission::with_limits(2, 32, 8);
+    routes.frames_lock().insert(
+        992,
+        super::DispatchFrame {
+            app: Arc::clone(&g.app),
+            request: budget.try_enter(AdmissionClass::Data).unwrap(),
+        },
+    );
+    let parent = super::UnitFrame {
+        routes: &routes,
+        unit: 992,
+    };
+    let child = routes.frames_lock().get(&992).unwrap().clone();
+    let retained = child.request.copy_input(b"child").unwrap().into_bytes();
+    routes.frames_lock().insert(993, child);
+    let child_routes = Arc::clone(&routes);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _child = super::UnitFrame {
+            routes: &child_routes,
+            unit: 993,
+        };
+        started.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    ready.await.unwrap();
+    drop(parent);
+    assert!(routes.frames_lock().contains_key(&993));
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(routes.frames_lock().is_empty());
+    assert_eq!(budget.used(), (5, 5));
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "retained child input still owns the admitted request"
+    );
+    drop(retained);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}

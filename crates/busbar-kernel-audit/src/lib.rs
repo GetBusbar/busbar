@@ -103,7 +103,9 @@ pub mod journal;
 pub mod link;
 // The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
 // Bootstrap signer threads, never per request.
+pub mod restart;
 pub mod stamp;
+pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkContext, WalkOutcome};
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;

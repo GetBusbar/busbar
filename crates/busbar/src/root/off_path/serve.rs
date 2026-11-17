@@ -1696,6 +1696,18 @@ pub(crate) fn data_routes_with_dispatch(
 }
 
 impl ListenerPlan {
+    fn core_lines(&self, app: &busbar_kernel::state::App) -> Vec<(String, RouteMethod, RouteAuth)> {
+        let mut lines = busbar_kernel::base_data_core_lines(app);
+        if let Some(native) = self
+            .served
+            .as_ref()
+            .and_then(|served| served.native.as_ref())
+        {
+            lines.extend(crate::root::provisioning::route_lines(&native.provisioning));
+        }
+        lines
+    }
+
     pub(crate) fn new(
         mut initial: crate::root::boot::ListenerNeeds,
         offers: Vec<TransportOffer>,
@@ -2061,7 +2073,7 @@ impl ListenerPlan {
         let mut prepared = PreparedListeners::default();
         for (at, guests) in self.lists(app)? {
             let core = if at == "listen" {
-                busbar_kernel::base_data_core_lines(app)
+                self.core_lines(app)
             } else {
                 Vec::new()
             };
@@ -2087,6 +2099,16 @@ impl ListenerPlan {
             )?
             .with_data(data)
             .with_dispatch_layer(crate::root::listener::deferred_dispatch_layer);
+            let router = if at == "listen" {
+                match served.native.as_ref() {
+                    Some(native) => router.with_core_routes(|routes| {
+                        crate::root::provisioning::mount_routes(routes, &native.provisioning)
+                    }),
+                    None => router,
+                }
+            } else {
+                router
+            };
             prepared.insert(at, Arc::new(router));
         }
 
@@ -2147,6 +2169,16 @@ impl ListenerPlan {
     }
 
     pub(crate) fn check_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        if self
+            .served
+            .as_ref()
+            .and_then(|served| served.native.as_ref())
+            .is_some_and(|native| {
+                !native.auth.is_empty() && native.config_version != app.config_version
+            })
+        {
+            return Err("identity-providers: candidate needs freshly prepared auth and route owners; restart required".into());
+        }
         for route in app.plugin_routes.descriptors() {
             if !route.dispatch_available
                 && self
@@ -2570,7 +2602,7 @@ impl ListenerPlan {
         }
         for (rung, (path, method, auth)) in (0u32..).zip(
             self.has_root_listener()
-                .then(|| busbar_kernel::base_data_core_lines(app))
+                .then(|| self.core_lines(app))
                 .into_iter()
                 .flatten(),
         ) {

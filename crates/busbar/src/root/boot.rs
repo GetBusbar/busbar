@@ -1958,6 +1958,7 @@ enum BookPhase {
     BuildDurability,
     BootPrices,
     BindKeyset,
+    SealAfterRestart,
     RestoreAmendments,
     AttachRecovery,
     Hydrate,
@@ -2155,6 +2156,48 @@ impl BookPreparation {
             .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
             (Arc::new(services), checkpoint)
         };
+        self.phase = BookPhase::SealAfterRestart;
+        {
+            let durability = self.durability.as_mut().unwrap();
+            let records = durability.take_boot_records();
+            let key_hex = durability.record.public_key_hex();
+            let key = key_hex
+                .as_deref()
+                .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
+            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
+                let sealed = super::durability::restart_seal::seal_own_node(
+                    durability, &records, &handle, &key, &host,
+                )
+                .await;
+                match sealed {
+                    super::durability::restart_seal::OwnSeal::Nothing => {
+                        tracing::debug!(node, "own-node audit tail already sealed");
+                    }
+                    super::durability::restart_seal::OwnSeal::Sealed { from, to } => {
+                        tracing::debug!(node, from, to, "own-node audit restart page committed");
+                    }
+                    super::durability::restart_seal::OwnSeal::Broken(at) => {
+                        tracing::debug!(
+                            node,
+                            last_good = at.last_good,
+                            reason = at.reason.as_str(),
+                            "own-node audit break recorded"
+                        );
+                    }
+                    super::durability::restart_seal::OwnSeal::Refused(cause) => {
+                        tracing::debug!(node, %cause, "own-node audit tail left unsealed");
+                    }
+                }
+            }
+            drop(records);
+            if let Some(key_hex) = key_hex {
+                audit.set_predecessor_inputs(super::durability::predecessor::PredecessorInputs {
+                    own: node,
+                    taken_at_ms: self.taken.as_ref().map_or(0, |taken| taken.taken_at_ms),
+                    key_hex,
+                });
+            }
+        }
         self.phase = BookPhase::RestoreAmendments;
         let durability = self.durability.as_mut().unwrap();
         durability
