@@ -521,7 +521,7 @@ impl PhysicalRequest {
     pub fn finish_input(self, body: SecureVec, credit: ByteCredit) -> Result<Self, ArrivalRefusal> {
         let binding = self.binding();
         binding.check_live()?;
-        if credit.len() != body.len() {
+        if credit.len() != body.len() || !binding.request.same_request(credit.request()) {
             return Err(ArrivalRefusal::ForeignInput);
         }
         let limit = binding.app.limits.as_ref().map_or(
@@ -531,14 +531,6 @@ impl PhysicalRequest {
         if body.len() > limit {
             return Err(ArrivalRefusal::BodyTooLarge);
         }
-        // try_merge already enforces opaque request identity, not merely budget/class.
-        // A zero credit lets that existing owner check adopt the exact supplied credit.
-        let mut own = binding
-            .request
-            .try_reserve(0)
-            .map_err(|_| ArrivalRefusal::Capacity)?;
-        own.try_merge(credit)
-            .map_err(|_| ArrivalRefusal::ForeignInput)?;
         let phase = binding
             .state
             .phase
@@ -551,7 +543,7 @@ impl PhysicalRequest {
             .body
             .set(PhysicalBody {
                 bytes: body,
-                _credit: own,
+                _credit: credit,
             })
             .map_err(|_| ArrivalRefusal::ForeignInput)?;
         // Retain the state guard through the one-time body publication. No await or callback.
