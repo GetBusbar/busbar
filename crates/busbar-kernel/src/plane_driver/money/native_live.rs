@@ -128,17 +128,23 @@ impl NativeRequestMoney {
 pub(crate) struct NativeAttempt {
     service: NativeRequestMoney,
     rate: Option<CommittedRate>,
+    answered: bool,
 }
 
 impl NativeAttempt {
     /// The actual connector returned this committed exchange's upstream response head.
     pub(crate) fn answered(&mut self) -> Result<(), NativeAttemptError> {
-        self.host_response(false)
+        let retained = self.host_response(false);
+        self.answered = true;
+        retained
     }
 
     /// The host accepted this exchange as the final response, after retry classification.
     /// Its preparation identity is carried by this guard and cannot be supplied by the plugin.
     pub(crate) fn served(&mut self) -> Result<(), NativeAttemptError> {
+        if !self.answered {
+            return Err(NativeAttemptError::Binding);
+        }
         self.host_response(true)
     }
 
@@ -194,6 +200,7 @@ impl NativeAttempt {
         Self {
             service,
             rate: Some(rate),
+            answered: false,
         }
     }
 
