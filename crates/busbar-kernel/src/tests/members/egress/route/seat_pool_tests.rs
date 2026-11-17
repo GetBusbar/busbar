@@ -7,8 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use busbar_contract::json::{json, JsonValueTrait, Value};
 use busbar_plugin_abi::host_side::caller::Accept;
-use serde_json::json;
 
 use super::*;
 use crate::plane_driver::port_egress::{
@@ -21,7 +21,7 @@ use crate::upstreams::{ConfiguredUpstreams, Upstreams};
 const PIN_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const OTHER_PIN_HEX: &str = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
 
-fn upstreams(section: serde_json::Value) -> Arc<ConfiguredUpstreams> {
+fn upstreams(section: Value) -> Arc<ConfiguredUpstreams> {
     let section = section.as_object().expect("an upstreams map").clone();
     Arc::new(
         ConfiguredUpstreams::from_config(
