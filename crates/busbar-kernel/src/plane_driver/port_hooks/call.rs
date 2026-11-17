@@ -22,6 +22,28 @@ pub(super) struct Input<'a> {
     pub context: &'a crate::host_services::InvocationContext,
 }
 
+/// Plugin rewrite bytes remain wiping-owned even when an abandoned worker or a gate drops its reply.
+pub(super) struct Reply(HookAnswer);
+impl std::ops::Deref for Reply {
+    type Target = HookAnswer;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Reply {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for Reply {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(bytes) = self.0.rewrite.as_mut() {
+            bytes.zeroize();
+        }
+    }
+}
+
 pub(super) enum Failed {
     Unconfirmed,
     Unprojected,
@@ -36,15 +58,11 @@ fn ppm(value: f64) -> u32 {
 }
 
 /// Each actual call has its own grants and confirmed content read, including fallbacks.
-pub(super) async fn one(
-    call: &Arc<Call>,
-    point: u32,
-    input: &Input<'_>,
-) -> Result<HookAnswer, Failed> {
+pub(super) async fn one(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     prepare(call, point, input).await
 }
 
-async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<HookAnswer, Failed> {
+async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     let deadline = Instant::now() + call.timeout;
     if call.port.points() & (1 << point) == 0 {
         return Err(Failed::Port);
@@ -72,7 +90,21 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Hook
     }
     // Both synchronous and I/O hooks run off the calling executor. The owned input retains
     // wiping content and its exact generation until a timed-out worker actually returns.
-    let projection = input.projection.clone();
+    let projection = Projection {
+        facts: input
+            .projection
+            .facts
+            .iter()
+            .filter(|(key, _)| identity || *key != busbar_plugin_abi::fail::fact::PJ_END_USER)
+            .cloned()
+            .collect(),
+        conversation: if content {
+            input.projection.conversation.clone()
+        } else {
+            None
+        },
+        expects: Vec::new(),
+    };
     let selected = input.selected.clone();
     let pool = input.selection.pool.to_owned();
     let container = input.selection.container.to_owned();
@@ -81,51 +113,75 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Hook
     let route = input.selection.route;
     let request_id = input.selection.request_id;
     let now_s = input.selection.now_s;
-    let identity = busbar_contract::secure::SecureVec::from(input.identity.to_vec());
+    let identity = if identity {
+        busbar_contract::secure::SecureVec::from(input.identity.to_vec())
+    } else {
+        Default::default()
+    };
     let candidates = input.candidates.to_vec();
     let quantities = input.quantities.to_vec();
     let stage = input.stage.to_vec();
     let context = input.context.clone();
     let call = Arc::clone(call);
     let handle = tokio::runtime::Handle::current();
-    let worker = tokio::task::spawn_blocking(move || {
-        let selection = Selection {
-            route,
-            pool: &pool,
-            container: &container,
-            dialect: &dialect,
-            principal: principal.as_deref(),
-            key: context.principal().map(AsRef::as_ref),
-            request_id,
-            now_s,
-        };
-        let input = Input {
-            projection: &projection,
-            selected: &selected,
-            selection: &selection,
-            identity: &identity,
-            candidates: &candidates,
-            quantities: &quantities,
-            stage: &stage,
-            context: &context,
-        };
-        handle.block_on(crate::hook_child::SCOPE.scope(
-            crate::hook_child::Scope::new(context.clone()),
-            invoke(&call, point, &input),
-        ))
-    });
+    let (sent, worker) = tokio::sync::oneshot::channel();
+    let owner = context.clone();
+    owner
+        .offload_hook(Box::new(move || {
+            let selection = Selection {
+                route,
+                pool: &pool,
+                container: &container,
+                dialect: &dialect,
+                principal: principal.as_deref(),
+                key: context.principal().map(AsRef::as_ref),
+                request_id,
+                now_s,
+            };
+            let input = Input {
+                projection: &projection,
+                selected: &selected,
+                selection: &selection,
+                identity: &identity,
+                candidates: &candidates,
+                quantities: &quantities,
+                stage: &stage,
+                context: &context,
+            };
+            let result = handle.block_on(async {
+                tokio::time::timeout_at(
+                    deadline.into(),
+                    crate::hook_child::SCOPE.scope(
+                        crate::hook_child::Scope::new(context.clone()),
+                        invoke(&call, point, &input, deadline),
+                    ),
+                )
+                .await
+                .map_err(|_| Failed::Port)?
+            });
+            let _ = sent.send(result);
+        }))
+        .map_err(|_| Failed::Port)?;
     tokio::time::timeout_at(deadline.into(), worker)
         .await
         .map_err(|_| Failed::Port)?
         .map_err(|_| Failed::Port)?
 }
 
-async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer, Failed> {
+async fn invoke(
+    call: &Call,
+    point: u32,
+    input: &Input<'_>,
+    deadline: Instant,
+) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
         input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
     let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
     let mut signals = super::view::signals(&input.projection.facts, call);
+    if !content {
+        signals.retain(|(key, _)| *key != busbar_plugin_abi::fail::fact::PJ_TEXT_COMPLETE);
+    }
     signals.push((abi::S_POOL, FactRef::Text(input.selection.pool)));
     signals.push((
         abi::S_INGRESS_PROTOCOL,
@@ -135,12 +191,22 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         signals.push((abi::S_ROUTING_POLICY, FactRef::Text(strategy)));
     }
     if identity {
+        if let Some(principal) = input.selection.principal {
+            signals.push((abi::S_USER_SUBJECT, FactRef::Text(principal)));
+        }
         if let Some(key) = &input.selected.key {
             signals.push((abi::S_KEY_ID, FactRef::Text(&key.id)));
             signals.push((abi::S_KEY_NAME, FactRef::Text(&key.name)));
         }
     }
     for (key, value) in input.stage {
+        if *key == abi::S_RESPONSE_TOKENS_OUT
+            && !call
+                .signals
+                .wants(busbar_contract::signal::Signal::ResponseTokensOut)
+        {
+            continue;
+        }
         signals.push((
             *key,
             match value {
@@ -260,15 +326,17 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         identity: identity.then_some(input.identity),
     };
     let cx = CallCx {
-        deadline: Instant::now() + call.timeout,
+        deadline,
         request_id: input.selection.request_id,
         stack: Default::default(),
     };
-    match call.port.on(cx, point, &view) {
+    let answer = match call.port.on(cx, point, &view) {
         HookCall::Done(result) => result,
         HookCall::Io(future) => future.await,
     }
-    .map_err(|_| Failed::Port)
+    .map(Reply)
+    .map_err(|_| Failed::Port);
+    answer
 }
 
 pub(super) fn record(call: &Call, answer: Option<&HookAnswer>) -> HookApplied {
@@ -291,29 +359,22 @@ pub(super) async fn chain(
     point: u32,
     input: &Input<'_>,
     ran: &mut Vec<HookApplied>,
-) -> (Arc<Call>, HookAnswer) {
+) -> Result<(Arc<Call>, Reply), Failed> {
     for attempted in std::iter::once(call).chain(call.fallbacks.iter()) {
         let answer = one(attempted, point, input).await;
-        ran.push(record(attempted, answer.as_ref().ok()));
+        ran.push(record(
+            attempted,
+            answer.as_ref().ok().map(|reply| &**reply),
+        ));
         if let Ok(answer) = answer {
-            return (Arc::clone(attempted), answer);
+            return Ok((Arc::clone(attempted), answer));
         }
-        if matches!(answer, Err(Failed::Unconfirmed | Failed::Unprojected)) {
-            return (
-                Arc::clone(attempted),
-                HookAnswer {
-                    verb: abi::VERB_REJECT,
-                    reject_status: Some(503),
-                    order: Vec::new(),
-                    restrict: Vec::new(),
-                    message: None,
-                    rewrite: None,
-                },
-            );
+        if let Err(error @ (Failed::Unconfirmed | Failed::Unprojected)) = answer {
+            return Err(error);
         }
     }
     let (verb, order) = match call.on_error {
-        crate::config::PolicyOnError::Reject => (abi::VERB_REJECT, Vec::new()),
+        crate::config::PolicyOnError::Reject => return Err(Failed::Port),
         crate::config::PolicyOnError::First if point == abi::POINT_ROUTE => (
             abi::VERB_PREFER,
             input
@@ -324,15 +385,15 @@ pub(super) async fn chain(
         ),
         _ => (abi::VERB_ABSTAIN, Vec::new()),
     };
-    (
+    Ok((
         Arc::clone(call),
-        HookAnswer {
+        Reply(HookAnswer {
             verb,
-            reject_status: Some(503),
+            reject_status: None,
             order,
             restrict: Vec::new(),
             message: None,
             rewrite: None,
-        },
-    )
+        }),
+    ))
 }

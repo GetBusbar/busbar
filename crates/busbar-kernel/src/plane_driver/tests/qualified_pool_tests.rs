@@ -34,6 +34,7 @@ struct Rig {
 
 fn rig() -> Rig {
     let limit = |amount, pool: Option<&str>| LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount,
         per: Some(LimitWindow::Total),

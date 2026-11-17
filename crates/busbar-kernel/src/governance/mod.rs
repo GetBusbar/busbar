@@ -660,6 +660,11 @@ pub struct FeeCharge {
 }
 
 impl FeeCharge {
+    /// The exact fee lane charged by the original admission; `None` is the flat base.
+    pub(crate) fn fee_lane(&self) -> Option<&str> {
+        self.lane.as_deref()
+    }
+
     pub fn raw_era(&self) -> RawRateEra {
         self.era
     }
@@ -892,6 +897,7 @@ pub mod mint_policy;
 pub mod group_provision;
 
 mod state;
+pub use state::admitted_view::{AdmissionViewUnavailable, AdmittedView};
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{

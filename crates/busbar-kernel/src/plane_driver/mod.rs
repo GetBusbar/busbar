@@ -16,6 +16,7 @@ pub mod native_hook_bindings;
 pub mod plane_judge;
 pub mod port;
 pub mod port_admin;
+pub mod port_admission;
 pub mod port_auth;
 pub mod port_billing;
 pub mod port_carrier;
@@ -34,7 +35,11 @@ pub mod port_services;
 pub mod port_session;
 pub mod port_upstream;
 pub mod port_work;
+pub mod provider_catalog;
+pub mod request_admission;
+pub(crate) use money::native_attempt::PreparedRateAttempt;
 pub(crate) use money::observation_budget_id;
+pub use money::NativeAdmissionError;
 pub(crate) mod needs;
 mod probe;
 pub mod registry;
@@ -76,8 +81,9 @@ pub use cancel::{CancelBill, Checkpoint, MoneySeam, OpenUnitEvidence};
 #[cfg(test)]
 pub(crate) use far_end::tests::lent_on_egress;
 pub use far_end::{
-    fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
-    MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    fixed_breaker, AuthBinding, BreakerSource, ConfiguredAuthBinding, Egress, EgressFarEnd,
+    MemberFacts, MemberRoute, MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute,
+    DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     dialect_at, GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys,

@@ -46,6 +46,7 @@ fn clock_at(ms: u64) -> Arc<ManualClock> {
 
 fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
         amount,
         per: Some(busbar_kernel::config::groups::LimitWindow::Day),
