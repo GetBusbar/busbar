@@ -741,7 +741,7 @@ async fn run(
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
-            &plugin_process, file_images, &base_cfg, boot_guard.clone(),
+            process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(),
         ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
@@ -752,7 +752,7 @@ async fn run(
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
-                conversion, process_io.handle(), store_admission, None,
+                conversion, store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
                 None,
                 &observation_reservation,
@@ -760,7 +760,6 @@ async fn run(
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
         }
-        let secret_resolver = bootstrap_ready.resolver(process_io.handle());
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -953,7 +952,6 @@ async fn run(
             operator_reference,
             effective_images,
             bootstrap_ready,
-            secret_resolver,
         ))
     }))
     .await;
@@ -972,7 +970,6 @@ async fn run(
         operator_reference,
         effective_images,
         bootstrap_ready,
-        secret_resolver,
     )) = bootstrap
     else {
         return;
@@ -1119,6 +1116,7 @@ async fn run(
     let max_inbound = cfg.limits.max_inbound_concurrent;
     let request_admission =
         busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1195,7 +1193,7 @@ async fn run(
     )
     .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
-        secret_resolver,
+        secret_resolver: serving_ready.resolver(),
         startup: store_admission,
         config: cfg,
         judged,
@@ -1268,6 +1266,17 @@ async fn run(
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
+    root::plane_node::node()
+        .bind_response_intents(
+            store_admission
+                .store()
+                .unwrap_or_else(|| die("response intent has no admitted Store")),
+            book.response_intents
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| die("response intent service was not constructed")),
+        )
+        .unwrap_or_else(|error| die(error));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
@@ -1344,20 +1353,20 @@ async fn run(
     let observation_reservation = export_observers
         .reserve(serving_ready.export_names())
         .unwrap_or_else(|error| die(error));
-    let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
-        serving_ready,
-        process_io.handle(),
-        store_admission,
-        services.kernel(),
-        busbar_kernel::plane_driver::port_work::governed_binder(
-            app.governance.clone(),
-            app.role_bindings.clone(),
-        ),
-        Some(root::min3_boot::ServingEnvironment::new(&app)),
-        &observation_reservation,
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+    let (store_admission, mut generation_workers, exports, native, selected_policy) =
+        root::min3_boot::finish(
+            serving_ready,
+            store_admission,
+            services.kernel(),
+            busbar_kernel::plane_driver::port_work::governed_binder(
+                app.governance.clone(),
+                app.role_bindings.clone(),
+            ),
+            Some(root::min3_boot::ServingEnvironment::new(&app)),
+            &observation_reservation,
+        )
+        .await
+        .unwrap_or_else(|error| die(error));
 
     let export_registry = export::plugin::open_prepared(
         &export_config,
@@ -1366,6 +1375,9 @@ async fn run(
     )
     .unwrap_or_else(|error| die_list("config errors", [error]));
     let mut app = Arc::unwrap_or_clone(app);
+    selected_policy
+        .install_initial(&mut app)
+        .unwrap_or_else(|error| die(error));
     app.secret_resolver = Arc::clone(&native.resolver);
     let auth_epoch = app
         .config_generation
@@ -1783,6 +1795,7 @@ async fn run(
         }
         for (limits, framer, tls, addr, router) in plugin_listeners {
             threads.push(serve_private_listener(
+                request_admission.connection_storage(AdmissionClass::Data),
                 addr,
                 limits,
                 router,
@@ -1818,6 +1831,7 @@ async fn run(
                     });
             if let Some(framer) = framer {
                 threads.extend(serve_thread_per_core(
+                    request_admission.connection_storage(AdmissionClass::Data),
                     data_workers,
                     listen.clone(),
                     bound_at("listen", &listen),
@@ -1835,6 +1849,7 @@ async fn run(
                 "admin listening through the connector"
             );
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -1853,6 +1868,7 @@ async fn run(
             if let Some(framer) = framer {
                 let resolver = tls_secret_resolver.clone();
                 let shutdown = shutdown_tx.subscribe();
+                let storage = request_admission.connection_storage(AdmissionClass::Data);
                 threads.push(spawn_multithread_data(
                     data_workers,
                     worker_shutdown_rx,
@@ -1860,6 +1876,7 @@ async fn run(
                         let data_listener =
                             root::listener::SocketAdmits::new(bind_listener(&listen).await);
                         serve_listener(
+                            storage,
                             data_listener,
                             data_router,
                             tls_cfg,
@@ -1875,6 +1892,7 @@ async fn run(
                 ));
             }
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -2117,6 +2135,7 @@ fn spawn_multithread_data(
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
+    storage: busbar_contract::storage::StorageSource,
     n: usize,
     addr: String,
 
@@ -2162,6 +2181,7 @@ fn serve_thread_per_core(
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
         let framer = framer.clone();
+        let storage = storage.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -2196,6 +2216,7 @@ fn serve_thread_per_core(
                         "data door listening through the connector"
                     );
                     serve_listener(
+                        storage,
                         listener,
                         router,
                         tls,
@@ -2223,6 +2244,7 @@ fn serve_thread_per_core(
 
 #[allow(clippy::too_many_arguments)]
 fn serve_private_listener(
+    storage: busbar_contract::storage::StorageSource,
     addr: String,
     limits: AcceptLimits,
     router: Router,
@@ -2247,6 +2269,7 @@ fn serve_private_listener(
                 let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
                     .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
                 serve_listener(
+                    storage,
                     listener,
                     router,
                     tls,
@@ -2270,6 +2293,7 @@ fn serve_private_listener(
 
 #[allow(clippy::too_many_arguments)]
 async fn serve_listener(
+    storage: busbar_contract::storage::StorageSource,
     listener: impl busbar_core_connector::listen::Admits,
     router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
@@ -2308,6 +2332,7 @@ async fn serve_listener(
     let result = match framer {
         Some(framer) => {
             root::listener::serve_admitted_framed(
+                storage,
                 listener,
                 router,
                 security,
@@ -2318,7 +2343,8 @@ async fn serve_listener(
             .await
         }
         None => {
-            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
+            root::listener::serve_admitted(storage, listener, router, security, shutdown, balancer)
+                .await
         }
     };
     if let Err(e) = result {

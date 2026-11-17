@@ -105,6 +105,7 @@ impl<'a> PreparedEstimates<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptUsage<'a> {
+    /// Target.attempt: host preparation ordinal, including unsent preparations; never dispatch count.
     pub attempt: u32,
     pub class: &'a str,
     pub amount: u64,
@@ -114,6 +115,7 @@ pub struct AttemptUsage<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttemptEnd {
+    /// The current Target.attempt preparation ordinal, not an arbitrary retained partition selector.
     pub attempt: u32,
     pub completeness: Completeness,
 }

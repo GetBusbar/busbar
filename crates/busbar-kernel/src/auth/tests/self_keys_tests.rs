@@ -64,6 +64,7 @@ fn identified(module: &str, p: Principal) -> ChainVerdict {
         module: module.to_string(),
         principal: p,
         resolved: None,
+        signed_authority: None,
     }
 }
 
@@ -696,6 +697,7 @@ fn rejects_static_key_400() {
         module: "test-idp-double".into(),
         principal: principal("sam", &["eng"]),
         resolved: Some(key),
+        signed_authority: None,
     };
     assert_eq!(
         resolve_exchange(&v, &rb, None).unwrap_err(),

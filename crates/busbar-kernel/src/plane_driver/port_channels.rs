@@ -141,20 +141,16 @@ impl PortDemuxer {
 }
 
 impl Demuxer for PortDemuxer {
-    fn demux(&self, key: &str, message: &[u8]) -> Option<Demuxed> {
-        match demux(&*self.0, key, message) {
-            Ok(found) => found,
-            Err(error) => {
-                tracing::warn!(?error, "a plane demux failed");
-                None
-            }
-        }
+    fn demux(&self, key: &str, message: &[u8]) -> Result<Option<Demuxed>, PortError> {
+        demux(&*self.0, key, message)
     }
 }
 
 /// The production [`ChannelHost`]: [`UpstreamChannels`] under the plane instance's binding. `upstream_of` names
 /// the configured upstream an exchange was sent to (the walk's choice); an exchange it does not know cannot attach.
 pub struct UpstreamHost {
+    pending: Option<Arc<super::port_admission::Pending>>,
+    budget: Option<crate::channels::budget::UnitBudget>,
     channels: Arc<dyn UpstreamChannels>,
     who: Namespace,
     upstream_of: Box<dyn Fn(u32) -> Option<Arc<UpstreamDef>> + Send + Sync>,
@@ -170,19 +166,53 @@ impl UpstreamHost {
         rt: Handle,
     ) -> Self {
         Self {
+            pending: None,
+            budget: None,
             channels,
             who,
             upstream_of,
             rt,
         }
     }
+    pub fn with_budget(mut self, budget: Option<crate::channels::budget::UnitBudget>) -> Self {
+        self.budget = budget;
+        self
+    }
+    pub fn with_admission(mut self, pending: Option<Arc<super::port_admission::Pending>>) -> Self {
+        self.pending = pending;
+        self
+    }
+
+    pub(crate) fn command(
+        &self,
+    ) -> Result<Option<crate::channels::authority::ChannelAuthority>, RecordsDenied> {
+        let Some(admitted) = self.pending.as_ref().and_then(|pending| pending.admitted()) else {
+            return Ok(None);
+        };
+        if admitted.request.registered_command().is_none() {
+            return Ok(None);
+        }
+        crate::channels::authority::ChannelAuthority::new(admitted.request.clone()).map(Some)
+    }
 }
 
 impl ChannelHost for UpstreamHost {
     fn attach(&self, attach: &ChannelAttach<'_>) -> Result<Attached, RecordsDenied> {
-        let upstream = (self.upstream_of)(attach.exchange).ok_or(RecordsDenied::Invalid)?;
+        let command = self.command()?;
+        let upstream = if command.is_some() {
+            self.pending
+                .as_ref()
+                .and_then(|pending| pending.admitted())
+                .and_then(|admitted| admitted.request.registered_command())
+                .cloned()
+        } else {
+            (self.upstream_of)(attach.exchange)
+        }
+        .ok_or(RecordsDenied::Invalid)?;
         let who = self.who.caller();
         let req = ChannelReq {
+            command: command.as_ref(),
+            budget: self.budget.as_ref().ok_or(RecordsDenied::Invalid)?,
             exchange: attach.exchange,
             carrier: attach.carrier,
             flags: attach.flags,

@@ -1441,7 +1441,7 @@ impl DataRoutes {
                 let runtime =
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
-                    busbar_kernel::host_services::ServingGeneration::new(
+                    busbar_kernel::host_services::ServingGeneration::try_new(
                         kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
@@ -1449,7 +1449,8 @@ impl DataRoutes {
                             runtime,
                             detached: busbar_kernel::detached::worker_detached(),
                         }),
-                    ),
+                    )
+                    .map_err(|_| "native routing generation counter exhausted".to_owned())?,
                 ))
             }
             None => None,
@@ -1460,18 +1461,21 @@ impl DataRoutes {
         }))
     }
 
-    /// Register the actual billed native unit against this selected immutable dispatch snapshot.
-    /// The exact driver Caller and checked unit record jointly create execution authority.
+    /// Register the allocated native unit against this selected immutable dispatch snapshot.
+    /// Monetary/effect authority remains pending until the retained task resolves its actual pool.
     pub(crate) fn native_unit(
         self: &Arc<Self>,
         seat: &busbar_kernel::plane_driver::port::PortSeat,
-        unit: &busbar_kernel::plane_driver::port::Unit,
+        unit: &mut busbar_kernel::plane_driver::port::Unit,
         ctx: &PlaneReqCtx,
     ) -> Result<NativeUnit, &'static str> {
         let generation = self
             .generation
             .as_ref()
             .ok_or("native route has no complete generation")?;
+        unit.ctx.generation = generation
+            .routing_generation()
+            .ok_or("native route has no allocated routing generation")?;
         let app = Arc::clone(&ctx.engine)
             .downcast::<busbar_kernel::state::App>()
             .map_err(|_| "native invocation needs its selected App snapshot")?;
@@ -1487,14 +1491,30 @@ impl DataRoutes {
         if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
             return Err("native unit is already registered");
         }
-        generation.core().units().admitted_for(
-            id,
-            seat.driver.caller(),
-            busbar_kernel::host_units::UnitRecord {
-                principal: Some(key),
-                depth: 0,
-            },
-        );
+        let registered = match &ctx.signed_authority {
+            Some(authority) => {
+                if !Arc::ptr_eq(&key, authority.original_key()) {
+                    return Err("native signed allocation has a different original key");
+                }
+                generation.core().units().pre_admitted_signed_for(
+                    id,
+                    seat.driver.caller(),
+                    authority.clone(),
+                    0,
+                )
+            }
+            None => generation.core().units().pre_admitted_for(
+                id,
+                seat.driver.caller(),
+                busbar_kernel::host_units::UnitRecord {
+                    principal: Some(key),
+                    depth: 0,
+                },
+            ),
+        };
+        if !registered {
+            return Err("native allocation could not be registered");
+        }
         let context = match seat.driver.invocation(Arc::clone(generation), id) {
             Ok(context) => context,
             Err(why) => {
@@ -1573,7 +1593,7 @@ pub(crate) struct NativeUnit {
 impl Drop for NativeUnit {
     fn drop(&mut self) {
         let id = self.context.unit();
-        self.context.generation().core().units().ended(id);
+        self.context.retire();
         self.routes.frames_lock().remove(&id);
     }
 }
@@ -2764,7 +2784,19 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     // The meter gate's fold, carried (SP-M1): re-folded only when the counts moved since.
-    let (lane, attribution, fold) = money.attributed_usage(unit)?;
+    let view = money.usage_view(unit)?;
+    let (lane, attribution, fold) = match view.as_ref() {
+        busbar_kernel::plane_driver::UsageView::Legacy {
+            lane,
+            attribution,
+            usage,
+        } => (lane.clone(), attribution.clone(), usage.clone()),
+        busbar_kernel::plane_driver::UsageView::Partitioned(snapshot) => {
+            return Some(crate::root::linked::node::Reported::Partitioned(
+                snapshot.clone(),
+            ))
+        }
+    };
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for (class, sum) in fold.by_class() {
@@ -2787,12 +2819,12 @@ pub(crate) fn report_of(
             *n = n.checked_add(count).ok()?;
         }
     }
-    Some((
+    Some(crate::root::linked::node::Reported::Legacy((
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
         lane,
         attribution,
-    ))
+    )))
 }
 
 pub(crate) struct DoorFar<'d, 's> {

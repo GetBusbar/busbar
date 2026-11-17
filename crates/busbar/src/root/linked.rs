@@ -81,7 +81,24 @@ pub mod node {
 
     /// What a unit consumed: its usage, its fee count, its serving lane and its sealed
     /// attribution (`group`, `pool`, `provider`; ADMIN-API-1.6 §3.2).
-    pub type Reported = (busbar_contract::billing::ExactUsage, u32, String, String);
+    pub type LegacyReport = (busbar_contract::billing::ExactUsage, u32, String, String);
+
+    pub enum Reported {
+        Legacy(LegacyReport),
+        /// A factual preview; it is never substituted for terminal custody.
+        Partitioned(Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>),
+        /// The original response owner's single final-reader lease.
+        Selected(busbar_kernel::plane_driver::SelectedTerminalReceipt),
+    }
+
+    impl Reported {
+        pub(crate) fn legacy(self) -> Option<LegacyReport> {
+            match self {
+                Self::Legacy(report) => Some(report),
+                Self::Partitioned(_) | Self::Selected(_) => None,
+            }
+        }
+    }
 
     pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
 
