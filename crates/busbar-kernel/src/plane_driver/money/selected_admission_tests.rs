@@ -131,6 +131,19 @@ async fn selected_fixture(
     NativeInvocationAdmission,
     CommittingRequest,
 ) {
+    selected_fixture_with_post(unit, Arc::new(CapturedPost(audit))).await
+}
+
+async fn selected_fixture_with_post(
+    unit: u64,
+    post: Arc<dyn EndPost>,
+) -> (
+    Arc<PlaneMoney>,
+    Arc<GovState>,
+    InvocationContext,
+    NativeInvocationAdmission,
+    CommittingRequest,
+) {
     let key = Arc::new(VirtualKey {
         id: "selected-payer".into(),
         enabled: true,
@@ -158,8 +171,41 @@ async fn selected_fixture(
             .await
             .unwrap(),
     );
-    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(CapturedPost(audit))));
+    let money = Arc::new(PlaneMoney::new(gov.clone(), post));
     (money, gov, context, lease, request)
+}
+
+#[tokio::test]
+async fn selected_startup_terminal_captures_latest_original_audit_facts() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    struct UpdatedPost(Arc<AtomicU8>);
+    impl EndPost for UpdatedPost {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+        fn checkpoint_facts(&self, _: UnitKey) -> Option<Vec<u8>> {
+            Some(vec![self.0.load(Ordering::Acquire)])
+        }
+    }
+    let facts = Arc::new(AtomicU8::new(1));
+    let (money, _, context, _lease, request) =
+        selected_fixture_with_post(103, Arc::new(UpdatedPost(facts.clone()))).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let rollback = money.admission_rollback(selected.request()).unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    facts.store(2, Ordering::Release);
+    drop(rollback);
+    let snapshot = terminal.wait().await.unwrap();
+    assert_eq!(snapshot.audit, Some(vec![2]));
+    assert!(snapshot.ended);
+    assert_eq!(money.open_units(), 0);
 }
 
 #[tokio::test]

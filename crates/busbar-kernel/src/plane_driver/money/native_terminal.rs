@@ -175,6 +175,11 @@ impl NativeRequestMoney {
             let (disposition, written, cut) = delivery_facts(ending, observed)?;
             end.cut |= cut;
             let mut snapshot = native.checkpoint().as_ref().clone();
+            self.capture_checkpoint_facts(&mut snapshot)
+                .map_err(|error| match error {
+                    NativeAttemptError::Custody(error) => NativeAdmissionError::Custody(error),
+                    _ => NativeAdmissionError::NotLive,
+                })?;
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
@@ -381,6 +386,11 @@ impl PlaneMoney {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
+            snapshot.audit = Some(self.post.checkpoint_facts(request.unit()).ok_or_else(|| {
+                NativeAttemptError::Custody(RecordStoreError(
+                    "selected request lost its original audit capture owner".into(),
+                ))
+            })?);
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
