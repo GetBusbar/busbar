@@ -1904,6 +1904,14 @@ async fn real_admin_dispatch() -> RouterDispatch {
         .expect("governance"),
     );
     crate::dist_root_install::install();
+    // The linked operator credential is bound and opened by the app build from its settings: the
+    // SHA-256 digest of the governance admin token.
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let operator = busbar_kernel::config::operator_provider();
+    let digest = gov
+        .admin_token_hash()
+        .expect("the governance state holds the admin token digest");
     let library_path = crate::root::test_plugins::application_store_library();
     let module = crate::root::test_plugins::native_image(&library_path).name;
     let manifest = crate::root::test_plugins::native_manifest(
@@ -1930,7 +1938,10 @@ async fn real_admin_dispatch() -> RouterDispatch {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "identity-providers": {
+                (operator): {"module": operator, "settings": {"sha256": digest}},
+            },
+            "auth": {"chain": [], "admin_auth": [operator]},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1978,18 +1989,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let digest = gov.admin_token_hash();
     built.governance = Some(gov);
-    built.admin_chain = vec![busbar_kernel::config::operator_provider().to_string()];
-    let operator = busbar_kernel::auth::open_operator(
-        &built.hook_env.registry,
-        digest,
-        &built.identity_providers,
-    )
-    .expect("the actual operator auth plugin opens with the configured digest");
-    std::sync::Arc::get_mut(&mut built.admin_modules)
-        .expect("the newly built admin chain has one owner")
-        .operator = operator;
     let app = std::sync::Arc::new(built);
     RouterDispatch::new(
         busbar_kernel::build_router(app),
