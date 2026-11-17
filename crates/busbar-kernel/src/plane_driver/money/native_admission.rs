@@ -141,6 +141,9 @@ impl PlaneMoney {
             return Err(NativeAdmissionError::NotLive);
         }
         let selected = if let Some(native) = &open.native {
+            if native.work.is_some() {
+                return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
             let parts = native
                 .checkpoint()
                 .partitions

@@ -112,6 +112,47 @@ impl Drop for SelectedTerminalReceipt {
 }
 
 impl NativeRequestMoney {
+    pub(crate) fn work_ended(
+        &self,
+        ending: crate::plane_driver::usage::Ending,
+    ) -> Result<(), NativeAttemptError> {
+        use crate::plane_driver::usage::Ending;
+        let mut all = self.money.shard(self.request.unit());
+        let open = all
+            .get_mut(&self.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.check_open_identity(open)?;
+        let native = open
+            .native
+            .as_mut()
+            .ok_or(NativeAttemptError::Unavailable)?;
+        match native.work {
+            Some(Ending::End) => Ok(()),
+            Some(previous) if previous == ending => Ok(()),
+            Some(_) => Err(NativeAttemptError::Binding),
+            None => {
+                native.work = Some(ending);
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn work_ending(
+        &self,
+    ) -> Result<Option<crate::plane_driver::usage::Ending>, NativeAttemptError> {
+        let all = self.money.shard(self.request.unit());
+        let open = all
+            .get(&self.request.unit())
+            .ok_or(NativeAttemptError::Unavailable)?;
+        self.check_open_identity(open)?;
+        Ok(open
+            .native
+            .as_ref()
+            .ok_or(NativeAttemptError::Unavailable)?
+            .work)
+    }
+
     pub fn terminal_receipt(&self) -> Result<SelectedTerminalReceipt, NativeAdmissionError> {
         self.terminal
             .claimed
@@ -150,7 +191,10 @@ impl PlaneMoney {
                 .native
                 .as_ref()
                 .ok_or(NativeAttemptError::Unavailable)?;
-            if !Arc::ptr_eq(&native.terminal, slot) || native.checkpoint().id != slot.id {
+            if native.work.is_some()
+                || !Arc::ptr_eq(&native.terminal, slot)
+                || native.checkpoint().id != slot.id
+            {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
