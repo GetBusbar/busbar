@@ -1,7 +1,0 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright (C) 2026 Busbar Inc and contributors
-
-#[path = "secret_door_plugin.rs"]
-pub mod secret_door_plugin;
-
-busbar_contract::export_door!(secret_door_plugin::broken::door);

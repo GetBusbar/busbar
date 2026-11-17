@@ -45,10 +45,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "builds the plugin's HostConns view from the host's raw slot table and context (HostConns::new is unsafe): needs a safe host-side HostConns row (not built)",
     ),
     ("crates/busbar-core-connector/src/tests/pool_prepared_seal_tests.rs", DOOR_DOUBLE),
-    (
-        "crates/busbar-core-connector/src/tests/refresh_binding_tests.rs",
-        "drives an SDK secret door's REFRESH and CLOSE through dispatch::Frame and reads plugin.instance() to look up the connector's binding: needs Opened::refresh and an Opened::instance_id row (not built)",
-    ),
 ];
 
 fn repository() -> std::path::PathBuf {

@@ -304,8 +304,15 @@ impl Shared {
         // The candidate is this call's own: its parts move into the store's request, uncopied.
         let mut request = request;
         let owned: &mut Request = Arc::make_mut(&mut request);
+        // The receipt identity is a held class-M op minted here (DES-264): the pending entry
+        // keeps it with the request until the definitive decision drops both.
+        let op = self
+            .store
+            .record_op()
+            .await
+            .map_err(|e| failed("conditional record identity", e))?;
         let request = scoped::Request {
-            op_id: owned.op_id.0,
+            op,
             predicates: owned
                 .predicates
                 .drain(..)

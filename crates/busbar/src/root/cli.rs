@@ -23,6 +23,9 @@ const OPTION_CONFIG: &str = "--config";
 const OPTION_CONFIG_SHORT: &str = "-c";
 const OPTION_PROVIDERS: &str = "--providers";
 const OPTION_STDIO: &str = "--stdio";
+/// `--store-kit` (DES-STOREKIT r2): the harness build's store-kit runner; absent from a shipped build.
+#[cfg(feature = "test-harness")]
+const OPTION_STORE_KIT: &str = "--store-kit";
 const PATH_VALUES: &str = "configuration path flags require explicit values";
 
 const HELP_HEAD: &str = "
@@ -349,6 +352,8 @@ fn ordinary_cli_flags_of(argv: &Argv) -> Option<i32> {
         }
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
         Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
+        #[cfg(feature = "test-harness")]
+        Some(OPTION_STORE_KIT) => Some(super::store_kit_run::command(&argv.words[1..])),
         Some(other) => {
             eprintln!(
                 "[error] {}",
@@ -465,9 +470,7 @@ pub(crate) fn validate_judged(
             .map(|_| ())
             .map_err(|errors| errors.join("\n  - "))
     };
-    // The dropped-in secret modules start judged, checked through a read-scoped view: none of them
-    // is admitted onto the live axis (SECRET-SHORTHAND-BOOT §3.6, B4).
-    let view = crate::root::boot::start_secret_view();
+    // The native secret images the start stage prepared (WP3 step 2): one source for every reader.
     let registry = config_validate::check(
         &cfg,
         config_validate::Check {
@@ -476,7 +479,7 @@ pub(crate) fn validate_judged(
             root: &destination_guard,
             fetch: None,
             resolve_builtins: true,
-            secret_axis: Some(&view),
+            secret_axis: Some(&crate::root::native_secrets::NATIVE),
         },
     )
     .map_err(ValidateRefusal::Check)?;

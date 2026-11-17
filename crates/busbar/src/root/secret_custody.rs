@@ -124,6 +124,8 @@ impl BootSecrets {
         runtime: tokio::runtime::Handle,
         sugars: busbar_contract::secret_ref::Sugars,
     ) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        // The kernel's secret axis resolves through the same prefix (WP3 step 2): the latest resolver's.
+        super::native_secrets::NATIVE.publish_opened(self, runtime.clone());
         let prefix = Arc::clone(self);
         let resolver = busbar_kernel::config::secret::SecretResolver::with_scoped_plugin(Box::new(
             move |module, settings, _scope| {
@@ -131,25 +133,39 @@ impl BootSecrets {
                     module: module.to_owned(),
                     settings: settings.clone(),
                 });
-                let (send, receive) = std::sync::mpsc::sync_channel(1);
-                let deadline = Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE;
-                let prefix = Arc::clone(&prefix);
-                let task = runtime.spawn(async move {
-                    let result = prefix.resolve_ref(deadline, &reference).await;
-                    let _ = send.send(result);
-                });
-                let result = receive.recv_timeout(super::min3_boot::CORE_SECRET_DEADLINE);
-                task.abort();
-                match result {
-                    Ok(Ok(value)) => Ok(busbar_contract::redacted::Secret::new(value.into_vec())),
-                    _ => Err(busbar_kernel::config::secret::SecretRefused {
-                        error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
-                        text: "the configured secret source did not resolve".to_owned(),
-                    }),
-                }
+                prefix.resolve_blocking(&runtime, reference)
             },
         ));
         Arc::new(resolver.with_sources(sugars))
+    }
+
+    /// One reference, resolved for a synchronous reader: dispatched onto `runtime` (the owned I/O executor, which
+    /// progresses even when the reader runs on a current-thread runtime) and awaited up to the core secret
+    /// deadline. A refusal names no source and carries no value.
+    pub(crate) fn resolve_blocking(
+        self: &Arc<Self>,
+        runtime: &tokio::runtime::Handle,
+        reference: SecretRef,
+    ) -> Result<
+        busbar_contract::redacted::Secret<Vec<u8>>,
+        busbar_kernel::config::secret::SecretRefused,
+    > {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let deadline = Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE;
+        let prefix = Arc::clone(self);
+        let task = runtime.spawn(async move {
+            let result = prefix.resolve_ref(deadline, &reference).await;
+            let _ = send.send(result);
+        });
+        let result = receive.recv_timeout(super::min3_boot::CORE_SECRET_DEADLINE);
+        task.abort();
+        match result {
+            Ok(Ok(value)) => Ok(busbar_contract::redacted::Secret::new(value.into_vec())),
+            _ => Err(busbar_kernel::config::secret::SecretRefused {
+                error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                text: "the configured secret source did not resolve".to_owned(),
+            }),
+        }
     }
 
     /// The complete empty prefix exists before the first secret open; it refuses forward references.

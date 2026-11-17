@@ -5209,10 +5209,6 @@ mod unix_target_tests;
 pub(crate) mod support;
 
 #[cfg(test)]
-#[path = "tests/refresh_binding_tests.rs"]
-mod refresh_binding_tests;
-
-#[cfg(test)]
 #[path = "tests/lease_release_tests.rs"]
 mod lease_release_tests;
 

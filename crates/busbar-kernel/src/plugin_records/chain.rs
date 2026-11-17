@@ -121,7 +121,7 @@ impl StoreRecords {
             );
             let body = host_chains::encode(&record).ok_or(RecordsDenied::TooLarge)?;
             let request = Request {
-                op_id: self.operation()?,
+                op: self.operation().await?,
                 predicates: vec![Predicate {
                     schema: CHAINS.to_string(),
                     key: head.clone(),

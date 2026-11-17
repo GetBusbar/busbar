@@ -345,25 +345,7 @@ fn registry_with_floor(
         remember_native_images(&registry, plugins);
     }
 
-    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
-}
-
-pub(crate) fn admit_secrets<'a>(
-    rows: &'a Arc<dyn PluginRows>,
-    plugins: &'a PluginsCfg,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-    Box::pin(async move {
-        hold_plugin_floor(rows.as_ref(), plugins).await?;
-        match super::loader::rows::registry_arc(Arc::clone(rows)) {
-            Some(registry) => admit_dropped_secrets(&registry),
-            None => Ok(()),
-        }
-    })
-}
-
-pub(crate) fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
-    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 pub(crate) fn registry_rows(
@@ -583,7 +565,7 @@ fn listener_candidates_from(
             .transpose()?
             .unwrap_or_default(),
     );
-    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+    for door in linked.plane_doors {
         let candidate = Candidate::linked(*door)?;
         if !candidates
             .iter()
@@ -1138,7 +1120,6 @@ pub(crate) struct StartScan {
 /// One scan of `plugins.dir` and the secret modules it admits, judged with the linked rows.
 pub(crate) struct Judged {
     registry: PluginRegistry,
-    secrets: Vec<Candidate>,
     sugars: busbar_contract::secret_ref::Sugars,
 }
 
@@ -1171,20 +1152,16 @@ pub(crate) fn install_start(
         let _ = START_REFUSAL.set(refusal);
         None
     });
-    let (registry, secrets, sugars) = match judged {
-        Some(Judged {
-            registry,
-            secrets,
-            sugars,
-        }) => {
+    let (registry, sugars) = match judged {
+        Some(Judged { registry, sugars }) => {
             let _ = START_SKIPS.set(skip_lines(registry.skipped()));
             if let Some(plugins) = plugins {
                 remember_native_images(&registry, &plugins);
                 let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
             }
-            (Some(registry), secrets, Some(sugars))
+            (Some(registry), Some(sugars))
         }
-        None => (None, Vec::new(), None),
+        None => (None, None),
     };
     let grammar = match (START_REFUSAL.get(), sugars) {
         (Some(refusal), _) => Err(busbar_kernel::config::GrammarRefusal(refusal.clone())),
@@ -1195,7 +1172,7 @@ pub(crate) fn install_start(
         )),
         (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
     };
-    let _ = START_JUDGED.set(StartJudged { secrets, grammar });
+    let _ = START_JUDGED.set(StartJudged { grammar });
     if registry.is_none() && rows.is_empty() {
         return None;
     }
@@ -1233,7 +1210,6 @@ pub(crate) fn bind_start_grammar() {
 /// What start judged: the secret modules its scan found (for `--validate`'s read-scoped view) and
 /// the grammar stage 3 publishes.
 struct StartJudged {
-    secrets: Vec<Candidate>,
     grammar: Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal>,
 }
 
@@ -1253,18 +1229,6 @@ pub(crate) fn start_grammar() -> Result<&'static busbar_kernel::config::Grammar,
     }
 }
 
-/// `--validate`'s read-scoped secret axis: the linked rows plus the secret modules start judged,
-/// none of them admitted. Each module's checker runs as it did when start admitted them; the live
-/// axis is untouched, and the view's checkers are dropped with it.
-pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretView<'static> {
-    super::linked::secret_rows().view(
-        START_JUDGED
-            .get()
-            .map(|judged| judged.secrets.clone())
-            .unwrap_or_default(),
-    )
-}
-
 /// Phase 1 for one read ([`busbar_kernel::config::grammar::grammar_for`], installed as
 /// `RootInstall.grammar`): the registry build's own scan and judgement of the read's directory
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
@@ -1280,13 +1244,9 @@ pub(crate) fn phase_one(
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
 fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
     let registry = scanned_registry(linked, plugins)?;
-    let secrets = discovered(&registry, |kind| kind == "secret")?;
-    let sugars = super::linked::secret_rows().grammar_of(secrets.clone())?;
-    Ok(Judged {
-        registry,
-        secrets,
-        sugars,
-    })
+    // WP3 step 2: the secret words are the native images' (published by the start-stage images prepare).
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
+    Ok(Judged { registry, sugars })
 }
 
 /// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
@@ -1325,7 +1285,7 @@ pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.
 fn linked_grammar() -> Result<busbar_kernel::config::Grammar, String> {
-    let sugars = super::linked::secret_rows().grammar_of(std::iter::empty())?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(busbar_kernel::config::Grammar::new(
         sugars,
         std::collections::BTreeMap::new(),
@@ -1393,7 +1353,7 @@ fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
 /// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
 /// outbound styles, and the start registry the dropped-in images and auth rows are read from.
 pub(crate) struct Registered<'a> {
-    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) planes: Vec<(String, Option<String>)>,
     pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
@@ -1409,7 +1369,7 @@ fn registered() -> Option<Registered<'static>> {
                 Origin::Linked(_) => None,
                 Origin::Dropped { file, .. } => Some(file.clone()),
             };
-            (c.name.clone(), c.verbs.clone(), file)
+            (c.name.clone(), file)
         })
         .collect();
     let linked_styles = crate::LINKED
@@ -1479,13 +1439,36 @@ pub(crate) fn classify_against(
             }
         };
     let mut known = std::collections::BTreeSet::new();
-    for (name, sections, file) in &registered.planes {
+    for (name, file) in &registered.planes {
         known.insert(name.clone());
         let (image, standing) = match file {
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+        // The instance name this plane was bound under at its admission: the running registry's
+        // recorded manifest alias, else its identity (r34 section 12.23 rule 1). It is never
+        // guessed: a plane the running registry does not record is judged NotAdmitted, naming the
+        // missing field.
+        let recorded = registered.start.and_then(|start| {
+            start
+                .loadable()
+                .iter()
+                .find(|row| row.manifest.kind == "plane" && row.is_module(name))
+                .map(|row| match row.manifest.alias.as_str() {
+                    "" => name.clone(),
+                    alias => alias.to_owned(),
+                })
+        });
+        let (instance, standing) = match recorded {
+            Some(instance) => (instance, standing),
+            None => (
+                name.clone(),
+                Standing::NotAdmitted(format!(
+                    "the running registry records no instance name (manifest `alias`) for plane `{name}`"
+                )),
+            ),
+        };
+        push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1527,11 +1510,14 @@ pub(crate) fn classify_against(
                 &image,
                 &Standing::Unregistered,
             );
-        } else if let Ok(Some(candidate)) = row.candidate() {
-            let sections = candidate.verbs;
+        } else if let Ok(Some(_)) = row.candidate() {
+            let instance = match row.manifest.alias.as_str() {
+                "" => row.manifest.name.clone(),
+                alias => alias.to_owned(),
+            };
             push(
                 ItemKind::Section,
-                sections,
+                vec![instance],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,
@@ -1551,10 +1537,7 @@ pub(crate) fn admitted_grammar(
     let Some(registry) = super::loader::rows::registry_of(rows) else {
         return Ok(None);
     };
-    let secrets = discovered(registry, |kind| kind == "secret").map_err(refused)?;
-    let sugars = super::linked::secret_rows()
-        .grammar_of(secrets)
-        .map_err(refused)?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(Some(
         busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
             .with_items(classify(registry, None)),
@@ -2119,8 +2102,16 @@ impl BookPreparation {
             node,
             deployment_id,
         );
-        // ADMIN-API-1.6 17: the node announces itself in the audit feed.
-        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(&[]));
+        // ADMIN-API-1.6 17: the node announces itself in the audit feed, naming the explicit open
+        // posture (`auth: { chain: [] }`) it booted in (#358).
+        let posture: &[&str] = if app.auth.is_open() {
+            &["open_relay"]
+        } else {
+            &[]
+        };
+        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(
+            posture,
+        ));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
         if let Some(live) = busbar_kernel::persistence::boot_identity::live() {

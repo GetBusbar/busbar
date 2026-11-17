@@ -18,6 +18,8 @@ pub(super) struct Entry {
     pub token: Arc<()>,
     pub pending: Option<PendingId>,
     pub domain: Option<Arc<()>>,
+    /// The receipt identity's generation hold, dropped when this entry pops (DES-264).
+    pub _hold: Option<crate::persistence::record_ops::HeldOp>,
 }
 
 pub(crate) enum LogicalClaim<'a> {
@@ -49,6 +51,18 @@ impl CoreStore {
         id: LogicalId,
         digest: [u8; 32],
         domain: Option<&DomainCall>,
+    ) -> Result<LogicalClaim<'_>, AccessError> {
+        self.claim_logical_held(id, digest, domain, None)
+    }
+
+    /// [`CoreStore::claim_logical_owned`] whose new entry holds `hold` until it pops: the
+    /// logical entry and its retained attempt keep the receipt's generation from draining.
+    pub(crate) fn claim_logical_held(
+        &self,
+        id: LogicalId,
+        digest: [u8; 32],
+        domain: Option<&DomainCall>,
+        hold: Option<crate::persistence::record_ops::HeldOp>,
     ) -> Result<LogicalClaim<'_>, AccessError> {
         if domain.is_some_and(|call| !call.belongs_to(self)) {
             return Err(AccessError::Authority);
@@ -102,6 +116,7 @@ impl CoreStore {
                 token: token.clone(),
                 pending: None,
                 domain: domain.map(|call| call.owner.id.clone()),
+                _hold: hold,
             },
         );
         Ok(LogicalClaim::Prepare(LogicalPermit {

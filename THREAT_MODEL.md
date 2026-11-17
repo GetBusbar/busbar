@@ -123,10 +123,15 @@ signature (`busbar-auth-sigv4` plugin; `crates/busbar/src/root/credentials.rs`).
 reason-agnostic: missing, wrong and disabled credentials get the same answer
 (`crates/busbar-kernel/src/auth/mod.rs`, `unauthorized_response`).
 
-**Limit:** a config with no `auth:` block, like an explicitly empty chain, runs an open relay for
-the LLM plane and for claims a plane marks open (for example A2A discovery). It is bannered on
-stderr and logged at ERROR at every boot (`crates/busbar-kernel/src/appbuild.rs`). The MCP plane
-refuses to boot behind an empty chain (`crates/busbar/tests/mcp_open_front_door.rs`).
+**Limit:** a config with no `auth:` block is refused at validation (BUSBAR-8014,
+`crates/busbar-kernel/src/config_validate/mod.rs`). Only an explicitly empty chain
+(`auth: { chain: [] }`, the operator's open-relay acknowledgement) runs an open relay for the LLM
+plane and for claims a plane marks open (for example A2A discovery). Nothing writes that block
+for the operator: the one-time 1.5.5 upgrade reports a missing `auth:` block as an action item
+with the refusal's remedy and writes nothing (`crates/busbar-migrate/src/migrate_1_6.rs`). It is
+bannered on stderr, logged at ERROR at every boot (`crates/busbar-kernel/src/appbuild.rs`) and
+named as `open_relay` in the `node.boot` audit event. The MCP plane refuses to boot behind an
+empty chain (`crates/busbar/tests/mcp_open_front_door.rs`).
 
 **Unauthenticated by design:** `/healthz` on both listeners; `/.well-known/oauth-protected-resource`;
 `/auth/token`, whose handler runs the auth chain itself; and, when `oauth_as:` is configured, the

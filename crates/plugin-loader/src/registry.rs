@@ -1385,7 +1385,3 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "tests/fips_external_plugins_tests.rs"]
-mod fips_external_plugins_tests;

@@ -25,6 +25,7 @@ use super::{
     commit::SubmitResult,
     facade::{AccessError, CoreStore, DomainCall, LogicalClaim, PendingId, Submission},
     keys, partition,
+    record_ops::{HeldOp, Op},
 };
 
 pub(crate) const RECORDS: NamespaceId = NamespaceId(*b"busbar.records1\0");
@@ -330,7 +331,15 @@ impl<'a> HostRecords<'a> {
     /// Preserve the old already-authorized conditional vocabulary and its bounds.
     /// The durable receipt binds the original fingerprint and selected namespace.
     /// A failed predicate writes no logical receipt; unknown never triggers replanning.
-    pub(crate) async fn conditional(&self, request: &conditional::Request) -> Result<Outcome> {
+    /// The plugin host path: `request.op_id` must be the identity of `held`.
+    pub(crate) async fn conditional(
+        &self,
+        held: &HeldOp,
+        request: &conditional::Request,
+    ) -> Result<Outcome> {
+        if request.op_id != held.op_id() {
+            return Err(Error::Invalid);
+        }
         request.encode_held().map_err(|_| Error::Invalid)?;
         let mut predicates = Vec::new();
         for predicate in &request.predicates {
@@ -368,7 +377,7 @@ impl<'a> HostRecords<'a> {
             });
         }
         self.conditional_prepared(
-            request.op_id.0,
+            &Op::Held(held.clone()),
             request.fingerprint(),
             predicates,
             mutations,
@@ -382,20 +391,21 @@ impl<'a> HostRecords<'a> {
     /// a durable logical claim or a backend crossing.
     pub(crate) async fn conditional_native(
         &self,
-        operation: [u8; 16],
+        op: &Op,
         predicates: Vec<Predicate>,
         mutations: Vec<Mutation>,
     ) -> Result<Outcome> {
-        self.conditional_native_timed(operation, predicates, mutations, None)
+        self.conditional_native_timed(op, predicates, mutations, None)
             .await
     }
     pub(crate) async fn conditional_native_timed(
         &self,
-        operation: [u8; 16],
+        op: &Op,
         predicates: Vec<Predicate>,
         mutations: Vec<Mutation>,
         time: Option<TimeGuard>,
     ) -> Result<Outcome> {
+        let operation = op.bytes();
         // Use a fixed validation identity only for the semantic body digest.
         // Native submission receives a fresh independently allocated attempt id.
         let canonical = PreparedCandidate::new(Candidate {
@@ -414,7 +424,7 @@ impl<'a> HostRecords<'a> {
         })
         .map_err(|_| Error::Invalid)?;
         self.conditional_prepared(
-            operation,
+            op,
             canonical.fingerprint(),
             canonical
                 .candidate()
@@ -456,23 +466,25 @@ impl<'a> HostRecords<'a> {
 
     async fn conditional_prepared(
         &self,
-        operation: [u8; 16],
+        op: &Op,
         fingerprint: [u8; 32],
         mut predicates: Vec<Predicate>,
         mut mutations: Vec<Mutation>,
         time: Option<TimeGuard>,
     ) -> Result<Outcome> {
+        let operation = op.bytes();
         let mut receipt = vec![1];
         receipt.extend_from_slice(&self.namespace.0);
         receipt.extend_from_slice(&fingerprint);
         let digest = Sha256::digest(&receipt);
-        let claim = self.store.claim_logical_owned(
+        let claim = self.store.claim_logical_held(
             super::facade::LogicalId {
                 namespace: RECORD_OPERATIONS.0,
                 operation,
             },
             digest,
             self.domain,
+            op.held().cloned(),
         );
         let permit = match claim {
             Err(AccessError::OperationConflict) => return Ok(Outcome::OpIdConflict),
@@ -482,9 +494,9 @@ impl<'a> HostRecords<'a> {
             Ok(LogicalClaim::Prepare(permit)) => permit,
         };
         let receipt_at = Address {
-            // OpId is node8 + counter8. Keep one generation owner per logical
-            // writer rather than leaving a permanent namespace per operation.
-            namespace: partition::namespace(RECORD_OPERATIONS, &[&operation[..8]]).0,
+            // Class M: one partition per generation (gen8), swept whole once it drains.
+            // Class D: its own label, which no generation's range delete reaches.
+            namespace: op.receipt_namespace().0,
             key: keys::framed(b'R', &[&RECORD_OPERATIONS.0, &operation])?,
         };
         if let Some(found) = self

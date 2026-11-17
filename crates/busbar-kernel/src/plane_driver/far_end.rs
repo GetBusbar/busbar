@@ -1392,7 +1392,7 @@ impl EgressFarEnd<'_> {
         });
         let (pool, member) = named.unwrap_or_default();
         tracing::error!(
-            diag = "BUSBAR-EGRESS-LOCAL-FRAMER",
+            diag = %crate::diagnostics::EGRESS_LOCAL_FRAMER_FAILED.banner(),
             pool = %pool,
             member = %member,
             error = %cause.text,
