@@ -20,10 +20,7 @@ use busbar_kernel::state::{App, AppHandle};
 use serde_json::{json, Value};
 
 use super::config_document::{apply, DocumentRequest, EditAudit, Planner};
-use super::{
-    err_json, err_json_cond, if_match_version, json_body, respond, response_snapshot,
-    with_config_etag,
-};
+use super::{err_json, err_json_cond, if_match_version, json_body, respond, response_snapshot};
 use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::{
     AdminError, HookAttachRequest, HookAttachment, HookPosition, HookPositionWord,
@@ -350,20 +347,16 @@ async fn edit(
         };
         next.map(|next| whole_list(&point, &next)).transpose()
     });
-    let installed = match apply(&handle, &actor, expected, audit, plan).await {
-        Ok((installed, _)) => installed,
+    let committed = match apply(&handle, &actor, expected, audit, plan).await {
+        Ok(committed) => committed,
         Err(response) => return *response,
     };
-    let version = installed.config_version;
-    with_config_etag(
-        respond(
-            StatusCode::OK,
-            AdminService::new(response_snapshot(installed).await)
-                .get_hook(&name)
-                .await,
-        ),
-        version,
-    )
+    committed.etag.attach(respond(
+        StatusCode::OK,
+        AdminService::new(response_snapshot(committed.installed).await)
+            .get_hook(&name)
+            .await,
+    ))
 }
 
 fn target_of(point: &Point) -> String {

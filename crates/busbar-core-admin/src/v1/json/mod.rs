@@ -690,6 +690,7 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod config_document;
 mod config_tree;
+mod instance_settings;
 pub(crate) mod kinds;
 mod plane_input_schemas;
 mod views;

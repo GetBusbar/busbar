@@ -13,10 +13,7 @@ use busbar_kernel::config::overlay::OverlayDoc;
 use busbar_kernel::state::{App, AppHandle};
 use serde_json::json;
 
-use super::{
-    config_transaction, err_json, if_match_version, ok_json, stale_if_match, with_config_etag,
-    Outcome,
-};
+use super::{config_transaction, err_json, if_match_version, ok_json, stale_if_match, Outcome};
 use crate::admin_state::AppAdmin as _;
 use crate::v1::contract::AdminError;
 
@@ -124,6 +121,44 @@ pub(super) struct EditAudit {
 pub(super) type Planner =
     Box<dyn FnOnce(&App) -> Result<Option<DocumentRequest>, AdminError> + Send>;
 
+/// Frozen while the config transaction still owns the writer lock. The App's generation
+/// counter is shared, so reading it after returning would let a later publication rewrite
+/// this operation's receipt identity and readback.
+pub(super) struct DocumentCommit {
+    pub(super) installed: Arc<App>,
+    pub(super) etag: super::generation::ConfigResponseEtag,
+    configuration: serde_json::Value,
+    reload_to_apply: Vec<String>,
+}
+
+impl DocumentCommit {
+    fn capture(installed: Arc<App>) -> Self {
+        let etag = super::generation::ConfigResponseEtag::capture(&installed);
+        let (mut configuration, reload_to_apply) = configuration_and_restart(&installed);
+        configuration["config_generation"] = json!(etag.generation());
+        Self {
+            installed,
+            etag,
+            configuration,
+            reload_to_apply,
+        }
+    }
+
+    pub(super) fn response(self) -> Response {
+        self.etag.attach(ok_json(
+            StatusCode::OK,
+            &json!({
+                "applied": true,
+                "persisted": true,
+                "config_version": self.installed.config_version,
+                "configuration": self.configuration,
+                "reload_to_apply": self.reload_to_apply,
+                "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
+            }),
+        ))
+    }
+}
+
 pub(super) async fn put(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
@@ -150,7 +185,7 @@ pub(super) async fn put(
         origin: format!("config/settings document patch by {actor}"),
         note: "config.document (Store document overlay)".into(),
     };
-    let installed = match apply(
+    let committed = match apply(
         &handle,
         &actor,
         expected,
@@ -159,36 +194,21 @@ pub(super) async fn put(
     )
     .await
     {
-        Ok((installed, _)) => installed,
+        Ok(committed) => committed,
         Err(response) => return *response,
     };
-    let (configuration, reload_to_apply) = configuration_and_restart(&installed);
-    with_config_etag(
-        ok_json(
-            StatusCode::OK,
-            &json!({
-                "applied": true,
-                "persisted": true,
-                "config_version": installed.config_version,
-                "configuration": configuration,
-                "reload_to_apply": reload_to_apply,
-                "note": "stored and installed as configuration; reload_to_apply paths require a process restart. plane_refresh observes only synchronous ordinary door callbacks; it does not acknowledge listener, model, credential, fallback, transport, or asynchronous plugin activation",
-            }),
-        ),
-        installed.config_version,
-    )
+    committed.response()
 }
 
-/// One durable document edit through the config transaction. `Ok((app, false))` is a plan that
-/// found nothing to change: no publication, no audit row. Every refusal is already audited and
-/// rendered as the `Err` response.
+/// One durable document edit through the config transaction. A plan that finds nothing to
+/// change does not publish or audit. Every refusal is already audited and rendered.
 pub(super) async fn apply(
     handle: &Arc<AppHandle>,
     actor: &str,
     expected: Option<u64>,
     audit: EditAudit,
     plan: Planner,
-) -> Result<(Arc<App>, bool), Box<Response>> {
+) -> Result<DocumentCommit, Box<Response>> {
     let EditAudit {
         action,
         resource,
@@ -202,7 +222,7 @@ pub(super) async fn apply(
             return Err(error);
         }
         let Some(request) = plan(snapshot.as_ref())? else {
-            return Ok(Outcome::Value(Ok((snapshot, false))));
+            return Ok(Outcome::Value(Ok((DocumentCommit::capture(snapshot), false))));
         };
         let changed: Vec<String> = request
             .document_patch
@@ -276,9 +296,13 @@ pub(super) async fn apply(
                     patch: doc.document_patch.as_mut(), providers_patch: doc.providers_patch.as_mut(),
                     admission: source_admission.as_mut(),
                 },
-            ).map_err(|error| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
+            ).map_err(|_| if source_admission.as_ref().is_some_and(|admission| admission.drifted()) {
                 AdminError::Conflict("operator source changed since the installed generation; reload and refresh before document edits".into())
-            } else { AdminError::Validation(error) })?;
+            } else {
+                // Loader errors may quote malformed private settings. This public boundary
+                // reports validation, never the original source excerpt.
+                AdminError::Validation("patched configuration failed document validation".into())
+            })?;
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
@@ -361,13 +385,13 @@ pub(super) async fn apply(
                 origin,
                 async move {
                     if let Some(rotate) = rotate { rotate.await; }
-                    Ok(Outcome::Value(Ok((installed, true))))
+                    Ok(Outcome::Value(Ok((DocumentCommit::capture(installed), true))))
                 },
             ))
         }))
     }).await;
     match out {
-        Ok(Ok((installed, changed))) => {
+        Ok(Ok((committed, changed))) => {
             if changed {
                 super::audit::AUDIT.record_by(
                     action,
@@ -375,9 +399,9 @@ pub(super) async fn apply(
                     super::audit::OUTCOME_APPLIED,
                     actor,
                 );
-                installed.record_version(actor, &note);
+                committed.installed.record_version(actor, &note);
             }
-            Ok((installed, changed))
+            Ok(committed)
         }
         Ok(Err((error, cond))) => {
             super::audit::AUDIT.record_by(action, &resource, super::audit::OUTCOME_REJECTED, actor);
