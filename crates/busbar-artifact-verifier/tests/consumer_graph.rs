@@ -18,6 +18,17 @@ fn quoted(value: &str) -> String {
 
 #[test]
 fn external_consumer_has_one_backend_and_no_loader_contract_or_yaml() {
+    consumer_graph(false, false);
+    consumer_graph(false, true);
+}
+
+#[test]
+fn host_consumer_has_one_backend_without_tls_or_loader_contract_yaml() {
+    consumer_graph(true, false);
+    consumer_graph(true, true);
+}
+
+fn consumer_graph(host: bool, all_features: bool) {
     let owner = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = owner.parent().unwrap().parent().unwrap();
     let unique = std::time::SystemTime::now()
@@ -57,13 +68,20 @@ fn external_consumer_has_one_backend_and_no_loader_contract_or_yaml() {
         .join("\n");
     // This fixture checks topology with the same selected backend source tree. The separate
     // backend_pin test and published-consumer lock prove the immutable source recipe.
+    let host_dependency = if host {
+        format!("busbar-plugin-abi = {{ path = {}, default-features = false, features = [\"host\"] }}\n",
+            quoted(root.join("crates/busbar-plugin-abi").to_str().unwrap()))
+    } else {
+        String::new()
+    };
     let manifest = format!(
-        "[package]\nname = \"artifact-graph-witness\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\n\n[dependencies]\nbusbar-artifact-verifier = {{ path = {}, default-features = false }}\n\n[patch.{}]\nbusbar-crypto-backend = {{ path = {} }}\n\n[patch.crates-io]\n{patches}\n",
+        "[package]\nname = \"artifact-graph-witness\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\n\n[dependencies]\nbusbar-artifact-verifier = {{ path = {}, default-features = false }}\n{host_dependency}\n[features]\nverifier-test-support = [\"busbar-artifact-verifier/test-support\"]\n\n[patch.{}]\nbusbar-crypto-backend = {{ path = {} }}\n\n[patch.crates-io]\n{patches}\n",
         quoted(owner.to_str().unwrap()), quoted(url), quoted(root.join("crates/busbar-crypto-backend").to_str().unwrap())
     );
     let manifest_path = scratch.0.join("Cargo.toml");
     std::fs::write(&manifest_path, manifest).unwrap();
-    let output = std::process::Command::new(env!("CARGO"))
+    let mut cargo = std::process::Command::new(env!("CARGO"));
+    cargo
         .args([
             "metadata",
             "--offline",
@@ -71,9 +89,11 @@ fn external_consumer_has_one_backend_and_no_loader_contract_or_yaml() {
             "1",
             "--manifest-path",
         ])
-        .arg(&manifest_path)
-        .output()
-        .unwrap();
+        .arg(&manifest_path);
+    if all_features {
+        cargo.arg("--all-features");
+    }
+    let output = cargo.output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -88,6 +108,7 @@ fn external_consumer_has_one_backend_and_no_loader_contract_or_yaml() {
         "saphyr",
         "unsafe-libyaml",
         "serde_yaml",
+        "serde_yaml_ng",
         "serde_json",
     ] {
         assert!(
@@ -106,14 +127,25 @@ fn external_consumer_has_one_backend_and_no_loader_contract_or_yaml() {
     );
     for node in metadata["resolve"]["nodes"].as_array().unwrap() {
         let id = node["id"].as_str().unwrap();
-        if id.contains("busbar-plugin-abi") || id.contains("busbar-ffi") {
+        if id.contains("busbar-crypto") {
             assert!(
                 !node["features"]
                     .as_array()
                     .unwrap()
                     .iter()
+                    .any(|feature| matches!(feature.as_str(), Some("tls" | "test-support"))),
+                "OEM consumer requested unsupported provider services: {id}"
+            );
+        }
+        if id.contains("busbar-plugin-abi") || id.contains("busbar-ffi") {
+            assert_eq!(
+                node["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
                     .any(|feature| feature.as_str() == Some("host")),
-                "external verifier enabled native loader: {id}"
+                host,
+                "consumer host feature selection differs: {id}"
             );
         }
     }
