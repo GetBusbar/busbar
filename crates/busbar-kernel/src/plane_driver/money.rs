@@ -367,6 +367,7 @@ impl Drop for FeeParticipation {
 }
 
 struct Open {
+    native: Option<native_attempt::NativeMoney>,
     spend_ceiling_micros: Option<u64>,
     observation: Option<Arc<crate::persistence::observations::BoundScope>>,
     observation_started: bool,
@@ -406,6 +407,7 @@ impl Open {
         checkpoint_audit: Option<Vec<u8>>,
     ) -> Self {
         Self {
+            native: None,
             spend_ceiling_micros: None,
             observation: None,
             observation_started: false,

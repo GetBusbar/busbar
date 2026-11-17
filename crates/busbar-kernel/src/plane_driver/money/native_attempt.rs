@@ -11,9 +11,27 @@ use busbar_contract::MeterClassId;
 
 use super::UnitMoney;
 use crate::governance::unit_checkpoint::partitions::{AttemptPartition, Finality, Transport};
+use crate::governance::unit_checkpoint::UnitCheckpoint;
 use crate::governance::AdmitGrant;
 use crate::invocation::InvocationContext;
 use crate::plane_driver::port_session::UpExchange;
+
+/// The book-accepted complete checkpoint is the runtime's single factual source as well.
+/// Live selection/rate authority is separate and is never reconstructed from these facts.
+pub(super) struct NativeMoney {
+    accepted: Arc<UnitCheckpoint>,
+}
+
+impl NativeMoney {
+    /// Only the host money owner installs a snapshot returned by stage_selected_checkpoint.
+    pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
+        Self { accepted }
+    }
+
+    pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
+        &self.accepted
+    }
+}
 use busbar_plugin_abi::records::RecErr;
 use busbar_ports::codec::fallback_usage::{
     AttemptEnd, AttemptState, AttemptUsage, Completeness, Declaration, UsageSource,
