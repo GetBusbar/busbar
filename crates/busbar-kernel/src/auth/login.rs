@@ -356,6 +356,7 @@ pub async fn issue_self_key(
         module: crate::cold::auth::login::owned_name(module),
         principal,
         resolved: None,
+        signed_authority: None,
     };
     let SelfMint {
         principal,

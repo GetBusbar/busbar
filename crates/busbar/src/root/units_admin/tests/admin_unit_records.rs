@@ -22,7 +22,7 @@ fn a_fresh_unit() -> u64 {
 }
 
 fn request(method: &str, path: &str) -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: method.to_string(),
         path: path.to_string(),
         credential: None,
@@ -30,7 +30,7 @@ fn request(method: &str, path: &str) -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 async fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {

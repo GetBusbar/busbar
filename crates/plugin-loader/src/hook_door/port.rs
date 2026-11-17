@@ -87,6 +87,7 @@ impl<N: Needs> HookOpener for BoundRegistry<N> {
     ) -> BoxFut<'a, Result<Arc<dyn HookPort>, OpenError>> {
         Box::pin(async move {
             let spec = InstanceSpec {
+                store_migration: None,
                 purpose: crate::instance::OpenPurpose::Canonical,
                 identity: module,
                 name,

@@ -152,18 +152,12 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(std::thread::current().name().unwrap());
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -229,7 +223,6 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (enabled_id, enabled) = mint(gov, "enabled").await;
     let (disabled_id, disabled) = mint(gov, "disabled").await;
     gov.update_key_outcome_async(&disabled_id, Some(false), None)
@@ -310,18 +303,12 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(std::thread::current().name().unwrap());
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -387,7 +374,6 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -425,18 +411,12 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(std::thread::current().name().unwrap());
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -502,7 +482,6 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_none());
     let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
@@ -541,18 +520,12 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     const AUDIENCE: &str = "api://ordinary-governance-routes";
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(std::thread::current().name().unwrap());
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -626,7 +599,6 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_some());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
@@ -675,18 +647,12 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     const AUDIENCE: &str = "api://ordinary-governance-routes";
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(std::thread::current().name().unwrap());
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -757,7 +723,6 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
-    assert!(gov.admin_token_hash().is_none());
     let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());

@@ -173,6 +173,41 @@ impl<C: Clock> fmt::Debug for Sealed<C> {
 }
 
 impl<C: Clock> ProducesTickets for Sealed<C> {
+    fn supports_bounded_output(&self) -> bool {
+        self.inner.supports_bounded_output()
+    }
+
+    fn encrypt_bounded(
+        &self,
+        plain: &[u8],
+        storage: &rustls::TicketStorage<'_>,
+    ) -> Result<Option<rustls::TicketBuffer>, rustls::OutputStorageError> {
+        if !self.inner.supports_bounded_output() {
+            return Err(rustls::OutputStorageError::UnsupportedProvider);
+        }
+        let size = plain
+            .len()
+            .checked_add(4)
+            .ok_or(rustls::OutputStorageError::Limit)?;
+        let mut stamped = storage.allocate(size)?;
+        stamped.extend_from_slice(&self.stamp().to_be_bytes())?;
+        stamped.extend_from_slice(plain)?;
+        let result = self.inner.encrypt_bounded(stamped.as_ref(), storage);
+        // The move-only buffer also wipes on Drop, including every earlier error path.
+        stamped.as_mut().zeroize();
+        drop(stamped);
+        match result? {
+            Some(ticket) => {
+                self.recovered();
+                Ok(Some(ticket))
+            }
+            None => {
+                self.key_failure();
+                Ok(None)
+            }
+        }
+    }
+
     fn enabled(&self) -> bool {
         self.inner.enabled()
     }
@@ -339,3 +374,7 @@ mod tests {
         assert!(!t.failing.load(Ordering::Relaxed), "recovered");
     }
 }
+
+#[cfg(test)]
+#[path = "tickets_funded_tests.rs"]
+mod funded_tests;

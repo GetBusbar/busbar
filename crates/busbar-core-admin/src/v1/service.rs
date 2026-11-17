@@ -1233,6 +1233,8 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+#[cfg(test)]
+pub(crate) use operations::refused as admission_refused;
 pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {

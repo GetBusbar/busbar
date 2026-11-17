@@ -62,21 +62,31 @@ impl Mem {
 }
 
 impl RecordStore for Mem {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
         self.scans.set(self.scans.get() + 1);
+        let rows = self.rows.borrow();
+        let mut after_rows = rows
+            .iter()
+            .filter(|((n, k), _)| *n == ns.0 && after.is_none_or(|a| k.as_slice() > a));
+        let page: Vec<_> = after_rows
+            .by_ref()
+            .take(limit as usize)
+            .map(|((_, k), v)| (k.clone(), SecureVec::from(v.clone())))
+            .collect();
+        // The store's own continuation: present while a row follows this page.
+        let next = match (page.last(), after_rows.next()) {
+            (Some((last, _)), Some(_)) => Some(last.clone()),
+            _ => None,
+        };
+        Ok(Page { rows: page, next })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
         Ok(self
             .rows
             .borrow()
-            .iter()
-            .filter(|((n, k), _)| *n == ns.0 && k.as_slice() > after)
-            .take(limit as usize)
-            .map(|((_, k), v)| (k.clone(), SecureVec::from(v.clone())))
-            .collect())
+            .get(&(ns.0, key.to_vec()))
+            .map(|v| SecureVec::from(v.clone())))
     }
 
     fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
@@ -776,10 +786,11 @@ fn evolve_once(mem: &Mem, steps: &[RecordStep], current: u32) -> Result<Option<u
 
 /// (h) The record-format chain: a format-1 store with 9,000 rows is admitted at 2, every row
 /// converted, manifest (2, 0), one RECORDS_EVOLVED; killed after a page it resumes from the cursor
-/// with no row converted twice; the last page and the flip are one commit.
+/// with no row converted twice. (#319 r4 §7.3: the flip is its own zero-payload commit after the
+/// last page; see `the_final_publication_is_an_empty_commit_after_the_payload`.)
 #[test]
 fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
-    let mem = evolve_store(9000, 1, 0);
+    let mem = opened_store(9000);
     assert_eq!(evolve_once(&mem, FIXTURE, 2), Ok(Some(9000)));
     assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
     assert!(mem
@@ -802,8 +813,8 @@ fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
         .contains_key(&(MANIFEST_NS.0, CURSOR_KEY.to_vec())));
 
     // Killed after the first page: manifest (1, 2) and a cursor; the next boot resumes.
-    let mem = evolve_store(9000, 1, 0);
-    mem.crash_at.set(Some(3));
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(2));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
     assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
     mem.crash_at.set(None);
@@ -817,9 +828,9 @@ fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
         "no row converted twice"
     );
 
-    // A fault in the flip commit (the last page): manifest still (1, 2), the last page unconverted.
-    let mem = evolve_store(9000, 1, 0);
-    mem.crash_at.set(Some(4));
+    // A fault in the last payload page: manifest still (1, 2), the last page unconverted.
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(3));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
     assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
     assert_eq!(
@@ -949,4 +960,385 @@ fn the_summary_row_round_trips() {
     let decoded = Summary::decode(&cells::value(&plugin)).unwrap();
     assert_eq!(decoded.tags[1], [0, 0, 0, 0]);
     assert!(Summary::decode(&cells::value(&plugin[..5])).is_err());
+}
+
+/// #319 r4 §7.3: a store whose native pages stop short of the asked count (a byte or item bound)
+/// before the namespace ends, and which records whether any applied commit published a Current
+/// manifest at format `intermediate`.
+struct Capped<'a> {
+    mem: &'a Mem,
+    cap: u32,
+    intermediate: Option<u32>,
+    published_intermediate: Counter<bool>,
+}
+
+impl<'a> Capped<'a> {
+    fn new(mem: &'a Mem, cap: u32) -> Self {
+        Self {
+            mem,
+            cap,
+            intermediate: None,
+            published_intermediate: Counter::new(false),
+        }
+    }
+}
+
+impl RecordStore for Capped<'_> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        self.mem.scan(ns, after, limit.min(self.cap))
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.mem.read(ns, key)
+    }
+
+    fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
+        let publishes = self.intermediate.is_some_and(|format| {
+            c.put.iter().any(|(ns, key, value)| {
+                *ns == MANIFEST_NS
+                    && key.as_slice() == b"active"
+                    && value.as_ref() == manifest_bytes(format, 0).as_slice()
+            })
+        });
+        let result = self.mem.commit(c)?;
+        if result == Committed::Applied && publishes {
+            self.published_intermediate.set(true);
+        }
+        Ok(result)
+    }
+
+    fn register(&self) -> Result<(), StoreFail> {
+        self.mem.register()
+    }
+}
+
+fn evolve_through(
+    store: &dyn FormatStore,
+    mem: &Mem,
+    steps: &[RecordStep],
+    current: u32,
+) -> Result<Option<u64>, Refusal> {
+    let bytes = manifest_of(mem);
+    evolve_with(
+        store,
+        steps,
+        current,
+        &Manifest {
+            ns: MANIFEST_NS,
+            key: b"active",
+            bytes: &bytes,
+            format: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            migrating_to: u32::from_le_bytes(bytes[72..76].try_into().unwrap()),
+            encode: &manifest_bytes,
+        },
+    )
+}
+
+fn data_values(mem: &Mem) -> Vec<Vec<u8>> {
+    mem.rows
+        .borrow()
+        .iter()
+        .filter(|((ns, _), _)| *ns == DATA_NS.0)
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+/// #319 r4 §7.3: a short native page is not exhaustion. Nine rows behind a store that answers
+/// two per page are all converted before the manifest reads Current, and the audit counts nine.
+#[test]
+fn record_format_short_page_cannot_publish_current_with_unconverted_rows() {
+    let mem = opened_store(9);
+    let store = Capped::new(&mem, 2);
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9
+        }]
+    );
+}
+
+fn to_three(_: NamespaceId, _: &[u8], value: &[u8]) -> Result<SecureVec, Refusal> {
+    let old = value
+        .strip_prefix(b"2:")
+        .ok_or_else(|| Refusal::Verify("step 2 requires format-2 input".to_owned()))?;
+    let mut out = b"3:".to_vec();
+    out.extend_from_slice(old);
+    Ok(SecureVec::from(out))
+}
+
+const CHAIN: &[RecordStep] = &[
+    RecordStep {
+        from: 1,
+        namespaces: &[DATA_NS],
+        convert: to_two,
+    },
+    RecordStep {
+        from: 2,
+        namespaces: &[DATA_NS],
+        convert: to_three,
+    },
+];
+
+/// #319 r4 §7.3: a 1 → 2 → 3 chain never publishes a Current format-2 manifest (a format-2 binary
+/// would admit ordinary serving mid-chain); the dataset stays closed until format 3, tail 0.
+#[test]
+fn record_format_chain_never_publishes_intermediate_current() {
+    let mem = opened_store(3);
+    let mut store = Capped::new(&mem, PAGE);
+    store.intermediate = Some(2);
+    assert_eq!(evolve_through(&store, &mem, CHAIN, 3), Ok(Some(6)));
+    assert!(
+        !store.published_intermediate.get(),
+        "a Current format-2 manifest admits a format-2 runtime during a target-3 migration"
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(3, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"3:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![
+            Audit::RecordsEvolved {
+                from: 1,
+                to: 2,
+                rows: 3
+            },
+            Audit::RecordsEvolved {
+                from: 2,
+                to: 3,
+                rows: 3
+            },
+        ]
+    );
+}
+
+/// #319 r4 §7.3: payload drains through ordinary pages, then a separate zero-payload commit
+/// publishes Current. A fault in that completion leaves every row converted under the nonzero
+/// tail; the next run publishes once, with one audit, converting nothing twice.
+#[test]
+fn the_final_publication_is_an_empty_commit_after_the_payload() {
+    // 9,000 rows, the step opened by admission: three pages, then the completion (commit 4).
+    let mem = opened_store(9000);
+    mem.crash_at.set(Some(4));
+    assert!(evolve_once(&mem, FIXTURE, 2).is_err());
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert!(mem.audit.borrow().is_empty());
+    mem.crash_at.set(None);
+    assert_eq!(evolve_once(&mem, FIXTURE, 2), Ok(Some(9000)));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9000
+        }]
+    );
+}
+
+/// #319 r4 §7.3: the cursor is the versioned five-cell value. The prototype three-cell cursor, or
+/// any unknown version, is VERIFY before any write.
+#[test]
+fn a_prototype_or_unknown_cursor_is_verify_before_any_write() {
+    let prototype = cells::value(&[Cell::Int(0), Cell::Blob(b""), Cell::Int(0)]);
+    let unknown = cells::value(&[
+        Cell::Int(2),
+        Cell::Int(0),
+        Cell::Int(0),
+        Cell::Blob(b""),
+        Cell::Blob(&[0; 8]),
+    ]);
+    for cursor in [prototype, unknown] {
+        let mem = evolve_store(3, 1, 2);
+        mem.put(MANIFEST_NS, CURSOR_KEY.to_vec(), cursor);
+        assert_eq!(evolve_once(&mem, FIXTURE, 2).unwrap_err().word(), "VERIFY");
+        assert_eq!(mem.commits.get(), 0);
+        assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"v"));
+    }
+}
+
+/// #319 r4 §7.3 (and the same seam for R0): the closure pre-check reads IMPORT to its explicit
+/// end, not to the first page shorter than asked.
+#[test]
+fn a_short_import_page_is_not_the_end_of_import() {
+    let rows: Vec<_> = (1..=5)
+        .map(|seq| audit_row(seq, if seq == 1 { "" } else { "h" }, "h"))
+        .collect();
+    let mem = store_with(&rows, [0; 8]);
+    let store = Capped::new(&mem, 2);
+    let report = run(&store, &NONE).unwrap().unwrap();
+    assert_eq!(report.rows[usize::from(table::AUDIT)], 5);
+    assert!(mem.import().is_empty(), "IMPORT drained");
+}
+
+/// The initial v1 cursor of a one-namespace step, as the kernel's opening writes it.
+fn initial_cursor_bytes() -> Vec<u8> {
+    cells::value(&[
+        Cell::Int(1),
+        Cell::Int(0),
+        Cell::Int(0),
+        Cell::Blob(b""),
+        Cell::Blob(&[0; 8]),
+    ])
+}
+
+/// A format-1 store the kernel's admission already opened for the step to 2: manifest (1, 2) and
+/// the step's initial cursor (#319 r4 §6).
+fn opened_store(rows: usize) -> Mem {
+    assert_eq!(initial_cursor(FIXTURE, 1), Some(initial_cursor_bytes()));
+    let mem = evolve_store(rows, 1, 2);
+    mem.put(MANIFEST_NS, CURSOR_KEY.to_vec(), initial_cursor_bytes());
+    mem
+}
+
+/// #319 r4 §6: opening a step is the kernel's one atomic transaction (dataset epoch, tail, cursor
+/// and migration owner together). The driver never registers or opens a step itself: an unopened
+/// older manifest is VERIFY before any call to the store.
+#[test]
+fn the_driver_never_opens_a_step_itself() {
+    let mem = evolve_store(3, 1, 0);
+    assert_eq!(evolve_once(&mem, FIXTURE, 2).unwrap_err().word(), "VERIFY");
+    assert_eq!(
+        (mem.commits.get(), mem.registers.get(), mem.scans.get()),
+        (0, 0, 0)
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 0));
+}
+
+/// #319 r4 §9: the final publication carries the kernel's fresh registrar and dataset epoch, so the
+/// driver never writes a Current manifest through an ordinary page commit.
+#[test]
+fn the_final_publication_is_not_an_ordinary_commit() {
+    let mem = opened_store(5);
+    let mut store = Capped::new(&mem, PAGE);
+    store.intermediate = Some(2);
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(5)));
+    assert!(
+        !store.published_intermediate.get(),
+        "an ordinary commit published the Current manifest"
+    );
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+}
+
+/// A store that refuses (never-uncertain, nothing applied) any commit carrying more than
+/// `max` converted rows, recording the size of every candidate it was sent.
+struct Refusing<'a> {
+    mem: &'a Mem,
+    max: usize,
+    sizes: RefCell<Vec<usize>>,
+}
+
+impl Refusing<'_> {
+    fn rows_in(c: &Candidate) -> usize {
+        c.put.iter().filter(|(ns, _, _)| *ns == DATA_NS).count()
+    }
+}
+
+/// #319 r4 §7.2: a refused page shrinks to its first half, as fresh candidates, down to one
+/// complete row; every row is still converted, no applied candidate exceeds what the store took,
+/// and the audit counts every row once.
+#[test]
+fn a_refused_page_halves_to_complete_rows_and_converts_everything() {
+    let mem = opened_store(9);
+    let store = Refusing {
+        mem: &mem,
+        max: 2,
+        sizes: RefCell::new(Vec::new()),
+    };
+    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
+    assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
+    assert_eq!(
+        *mem.audit.borrow(),
+        vec![Audit::RecordsEvolved {
+            from: 1,
+            to: 2,
+            rows: 9
+        }]
+    );
+    assert_eq!(
+        store.sizes.borrow().first(),
+        Some(&9),
+        "the first candidate carries the whole page"
+    );
+}
+
+/// #319 r4 §7.2: a store that refuses even one row stops the conversion after 1 + floor(log2 n)
+/// sizing candidates (9, 4, 2, 1), as STORE, with the cursor and the tail exactly as committed.
+#[test]
+fn a_one_row_refusal_stops_after_bounded_halving() {
+    let mem = opened_store(9);
+    let store = Refusing {
+        mem: &mem,
+        max: 0,
+        sizes: RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        evolve_through(&store, &mem, FIXTURE, 2).unwrap_err().word(),
+        "STORE"
+    );
+    assert_eq!(*store.sizes.borrow(), vec![9, 4, 2, 1]);
+    assert_eq!(manifest_of(&mem), manifest_bytes(1, 2));
+    assert_eq!(
+        mem.rows
+            .borrow()
+            .get(&(MANIFEST_NS.0, CURSOR_KEY.to_vec()))
+            .cloned(),
+        Some(initial_cursor_bytes())
+    );
+    assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"v"));
+}
+
+impl RecordStore for Refusing<'_> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        self.mem.scan(ns, after, limit)
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.mem.read(ns, key)
+    }
+
+    fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
+        let rows = Self::rows_in(&c);
+        if rows > 0 {
+            self.sizes.borrow_mut().push(rows);
+        }
+        if rows > self.max {
+            return Ok(Committed::Refused);
+        }
+        self.mem.commit(c)
+    }
+
+    fn register(&self) -> Result<(), StoreFail> {
+        self.mem.register()
+    }
+}
+
+/// The final publication as the kernel applies it: the completion with the Current manifest.
+impl FormatStore for Mem {
+    fn finalize(&self, mut c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        c.put.push((
+            MANIFEST_NS,
+            b"active".to_vec(),
+            SecureVec::from(manifest_bytes(format, 0)),
+        ));
+        self.commit(c)
+    }
+}
+
+impl FormatStore for Capped<'_> {
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        self.mem.finalize(c, format)
+    }
+}
+
+impl FormatStore for Refusing<'_> {
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        self.mem.finalize(c, format)
+    }
 }

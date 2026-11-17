@@ -67,3 +67,8 @@ impl Sha256State {
         fixed(self.0.finish())
     }
 }
+
+/// Fallible SHA-256 contract for authority-bound verification.
+pub fn sha256_checked(data: &[u8]) -> Result<[u8; 32], crate::Error> {
+    Ok(sha256(data))
+}

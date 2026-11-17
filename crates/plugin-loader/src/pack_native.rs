@@ -29,6 +29,19 @@ pub fn is_native(bytes: &[u8]) -> Result<bool, String> {
     crate::sign::native_stamp(bytes).map(|stamp| stamp.is_some())
 }
 
+/// A native image's stamped name and version, and its header's ordered `former_names` (the words a
+/// manifest's alias is chosen from), read as [`complete`] reads them.
+///
+/// # Errors
+/// A non-native or malformed image, or a header whose names are invalid.
+pub fn identity(bytes: &[u8]) -> Result<(String, String, Vec<String>), String> {
+    let stamp = crate::sign::native_stamp(bytes)?.ok_or("native image has no stamp")?;
+    let name = crate::scan::text(&stamp.name).to_owned();
+    let version = crate::scan::text(&stamp.version).to_owned();
+    let names = inspect_names(bytes, &name)?;
+    Ok((name, version, names))
+}
+
 /// Complete the native manifest from the stamp/header. CLI identity values are assertions;
 /// `abi_assertion` distinguishes an explicit ABI from the legacy caller's default.
 pub fn complete(
@@ -44,9 +57,14 @@ pub fn complete(
         .map_err(|e| e.to_string())?;
     let name = crate::scan::text(&stamp.name);
     let version = crate::scan::text(&stamp.version);
+    if !manifest.version.is_empty() && manifest.version != version {
+        return Err(format!(
+            "--version {} is not the version plugin '{name}' states in its native stamp ({version})",
+            manifest.version
+        ));
+    }
     if manifest.name != name
         || manifest.kind != crate::admit::kind_word(kind)
-        || (!manifest.version.is_empty() && manifest.version != version)
         || abi_assertion.is_some_and(|abi| abi != stamp.kind_abi)
     {
         return Err("pack identity assertion disagrees with the native image stamp".into());

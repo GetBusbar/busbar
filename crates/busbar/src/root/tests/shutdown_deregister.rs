@@ -179,55 +179,56 @@ fn concurrent_intent_publication_cannot_erase_force() {
     assert_eq!(*request.subscribe().borrow(), ShutdownIntent::Force);
 }
 
+/// The native listener keeps serving while the shutdown intent propagates, stops when the
+/// workers signal fires, and a listener started after that signal observes it at once.
+#[cfg(unix)]
 #[tokio::test]
-async fn actual_listener_serves_during_propagation_and_a_late_listener_observes_stop() {
+async fn native_listener_serves_during_propagation_and_a_late_listener_observes_stop() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let mut lifecycle = Lifecycle::start(Duration::from_secs(30), ShutdownIntent::Serving, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = axum::Router::new().route("/", axum::routing::get(|| async { "still-serving" }));
-    let stop = lifecycle.workers.clone();
-    let serving = tokio::spawn(crate::root::listener::serve_admitted(
-        crate::root::listener::SocketAdmits::new(listener),
-        router.clone(),
-        None,
-        busbar_kernel::detached::shutdown_fired(Some(stop)),
-        None,
-    ));
-    lifecycle.request.request(ShutdownIntent::Operator);
-    tokio::task::yield_now().await;
-    let mut peer = tokio::net::TcpStream::connect(address).await.unwrap();
-    peer.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    crate::tests::native_listener::with_real_server(Some, |server| async move {
+        let mut lifecycle =
+            Lifecycle::start(Duration::from_secs(30), ShutdownIntent::Serving, false);
+        let stop = lifecycle.workers.clone();
+        let (address, serving) = server.spawn(busbar_kernel::detached::shutdown_fired(Some(stop)));
+        lifecycle.request.request(ShutdownIntent::Operator);
+        tokio::task::yield_now().await;
+        let mut peer = tokio::net::TcpStream::connect(address).await.unwrap();
+        peer.write_all(
+            format!(
+                "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                busbar_kernel::auth::LIVEZ_PATH
+            )
+            .as_bytes(),
+        )
         .await
         .unwrap();
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut response))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&response).contains("still-serving"));
-    lifecycle.still_serving();
-    lifecycle.request.request(ShutdownIntent::Safety);
-    tokio::time::timeout(Duration::from_secs(2), serving)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(*lifecycle.workers.borrow());
-    assert!(tokio::net::TcpStream::connect(address).await.is_err());
-    let late = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        crate::root::listener::serve_admitted(
-            crate::root::listener::SocketAdmits::new(late),
-            router,
-            None,
-            busbar_kernel::detached::shutdown_fired(Some(lifecycle.workers.clone())),
-            None,
-        ),
-    )
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 200") && response.ends_with("ok"),
+            "the native listener still serves during propagation: {response}"
+        );
+        lifecycle.still_serving();
+        lifecycle.request.request(ShutdownIntent::Safety);
+        tokio::time::timeout(Duration::from_secs(2), serving)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*lifecycle.workers.borrow());
+        assert!(tokio::net::TcpStream::connect(address).await.is_err());
+        let (_, late) = server.spawn(busbar_kernel::detached::shutdown_fired(Some(
+            lifecycle.workers.clone(),
+        )));
+        tokio::time::timeout(Duration::from_secs(2), late)
+            .await
+            .unwrap()
+            .unwrap();
+        lifecycle.request.request(ShutdownIntent::Force);
+    })
     .await
-    .unwrap()
-    .unwrap();
-    lifecycle.request.request(ShutdownIntent::Force);
+    .expect("the actual declared supplier serves the fixture");
 }

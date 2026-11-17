@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2532,
+    "total": 2533,
     "by_plane": {
       "a2a": 468,
-      "core": 949,
+      "core": 950,
       "llm": 203,
       "mcp": 912
     },
@@ -74,7 +74,7 @@
       "cli": 14,
       "concurrency": 3,
       "config": 1,
-      "config.migrate": 158,
+      "config.migrate": 159,
       "cooldown": 1,
       "crosscut.traps": 5,
       "documented": 27,
@@ -16201,6 +16201,21 @@
         "env": {}
       },
       "why": "expect exit 0; stderr \u220b None",
+      "needs_fixture": false
+    },
+    {
+      "id": "config.migrate|LAW0-MIG-PLANE-MCP-LITERALS|boot",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:LAW0-MIG-PLANE-MCP-LITERALS",
+        "env": {}
+      },
+      "why": "expect exit 0; stderr ∋ None",
       "needs_fixture": false
     },
     {

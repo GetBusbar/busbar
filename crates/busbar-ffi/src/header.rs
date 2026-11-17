@@ -60,6 +60,18 @@ pub const SYMBOL: &[u8] = b"busbar_plugin\0";
 pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
 /// Byte offset of `Plugin::kind_vt`.
 pub const PLUGIN_KIND_VT_AT: usize = core::mem::offset_of!(Plugin, kind_vt);
+/// Byte offset of `Plugin::describe`.
+pub const PLUGIN_DESCRIBE_AT: usize = core::mem::offset_of!(Plugin, describe);
+/// Byte offset of `Plugin::open`.
+pub const PLUGIN_OPEN_AT: usize = core::mem::offset_of!(Plugin, open);
+/// Byte offset of `Plugin::resume`.
+pub const PLUGIN_RESUME_AT: usize = core::mem::offset_of!(Plugin, resume);
+/// Byte offset of `Plugin::cancel`.
+pub const PLUGIN_CANCEL_AT: usize = core::mem::offset_of!(Plugin, cancel);
+/// Byte offset of `Plugin::close`.
+pub const PLUGIN_CLOSE_AT: usize = core::mem::offset_of!(Plugin, close);
+/// Byte offset of `Plugin::former_names`.
+pub const PLUGIN_FORMER_NAMES_AT: usize = core::mem::offset_of!(Plugin, former_names);
 
 // `Plugin` is `Sync` structurally: its two raw pointers are `Shared`, pointing at immutable statics of the
 // image (`STAMP`, the kind table) that live as long as the image, which is never unloaded once admitted

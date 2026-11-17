@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A2A lifecycle settings and declared raw user configuration",
+  "description": "The document root validates lifecycle settings after core consumes dial policy and resource labels from /agents/*. Unstamped older shapes are judged by the native migration parser. The raw entry point describes the canonical a2a deployment section; its format-2 pin is a mechanism string. Migration returns dial facts inside registration CONFIG, never an UPSTREAM fragment.",
+  "anyOf": [
+    {
+      "type": "object",
+      "required": ["format"],
+      "properties": {
+        "format": { "const": 2 },
+        "public_url": { "type": ["string", "null"] },
+        "hooks": { "type": "array", "items": { "type": "string" } },
+        "agents": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9_.-]{1,64}$", "not": { "enum": [".", ".."] } },
+          "additionalProperties": { "$ref": "#/$defs/agent" }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["format"],
+      "properties": { "format": { "type": "integer", "minimum": 3 } }
+    },
+    {
+      "type": "object",
+      "not": { "required": ["format"] }
+    }
+  ],
+  "$defs": {
+    "agent_fields": {
+      "properties": {
+        "pin": { "enum": ["jws_issuer_key", "cert_spki", "mtls", "unpinned"] },
+        "reverify_ttl": { "type": "string", "pattern": "^[0-9]+[smhd]?$" },
+        "recovery_backoff": { "type": "string", "pattern": "^[0-9]+[smhd]?$" },
+        "hooks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["pin"],
+      "allOf": [{ "$ref": "#/$defs/agent_fields" }],
+      "unevaluatedProperties": false
+    },
+    "resource": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+      "description": "Optional opaque core-owned policy label. Null and absence are unbound. Canonical host admission additionally enforces at most 128 UTF-8 bytes; JSON Schema maxLength counts characters. Core strips this field before lifecycle validation and preserves its exact authored value on writeback."
+    },
+    "authored_agent": {
+      "type": "object",
+      "required": ["pin", "url"],
+      "allOf": [{ "$ref": "#/$defs/agent_fields" }],
+      "properties": {
+        "url": { "type": "string", "description": "Core-owned network endpoint; canonical host admission validates URL syntax and transport policy." },
+        "tls": {
+          "type": ["object", "null"],
+          "properties": {
+            "pin_spki": { "type": "array", "items": { "type": "string" } },
+            "client_identity": { "type": "object", "description": "One raw SecretRef for the certificate-chain and private-key PEM bundle; core validates and resolves the reference." },
+            "trust": { "type": "string" }
+          },
+          "additionalProperties": false,
+          "description": "Core-owned TLS grammar. Canonical admission validates pins, CA material, identity references and endpoint compatibility."
+        },
+        "auth": {
+          "type": ["string", "object", "null"],
+          "description": "Core-owned outbound binding: an auth instance name or one bearer, api_key, token_exchange or connection form with optional cache_max_s. Canonical host admission validates the selected form and raw SecretRefs."
+        },
+        "upstream_credentials": { "enum": ["own", "passthrough", "connection", null], "description": "Core validates credential-mode and binding compatibility; schema acceptance grants no credential forwarding authority." },
+        "allow_private": { "type": "boolean", "default": false },
+        "resource": { "$ref": "#/$defs/resource" }
+      },
+      "unevaluatedProperties": false
+    },
+    "authored_settings": {
+      "type": "object",
+      "required": ["format"],
+      "properties": {
+        "format": { "const": 2 },
+        "hooks": { "type": "array", "items": { "type": "string" } },
+        "agents": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9_.-]{1,64}$", "not": { "enum": [".", ".."] } },
+          "additionalProperties": { "$ref": "#/$defs/authored_agent" }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Native settings bag for the a2a alias. The registration declaration /agents/* is relative to this bag. Core injects public_url into lifecycle settings; author the host public_url instead."
+    },
+    "user_configuration": {
+      "type": "object",
+      "properties": {
+        "a2a": { "$ref": "#/$defs/authored_settings" }
+      }
+    }
+  },
+  "x-busbar-user-configuration": {
+    "version": 1,
+    "context": "raw_user_configuration",
+    "schema_ref": "#/$defs/user_configuration",
+    "reference_base": "returned_schema_document",
+    "roots": ["a2a"],
+    "member_schema_refs": { "a2a": "#/$defs/authored_agent" },
+    "settings_representation": "Canonical raw format-2 settings under the native a2a alias; /agents/* identifies registrations inside that bag. Lifecycle settings exclude core-owned dial fields and resource labels.",
+    "runtime_validation": [
+      "Run the canonical host validate/apply path: declaration splitting, core URL/TLS/auth/SecretRef/credential/private-reach validation, resource UTF-8 byte validation, then lifecycle schema/check/open.",
+      "The host owns source fences, exact core-field reattachment, migration LIFT authorization and publication; an installed schema does not prove activation.",
+      "Unstamped 1.5.5 input requires native migration. Legacy pin objects are not the canonical authored registration grammar.",
+      "This declaration requires the admitted native descriptor to be projected into the host configuration schema publisher with a2a section ownership."
+    ]
+  }
+}

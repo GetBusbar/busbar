@@ -44,6 +44,185 @@ struct Slot<T> {
     value: UnsafeCell<Option<T>>,
 }
 
+/// C-CLOSE-PARKED through the real host/shim path. The host-feature Miri run covers this caller.
+#[cfg(all(test, feature = "host", not(loom)))]
+mod close_parked_host {
+    #![forbid(unsafe_code)]
+
+    use super::{ChainBox, ChainRef, Inst, Slots};
+    use crate::header::{LinkedPlugin, STAMP_KIND_AT, STAMP_SIZE, StampBytes, plugin};
+    use crate::host::{ChainBufs, OpenAnswer, OutLease, Started};
+    use crate::image::Admitted;
+    use crate::raw::{Arg, Bytes, ChainBytes, Host, HostFns, KindCode, Out, Status, Str, Token};
+    use crate::shim::{ChainFut, Image, Opening, Start1, Step};
+    use crate::vt::{Built, kind, secret};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    static SAW_ALIVE: AtomicBool = AtomicBool::new(false);
+    static FUTURE_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static PLUGIN_DROPS: AtomicUsize = AtomicUsize::new(0);
+    static PARKED: AtomicUsize = AtomicUsize::new(0);
+    static GLOBAL: Slots<ChainBox<(), ()>> = Slots::new();
+    static HOST: Host = Host::new(
+        0,
+        HostFns {
+            now: None,
+            mono: None,
+            random: None,
+            crypto: None,
+            log: None,
+            log_level: None,
+            grow: None,
+            deployment: None,
+            migrate_admit: None,
+        },
+    );
+
+    pub struct BorrowedPlugin {
+        alive: AtomicBool,
+    }
+
+    impl Drop for BorrowedPlugin {
+        fn drop(&mut self) {
+            self.alive.store(false, Ordering::SeqCst);
+            PLUGIN_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct Parked<'p>(&'p BorrowedPlugin);
+
+    impl Drop for Parked<'_> {
+        fn drop(&mut self) {
+            SAW_ALIVE.store(self.0.alive.load(Ordering::SeqCst), Ordering::SeqCst);
+            FUTURE_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub struct Fixture;
+
+    fn record(out: &mut Out<'_>, tag: u16, value: u64) -> bool {
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&tag.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&8u32.to_ne_bytes());
+        bytes[8..].copy_from_slice(&value.to_le_bytes());
+        out.append(&bytes)
+    }
+
+    impl Image for Fixture {
+        type Plugin = BorrowedPlugin;
+        type Session = ();
+        type Reply = ();
+        type Inbox = ();
+
+        fn global() -> &'static Slots<ChainBox<(), ()>> {
+            &GLOBAL
+        }
+
+        fn describe(_host: &'static Host, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+
+        fn open(
+            _host: &'static Host,
+            _config: Bytes<'_>,
+            _chained: ChainBytes,
+            _flags: u32,
+            out: &mut Out<'_>,
+        ) -> Opening<(), ()> {
+            let address = Box::new(Inst::<BorrowedPlugin, (), (), ()>::new(BorrowedPlugin {
+                alive: AtomicBool::new(true),
+            }))
+            .into_instance();
+            assert!(record(out, 0x0009, address), "INSTANCE record fits");
+            Opening::Done(Status::OK)
+        }
+
+        fn poll(
+            mut chain: ChainRef<'_, (), ()>,
+            _results: Option<ChainBytes>,
+            _out: &mut Out<'_>,
+        ) -> Step {
+            assert!(chain.poll().is_pending());
+            Step::Need
+        }
+
+        fn parked(token: Token, out: &mut Out<'_>) -> Status {
+            PARKED.fetch_add(1, Ordering::SeqCst);
+            assert!(record(out, 0x0003, token), "TOKEN record fits");
+            Status::NEED
+        }
+
+        fn opened(_token: Token, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+    }
+
+    impl Start1<Bytes<'static>, 0> for Fixture {
+        fn start<'i>(
+            plugin: &'i BorrowedPlugin,
+            _host: &'static Host,
+            _reference: ChainBytes,
+        ) -> (ChainFut<'i, ()>, ()) {
+            let parked = Parked(plugin);
+            (
+                Box::pin(async move {
+                    let _keep = &parked;
+                    core::future::pending::<()>().await;
+                }),
+                (),
+            )
+        }
+    }
+
+    static VT: Built<Fixture, secret::Vt> = secret::Vt::build::<Fixture>();
+    static STAMP: StampBytes = {
+        let mut bytes = [0u8; STAMP_SIZE];
+        bytes[STAMP_KIND_AT] = KindCode::Secret as u8;
+        StampBytes(bytes)
+    };
+    static PLUGIN: LinkedPlugin = plugin::<Fixture, kind::Secret>(&VT, &STAMP, Str::EMPTY);
+
+    #[test]
+    fn a_parked_chain_drops_before_its_plugin_through_host() {
+        let image = Admitted::linked(&PLUGIN).expect("fixture header");
+        let instance = {
+            let mut lease = OutLease::new(vec![0; 64], 64).expect("open lease");
+            let OpenAnswer::Done(Status::OK, Some(instance)) =
+                image.open::<kind::Secret>(&HOST, Vec::new(), 0, &mut lease)
+            else {
+                panic!("fixture opens a real instance");
+            };
+            instance
+        };
+        {
+            let mut lease = OutLease::new(vec![0; 64], 64).expect("start lease");
+            let Started::Need(chain) = instance.start1(
+                |vt| &vt.resolve,
+                ChainBufs::new(),
+                |_| Arg::bytes(Bytes::EMPTY),
+                &mut lease,
+            ) else {
+                panic!("the real start shim parks the pending future");
+            };
+            assert_ne!(chain.token(), 0);
+            // Keep the future in the real instance's chain table until close. Only the host handle is
+            // forgotten; its buffers are empty. Dropping it would cancel before instance teardown.
+            core::mem::forget(chain);
+        }
+        assert_eq!(
+            PARKED.load(Ordering::SeqCst),
+            1,
+            "table insertion succeeded"
+        );
+        assert_eq!(FUTURE_DROPS.load(Ordering::SeqCst), 0);
+        assert_eq!(PLUGIN_DROPS.load(Ordering::SeqCst), 0);
+        drop(instance);
+        assert!(SAW_ALIVE.load(Ordering::SeqCst));
+        assert_eq!(FUTURE_DROPS.load(Ordering::SeqCst), 1);
+        assert_eq!(PLUGIN_DROPS.load(Ordering::SeqCst), 1);
+    }
+}
+
 impl<T> Slot<T> {
     fn new() -> Self {
         Slot {

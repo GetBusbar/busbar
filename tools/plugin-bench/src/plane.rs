@@ -64,9 +64,9 @@ fn handed(plugin: &Plugin<Plane>, settings: &[u8]) -> Result<Vec<u8>, String> {
     let keyed =
         facts.section == busbar_contract::section::RESERVED_POOLS_KEY || !facts.consumed.is_empty();
     let already = value.as_object().is_some_and(|o| {
-        o.contains_key(facts.section)
-            && o.keys()
-                .all(|k| k == facts.section || facts.consumed.contains(&k))
+        o.contains_key(&facts.section)
+            && o.iter()
+                .all(|(k, _)| k == facts.section || facts.consumed.contains(&k))
     });
     if !keyed || already {
         return Ok(settings.to_vec());
