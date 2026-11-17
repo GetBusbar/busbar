@@ -414,3 +414,60 @@ async fn selected_session_reports_keep_source_precedence_and_reject_attempt_clas
         "malformed session answer must publish nothing"
     );
 }
+
+#[tokio::test]
+async fn selected_callback_rollback_transfers_fee_finality_before_releasing_open() {
+    use crate::governance::unit_checkpoint::partitions::{CapturedFee, Disposition, FeeResult};
+    let (money, gov, context, _lease, request) = selected_fixture(99, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let mut terminal = selected.terminal_receipt().unwrap();
+    assert!(
+        selected.terminal_receipt().is_err(),
+        "one actual terminal reader"
+    );
+    let guard = money.admission_rollback(selected.request()).unwrap();
+    assert!(guard.accepts(selected.request()));
+    drop(guard);
+    assert_eq!(money.open_units(), 0);
+    assert!(!context.is_live());
+    let final_snapshot = terminal.wait().await.unwrap();
+    let parts = final_snapshot.partitions.as_ref().unwrap();
+    assert_eq!(parts.disposition, Disposition::Failed);
+    assert!(parts.attempts.is_empty());
+    assert!(matches!(
+        parts.fee,
+        CapturedFee::ResolvedOwner {
+            result: FeeResult::Refunded,
+            ..
+        }
+    ));
+    assert!(!final_snapshot.metered);
+    assert!(final_snapshot.ended);
+    let usage = gov
+        .derived_bucket_usage_async(
+            selected.request().cost(),
+            &selected.request().key().id,
+            crate::governance::WINDOW_TOTAL,
+            true,
+            100,
+        )
+        .await
+        .unwrap();
+    assert_eq!(usage.requests, 0);
+    assert_eq!(usage.spend_cents, 0);
+    drop(terminal);
+    let mut retry = selected.terminal_receipt().unwrap();
+    assert!(
+        Arc::ptr_eq(&final_snapshot, &retry.wait().await.unwrap()),
+        "retry retains final Arc"
+    );
+}
