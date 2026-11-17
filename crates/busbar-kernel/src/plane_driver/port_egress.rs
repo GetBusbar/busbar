@@ -216,17 +216,21 @@ pub struct EgressWalk<'a, F: FarEnd> {
 /// Test orchestration over the real request, walk, admission and preparation producers.
 /// It does not construct any selection or money token, and returns the still-live Task.
 #[cfg(test)]
-pub(crate) fn prepare_fixture<'k, K: super::port_session::Calls + ?Sized, F: FarEnd>(
+pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F: FarEnd>(
     calls: &'k K,
     request: &busbar_ports::plane::PlaneIn<'_>,
     body: &[u8],
     effects: &dyn super::port_session::Effects,
     pending: Arc<super::port_admission::Pending>,
-    walk: EgressWalk<'_, F>,
+    walk: EgressWalk<'w, F>,
     dialect: &str,
     model: &str,
 ) -> Result<
-    (super::port_session::Task<'k, K>, super::PreparedRateAttempt),
+    (
+        super::port_session::Task<'k, K>,
+        super::PreparedRateAttempt,
+        EgressWalk<'w, F>,
+    ),
     super::port_session::SessionError,
 > {
     use super::port_session::{Buffered, SessionError, Task};
@@ -268,7 +272,7 @@ pub(crate) fn prepare_fixture<'k, K: super::port_session::Calls + ?Sized, F: Far
     let prepared = money
         .prepare(selection, prepared)
         .map_err(|_| SessionError::NotDriven)?;
-    Ok((task, prepared))
+    Ok((task, prepared, walk))
 }
 
 impl<'a, F: FarEnd> EgressWalk<'a, F> {

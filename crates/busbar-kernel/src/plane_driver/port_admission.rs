@@ -201,6 +201,23 @@ impl Pending {
             .ok_or(SessionError::NotDriven)?;
         let mut members = members;
         let receipt = match wants {
+            Some(wants)
+                if wants
+                    .upstream
+                    .as_deref()
+                    .is_some_and(|name| self.routes.command_registration(name).is_some()) =>
+            {
+                allocation
+                    .registration(
+                        &self.routes,
+                        wants.model.as_deref(),
+                        wants
+                            .upstream
+                            .as_deref()
+                            .expect("classified actual command"),
+                    )
+                    .map_err(|_| SessionError::NotDriven)?
+            }
             Some(wants) => {
                 let members = members.as_deref_mut().ok_or(SessionError::NotDriven)?;
                 let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
@@ -216,6 +233,7 @@ impl Pending {
                 .local(&self.routes)
                 .map_err(|_| SessionError::NotDriven)?,
         };
+        let walk_selected = receipt.walk_key().is_some();
         let admitted = match commit {
             Commit::Ordinary(commit) => commit(receipt),
             Commit::Selected(commit) => commit(receipt, declaration),
@@ -239,7 +257,7 @@ impl Pending {
         self.admitted
             .set(admitted)
             .map_err(|_| SessionError::NotDriven)?;
-        if let Some(members) = members.filter(|_| wants.is_some()) {
+        if let Some(members) = members.filter(|_| walk_selected) {
             if !members.admit_request(&self.admitted.get().unwrap().request) {
                 return Err(SessionError::NotDriven);
             }
