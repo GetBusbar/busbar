@@ -324,6 +324,37 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
 }
 
 #[test]
+fn configured_hooks_join_the_typed_plan_with_their_exact_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    cfg.hooks.insert(
+        "guard".into(),
+        busbar_contract::json::parse_str(
+            r#"{"kind":"gate","module":"fixture-hook","settings":{"mode":"strict"}}"#,
+        )
+        .unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let hook = instances
+        .iter()
+        .find(|one| one.kind == KindCode::Hook)
+        .expect("configured hook participates in the same typed boot plan");
+    assert_eq!(hook.name, "guard");
+    assert_eq!(hook.identity, "fixture-hook");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&hook.config).unwrap(),
+        serde_json::json!({"mode":"strict"})
+    );
+}
+
+#[test]
 fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
     let grammar =
         busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());

@@ -352,6 +352,18 @@ fn is_marker(map: &Map<String, Value>) -> bool {
     map.contains_key(SECRET) || map.contains_key(TRUST) || map.contains_key(DEST)
 }
 
+/// Provider projections have no secret positions. Reuse the binder's reference/marker scan.
+pub(crate) fn check_projection(node: &Value, sugars: &Sugars) -> Result<(), BindError> {
+    scan(
+        node,
+        &mut String::new(),
+        &[],
+        sugars,
+        false,
+        &mut Vec::new(),
+    )
+}
+
 fn scan(
     node: &Value,
     at: &mut String,

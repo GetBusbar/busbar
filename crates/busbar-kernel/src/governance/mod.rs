@@ -897,6 +897,7 @@ pub mod mint_policy;
 pub mod group_provision;
 
 mod state;
+pub use state::admitted_view::{AdmissionViewUnavailable, AdmittedView};
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{
