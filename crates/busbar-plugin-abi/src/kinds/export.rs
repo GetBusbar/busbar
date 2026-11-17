@@ -55,7 +55,8 @@ crate::kind! {
             pub level: u32,
             pub recheck_s: u32,
         }
-        /// Round 33. Describe: how many deliveries this instance holds pending custody at most (≥ 1; core clamps).
+        /// Round 33. Describe: how many deliveries this instance holds pending custody at most, 1 to PENDING_CAPACITY_MAX
+        /// (4096); core refuses a value above it at admit and never clamps.
         pub struct DeliveryRec {
             pub pending_capacity: u64,
         }
@@ -94,7 +95,7 @@ crate::kind! {
         /// already applied. EVENTS is the hash-chained engine lifecycle and audit chain; IDENTITY is the
         /// pseudonymization switch (a sink without it gets the same records with no subject). Round 33: PROMPTS
         /// and COMPLETIONS are reserved and never produced; CONTENT is the one content stream (core-built content
-        /// events, 1.6.x). A subscription to a stream with no producer is refused at config load (dev's HAS NO
+        /// events; content lines are `busbar.content.v2`). A subscription to a stream with no producer is refused at config load (dev's HAS NO
         /// PRODUCER rule), CONTENT included in 1.6.0. There is no AUDIT, SEALS or USAGE stream (audit = EVENTS,
         /// spend = COSTS).
             STREAM_METRICS: u32 = 0;
