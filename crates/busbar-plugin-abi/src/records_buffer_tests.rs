@@ -164,3 +164,33 @@ fn scratch_grows_and_returns_the_exact_bytes_before_finish() {
     assert_eq!(reply.len(), 0);
     assert!(reply.buf.capacity() >= 300);
 }
+
+#[test]
+fn prefixed_nested_failure_wipes_header_prefix_records_and_final_padding() {
+    // One-byte prefix makes final outer padding observable, unlike IssuedShapeRec's eight bytes.
+    for cap in [8, 16, 17, 33, 48] {
+        let mut sink = Sink::new(cap);
+        let mut invoked = false;
+        let result = put_prefixed_nested_in(&mut sink, 0x101, b"x", |nested| {
+            invoked = true;
+            nested.put_text(tag::TEXT, "first")?;
+            nested.put_text(tag::TEXT, "second")
+        });
+        assert!(result.is_err(), "cap {cap}");
+        assert_eq!(invoked, cap >= 17);
+        sink.rolled_back();
+    }
+    let mut sink = Sink::new(64);
+    put_prefixed_nested_in(&mut sink, 0x101, b"x", |nested| {
+        nested.put_text(tag::TEXT, "first")?;
+        nested.put_text(tag::TEXT, "second")
+    })
+    .unwrap();
+    assert_eq!(sink.len, 56);
+    let record = Records::new(&sink.bytes[8..sink.len])
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.body[0], b'x');
+    assert_eq!(Records::new(&record.body[1..]).count(), 2);
+}
