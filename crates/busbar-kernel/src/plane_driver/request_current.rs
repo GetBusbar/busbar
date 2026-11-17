@@ -78,6 +78,25 @@ impl RequestRoutes {
                         .any(|m| &*m.upstream == member_name)
             });
         }
+        if let RequestDomain::NamedPool(name) = request.domain() {
+            if self.section_pools.contains_key(name) {
+                // A section walk reaches its own pool and that pool's one fallback; the current
+                // key must still hold both and the selected member (#108).
+                let selection = request.selection.as_deref();
+                let fallback = self
+                    .section_pools
+                    .get(name)
+                    .and_then(|pool| pool.fallback.as_deref());
+                return (name.as_str() == selected_pool || fallback == Some(selected_pool))
+                    && self.section_walk_admits(current_key, selection, name)
+                    && self.section_member_admits(
+                        current_key,
+                        selection,
+                        selected_pool,
+                        member_name,
+                    );
+            }
+        }
         let Some(catalog) = &self.catalog else {
             return false;
         };
