@@ -178,6 +178,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     store
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: ADJUSTED_KEY.into(),
             bucket: day,

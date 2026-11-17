@@ -76,6 +76,9 @@ fn table(names: &[&str]) -> Arc<Table> {
 
 fn candidate(name: &str) -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
         upstream: name.into(),
         provider: "{}".into(),
         base_path: "".into(),
