@@ -1832,3 +1832,35 @@ async fn a_request_refuses_an_unconfirmed_enqueue_even_when_the_caller_ignores_i
     );
     assert_eq!(queue.len(), 0);
 }
+
+#[tokio::test]
+async fn serving_observers_keep_the_bootstrap_audit_original_on_its_exact_attachment() {
+    let (bootstrap, log) = native_harness().await;
+    let mut pending = pending_audit(
+        ADMIN_LOG,
+        audit_suffix(17, "generation.publish", "root", "applied", "admin"),
+        EventOrigin::Mutation,
+    )
+    .unwrap();
+    let prepared = prepare_native(&pending, bootstrap.clone()).unwrap();
+    let expected = (prepared.entry.seq, prepared.entry.hash.clone());
+    pending.prepared = Some(prepared);
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending);
+    let serving = Arc::new(NativeAudit {
+        storage: Arc::clone(&bootstrap.storage),
+        exports: Some(Arc::default()),
+    });
+    drain_native(&queue, &log, serving).await.unwrap();
+    assert_eq!(
+        queue.len(),
+        0,
+        "the original remains drainable after S9 assembly"
+    );
+    let actual = log.list_filtered(0, 1, None, None).remove(0);
+    assert_eq!(
+        (actual.seq, actual.hash),
+        expected,
+        "publication cannot reframe a retained original"
+    );
+}
