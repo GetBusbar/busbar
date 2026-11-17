@@ -665,6 +665,77 @@ async fn serve_once(
     (far, seen_rx)
 }
 
+/// THE PRIVATE TRUST ANCHOR the TLS far end serves under and the download's connector trusts (its
+/// `EgressTrust::extra_anchors`, as an operator's private registry CA is): the certificate's DER and its
+/// key's DER, for `localhost` and `127.0.0.1`. No public root vouches for it.
+fn private_anchor() -> &'static (Vec<u8>, Vec<u8>) {
+    static ONE: OnceLock<(Vec<u8>, Vec<u8>)> = OnceLock::new();
+    ONE.get_or_init(|| {
+        let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_owned(),
+            "127.0.0.1".to_owned(),
+        ])
+        .unwrap();
+        (cert.der().to_vec(), signing_key.serialize_der())
+    })
+}
+
+/// [`serve_once`] over TLS: a loopback registry that terminates TLS under the [`private_anchor`]
+/// (offering the request framer's HTTP/1.1 wire), reads one request head and answers `response`.
+async fn serve_once_tls(
+    response: Vec<u8>,
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const PROTOCOL: &[u8] = b"http/1.1";
+    let (cert, key) = private_anchor();
+    let mut server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![rustls_pki_types::CertificateDer::from(cert.clone())],
+                rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
+    server.alpn_protocols = framer::accept_offer(composing_door().as_ref())
+        .unwrap()
+        .into_iter()
+        .filter(|protocol| protocol.as_slice() == PROTOCOL)
+        .collect();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far = l.local_addr().unwrap();
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+    tokio::spawn(async move {
+        let (s, _) = l.accept().await.unwrap();
+        let mut s = acceptor.accept(s).await.unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the request head arrives");
+            req.extend_from_slice(&buf[..n]);
+        }
+        let _ = seen_tx.send(String::from_utf8_lossy(&req).into_owned());
+        let _ = s.write_all(&response).await;
+        let _ = s.shutdown().await;
+    });
+    (far, seen_rx)
+}
+
+/// The request framer's secured claim (`https`): the claim whose located target is secured.
+fn secured_claim(door: &dyn busbar_core_connector::framer::FramerDoor) -> &'static str {
+    door.facts()
+        .claims
+        .iter()
+        .copied()
+        .find(|claim| {
+            framer::locate(door, &format!("{claim}://127.0.0.1:443/"))
+                .is_ok_and(|located| located.secure)
+        })
+        .expect("the request framer states its secured claim")
+}
+
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
@@ -766,25 +837,34 @@ fn fetch_table_judged(
     use busbar_core_connector::Connector;
 
     let door = composing_door();
-    let scheme = door.facts().claims[0];
+    let scheme = secured_claim(door.as_ref());
     let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
         std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
-    let c = std::sync::Arc::new(Connector::serving(
-        Transports::new(vec![
-            Entry {
-                door,
-                alpn: Vec::new(),
-            },
-            Entry {
-                door: layer,
-                alpn: Vec::new(),
-            },
-        ])
-        .unwrap(),
-        judge,
-        None,
-        std::sync::Arc::new(|_, _| {}),
-    ));
+    // plugins.fetch is https only (SEC-2, #297): the registry is reached over verified TLS, its
+    // certificate vouched for by the operator's private anchor and nothing else.
+    let trust = busbar_contract::transport::trust::EgressTrust {
+        extra_anchors: vec![private_anchor().0.clone()],
+        ..Default::default()
+    };
+    let c = std::sync::Arc::new(
+        Connector::serving_with_trust(
+            Transports::new(vec![
+                Entry {
+                    door,
+                    alpn: Vec::new(),
+                },
+                Entry {
+                    door: layer,
+                    alpn: Vec::new(),
+                },
+            ])
+            .unwrap(),
+            judge,
+            trust,
+            std::sync::Arc::new(|_, _| {}),
+        )
+        .expect("the private anchor builds the download's TLS configuration"),
+    );
     let table = busbar_core_connector::fetch::Table {
         owner: InstanceId(9),
         secured_need: NeedId(1),
@@ -807,7 +887,8 @@ fn fetch_once_over(
     response: &str,
     cap: usize,
 ) -> (Result<Vec<u8>, String>, String) {
-    let response = respond(scheme, response);
+    // The reply's version is the wire's own (`HTTP/1.1`), whichever claim the URL names.
+    let response = respond(composing_door().facts().claims[0], response);
     let path = path.to_owned();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -815,7 +896,7 @@ fn fetch_once_over(
         .build()
         .unwrap();
     rt.block_on(async move {
-        let (far, seen) = serve_once(response).await;
+        let (far, seen) = serve_once_tls(response).await;
         let url = format!("{scheme}://{far}{path}");
         let got = tokio::task::spawn_blocking(move || {
             busbar_core_connector::fetch::download(&table, &url, &[], cap)
@@ -926,9 +1007,9 @@ fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJu
     )
 }
 
-/// A plaintext private registry downloads under the default guard.
+/// A private registry downloads under the default guard, over TLS its operator's private anchor vouches for.
 #[test]
-fn a_plaintext_private_registry_downloads_under_the_default_guard() {
+fn a_private_registry_downloads_over_tls_under_the_default_guard() {
     let (got, _) = fetch_once_over(
         fetch_table_judged(guarded(&[])),
         "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
@@ -956,6 +1037,30 @@ fn a_download_the_guard_refuses_never_reaches_the_registry() {
              cloud-metadata host or a host listed in security.blocked_metadata_hosts"
         ),
         "{err}"
+    );
+}
+
+/// SEC-2, #297: `plugins.fetch` is core-owned and https only. A plaintext registry URL is refused on
+/// every host, loopback and private included (no loopback exemption, no acceptance can admit it), in
+/// words, and nothing is dialled.
+#[test]
+fn a_plaintext_registry_is_refused_on_every_host_and_nothing_is_dialled() {
+    let (_, table) = fetch_table_judged(guarded(&[]));
+    let (port, seen) = counting_listener();
+    for host in ["127.0.0.1", "localhost"] {
+        let url = format!("http://{host}:{port}/releases/busbar-oracle-fetch-1.0.0.tar.gz");
+        let err = busbar_core_connector::fetch::download(&table, &url, &[], 4096)
+            .expect_err("a plaintext registry is never downloaded from");
+        assert!(
+            err.starts_with(&format!("plugins.fetch url must use https (got '{url}')")),
+            "{err}"
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing was dialled"
     );
 }
 
