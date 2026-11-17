@@ -101,3 +101,34 @@ fn pointer_roots_unescape_and_cover_the_whole_document() {
     assert_eq!(pointer_root("/*/x"), "*");
     assert_eq!(pointer_root(""), "*");
 }
+
+#[test]
+fn outbound_styles_keep_describe_order_and_their_declared_flags() {
+    let mut d = described(None, &[]);
+    d.items = vec![
+        (
+            busbar_plugin_abi::auth::tag::D_OUTBOUND_STYLE,
+            b"jwt-bearer".to_vec(),
+        ),
+        (tag::D_SECRET_PATH, b"/key".to_vec()),
+        (
+            busbar_plugin_abi::auth::tag::D_OUTBOUND_STYLE,
+            b"client-credentials".to_vec(),
+        ),
+    ];
+    let styles = auth_styles_of_described(&d, |name| u64::from(name == "jwt-bearer") * 4);
+    assert_eq!(
+        styles,
+        [
+            AuthStyle {
+                name: "jwt-bearer".into(),
+                flags: 4,
+            },
+            AuthStyle {
+                name: "client-credentials".into(),
+                flags: 0,
+            },
+        ]
+    );
+    assert!(auth_styles_of_described(&described(None, &[]), |_| 1).is_empty());
+}

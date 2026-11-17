@@ -25,7 +25,31 @@ pub struct PublicSettings {
     pub public: BTreeSet<String>,
 }
 
+/// One outbound auth style an admitted auth image declares (D_OUTBOUND_STYLE) and its D_STYLE_FLAGS mask
+/// (`auth::STYLE_*`, 0 when it declared none): the native successor of the legacy Statement's
+/// `kinds::auth::OutboundStyle` name and flags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthStyle {
+    /// The style word.
+    pub name: String,
+    /// Its D_STYLE_FLAGS mask.
+    pub flags: u64,
+}
+
 impl Images {
+    /// The outbound styles the admitted auth image `identity` declares, in describe order; empty for
+    /// any other kind or an unknown identity.
+    #[must_use]
+    pub fn auth_styles(&self, identity: &str) -> Vec<AuthStyle> {
+        let Some(described) = self
+            .described(identity)
+            .filter(|d| d.kind == busbar_plugin_abi::types::KindCode::Auth)
+        else {
+            return Vec::new();
+        };
+        auth_styles_of_described(&described, |name| self.style_flags(identity, name))
+    }
+
     /// The public settings of the admitted image `identity`, from its D_SCHEMA and D_SECRET_PATH
     /// items. `Ok(None)` when it declares no public setting or no such image is admitted.
     ///
@@ -42,6 +66,20 @@ impl Images {
         };
         public_settings_of_described(identity, &self.names(identity), &described, words)
     }
+}
+
+/// [`Images::auth_styles`] over one image's admitted facts; `flags` answers a style's D_STYLE_FLAGS.
+pub(crate) fn auth_styles_of_described(
+    described: &Described,
+    flags: impl Fn(&str) -> u64,
+) -> Vec<AuthStyle> {
+    described
+        .paths(busbar_plugin_abi::auth::tag::D_OUTBOUND_STYLE)
+        .map(|name| AuthStyle {
+            name: name.to_owned(),
+            flags: flags(name),
+        })
+        .collect()
 }
 
 /// [`Images::public_settings`] over one image's admitted facts: `names` is its identity and its

@@ -2575,7 +2575,7 @@ mod transport_endpoint_tests;
 
 /// Native metadata readers for the composition root (LIFECYCLE-A-PLAN WP1).
 mod facts;
-pub use facts::PublicSettings;
+pub use facts::{AuthStyle, PublicSettings};
 
 #[cfg(test)]
 mod needs_tests;
