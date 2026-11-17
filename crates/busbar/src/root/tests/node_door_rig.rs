@@ -223,10 +223,10 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     let store_settings: serde_json::Value =
         serde_json::from_str(&store_settings).expect("the actual Store settings are JSON");
     let auth = if opts.open_door {
-        "auth:\n  chain: []\n  admin_auth: []\n".to_string()
+        "auth:\n  chain: []\n".to_string()
     } else {
         format!(
-            "auth:\n  chain: [keys]\n  admin_auth: []\n  signing_key: {{ file: '{}' }}\n",
+            "auth:\n  chain: [keys]\n  signing_key: {{ file: '{}' }}\n",
             signing_file.display()
         )
     };

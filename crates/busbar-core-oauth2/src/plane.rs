@@ -42,6 +42,9 @@ pub(crate) type AsService = oauth_as::http::AuthorizationService<AsStore, System
 
 pub(crate) struct AsPlane {
     identity: AsIdentity,
+    /// The admin listener's origin (`busbar_kernel::oauth_as::seam::admin_origin`): where the operator
+    /// approval pages live, and the address published for them.
+    admin_origin: String,
     service: AsService,
     server: Arc<AsServer>,
 
@@ -179,6 +182,7 @@ impl AsPlane {
             .expect("the in-memory store opens the oauth-as scope");
         Self::build_carrying(
             identity,
+            crate::testkit::ADMIN_ORIGIN.to_string(),
             key_material,
             protected_resources,
             fetch,
@@ -189,6 +193,7 @@ impl AsPlane {
 
     pub(crate) async fn build_carrying(
         identity: AsIdentity,
+        admin_origin: String,
         key_material: Option<&str>,
         protected_resources: Vec<String>,
         fetch: Arc<dyn super::cimd::CimdFetch>,
@@ -220,7 +225,8 @@ impl AsPlane {
             }
         };
 
-        let mut config = ServerConfig::new(identity.issuer(), identity.verification_url());
+        let verification_uri = format!("{admin_origin}{}", crate::config::OPERATOR_DEVICE_PATH);
+        let mut config = ServerConfig::new(identity.issuer(), verification_uri);
         let (authorization, token, device, revocation) = (
             format!("{}/authorize", identity.issuer()),
             format!("{}/token", identity.issuer()),
@@ -287,15 +293,13 @@ impl AsPlane {
         );
 
         let sessions = Arc::clone(&carried.sessions);
-        let consent_subject = super::consent::subject_resolver(Arc::clone(&sessions));
+        // The library's own device verification page is never reached: `verification_uri` is on the
+        // admin origin, which busbar serves itself (`routes::device_page`), so no CSRF seam is wired.
         let service = oauth_as::http::ServiceBuilder::new(Arc::clone(&server))
-            .with_subject_resolver(move |headers| {
-                serve::device_subject().or_else(|| consent_subject(headers))
-            })
-            .with_csrf_tokens(|_| serve::device_issued(), |_| serve::device_consumed())
+            .with_subject_resolver(super::consent::subject_resolver(Arc::clone(&sessions)))
             .with_approval_resolver(super::consent::approval_resolver(
                 Arc::clone(&sessions),
-                identity.consent_url(),
+                format!("{admin_origin}{}", crate::config::OPERATOR_CONSENT_PATH),
             ))
             .build()
             .map_err(AsBuildError::Service)?;
@@ -306,6 +310,7 @@ impl AsPlane {
 
         Ok(Self {
             identity,
+            admin_origin,
             service,
             server,
             sessions,
@@ -318,6 +323,20 @@ impl AsPlane {
 
     pub(crate) fn identity(&self) -> &AsIdentity {
         &self.identity
+    }
+
+    /// The admin listener's origin: where the operator approval pages live.
+    pub(crate) fn admin_origin(&self) -> &str {
+        &self.admin_origin
+    }
+
+    /// The consent page's absolute URL, on the admin origin.
+    pub(crate) fn consent_url(&self) -> String {
+        format!(
+            "{}{}",
+            self.admin_origin,
+            crate::config::OPERATOR_CONSENT_PATH
+        )
     }
 
     pub(crate) fn server(&self) -> &Arc<AsServer> {
@@ -425,11 +444,25 @@ pub(crate) fn seam_build<C: crate::Connections>(
     protected_resources: Vec<String>,
     prior: Option<Arc<dyn std::any::Any + Send + Sync>>,
     store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    admin_origin: String,
 ) -> BuildFuture {
     Box::pin(async move {
         let identity = crate::config::identity_of(&block)?;
         let carried = match prior.and_then(|p| p.downcast::<AsPlane>().ok()) {
-            Some(plane) => Arc::clone(&plane.carried),
+            Some(plane) => {
+                // The admin listener is bound once, at boot, and every pending login was sent to the
+                // address it published. An apply cannot move it; a restart can.
+                if plane.admin_origin != admin_origin {
+                    return Err(format!(
+                        "oauth_as: the admin listener is `{}` since boot, and this config names \
+                         `{admin_origin}` (admin_listen or admin_tls changed). The listener is \
+                         bound once at boot and the operator approval pages are published at its \
+                         address, so this cannot change on apply. Restart busbar to apply it.",
+                        plane.admin_origin
+                    ));
+                }
+                Arc::clone(&plane.carried)
+            }
             None => Arc::new(Carried::over(store)?),
         };
 
@@ -462,10 +495,16 @@ pub(crate) fn seam_build<C: crate::Connections>(
         };
 
         let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
-        let mut plane =
-            AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
-                .await
-                .map_err(|e| e.to_string())?;
+        let mut plane = AsPlane::build_carrying(
+            identity,
+            admin_origin,
+            key_material,
+            protected_resources,
+            fetch,
+            carried,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         plane.sweeper = Some(sweep_on_clock(
             plane.server(),

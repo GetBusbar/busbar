@@ -59,6 +59,14 @@ pub(crate) struct OwnHistory<'a> {
     journal: StoreJournal<'a>,
 }
 impl<'a> OwnHistory<'a> {
+    /// A cut-aware cold walk, with kept context before the retained originals.
+    pub(crate) async fn walk<S>(
+        &self,
+        fresh: impl FnMut() -> S,
+        each: impl FnMut(&mut S, &Record, bool) -> Result<()>,
+    ) -> Result<(S, VerifiedHead)> {
+        self.journal.walk(fresh, each).await
+    }
     pub(super) fn new(store: &'a CoreStore, node: u64) -> Result<Self> {
         Ok(Self {
             journal: StoreJournal::new(store, node)?,

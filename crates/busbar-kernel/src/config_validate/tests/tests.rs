@@ -26,6 +26,12 @@ fn make_root_cfg(
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
+        // #359 SEC-L1: both root listeners serve plaintext here, so the fixtures write the explicit acceptance.
+        listener_acceptances: crate::config::listener_acceptance::ListenerAcceptances {
+            listen: Some(fixture_plaintext()),
+            admin_listen: Some(fixture_plaintext()),
+            inert: Vec::new(),
+        },
         // #358: the open posture is written explicitly; omission is refused.
         auth: Some(config::AuthCfg::default_none()),
 
@@ -38,7 +44,7 @@ fn make_root_cfg(
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
         // No operator row is bound in these tests, so the default chain would be refused
-        // (OPERATOR-FROM-ADMITTED-AUTH R19); the fixtures name the open dev posture explicitly.
+        // (OPERATOR-FROM-ADMITTED-AUTH R19); with no `auth:` block no rule judges the empty chain.
         admin_auth: Vec::new(),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
@@ -1979,5 +1985,14 @@ fn a_retired_metadata_key_is_refused_with_the_manual_fix_and_no_migrate_flag() {
         assert!(text.starts_with(key), "{text}");
         assert!(text.contains("remove the key"), "{text}");
         assert!(!text.contains("--migrate-config"), "{text}");
+    }
+}
+
+/// The explicit plaintext acceptance the root-listener fixtures write (#359 SEC-L1).
+fn fixture_plaintext() -> crate::config::min3::InsecureTransport {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    crate::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
     }
 }

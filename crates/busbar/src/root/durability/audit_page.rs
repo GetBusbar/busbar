@@ -287,7 +287,9 @@ impl Durability {
             .next_journal
             .saturating_add(SCAN_POSITIONS)
             .min(cursor.journal_end);
-        let scan = !(exhausted || covered);
+        // SEALING-FIX §3.9: once an Ephemeral cut has moved the base, the ring may name lines the
+        // store no longer holds, so the page reads the retained WAL from its base.
+        let scan = self.journal.base_tail().is_some() || !(exhausted || covered);
         let records = if scan {
             Vec::new()
         } else {
@@ -313,13 +315,31 @@ impl Durability {
 
 impl AuditPagePlan {
     pub async fn finish(mut self) -> Result<Vec<u8>, GovernanceError> {
-        // One read of the node's journal serves the page's scan and its evidence.
-        let rows = self
+        // One read of the node's journal, from its replay base (SEALING-FIX §3.9), serves the
+        // page's scan and its evidence.
+        let walked = self
             .chain
-            .read()
+            .read_walk()
             .await
-            .map_err(|_| GovernanceError::Store)?
             .map_err(|_| GovernanceError::Store)?;
+        if let Some(base) = walked.base_tail {
+            self.body["truncated_below_base"] = json!({"base_seq": base.chain_seq.to_string()});
+            self.body["retention"]["durable_from"] =
+                json!(base.chain_seq.saturating_add(1).to_string());
+            self.body["retention"]["durable_from_known"] = json!(true);
+            self.cursor.next_audit = self.cursor.next_audit.max(base.chain_seq.saturating_add(1));
+            // The base may be a non-audit row. Start at the first retained WAL row, not at the
+            // audit tail's WAL position; the two are deliberately independent.
+            if let Some(first) = walked.rows.first() {
+                self.cursor.next_journal = self.cursor.next_journal.max(first.node_seq);
+                self.scan_end = self
+                    .cursor
+                    .next_journal
+                    .saturating_add(SCAN_POSITIONS)
+                    .min(self.cursor.journal_end);
+            }
+        }
+        let rows = walked.rows;
         let evidence = Evidence::read(&rows);
         let first_audit = self.cursor.next_audit;
         let scanned = if self.scan {

@@ -35,7 +35,7 @@ async fn test_open_door_regardless_of_upstream_creds() {
             serde_json::json!({
                 "providers": {},
                 "models": {},
-                "auth": { "chain": [], "admin_auth": [] },
+                "auth": { "chain": [] },
                 "store": { "module": module, "settings": settings },
                 "advanced": {  },
             }),

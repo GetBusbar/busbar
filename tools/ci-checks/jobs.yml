@@ -97,7 +97,7 @@ ffi-loom:                              # W1-U0 !2438
   rules: !reference [.checked, rules]
   script:
     - if green_skip; then green_exit; fi
-    - RUSTFLAGS="--cfg loom" k cargo test -p busbar-ffi --test loom_slots --release
+    - RUSTFLAGS="--cfg loom" k cargo test -p busbar-ffi --lib --release loom_tests
     - k_done
 
 # --- the plugin repos' jobs: lines for busbar-release template/gitlab-ci.yml (W1-FLEET renders them) -------------

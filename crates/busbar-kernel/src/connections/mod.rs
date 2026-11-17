@@ -1,11 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Caller connections: per-caller outbound grants, BEGIN/STATUS/REVOKE and the caller-mode grant (IF §12.12). W0-ABI stub: frozen signatures, `todo!()` bodies; W1-K10 fills it.
+//! Caller connections: per-caller outbound grants, BEGIN/STATUS/REVOKE and the caller-mode grant (IF §12.12). The
+//! frozen contract is below; W1-K10's implementation is [`StoreConnections`] (store.rs), its browser callback
+//! [`StoreConnections::callback`] with the route claims in callback.rs, the grant deletion on R_CONNECT_REQUIRED
+//! [`settle_outbound`], and core's one PKCE/state/nonce minting module [`pkce`].
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 
 use crate::plugin_records::RecordsDenied;
+
+mod callback;
+pub mod pkce;
+mod store;
+
+pub use callback::{callback_paths, CallbackAnswer, CallbackPath};
+pub use store::{settle_outbound, ConnectLogins, StoreConnections, LOGIN_TTL_S};
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
 
 /// Grants are custody: stored encrypted (core at-rest key), keyed by (plane plugin, plane instance **name**,
 /// caller subject hash, configured upstream name), never by a runtime id, so they survive restart, reconfigure

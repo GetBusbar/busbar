@@ -10,13 +10,6 @@ use busbar_contract::auth::Principal;
 use busbar_contract::authz::{Grants, Scope};
 
 #[test]
-fn an_open_door_is_anonymous_with_both_rulings() {
-    let authority = trust_decision_authority(&AdminDoor::Open).expect("an open door grants");
-    assert_eq!(authority.principal, "anonymous");
-    assert!(authority.approve && authority.revoke);
-}
-
-#[test]
 fn a_refused_door_grants_nothing() {
     assert_eq!(trust_decision_authority(&AdminDoor::Denied), None);
 }

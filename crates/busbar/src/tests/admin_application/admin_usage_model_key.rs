@@ -158,7 +158,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     let now = busbar_kernel::store::now();
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name":"team-a"}))
         .send()
         .await
@@ -191,7 +191,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 
     let body = client
         .get(format!("http://{addr}/api/v1/admin/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()

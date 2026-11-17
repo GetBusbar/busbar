@@ -443,7 +443,9 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
 }
 
 fn source_scan_needles_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
-    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    // The secret sources are the native secret images the test rig links (`test-linked.secrets`); the
+    // secret-doors axis that used to name them is gone with the door secret path (WP3 step 2).
+    let sources = test_linked_list(manifest, "secrets");
     let features = declared_features(manifest);
     let required = required_deps(manifest);
     let mut out = String::from(
@@ -451,9 +453,7 @@ fn source_scan_needles_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) ->
          const SOURCE_SCAN_NEEDLES: &[&str] = &[\n",
     );
     for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
-        let is_source = axes
-            .iter()
-            .any(|(f, a)| *f == feature && a.split_whitespace().any(|axis| axis == SECRET_AXIS));
+        let is_source = sources.contains(&krate);
         let always = !features.contains(&feature) && required.contains(&krate);
         if !is_source || !(enabled(&feature) || always) {
             continue;

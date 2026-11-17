@@ -121,7 +121,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
         }),
         &crate::root::boot::axis_test_grammar(),
