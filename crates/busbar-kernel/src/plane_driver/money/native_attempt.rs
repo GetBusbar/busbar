@@ -336,6 +336,14 @@ impl PreparedRateAttempt {
     ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
         self._prepared.original_route()
     }
+
+    pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
+        self._prepared.exchange()
+    }
+
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self._prepared.data()
+    }
 }
 
 impl std::fmt::Debug for PreparedRateAttempt {
