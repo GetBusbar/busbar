@@ -1124,12 +1124,14 @@ async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
     first: Vec<Act>,
     io: S,
     wiring: Wiring,
-) -> Outcome<S> {
+) -> Outcome<crate::raw_progress::RawCarrier<S>> {
     let mut answer = Actions::new(&conn.answers.source).expect("test answer owner");
     for act in first {
         answer.push(act).expect("test action capacity");
     }
-    super::drive(conn, answer, io, wiring).await
+    let io = crate::raw_progress::test_carrier(io);
+    let progress = io.progress();
+    super::drive(conn, answer, io, progress, wiring).await
 }
 
 #[test]
@@ -1189,11 +1191,17 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
 }
 
 fn rig() -> Rig {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let (_register, registrations) = mpsc::channel(8);
     let (feeds, feed_rx) = mpsc::channel(8);
     let (inbound_tx, inbound) = mpsc::channel(8);
     let (close, close_rx) = oneshot::channel();
     let counters = Arc::new(SessionCounters::default());
     let wiring = Wiring {
+        delivery: DeliveryLedger::new(&source, 128.try_into().unwrap(), 8.try_into().unwrap())
+            .expect("test bounded ledger"),
+        registrations,
         feeds: feed_rx,
         inbound: inbound_tx,
         close: close_rx,

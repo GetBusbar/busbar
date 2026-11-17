@@ -17,6 +17,10 @@ use busbar_contract::response_delivery::{
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use futures::task::AtomicWaker;
 
+#[cfg(test)]
+#[path = "response_delivery_tests.rs"]
+mod tests;
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -440,6 +444,27 @@ impl DeliveryLedger {
     pub(crate) fn poll_control(&mut self, cx: &mut Context<'_>) -> Poll<DeliveryControl> {
         self.register_control_waker(cx.waker());
         self.next_control().map_or(Poll::Pending, Poll::Ready)
+    }
+
+    /// Whether a response binding still needs an input/protocol/settlement join.
+    pub(crate) fn has_responses(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    /// Retry only the existing complete retirement predicate after actual input publications.
+    /// Registration precedes the scan so a concurrent EOF or cancellation join cannot be lost.
+    pub(crate) fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.register_control_waker(cx.waker());
+        self.drain_input();
+        for index in (0..self.entries.len()).rev() {
+            let stream = self.entries[index].cell.key.stream;
+            let _ = self.retire_response(stream);
+        }
+        if self.entries.is_empty() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 
     /// Take one coalesced control; cancellation wins over an unconsumed release.

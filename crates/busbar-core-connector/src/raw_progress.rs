@@ -206,6 +206,12 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for RawCarrier<S> {
 
 /// Explicit test carrier; never available to production assembly.
 #[cfg(test)]
+pub(crate) fn test_carrier<S>(io: S) -> RawCarrier<S> {
+    RawCarrier::new(io)
+}
+
+/// Explicit erased test carrier; never available to production assembly.
+#[cfg(test)]
 pub(crate) fn test_io(
     io: Box<dyn busbar_contract::transport::wire::RawIo>,
     storage: busbar_contract::storage::StorageSource,
