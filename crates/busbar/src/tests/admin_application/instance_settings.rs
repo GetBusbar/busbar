@@ -78,6 +78,27 @@ async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay(
         );
         assert!(std::sync::Arc::ptr_eq(&before, &fixture.handle.load()));
     }
+    let duplicate = client
+        .put(&endpoint)
+        .header("If-Match", "\"stale\"")
+        .header("If-Match", etag)
+        .header("Idempotency-Key", "instance-duplicate-precondition")
+        .header("Content-Type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+    let missing_key = client
+        .put(&endpoint)
+        .header("If-Match", etag)
+        .header("Content-Type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_key.status(), StatusCode::BAD_REQUEST);
+    assert!(std::sync::Arc::ptr_eq(&before, &fixture.handle.load()));
     let first = client
         .put(&endpoint)
         .header("If-Match", etag)
@@ -155,6 +176,57 @@ async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay(
         after["actions"][0]["etag"],
         committed_etag.to_str().unwrap()
     );
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn instance_settings_cannot_overwrite_a_higher_priority_typed_overlay() {
+    const CHILD: &str = "BUSBAR_INSTANCE_SETTINGS_PRECEDENCE_CHILD";
+    const WITNESS: &str = "instance settings precedence refusal completed";
+    if super::config_document_patch::ran_in_child(CHILD, WITNESS) {
+        return;
+    }
+    let fixture = super::config_document_patch::durable_admin("instance-settings-precedence").await;
+    let client = reqwest::Client::new();
+    let endpoint = format!("http://{}/api/v1/admin/config/settings", fixture.addr);
+    let before = describe(&fixture).await;
+    let typed = client
+        .put(&endpoint)
+        .header("If-Match", before["actions"][0]["etag"].as_str().unwrap())
+        .json(&json!({"store":fixture.document["store"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(typed.status(), StatusCode::OK);
+    let description = describe(&fixture).await;
+    let action = &description["actions"][0];
+    let installed = fixture.handle.load();
+    let stored = fixture
+        .overlay
+        .read_required_async()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.root.as_ref().unwrap().store.is_some());
+    let response = client
+        .put(&endpoint)
+        .header("If-Match", action["etag"].as_str().unwrap())
+        .header("Idempotency-Key", "instance-shadowed")
+        .header("Content-Type", "application/json")
+        .body(edit(action, 4321))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(std::sync::Arc::ptr_eq(&installed, &fixture.handle.load()));
+    let after = fixture
+        .overlay
+        .read_required_async()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after.document_patch.is_none());
+    assert!(after.root.as_ref().unwrap().store.is_some());
     println!("{WITNESS}");
 }
 
