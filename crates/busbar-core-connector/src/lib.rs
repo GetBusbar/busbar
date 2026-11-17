@@ -5,6 +5,8 @@
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
+// Send proofs over busbar-kernel futures in this crate exceed the default 128 (see busbar-kernel lib.rs).
+#![recursion_limit = "256"]
 
 // busbar:request-path
 #[cfg_attr(

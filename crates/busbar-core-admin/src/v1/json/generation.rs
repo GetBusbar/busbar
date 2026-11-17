@@ -769,7 +769,7 @@ pub(crate) async fn get_operation(
             let Some(intent) = decode_intent(&receipt) else {
                 return unreadable_replay();
             };
-            serde_json::json!({
+            busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
                 "state": "in_flight", "status": null,
                 "request_sha256": hex::encode(intent.fingerprint), "received_at": intent.received_at,

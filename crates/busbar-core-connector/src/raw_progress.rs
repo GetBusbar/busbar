@@ -26,6 +26,15 @@ pub struct RawCarrier<S> {
     progress: Arc<Progress>,
 }
 
+/// Debug names the carrier and its current progress counters; the wrapped stream is not printed.
+impl<S> std::fmt::Debug for RawCarrier<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawCarrier")
+            .field("progress", &self.progress.snapshot())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S> RawCarrier<S> {
     fn new(inner: S) -> Self {
         Self {

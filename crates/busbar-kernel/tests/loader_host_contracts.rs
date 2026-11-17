@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+// Send proofs over busbar-kernel futures exceed the default 128 (see busbar-kernel lib.rs).
+#![recursion_limit = "256"]
 // Actual KernelServices controls relocated from the deleted conformance Host simulator.
 use busbar_contract::abi::host::service::MAX_RANDOM_FILL;
 use busbar_contract::abi::mechanism::{call::Outcome, KindCode};
