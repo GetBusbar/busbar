@@ -20,6 +20,7 @@ pub(crate) struct AdminRequest {
     snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
     binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
     physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+    projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
 
@@ -36,6 +37,7 @@ impl AdminRequest {
             unit,
             binding: None,
             physical: None,
+            projection: Arc::new(Mutex::new(None)),
         }
     }
     pub(crate) fn from_binding(
@@ -47,6 +49,7 @@ impl AdminRequest {
             unit: binding.invocation().request_id().get(),
             binding: Some(binding),
             physical: None,
+            projection: Arc::new(Mutex::new(None)),
         })
     }
     pub(crate) fn attach_physical(
@@ -109,6 +112,9 @@ impl AdminRequest {
             })
     }
     pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
+        if self.binding.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in self.headers() {
             headers.append(
@@ -118,6 +124,12 @@ impl AdminRequest {
             );
         }
         Ok(headers)
+    }
+
+    pub(crate) fn http_projection(
+        &self,
+    ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
+        self.projection.lock().ok()?.as_ref().cloned()
     }
 }
 

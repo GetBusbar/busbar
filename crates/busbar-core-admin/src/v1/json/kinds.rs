@@ -854,7 +854,7 @@ fn page(items: Vec<Value>, next_cursor: Option<String>) -> Value {
 /// `GET /kinds[?category=]`.
 pub(crate) async fn list(
     State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Some(refused) = refuse_unknown(&q, LIST_PARAMS) {

@@ -454,7 +454,7 @@ impl Drop for UnpublishedPluginPin {
 pub(crate) async fn rollback_plugin(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -866,7 +866,7 @@ impl GroupPatchReq {
 pub(crate) async fn register_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -945,7 +945,7 @@ pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1017,7 +1017,7 @@ pub(crate) async fn delete_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -1086,7 +1086,7 @@ pub(crate) use busbar_kernel::governance::group_provision::plan_mint_group;
 pub(crate) async fn register_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1142,7 +1142,7 @@ pub(crate) async fn put_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1194,7 +1194,7 @@ pub(crate) async fn patch_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1255,7 +1255,7 @@ pub(crate) async fn delete_group(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -1340,7 +1340,7 @@ pub(crate) async fn reset_overlay_section(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(section): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     use busbar_kernel::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
@@ -1928,7 +1928,7 @@ pub(crate) struct RollbackReq {
 pub(crate) async fn rollback_config(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -2004,7 +2004,7 @@ pub(crate) async fn rollback_config(
 pub(crate) async fn put_auth(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let expected = ok_or_respond!(if_match_version(&headers));
@@ -2319,7 +2319,7 @@ pub(crate) struct RestartReq {
 
 pub(crate) async fn restart(
     State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -2474,7 +2474,7 @@ enum Applied {
 pub(crate) async fn apply_config(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -2889,7 +2889,7 @@ pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     original: Option<axum::Extension<super::generation::OriginalConfigPrecondition>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     if super::instance_settings::is_request(&body) {
@@ -3142,7 +3142,7 @@ pub(crate) async fn patch_hook_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();

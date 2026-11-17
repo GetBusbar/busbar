@@ -58,6 +58,19 @@ pub async fn apply_config(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    use axum::extract::FromRequestParts;
+    use axum::response::IntoResponse;
+    let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+    parts.headers = headers;
+    let headers = match busbar_kernel::inbound::http_projection::AdminHeaders::from_request_parts(
+        &mut parts,
+        &(),
+    )
+    .await
+    {
+        Ok(headers) => headers,
+        Err(error) => return error.into_response(),
+    };
     crate::v1::json::apply_config(state, principal, headers, body).await
 }
 

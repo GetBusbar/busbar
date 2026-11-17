@@ -207,9 +207,14 @@ fn check_if_match(req: &mut Request, app: &App, rel: &str) -> Result<(), Box<Res
             Cond::StaleIfMatch,
         )));
     }
-    if let Ok(version) = HeaderValue::from_str(&format!("\"{}\"", app.config_version)) {
-        req.headers_mut().insert(header::IF_MATCH, version);
-    }
+    use std::io::Write;
+    let mut formatted = [0u8; 22];
+    let mut remaining = formatted.as_mut_slice();
+    write!(remaining, "\"{}\"", app.config_version)
+        .map_err(|_| Box::new(err_json(&AdminError::Internal)))?;
+    let written = 22 - remaining.len();
+    busbar_kernel::inbound::http_projection::replace_if_match(req, &formatted[..written])
+        .map_err(|error| Box::new(error.into_response()))?;
     Ok(())
 }
 

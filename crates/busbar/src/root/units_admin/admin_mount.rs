@@ -385,18 +385,37 @@ async fn call(
 ) -> AdminAnswer {
     use tower::ServiceExt;
 
-    let mut builder = axum::http::Request::builder()
-        .method(request.method())
-        .uri(request.path());
-    for (name, value) in request.headers() {
-        builder = builder.header(name, value);
-    }
-    builder = builder
-        .extension(Arc::clone(replays))
-        .extension(Arc::clone(request.snapshot()))
-        .extension(request.snapshot().request().clone());
+    let projection = request
+        .projection
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    let mut http = if let Some(projection) = projection {
+        let Ok(projection) = Arc::try_unwrap(projection) else {
+            return unavailable_answer();
+        };
+        projection.into_request(axum::body::Body::from(request.snapshot().body_bytes()))
+    } else {
+        if request.binding.is_some() {
+            return unavailable_answer();
+        }
+        let mut builder = axum::http::Request::builder()
+            .method(request.method())
+            .uri(request.path());
+        for (name, value) in request.headers() {
+            builder = builder.header(name, value);
+        }
+        let Ok(http) = builder.body(axum::body::Body::from(request.snapshot().body_bytes())) else {
+            return error_answer(400, "invalid_request");
+        };
+        http
+    };
+    http.extensions_mut().insert(Arc::clone(replays));
+    http.extensions_mut().insert(Arc::clone(request.snapshot()));
+    http.extensions_mut()
+        .insert(request.snapshot().request().clone());
     if let Some(admission) = admission {
-        builder = builder.extension(admission);
+        http.extensions_mut().insert(admission);
     }
     if let Some(physical) = &request.physical {
         if physical.check_executing().is_err() {
@@ -408,7 +427,7 @@ async fn call(
         {
             return door_answer();
         }
-        builder = builder.extension(physical.clone());
+        http.extensions_mut().insert(physical.clone());
     }
     if let Some(execution) = execution {
         if let Some((lease, prepared)) = execution.native() {
@@ -418,15 +437,10 @@ async fn call(
             {
                 return door_answer();
             }
-            builder = builder
-                .extension(Arc::clone(lease.generation()))
-                .extension(execution);
+            http.extensions_mut().insert(Arc::clone(lease.generation()));
+            http.extensions_mut().insert(execution);
         }
     }
-    let Ok(http) = builder.body(axum::body::Body::from(request.snapshot().body_bytes())) else {
-        return error_answer(400, "invalid_request");
-    };
-
     let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
     let (parts, body) = response.into_parts();
 
@@ -718,6 +732,19 @@ pub(crate) fn mount(
                         AdminRequest::from_snapshot(snapshot, unit)
                     }
                 };
+                if physical.is_some() {
+                    let projection =
+                        match busbar_kernel::inbound::http_projection::HttpProjection::from_parts(
+                            parts,
+                        ) {
+                            Ok(projection) => projection,
+                            Err(_) => return http_response(unavailable_answer()),
+                        };
+                    let Ok(mut slot) = request.projection.lock() else {
+                        return http_response(unavailable_answer());
+                    };
+                    *slot = Some(Arc::new(projection));
+                }
                 let unit = request.unit;
 
                 let exit = ExitPath { unit };
