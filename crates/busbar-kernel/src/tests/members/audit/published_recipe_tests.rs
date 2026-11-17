@@ -272,7 +272,7 @@ fn the_published_key_set_checks_the_published_examples_signature() {
     let domain = range["signature_domain"]
         .as_str()
         .expect("the published body names its signature domain");
-    let published_key = &keys["keys"][0];
+    let published_key = &keys["items"][0];
     let key_hex = published_key["public_key"]
         .as_str()
         .expect("a published key");

@@ -322,7 +322,7 @@ fn unknown_versions_domains_algorithms_and_key_identifiers_are_refused() {
     bad["records"][0]["recipe"] = json::json!("busbar.audit.digest.v99");
     assert!(verify(&keys, &bad, None).is_err());
     let mut bad = keys;
-    bad["keys"][0]["key_id"] = json::json!("00".repeat(8));
+    bad["items"][0]["key_id"] = json::json!("00".repeat(8));
     assert!(verify(&bad, &range, None).is_err());
 }
 
@@ -354,10 +354,10 @@ fn mixed_v2_v4_records_and_a_rotated_trusted_key_verify() {
     let mut old = example(V2, 0)["records"][0].clone();
     old["recipe"] = json::json!(DIGEST_RECIPE_V2);
     range["records"][0] = old;
-    keys["keys"]
+    keys["items"]
         .as_array_mut()
         .unwrap()
-        .push(example(V2, 2)["keys"][0].clone());
+        .push(example(V2, 2)["items"][0].clone());
     for index in 1..3 {
         range["records"][index]["prev_hash"] = range["records"][index - 1]["hash"].clone();
         sign(&mut range["records"][index]);
@@ -371,14 +371,14 @@ fn mixed_v2_v4_records_and_a_rotated_trusted_key_verify() {
 fn absent_or_weak_trusted_keys_cannot_authenticate_a_range() {
     let (keys, range, _) = chain();
     let mut bad = keys.clone();
-    bad["keys"] = json::json!([]);
+    bad["items"] = json::json!([]);
     assert!(verify(&bad, &range, None).is_err());
     bad = keys.clone();
-    bad["keys"][0]["public_key"] = json::json!(format!("01{}", "00".repeat(31)));
+    bad["items"][0]["public_key"] = json::json!(format!("01{}", "00".repeat(31)));
     assert!(verify(&bad, &range, None).is_err());
     bad = keys;
-    let duplicate = bad["keys"][0].clone();
-    bad["keys"].as_array_mut().unwrap().push(duplicate);
+    let duplicate = bad["items"][0].clone();
+    bad["items"].as_array_mut().unwrap().push(duplicate);
     assert!(verify(&bad, &range, None).is_err());
 }
 
@@ -456,10 +456,10 @@ fn mixed_v2_v4_v5_window_verifies_without_rewriting_old_signed_record() {
     let (mut keys, mut range, _) = chain();
     let original = example(V2, 0)["records"][0].clone();
     range["records"][0] = original.clone();
-    keys["keys"]
+    keys["items"]
         .as_array_mut()
         .unwrap()
-        .push(example(V2, 2)["keys"][0].clone());
+        .push(example(V2, 2)["items"][0].clone());
     range["records"][1]["prev_hash"] = original["hash"].clone();
     sign(&mut range["records"][1]);
     range["records"][2]["recipe"] = json::json!(DIGEST_RECIPE);
@@ -735,4 +735,30 @@ fn the_link_recipe_is_verified_from_its_own_page_alone() {
     ] {
         assert!(LINK.contains(field), "the link page does not state {field}");
     }
+}
+
+/// The node serves `/api/v1/admin/audit/keys` as a page: the envelope, the keys under `items`, and
+/// `next_cursor`. The verifier takes that unmodified response; a page with more to fetch is not a
+/// whole key set and is refused.
+#[test]
+fn the_served_audit_keys_response_is_the_trusted_key_input() {
+    let built = keys();
+    let mut served = json::json!({
+        "recipe": built["recipe"].clone(),
+        "signature_domain": built["signature_domain"].clone(),
+        "algorithm": built["algorithm"].clone(),
+        "items": [{
+            "key_id": signer().key_id(),
+            "algorithm": SIGNATURE_ALGORITHM,
+            "public_key": signer().public_key_hex(),
+        }],
+        "next_cursor": null,
+    });
+    let (_, range, _) = chain();
+    assert!(verify(&served, &range, None).is_ok());
+    served["next_cursor"] = json::json!("audit-keys.next");
+    assert!(
+        verify(&served, &range, None).is_err(),
+        "one page of several is not the key set"
+    );
 }

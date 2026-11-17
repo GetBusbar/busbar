@@ -255,8 +255,15 @@ fn hex(text: &str, bytes: usize) -> bool {
 
 fn trusted_keys(body: &Value) -> Result<BTreeMap<String, AuditVerifyingKey>> {
     envelope(body)?;
+    // The served /audit/keys page: its keys under `items`, and `next_cursor` null on the last page.
+    if body
+        .get("next_cursor")
+        .is_some_and(|cursor| !cursor.is_null())
+    {
+        return Err("the key set is one page of several; fetch every page and trust the whole set");
+    }
     let rows = body
-        .get("keys")
+        .get("items")
         .and_then(Value::as_array)
         .ok_or("key set is absent")?;
     let mut keys = BTreeMap::new();

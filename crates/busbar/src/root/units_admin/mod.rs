@@ -905,7 +905,7 @@ async fn audit_keys_page(
         .into_object()
         .ok_or(busbar_core_admin::GovernanceError::Store)?;
     let keys = body
-        .remove(&"keys")
+        .remove(&"items")
         .and_then(|keys| keys.as_array().map(|keys| keys.to_vec()))
         .ok_or(busbar_core_admin::GovernanceError::Store)?;
     let page = cursor::keyset(

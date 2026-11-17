@@ -3885,9 +3885,9 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
                 .body,
         )
         .expect("valid JSON");
-        served["keys"]
+        served["items"]
             .as_array()
-            .expect("keys")
+            .expect("items")
             .iter()
             .map(|k| k["public_key"].as_str().expect("public_key").to_string())
             .collect()
