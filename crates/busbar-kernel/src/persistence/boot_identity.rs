@@ -307,6 +307,13 @@ impl WriterRetirements {
                 retry_at_ms: closable_ms,
             });
         }
+        let mark_address = super::scoped::migration_address(
+            true,
+            INSTANCE,
+            NODE_SCHEMA,
+            &predecessor_seal::fenced_key(epoch, writer),
+        )
+        .map_err(error)?;
         let fence = super::fences::writer(
             core.next_id().map_err(error)?,
             writer,
@@ -315,6 +322,20 @@ impl WriterRetirements {
         )
         .map_err(error)?;
         let body = fence.candidate();
+        // Preserve the shared writer transition's epoch and slot cleanup, and retain
+        // the predecessor mark in that same exact candidate through every retry.
+        let mut mutations = control::writer_put(writer, Some(old), permanently_closed)
+            .ok_or("invalid writer retirement transition")?;
+        mutations.push(native::Mutation::Put {
+            address: mark_address,
+            value: Secret::new(
+                FenceMark {
+                    lease_expires_ms: lease_row.expires_ms,
+                    sealed: Vec::new(),
+                }
+                .bytes(),
+            ),
+        });
         let candidate = native::PreparedCandidate::new(native::Candidate {
             id: body.id,
             codec: body.codec,
@@ -329,7 +350,7 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: body.mutations.clone(),
+            mutations,
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,

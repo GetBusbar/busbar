@@ -533,6 +533,8 @@ pub enum OpenPurpose {
 
 pub struct InstanceSpec<'a> {
     pub purpose: OpenPurpose,
+    /// One Store-open recovery verdict. Never copied to Applied or a serving/reopen context.
+    pub store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -1313,6 +1315,7 @@ impl Registry {
                 })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1359,6 +1362,7 @@ impl Registry {
             })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,

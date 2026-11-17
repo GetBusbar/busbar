@@ -16,6 +16,9 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
 
+#[path = "request_current.rs"]
+mod current;
+
 const REGISTERED: u8 = 0;
 const RESOLVING: u8 = 1;
 const READY: u8 = 2;
@@ -562,3 +565,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/request_credential_tests.rs"]
 mod credential_tests;
+
+#[cfg(test)]
+#[path = "tests/request_current_tests.rs"]
+mod current_tests;

@@ -40,8 +40,8 @@ pub(crate) fn sync<'o>(
         return Err(CallError::Quarantined);
     }
     // None: busbar-ffi's ACTIVE stack is full, a host fault and not the plugin's (no sink, no quarantine).
-    let status =
-        step(inst.slot, entry, buf, call).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+    let status = step(inst.slot, entry, None, buf, call)
+        .ok_or(CallError::Fault(FaultReason::BadInstance))?;
     Answer::parse(status, buf.bytes()).map_err(|reason| report_fault(inst.slot, false, reason))
 }
 
@@ -82,8 +82,8 @@ pub(crate) fn opener<'o, K: Kind>(
     if !inst.is_live() {
         return Err(CallError::Quarantined);
     }
-    let (status, session) =
-        step(inst.slot, entry, buf, call).ok_or(CallError::Fault(FaultReason::BadInstance))?;
+    let (status, session) = step(inst.slot, entry, None, buf, call)
+        .ok_or(CallError::Fault(FaultReason::BadInstance))?;
     match Answer::parse(status, buf.bytes()) {
         Ok(answer) => Ok((session, answer)),
         // `session` drops here: busbar-ffi cancels the token the plugin minted.
