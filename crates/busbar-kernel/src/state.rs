@@ -1273,7 +1273,7 @@ impl AppHandle {
             .as_ref()
             .filter(|held| held.pending())
         {
-            held.check(&prior)?;
+            held.check(self, &prior)?;
             if generation != Some(held.epoch()) {
                 return Err("candidate publication epoch differs from its prepared owners".into());
             }
@@ -1341,6 +1341,17 @@ impl AppHandle {
         Ok(())
     }
 
+    pub(crate) fn check_candidate_generation(&self, next: &App) -> Result<(), String> {
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(self, &self.load())?;
+        }
+        Ok(())
+    }
+
     async fn candidate_generation(&self, next: &App) -> Result<u64, String> {
         match next
             .publication_generation
@@ -1348,7 +1359,7 @@ impl AppHandle {
             .filter(|held| held.pending())
         {
             Some(held) => {
-                held.check(&self.load())?;
+                held.check(self, &self.load())?;
                 Ok(held.epoch())
             }
             None => self.reserve_generation().await,
@@ -1361,6 +1372,7 @@ impl AppHandle {
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
         let generation = self.candidate_generation(&next).await?;
@@ -1407,6 +1419,7 @@ impl AppHandle {
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
         let expected = self.load();
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(expected.overlay_path.clone());
         let prepared = match preparation {

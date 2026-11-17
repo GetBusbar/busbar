@@ -1864,7 +1864,18 @@ async fn build_app_native(
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
     let publication_generation = config::generation::reserve(prior).await?;
-    let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
+    };
     let prepared_resolver = preparation
         .as_ref()
         .map(|preparation| preparation.secret_resolver());
