@@ -1464,6 +1464,7 @@ fn breaker_trip_default_matches_an_empty_config_object() {
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
+        require_if_match: None,
         signing_key: Some(crate::config::secret::descriptor_reference(
             "BUSBAR_T_DEBUG_SECRET",
         )),
