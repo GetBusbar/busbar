@@ -15,6 +15,9 @@ mod count_scale;
 mod metering_pricing;
 pub use metering_pricing::{MeteringPricingV1, MeteringRole};
 
+#[cfg(test)]
+mod selected_metering_tests;
+
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
 /// admission-topology substrate: everywhere busbar used
 /// to name "which pool" with a bare `String`, it now names "which scope, of what kind" with this
