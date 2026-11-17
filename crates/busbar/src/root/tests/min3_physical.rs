@@ -276,6 +276,7 @@ fn core_coverage_requires_exact_declared_path_methods_and_class() {
 async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_health() {
     use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener, RouteTarget};
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use tower::ServiceExt as _;
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
     let transport = crate::root::min3_transports::tests::framer(&["http"]);
@@ -287,7 +288,7 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
     let selected = slot.clone();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
     let listener = PhysicalListener::new(
-        handle,
+        handle.clone(),
         "admin_listen".into(),
         transport,
         AdmissionClass::Operator,
@@ -330,6 +331,37 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
         .unwrap()
         .complete_public()
         .unwrap();
+    assert!(execution.check_executing().is_ok());
+    let selected = slot.clone();
+    let router = busbar_kernel::router::serve_listener_generations(
+        handle,
+        move |_| Some(selected.prepared().clone()),
+        1024,
+        0,
+        false,
+    );
+    let expected = busbar_kernel::endpoints::healthz(busbar_kernel::state::CurrentApp(
+        execution.binding().app().clone(),
+    ))
+    .await
+    .status();
+    let mut http = axum::http::Request::builder()
+        .method("HEAD")
+        .uri(busbar_kernel::auth::HEALTHZ_PATH)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    http.extensions_mut()
+        .insert(execution.binding().app().clone());
+    http.extensions_mut()
+        .insert(execution.binding().request().clone());
+    http.extensions_mut()
+        .insert(execution.binding().snapshot().unwrap());
+    let response = router.oneshot(http).await.unwrap();
+    assert_eq!(response.status(), expected);
+    assert!(axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(execution.check_executing().is_ok());
 }
 
