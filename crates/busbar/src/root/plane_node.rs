@@ -199,7 +199,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(None),
+            lost: Mutex::new(Self::fixture_terminal_book()),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
 
@@ -226,6 +226,40 @@ impl Node {
             process.connection_storage(AdmissionClass::Operator),
         ));
         Ok(())
+    }
+
+    /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
+    #[cfg(not(test))]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        None
+    }
+
+    /// Unit fixtures use a real ProcessAdmission, as production does. A fixture asserting on
+    /// its own boot budget rebinds through `rebind_terminal_storage` before any unit enters.
+    #[cfg(test)]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        let process = ProcessAdmission::new(0);
+        Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ))
+    }
+
+    /// Replace an empty fixture book with the fixture's own boot-bound process storage.
+    #[cfg(test)]
+    pub(crate) fn rebind_terminal_storage(&self, process: &Arc<ProcessAdmission>) {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            book.as_ref().is_none_or(|book| book.len() == 0),
+            "terminal storage is rebound only before any unit enters"
+        );
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
     }
 
     pub(crate) fn terminal_pending(&self) -> usize {
