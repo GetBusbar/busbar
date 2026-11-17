@@ -8,12 +8,14 @@ use crate::config::groups::{ExhaustionMode, GroupCfg};
 use crate::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use crate::host_services::{KernelServices, NativeInvocationAdmission, Nest, NestDone, NestRoute};
 use crate::inbound::native::tests::{accepted, app, Transport};
-use crate::inbound::native::{PhysicalConnection, PhysicalListener, PhysicalPlan, StreamOwner};
+use crate::inbound::native::{
+    CompletingPhysicalRequest, PhysicalConnection, PhysicalListener, PhysicalPlan, StreamOwner,
+};
 use crate::issued::IssuedCredentials;
 use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
-use crate::plane_driver::money::{EndPost, FeeRefund, PlaneMoney};
 use crate::plane_driver::port_intents::Namespace;
 use crate::plane_driver::port_routes::Mounted;
+use crate::plane_driver::{EndPost, FeeRefund, PlaneMoney};
 use crate::plane_grants::{KeyRefresh, ReplayGuard};
 use crate::plugin_records::RecordsDenied;
 use crate::resource_admission::{ForwardFact, FrozenRequest, ResourceFact};
@@ -722,7 +724,7 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     assert!(!context.is_live());
     assert!(!context.effects_allowed());
     assert!(binding.check_executing().is_err());
-    let ended = crate::plane_driver::money::UnitEnd {
+    let ended = crate::plane_driver::UnitEnd {
         caller_status: 499,
         cut: false,
         refused_unspent: true,
