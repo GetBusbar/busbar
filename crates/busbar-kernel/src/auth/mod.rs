@@ -1084,11 +1084,6 @@ fn sender_constraint_response(
     reason: dpop::Refusal,
 ) -> Response {
     let ingress = ingress_for_path(app, path);
-    auth_completion_taps(
-        app,
-        crate::ingress::native::envelope_dialect(ingress),
-        Some(StatusCode::UNAUTHORIZED.as_u16()),
-    );
     let description = reason.description(app.oauth_as.is_none());
     if let Some(resource_metadata) = resource_metadata {
         return challenge::refuse(
@@ -2028,47 +2023,12 @@ pub(crate) fn scoped_unauthorized_with_completion_taps(
     admission: Option<&crate::plane_driver::dispatch::PlaneAdmission>,
     client_token_present: bool,
 ) -> Response {
-    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
-    auth_completion_taps(
-        app,
-        proto,
-        Some(auth_failure_status_and_kind(proto).0.as_u16()),
-    );
     identity_refusal_response(
         IdentityRefusal::Denied,
         admission,
         client_token_present,
         || unauthorized_response(app, path, door),
     )
-}
-
-/// Fire auth rejection completion taps using the selected plane's declared dialect.
-pub fn auth_completion_taps(
-    app: &std::sync::Arc<crate::state::App>,
-    proto: &str,
-    status: Option<u16>,
-) {
-    if !app.tap_hooks_response.is_empty() {
-        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
-
-        let host = crate::plane_driver::engine_host_value(app);
-        let host: &dyn crate::plane_driver::EngineHost = &host;
-        crate::hooks::taps::fire_stage_taps_where(
-            &app.tap_hooks_response,
-            &shape,
-            &busbar_contract::hook_wire::HookStageProjection {
-                at: "response",
-                model: None,
-                attempt_number: None,
-                remaining_candidates: None,
-                previous_failure: None,
-                outcome: Some("rejected_by_auth"),
-                status,
-            },
-            Default::default(),
-            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
-        );
-    }
 }
 
 pub(crate) fn verifier_unavailable_response() -> Response {

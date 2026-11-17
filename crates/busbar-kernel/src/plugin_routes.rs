@@ -163,51 +163,6 @@ impl PluginRouteTable {
         build_route_table(declarations)
     }
 
-    pub fn with_hook_routes(&self, declarations: Vec<RouteDecl>) -> Result<Self, String> {
-        if declarations
-            .iter()
-            .any(|route| route.kind != RouteKind::Hook || route.scrape || route.persistent)
-        {
-            return Err(
-                "a hook route replacement must contain only ungranted hook declarations".into(),
-            );
-        }
-        let hooks = build_route_table(declarations)?;
-        let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = self
-            .by_path
-            .iter()
-            .filter_map(|(path, entries)| {
-                let retained: Vec<_> = entries
-                    .iter()
-                    .filter(|(_, registered)| registered.kind != RouteKind::Hook)
-                    .cloned()
-                    .collect();
-                (!retained.is_empty()).then(|| (path.clone(), retained))
-            })
-            .collect();
-        for (path, entries) in hooks.by_path {
-            let retained = by_path.entry(path.clone()).or_default();
-            for (method, registered) in entries {
-                if let Some((_, prior)) = retained.iter().find(|(existing, _)| *existing == method)
-                {
-                    return Err(format!(
-                        "plugin {:?} cannot register {} {} — already registered by {:?}",
-                        registered.owner,
-                        method.as_str(),
-                        path,
-                        prior.owner
-                    ));
-                }
-                retained.push((method, registered));
-            }
-        }
-        Ok(Self {
-            by_path,
-            persistent: self.persistent.clone(),
-            withheld_public_exports: self.withheld_public_exports.clone(),
-        })
-    }
-
     pub fn for_listener(&self, guests: &crate::guest::GuestList) -> Self {
         let mut by_path = HashMap::new();
         for (path, entries) in &self.by_path {

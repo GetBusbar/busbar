@@ -173,6 +173,7 @@ fn walk_secret_refs_with_boot_token<'a>(
         grammar: _,
         tls,
         admin_tls,
+        listener_acceptances: _,
         auth,
         providers,
         identity_providers,

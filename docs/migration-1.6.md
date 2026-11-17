@@ -204,6 +204,22 @@ config; explicit `{ env: NAME }` secret references still resolve environment val
 `RUST_LOG` and the `TOKIO_WORKER_THREADS` fallback remain available. `BUSBAR_DATA_DIR` is still
 used for registry data; it does not restore the retired journal.
 
+### A configuration with no `auth:` block
+
+1.5.5 booted a configuration with no `auth:` block (or an empty one) as an open relay: every
+caller that could reach the listener used the configured provider credentials, with only a
+banner. 1.6.0 never boots an open relay by omission: it refuses a configuration with no `auth:`
+block (BUSBAR-8014).
+
+The one-time upgrade does not write an `auth:` block for you. It reports the missing block as an
+action item (BUSBAR-8014) and the first 1.6.0 boot refuses it. Both give the same remedy: add
+`auth: { chain: [] }` explicitly to run an open relay, or configure a chain
+(`auth: { chain: [keys] }` with virtual keys minted through the admin API).
+
+`auth: { chain: [] }` is the one explicit open-relay acknowledgement. It is bannered on stderr and
+logged at ERROR at every boot, and audited as `open_relay` in the `node.boot` event. The MCP
+plane refuses to boot behind it.
+
 ### Grants and hooks
 
 The migrator adds `auth.role_bindings.<provider>."*": {}` for non-key providers in `auth.chain`
@@ -269,6 +285,28 @@ For encrypted transport with deliberately unverified certificates, the acceptanc
 Add it after stopping 1.5.5, which does not understand the new field. Store DSN details and
 implementation-specific error codes belong to the selected kind's own documentation; do not
 assume a code emitted by one implementation applies to another.
+
+### Listeners without TLS
+
+1.5.5 served the data listener (`listen`) and the admin listener (`admin_listen`) in plaintext
+whenever `tls:` / `admin_tls:` was absent, with no acceptance and no audit. 1.6.0 refuses to boot
+a listener without TLS unless its plaintext is accepted explicitly (BUSBAR-3172). No address is
+exempt: the default loopback admin listener needs its acceptance too, so this affects almost every
+1.5.5 configuration. The upgrader does not write the acceptance for you; the refusal names each
+listener and its one-line remedy. Add TLS, or accept the plaintext deliberately in config.yaml:
+
+```yaml
+listen_insecure_transport: { accept: [plaintext], reason: "<deployment-specific justification>" }
+admin_listen_insecure_transport: { accept: [plaintext], reason: "<deployment-specific justification>" }
+```
+
+The reason is required (one printable line, at most 256 characters, not the `<why>` placeholder)
+and `plaintext` is the only word a listener accepts. A listener with TLS takes no acceptance:
+writing both is refused. The acceptance is file-only; the Store overlay cannot set it. A 1.5.5
+overlay `tls` folded by the upgrade satisfies the rule, and an overlay that sets TLS later makes a
+file acceptance inert (the boot warns that it can be removed). Each listener served in the clear
+prints an error banner at boot and writes a `config.insecure_transport_accepted` audit row with
+resource `listener:<setting>:accept=plaintext`.
 
 ## HTTP endpoints and spend refusals
 

@@ -6,7 +6,7 @@
 use super::*;
 use crate::persistence::startup::{classify, Format};
 use crate::persistence::test_backend::{attach, Backend};
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::Secret;
 
 fn row(epoch: u64, state: RestoreState) -> Restore {

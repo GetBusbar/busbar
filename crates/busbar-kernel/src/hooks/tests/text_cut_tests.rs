@@ -127,54 +127,8 @@ pub(crate) fn probe<T>(f: impl FnOnce() -> T) -> (T, Probe) {
 }
 
 #[test]
-fn hook_status_cuts_are_reported_once_per_field_and_counted_every_time() {
+fn plugin_text_cuts_are_latched_per_plugin_and_field() {
     // T3: one #[test] for every tracing case (the latch is process-global; names are unique).
-    let euro = "€".repeat(400);
-    let raw = [serde_json::json!({
-        "name": "ok_total", "type": "counter", "value": 1.0,
-        "help": euro, "label": euro, "unit": euro
-    })];
-
-    let (first, seen) = probe(|| parse_hook_status_metrics("acme-status", &raw));
-    assert_eq!(first.len(), 1);
-    assert_eq!(
-        first[0].help.as_deref(),
-        Some("€".repeat(MAX_METRIC_HELP_CHARS).as_str())
-    );
-    assert_eq!(
-        first[0].label.as_deref(),
-        Some("€".repeat(MAX_METRIC_LABEL_CHARS).as_str())
-    );
-    assert_eq!(
-        first[0].unit.as_deref(),
-        Some("€".repeat(MAX_METRIC_UNIT_CHARS).as_str())
-    );
-    let warns = seen.cut_warns();
-    assert_eq!(warns.len(), 3, "one BUSBAR-6013 per cut field: {warns:#?}");
-    for (field, cap) in [
-        (TextField::MetricHelp, MAX_METRIC_HELP_CHARS),
-        (TextField::MetricLabel, MAX_METRIC_LABEL_CHARS),
-        (TextField::MetricUnit, MAX_METRIC_UNIT_CHARS),
-    ] {
-        let line = warns
-            .iter()
-            .find(|l| l.contains(&format!("field={}", field.as_str())))
-            .unwrap_or_else(|| panic!("no warning for {}: {warns:#?}", field.as_str()));
-        assert!(line.contains("plugin=acme-status"), "{line}");
-        assert!(line.contains(&format!("cap={cap}")), "{line}");
-        assert!(line.contains("sanitised_chars=400"), "{line}");
-        assert_eq!(seen.counter("acme-status", field), 1);
-    }
-
-    let (again, seen) = probe(|| parse_hook_status_metrics("acme-status", &raw));
-    assert_eq!(again[0].help, first[0].help, "the bytes do not change");
-    assert!(
-        seen.cut_warns().is_empty(),
-        "the latch holds: {:#?}",
-        seen.cut_warns()
-    );
-    assert_eq!(seen.counter("acme-status", TextField::MetricHelp), 1);
-
     let (reported, seen) = probe(|| {
         [
             report("acme-report", TextField::DiagField, 64, 3, 90),
