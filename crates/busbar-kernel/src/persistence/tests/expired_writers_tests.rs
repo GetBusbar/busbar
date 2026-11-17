@@ -647,7 +647,22 @@ async fn adoption_retirement_preserves_every_declared_epoch_and_slot_effect() {
         );
         let candidate = prepared.candidate();
         assert_ne!(candidate.id.writer, target);
-        assert_eq!(candidate.mutations.len(), old.live().count() + 2);
+        // The live epochs, the slot range and the control row, plus the predecessor mark the
+        // same candidate retains through every retry (851dbfd6d8, decision 193 test 4(c')).
+        assert_eq!(candidate.mutations.len(), old.live().count() + 3);
+        let mark = crate::persistence::scoped::migration_address(
+            true,
+            INSTANCE,
+            NODE_SCHEMA,
+            &super::predecessor_seal::fenced_key(EPOCH, target),
+        )
+        .unwrap();
+        assert!(
+            candidate.mutations.iter().any(
+                |mutation| matches!(mutation, Mutation::Put { address, .. } if *address == mark)
+            ),
+            "the adoption retirement carries its predecessor mark"
+        );
         assert!(candidate.mutations.iter().any(|mutation| matches!(
             mutation,
             Mutation::DeleteRange { namespace, prefix, exact_key_length }
