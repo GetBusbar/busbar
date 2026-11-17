@@ -297,3 +297,86 @@ fn mismatched_precharged_storage_is_discarded_without_leaking_capacity() {
     assert!(credit.into_input(b"too much".to_vec()).is_err());
     assert_eq!(budget.used(), (0, 0));
 }
+
+#[derive(Default)]
+struct ReservationRecorder {
+    visits: AtomicU64,
+    increments: Arc<AtomicU64>,
+}
+impl metrics::Recorder for ReservationRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(key.name(), crate::snapshot::ADMISSION_DENIED_TOTAL);
+        assert!(key
+            .labels()
+            .any(|label| label.key() == "gate" && label.value() == "inbound_body_bytes"));
+        metrics::Counter::from_arc(Arc::clone(&self.increments))
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Histogram::noop()
+    }
+}
+
+#[test]
+fn private_reservation_never_reenters_a_recorder_on_success_capacity_or_overflow() {
+    let budget = budget(0);
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        assert_eq!(budget.reserve(AdmissionClass::Data, 12), Ok(12));
+        assert!(budget.reserve(AdmissionClass::Data, 1).is_err());
+        assert!(budget.reserve(AdmissionClass::Data, usize::MAX).is_err());
+        assert_eq!(budget.used(), (12, 12));
+        budget.release(AdmissionClass::Data, 12);
+    });
+    assert_eq!(
+        recorder.visits.load(Ordering::Relaxed),
+        0,
+        "reservation under a registry guard must not look up any recorder handle"
+    );
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn public_byte_denials_still_report_once_per_failed_attempt() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve(12).unwrap();
+        assert!(request.try_reserve(1).is_err());
+        assert!(request.try_reserve(usize::MAX).is_err());
+        drop(credit);
+    });
+    assert_eq!(recorder.increments.load(Ordering::Relaxed), 2);
+    assert_eq!(budget.used(), (0, 0));
+}
