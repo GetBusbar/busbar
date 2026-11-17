@@ -43,3 +43,7 @@ pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'stat
 #[cfg(test)]
 #[path = "tests/io_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/explicit_runtime_tests.rs"]
+mod explicit_runtime_tests;
