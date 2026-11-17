@@ -254,7 +254,9 @@ spellings; for example, `at: response` becomes `phase: [response]`. Read `fires_
 stages. An omitted phase list selects the four core phases, not every future phase.
 
 Cloud-metadata exceptions `security.allow_metadata_hosts`, `security.allow_all_metadata` and
-`providers.<name>.allow_metadata_hosts` are removed and reported. No configuration admits
+`providers.<name>.allow_metadata_hosts` (and the same key in a providers catalog) are removed with one
+warning (BUSBAR-3411) that names every removed path and never an entry value, and an audit record
+of the removed paths is written once the upgrade completes. No configuration admits
 cloud-metadata destinations. `security.blocked_metadata_hosts` still extends the denylist;
 entries that name no usable host are removed and reported.
 

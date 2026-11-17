@@ -1724,6 +1724,7 @@ pub(crate) async fn finish(
         )
         .await?
         .ok_or("CONFIG: conversion lost its pending source plan")?;
+        super::migrate::record_completed_changes(&written);
         drop(steps);
         drop(specs);
         return Err(super::migrate::restart(
