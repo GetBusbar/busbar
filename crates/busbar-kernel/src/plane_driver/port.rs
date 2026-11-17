@@ -398,6 +398,56 @@ impl PortDriver {
         .map_err(|_| ServeError::Cancelled)?
     }
 
+    /// Render a core refusal in this exact admitted route's dialect without opening a unit.
+    pub async fn render_refusal(
+        &self,
+        route: u32,
+        http: HttpIn,
+        refusal: ClientRefusal,
+    ) -> Result<Vec<ToClient>, ServeError> {
+        let mounted = self
+            .routes
+            .data
+            .iter()
+            .chain(&self.routes.upgrade)
+            .chain(&self.routes.admin)
+            .find(|mounted| mounted.route == route)
+            .ok_or(ServeError::NoRoute)?;
+        let auth = mounted.effective & mounted.effective.wrapping_neg();
+        let port = Arc::clone(&self.port);
+        tokio::task::spawn_blocking(move || {
+            struct RenderOnly;
+            impl Effects for RenderOnly {
+                fn emit(&self, _: u64, _: &[u8]) {}
+            }
+            let headers = http
+                .headers
+                .iter()
+                .map(|(name, value)| Pair {
+                    name: Str::new(name),
+                    value: Bytes::new(value),
+                })
+                .collect::<Vec<_>>();
+            let req = PlaneIn {
+                route,
+                flags: 0,
+                auth,
+                method: &http.method,
+                path: &http.path,
+                query: &http.query,
+                headers: &headers,
+                identity: &[],
+                request_id: http.request_id,
+                carrier: 0,
+                work: "",
+                ticket_record: &[],
+            };
+            refuse(&*port, &req, &refusal, &RenderOnly)
+        })
+        .await
+        .map_err(|_| ServeError::Cancelled)
+    }
+
     /// D_TICK_S: the period core calls [`tick`](Self::tick) at, if the plane declares one.
     #[must_use]
     pub fn tick_s(&self) -> Option<u64> {
@@ -710,6 +760,7 @@ fn line_blocking(
         Err(ServeError::Session(error)) => Err(LineRefused::Session(error)),
         Err(ServeError::NoRoute) => Err(LineRefused::NoLineRoute),
         Err(ServeError::Cancelled) => Err(LineRefused::Cancelled),
+        Err(ServeError::Invocation(_)) => Err(LineRefused::Session(SessionError::HookPrerequisite)),
     }
 }
 
