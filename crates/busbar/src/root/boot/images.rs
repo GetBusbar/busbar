@@ -33,7 +33,7 @@ pub(crate) fn prepare(
             .insert(name.clone(), version.clone());
     }
     let admitted = crate::root::min3_boot::admit_images(&plugins).map_err(GrammarRefusal)?;
-    let proofs = admitted
+    let proofs: BTreeMap<String, ImageProof> = admitted
         .iter()
         .map(|(image, _)| {
             (
@@ -45,7 +45,7 @@ pub(crate) fn prepare(
             )
         })
         .collect();
-    let aliases = admitted
+    let aliases: Vec<(String, String)> = admitted
         .iter()
         .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
         .collect();
@@ -213,7 +213,7 @@ pub(crate) fn fixture(
             admitted.push((image, row.manifest.alias.clone()));
         }
     }
-    let proofs = admitted
+    let proofs: BTreeMap<String, ImageProof> = admitted
         .iter()
         .map(|(image, _)| {
             (
@@ -225,7 +225,7 @@ pub(crate) fn fixture(
             )
         })
         .collect();
-    let aliases = admitted
+    let aliases: Vec<(String, String)> = admitted
         .iter()
         .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
         .collect();
