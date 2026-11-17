@@ -582,3 +582,6 @@ impl busbar_contract::persistence::PersistenceBackend for Backend {
         self.inner.clock(dataset)
     }
 }
+
+#[path = "native_export_lifecycle.rs"]
+mod native_export_lifecycle;
