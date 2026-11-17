@@ -679,3 +679,6 @@ mod checks_tests;
 
 #[cfg(test)]
 mod spdx_tests;
+
+#[cfg(test)]
+mod release_targets_tests;
