@@ -315,6 +315,19 @@ impl WriterRetirements {
         )
         .map_err(error)?;
         let body = fence.candidate();
+        // Preserve the shared writer transition's epoch and slot cleanup, and retain
+        // the predecessor mark in that same exact candidate through every retry.
+        let mut mutations = body.mutations.clone();
+        mutations.push(native::Mutation::Put {
+            address: mark_address,
+            value: Secret::new(
+                FenceMark {
+                    lease_expires_ms: lease_row.expires_ms,
+                    sealed: Vec::new(),
+                }
+                .bytes(),
+            ),
+        });
         let candidate = native::PreparedCandidate::new(native::Candidate {
             id: body.id,
             codec: body.codec,
@@ -329,7 +342,7 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: body.mutations.clone(),
+            mutations,
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,
