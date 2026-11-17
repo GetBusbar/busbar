@@ -90,6 +90,7 @@ impl Drop for DataPreparation {
 /// The original pending owner and a terminal classified decision jointly grant one output.
 pub struct PhysicalRefusal {
     binding: Arc<RequestBinding>,
+    audit_claimed: bool,
     // Keep the actual decision and its producer custody, not a reconstructed status.
     _provenance: RefusalProvenance,
 }
@@ -106,6 +107,36 @@ enum RefusalProvenance {
     },
 }
 impl PhysicalRefusal {
+    pub fn check_output_live(&self) -> Result<(), ArrivalRefusal> {
+        let phase = self
+            .binding
+            .state
+            .phase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *phase != Phase::Refusing || self.binding.state.cancelled.is_cancelled() {
+            return Err(ArrivalRefusal::Cancelled);
+        }
+        if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(ArrivalRefusal::Deadline);
+        }
+        Ok(())
+    }
+    pub fn preunit_data_reason(&self) -> Option<crate::auth::native_data::DataRefused> {
+        match &self._provenance {
+            RefusalProvenance::Data { _denied } => Some(_denied.decision()),
+            _ => None,
+        }
+    }
+    /// Consumed before enqueue; even a returned confirmed guard cannot enqueue a second row.
+    pub(crate) fn claim_preunit_audit(&mut self) -> Result<(), ArrivalRefusal> {
+        self.check_output_live()?;
+        if self.audit_claimed || self.preunit_data_reason().is_none() {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        self.audit_claimed = true;
+        Ok(())
+    }
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
@@ -168,6 +199,7 @@ impl CompletingPhysicalRequest {
         self.cancel_on_drop = false;
         Ok(PhysicalRefusal {
             binding: self.binding.clone(),
+            audit_claimed: false,
             _provenance: RefusalProvenance::Data { _denied: denied },
         })
     }
@@ -190,6 +222,7 @@ impl CompletingPhysicalRequest {
         self.cancel_on_drop = false;
         Ok(PhysicalRefusal {
             binding: self.binding.clone(),
+            audit_claimed: false,
             _provenance: RefusalProvenance::Admin {
                 _outcome: record.outcome.unit_end,
             },
@@ -252,6 +285,7 @@ impl PhysicalExecutionOwner {
         // both continue to close the same state when the final refusal owner is dropped.
         Ok(PhysicalRefusal {
             binding: self.binding.clone(),
+            audit_claimed: false,
             _provenance: RefusalProvenance::Allocated {
                 _owner: self,
                 _witness: witness,

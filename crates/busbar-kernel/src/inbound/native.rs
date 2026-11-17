@@ -565,6 +565,14 @@ impl RequestBinding {
     pub fn prepared(&self) -> &Arc<PreparedListener> {
         &self.prepared
     }
+    pub fn slot(&self) -> &str {
+        &self
+            .prepared
+            .physical
+            .as_ref()
+            .expect("physical arrival retains its prepared plan")
+            .slot
+    }
     pub fn route(&self) -> &Arc<RouteBinding> {
         &self.route
     }
