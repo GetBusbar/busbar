@@ -72,15 +72,24 @@ impl NetworkEndpoint {
 
     /// Decode a bounded CHECK endpoint into the same operation-specific authority used at dial.
     pub fn new(op: u32, flags: u32, dest: &str) -> Option<Self> {
+        if dest.len() > 2048 {
+            return None;
+        }
+        Self::from_intent(op, flags, dest)
+    }
+
+    /// A live URL's path/query are not authority and retain the existing Need input bounds.
+    pub fn from_intent(op: u32, flags: u32, dest: &str) -> Option<Self> {
         let known = need_flag::TLS_MASK | (0xf << 16);
         let tls = flags & need_flag::TLS_MASK;
-        if flags & !known != 0 || flags >> 16 > egress::LOOPBACK_ALLOWED || dest.len() > 2048 {
+        if flags & !known != 0 || flags >> 16 > egress::LOOPBACK_ALLOWED {
             return None;
         }
         let dest = if op == op::OPEN {
             if let Some(path) = dest.strip_prefix("unix:") {
                 if tls != need_flag::TLS_NONE
                     || !path.starts_with('/')
+                    || path.len() <= 1
                     || path.len() > 107
                     || path.contains('\0')
                     || path.contains("/../")

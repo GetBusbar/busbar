@@ -32,6 +32,10 @@ fn direct_network_authority_is_frozen_for_one_instance_and_operation() {
     b.freeze_network(7, &[e.clone()]).unwrap();
     b.freeze_network(8, &[]).unwrap();
     let permit = b.admit_network(7, &e).expect("exact bound endpoint");
+    assert!(
+        b.bind(7, b"{}", &[], &[], &[], &[]).is_err(),
+        "active identity cannot be rebound in place"
+    );
     assert_eq!(
         (permit.instance, permit.registration, permit.class()),
         (7, 1, egress::OPERATOR_INFRASTRUCTURE)
@@ -111,6 +115,19 @@ fn network_endpoint_canonicalization_preserves_origin_and_tls_boundaries() {
         "https://example.org:443/other",
     );
     assert_eq!(a, b, "FETCH authority is an origin, not a URL path");
+    let long_url = format!("https://example.org/{}", "a".repeat(4096));
+    assert!(
+        NetworkEndpoint::new(op::FETCH, need_flag::TLS_REQUIRED, &long_url).is_none(),
+        "CHECK records remain bounded"
+    );
+    assert_eq!(
+        NetworkEndpoint::from_intent(op::FETCH, need_flag::TLS_REQUIRED, &long_url)
+            .unwrap()
+            .dest
+            .as_ref(),
+        "https://example.org:443",
+        "a live path does not broaden origin authority or acquire a new path-length rule"
+    );
     assert_eq!(
         endpoint(
             op::OPEN,

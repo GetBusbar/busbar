@@ -240,9 +240,7 @@ pub trait NeedIo: Send + Sync + 'static {
 /// The one-judge-per-dial adapter handed to [`NeedIo::fetch`].
 struct Dialer<'a, R: Resolve> {
     judge: &'a Judge<R>,
-    class: u32,
-    reach: bool,
-    owner: (u64, u32),
+    checked: &'a NetworkPermit,
 }
 
 impl<R: Resolve> Admission for Dialer<'_, R> {
@@ -252,10 +250,35 @@ impl<R: Resolve> Admission for Dialer<'_, R> {
         port: u16,
         secured: bool,
     ) -> BoxFut<'a, Result<judge::Route, NeedErr>> {
-        Box::pin(
+        Box::pin(async move {
+            if !self.checked.lease.live() {
+                return Err(NeedErr::Denied);
+            }
+            let authority = if host.contains(':') {
+                format!("[{host}]:{port}")
+            } else {
+                format!("{host}:{port}")
+            };
+            let actual = NetworkEndpoint::from_intent(
+                busbar_plugin_abi::need::op::FETCH,
+                self.checked.endpoint.flags,
+                &format!("{}://{authority}", if secured { "https" } else { "http" }),
+            )
+            .ok_or(NeedErr::Denied)?;
+            if actual != self.checked.endpoint {
+                return Err(NeedErr::Denied);
+            }
             self.judge
-                .plan(host, port, self.class, self.reach, secured, self.owner),
-        )
+                .plan(
+                    host,
+                    port,
+                    self.checked.class(),
+                    self.checked.private_reach(),
+                    secured,
+                    (self.checked.instance, self.checked.registration),
+                )
+                .await
+        })
     }
 }
 
@@ -410,7 +433,7 @@ where
             return Err(NeedErr::Denied);
         }
         let endpoint =
-            NetworkEndpoint::new(op, tls | (class << 16), dest).ok_or(NeedErr::Denied)?;
+            NetworkEndpoint::from_intent(op, tls | (class << 16), dest).ok_or(NeedErr::Denied)?;
         self.binder
             .admit_network(cx.instance, &endpoint)
             .filter(|permit| permit.lease.live())
@@ -906,9 +929,7 @@ where
         };
         let dialer = Dialer {
             judge: &self.judge,
-            class,
-            reach: checked.private_reach(),
-            owner: (checked.instance, checked.registration),
+            checked: &checked,
         };
         if !checked.lease.live() {
             return Err(NeedErr::Denied);

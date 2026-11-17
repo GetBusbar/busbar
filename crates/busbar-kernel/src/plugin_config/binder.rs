@@ -223,10 +223,14 @@ impl Binder {
 
         let bound = serde_json::to_vec(&doc)
             .map_err(|_| BindError::NotAReference { pointer: "".into() })?;
-        self.instances
+        let mut instances = self
+            .instances
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(instance, Arc::new(entry));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if instances.contains_key(&instance) {
+            return Err(BindError::BadNetwork);
+        }
+        instances.insert(instance, Arc::new(entry));
         Ok(bound)
     }
 
