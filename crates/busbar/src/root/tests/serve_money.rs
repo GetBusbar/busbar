@@ -2485,14 +2485,20 @@ async fn cancelled_nested_frame_does_not_retire_its_retained_input_lease() {
     };
     let child = routes.frames_lock().get(&992).unwrap().clone();
     let retained = child.request.copy_input(b"child").unwrap().into_bytes();
+    routes.frames_lock().insert(993, child);
+    let child_routes = Arc::clone(&routes);
     let (started, ready) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
-        let _child = child;
+        let _child = super::UnitFrame {
+            routes: &child_routes,
+            unit: 993,
+        };
         started.send(()).unwrap();
         std::future::pending::<()>().await;
     });
     ready.await.unwrap();
     drop(parent);
+    assert!(routes.frames_lock().contains_key(&993));
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert!(routes.frames_lock().is_empty());
