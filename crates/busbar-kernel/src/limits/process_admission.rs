@@ -155,7 +155,7 @@ impl ProcessAdmission {
     }
 
     fn reserve(&self, class: AdmissionClass, bytes: usize) -> Result<u32, CapacityDenied> {
-        let bytes = u32::try_from(bytes).map_err(|_| denied("inbound_body_bytes"))?;
+        let bytes = u32::try_from(bytes).map_err(|_| CapacityDenied)?;
         self.bytes
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
                 let (total, data) = unpack(held);
@@ -173,7 +173,7 @@ impl ProcessAdmission {
                     },
                 ))
             })
-            .map_err(|_| denied("inbound_body_bytes"))?;
+            .map_err(|_| CapacityDenied)?;
         Ok(bytes)
     }
 
@@ -294,6 +294,17 @@ impl RequestLease {
 
     /// Reserve before retaining decoded input or making an independent copy.
     pub fn try_reserve(&self, bytes: usize) -> Result<ByteCredit, CapacityDenied> {
+        self.try_reserve_unreported(bytes)
+            .map_err(|_| denied("inbound_body_bytes"))
+    }
+
+    /// Pure capacity operation for capture beneath registry/serializer guards: no recorder,
+    /// logging, allocation or callbacks, including on refusal. The outer admin boundary reports
+    /// a capacity refusal once, only after all capture guards have been released.
+    pub(crate) fn try_reserve_unreported(
+        &self,
+        bytes: usize,
+    ) -> Result<ByteCredit, CapacityDenied> {
         let bytes = self.0.budget.reserve(self.0.class, bytes)?;
         Ok(ByteCredit {
             bytes,

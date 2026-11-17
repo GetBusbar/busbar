@@ -380,3 +380,24 @@ fn public_byte_denials_still_report_once_per_failed_attempt() {
     assert_eq!(recorder.increments.load(Ordering::Relaxed), 2);
     assert_eq!(budget.used(), (0, 0));
 }
+
+#[test]
+fn unreported_credit_preserves_class_and_request_without_recorder_access() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    let credit = metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve_unreported(12).unwrap();
+        assert!(request.try_reserve_unreported(1).is_err());
+        assert!(request.try_reserve_unreported(usize::MAX).is_err());
+        credit
+    });
+    assert_eq!(recorder.visits.load(Ordering::Relaxed), 0);
+    assert_eq!(credit.request().class(), AdmissionClass::Data);
+    drop(request);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(budget.used(), (12, 12));
+    drop(credit);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
