@@ -9,7 +9,7 @@
 //! There is no per-instance `limits` key and no `routes` section: an instance
 //! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::json::{
@@ -23,8 +23,14 @@ use super::DeployCfg;
 
 /// Every MIN-3 key of one config load, carried on [`RootCfg::min3`](super::RootCfg::min3). Empty (the default)
 /// for a config that writes none of them.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Min3Config {
+    /// Checked host outbound credential custody policy (IF §12.18).
+    pub outbound: crate::custody::CredPolicy,
+    /// Checked host refresh interval (IF §8.3), never a plugin setting.
+    pub unknown_key_refresh_s: u64,
+    /// Explicit issued-kind grants keyed by configured auth instance, never image name.
+    pub issued_kinds: BTreeMap<Box<str>, BTreeSet<Box<str>>>,
     /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
     pub verdict_cache: crate::auth::verdicts::VerdictPolicy,
     /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
@@ -32,6 +38,19 @@ pub struct Min3Config {
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
+}
+
+impl Default for Min3Config {
+    fn default() -> Self {
+        Self {
+            outbound: crate::custody::CredPolicy::DEFAULT,
+            unknown_key_refresh_s: 30,
+            issued_kinds: BTreeMap::new(),
+            verdict_cache: Default::default(),
+            provisioning: BTreeMap::new(),
+            insecure_transport: BTreeMap::new(),
+        }
+    }
 }
 
 /// Per-instance `insecure_transport`, by (kind section, configured instance name).
@@ -126,6 +145,16 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
+    let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
+    let outbound = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.outbound)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
     let verdict_cache = kept(
         deploy
             .auth
@@ -139,10 +168,43 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         return Err(refused);
     }
     Ok(Min3Config {
+        outbound,
+        unknown_key_refresh_s: deploy
+            .auth
+            .as_ref()
+            .map_or(30, |auth| auth.unknown_key_refresh_s)
+            .max(5),
+        issued_kinds,
         verdict_cache,
         provisioning,
         insecure_transport,
     })
+}
+
+fn parse_issued_kinds(
+    deploy: &DeployCfg,
+) -> Result<BTreeMap<Box<str>, BTreeSet<Box<str>>>, Vec<String>> {
+    let mut grants = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, provider) in &deploy.identity_providers {
+        let Some(kinds) = &provider.issued_kinds else {
+            continue;
+        };
+        let mut unique = BTreeSet::new();
+        for kind in kinds {
+            if kind.trim().is_empty() || !unique.insert(kind.clone()) {
+                refused.push(format!(
+                    "identity-providers.{name}.issued_kinds: expected distinct nonblank kind names"
+                ));
+            }
+        }
+        grants.insert(name.as_str().into(), unique);
+    }
+    if refused.is_empty() {
+        Ok(grants)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The parsed value, or its default with its refusals appended to `refused`.

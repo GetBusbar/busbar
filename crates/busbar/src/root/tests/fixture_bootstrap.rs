@@ -29,7 +29,26 @@ pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Gra
     super::super::boot::images::fixture(&process()?.resources, plugins).map(|images| images.grammar)
 }
 
+/// Describe an actual admitted image before typing its deployment. Tests use these same
+/// signed-image facts for rate vocabulary and settings; no legacy declaration substitutes.
+pub(crate) fn described(
+    plugins: &PluginsCfg,
+    module: &str,
+) -> Result<busbar_plugin_loader::instance::Described, String> {
+    let admitted = super::super::boot::images::fixture(&process()?.resources, plugins)?;
+    let identity = admitted
+        .images
+        .identity_of(module)
+        .ok_or_else(|| format!("fixture image `{module}` was not admitted"))?;
+    admitted
+        .images
+        .described(&identity)
+        .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
+}
+
 struct Owners {
+    admitted_images: Arc<crate::root::boot::images::FileImages>,
+    channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
     planes: Vec<PlaneImage>,
@@ -85,6 +104,14 @@ pub(crate) struct PlaneFixture {
     _invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
 }
 
+impl std::fmt::Debug for PlaneFixture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneFixture")
+            .field("seat", &self.seat)
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) type HookFixture = hooks::Opened;
 
 impl PlaneFixture {
@@ -93,6 +120,93 @@ impl PlaneFixture {
         &self,
     ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
         Ok(self.hooks.clone())
+    }
+
+    /// The production dispatcher shape, retaining the fixture's actual opened instance leases.
+    /// Its workers remain dormant until the caller has published the complete listener plan.
+    pub(crate) fn served(
+        mut self,
+        app: &Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+    ) -> (
+        crate::root::serve::Served,
+        crate::root::boot::workers::PreparedWorkers,
+    ) {
+        let workers = std::mem::replace(
+            &mut self.workers,
+            crate::root::boot::workers::PreparedWorkers::new(),
+        );
+        let owner = Arc::new(self);
+        let served = crate::root::serve::Served {
+            ports: vec![owner.seat.clone()],
+            native_fixture: Some(owner),
+            billing: Some(billing),
+            post: Some(post),
+            tables: app.serve_tables.clone(),
+            ..Default::default()
+        };
+        (served, workers)
+    }
+
+    /// Publish the actual native HTTP mounts and their checked generation before starting any
+    /// prepared instance worker. Callers retain this owner while either router can serve.
+    pub(crate) fn publish(
+        self,
+        app: Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+        body_limit: usize,
+    ) -> Result<PublishedFixture, String> {
+        let (served, workers) = self.served(&app, post, billing);
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || crate::root::kernel::ROOT_CARD.pin(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )?;
+        let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+            app,
+            mounts.routes,
+            mounts.sessions,
+            mounts.refusals,
+            body_limit,
+            0,
+            false,
+        );
+        let guests = mounts.data.guests.clone();
+        let refuse_by_path = mounts.refuse_by_path;
+        if let Some(refuse) = &refuse_by_path {
+            handle.bind_door_refuser(Arc::clone(refuse));
+        }
+        let workers = workers.start();
+        Ok(PublishedFixture {
+            data,
+            admin,
+            handle,
+            guests,
+            refuse_by_path,
+            routes: mounts.data,
+            workers,
+        })
+    }
+}
+
+pub(crate) struct PublishedFixture {
+    pub(crate) data: axum::Router,
+    pub(crate) admin: axum::Router,
+    pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(crate) guests: busbar_kernel::guest::GuestList,
+    pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
+    workers: crate::root::boot::workers::RunningWorkers,
+}
+
+impl PublishedFixture {
+    pub(crate) async fn stop(self) -> Result<(), String> {
+        self.workers.stop().await
     }
 }
 
@@ -179,9 +293,11 @@ impl ServingFixture {
             .map_err(|why| format!("{why:?}"))?;
             opened_hooks.insert(spec.name.to_owned(), hook);
         }
-        let hook_inputs = hooks::Environment::new(cfg, app)?;
+        let hook_plan = hooks::Plan::capture(cfg, &instances)?;
+        let hook_inputs = hooks::Environment::new(hook_plan, app)?;
         hook_inputs.check_pools(&instances)?;
         let steps = Steps {
+            images: &self.owners.admitted_images,
             registry: &built.registry,
             instances: &specs,
             services: Some(services),
@@ -197,6 +313,11 @@ impl ServingFixture {
                     .into_iter()
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
+                catalogs: Default::default(),
+                channel_budgets: self
+                    .owners
+                    .channel_accounts
+                    .for_instances(&built.registry, &instances)?,
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
@@ -254,7 +375,10 @@ pub(crate) async fn open(
     policy: Arc<dyn RootRules>,
 ) -> Result<Fixture, String> {
     let process = process()?;
-    let images = super::super::boot::images::fixture(&process.resources, plugins)?;
+    let images = Arc::new(super::super::boot::images::fixture(
+        &process.resources,
+        plugins,
+    )?);
     let protected = images.protect(cfg)?;
     let planes = images
         .aliases
@@ -274,7 +398,7 @@ pub(crate) async fn open(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
         cfg,
-        images.images,
+        images.images.clone(),
     )?;
     let configured = configured(cfg, &[])?;
     let specs = specifications(&configured, cfg.public_url.as_deref(), false);
@@ -323,6 +447,8 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
+        admitted_images: images,
+        channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
         planes,

@@ -119,6 +119,7 @@ impl ServingGeneration {
 /// Retaining a numeric request ID alone never constructs this authority.
 #[derive(Clone)]
 pub struct InvocationContext {
+    data_gate: Option<Arc<crate::auth::native_data::NativeDataEffectGate>>,
     generation: Arc<ServingGeneration>,
     caller: Caller,
     unit: u64,
@@ -146,11 +147,18 @@ impl InvocationContext {
             .units()
             .invocation_phase(unit, &caller, &record)
             .ok_or(NEST_NO_UNIT)?;
+        let data_gate = generation
+            .core
+            .units()
+            .invocation_data_gate(unit, &caller, &record)
+            .ok_or(NEST_NO_UNIT)?;
         let signed_authority = generation
             .core
             .units()
             .invocation_signed_authority(unit, &caller, &record);
         Ok(Self {
+            data_gate,
+
             generation,
             caller,
             unit,
@@ -198,7 +206,12 @@ impl InvocationContext {
 
     /// Required before effectful host services; pre-admission keeps only read prerequisites.
     pub fn effects_allowed(&self) -> bool {
-        self.is_live() && self.phase.effects_allowed()
+        self.is_live()
+            && self.phase.effects_allowed()
+            && self
+                .data_gate
+                .as_ref()
+                .is_none_or(|gate| gate.effects_allowed())
     }
 
     pub(crate) fn admission_phase(
@@ -217,7 +230,7 @@ impl InvocationContext {
     /// Keep hook work on the exact retained generation's bounded executor, including after
     /// the request stops waiting for a tap or an expired call.
     pub(crate) fn offload_hook(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
-        if !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
@@ -230,7 +243,7 @@ impl InvocationContext {
         nest: Nest,
         done: NestDone,
     ) -> Result<(), &'static str> {
-        if nest.parent != self.unit || !self.effects_allowed() {
+        if self.data_gate.is_some() || nest.parent != self.unit || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         self.generation
@@ -251,7 +264,7 @@ impl InvocationContext {
     }
 
     pub fn nest(&self, caller: &Caller, ask: NestAsk, done: NestDone) -> Result<(), &'static str> {
-        if !self.accepts(caller) || !self.effects_allowed() {
+        if self.data_gate.is_some() || !self.accepts(caller) || !self.effects_allowed() {
             return Err(NEST_NO_UNIT);
         }
         let retained = self.clone();

@@ -54,6 +54,11 @@ impl VerifiedKeyAuthority {
 }
 
 impl GovState {
+    /// Schedule the existing bounded/coalesced refresh before entering the publication gate.
+    pub(crate) fn refresh_current_credential(&self, now: u64) {
+        self.denylist.refresh_if_stale(now);
+    }
+
     /// Execute the existing signed verification and standing policy once, retaining its proof.
     /// The returned original key is the one to install in the original request admission.
     pub fn verify_token_authority(

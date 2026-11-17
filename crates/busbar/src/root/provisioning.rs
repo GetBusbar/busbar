@@ -122,6 +122,124 @@ pub(crate) async fn prepare(
     })
 }
 
+/// S9's route consumers. Every configured mount is completed from the actual opened instance;
+/// a missing port or invalid describe aborts the candidate instead of silently omitting a route.
+pub(crate) fn mounts(
+    config: &Min3Config,
+    auth: &super::min3_auth::AuthSet,
+    app: &busbar_kernel::state::App,
+    epoch: u64,
+    body_cap: usize,
+    call_budget: std::time::Duration,
+    request_ids: Arc<std::sync::atomic::AtomicU64>,
+) -> Result<Vec<Arc<super::provisioning_mount::ProvisionMount>>, String> {
+    use super::provisioning_mount::{ClientPolicy, ProvisionMount};
+    use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY, M_VERIFY_IO};
+
+    let mut mounts = Vec::with_capacity(config.provisioning.len());
+    for (name, cfg) in &config.provisioning {
+        let instance = auth.get(name).ok_or_else(|| {
+            format!("identity-providers.{name}.provisioning: no opened auth instance")
+        })?;
+        let opened = &instance.opened;
+        if opened.port.facts() & FB_PROVISION == 0
+            || opened.methods & (M_VERIFY | M_VERIFY_IO) == 0
+            || opened.methods & M_SERVE == 0
+        {
+            return Err(format!(
+                "identity-providers.{name}.provisioning: admitted auth lacks provision, verify or serve"
+            ));
+        }
+        let credential_headers = opened
+            .port
+            .cred_headers()
+            .iter()
+            .map(|header| {
+                axum::http::HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+                    format!("identity-providers.{name}: invalid admitted credential header")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        mounts.push(Arc::new(ProvisionMount {
+            name: name.clone(),
+            plugin: opened.who.plugin.as_ref().into(),
+            slot: opened.who.slot,
+            out_of_process: opened.out_of_process,
+            limits: opened.limits,
+            port: Arc::clone(&opened.port),
+            keys: Arc::clone(&instance.keys),
+            holds: instance.holds.clone(),
+            cache: Arc::clone(&auth.owners.cache),
+            issued: Arc::clone(&auth.owners.issued),
+            replay: Arc::clone(&auth.owners.replay),
+            policy: ClientPolicy {
+                instance: opened.who.instance,
+                epoch,
+                current_epoch: Arc::clone(&app.config_generation),
+                clients: cfg.clients.clone(),
+            },
+            credential_headers,
+            body_cap,
+            timeout: if opened.limits.timeout_ms == 0 {
+                call_budget
+            } else {
+                call_budget.min(std::time::Duration::from_millis(u64::from(
+                    opened.limits.timeout_ms,
+                )))
+            },
+            request_ids: Arc::clone(&request_ids),
+        }));
+    }
+    Ok(mounts)
+}
+
+/// The same exact paths and methods feed physical selection and the core router's policy table.
+pub(crate) fn route_lines(
+    mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
+) -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    use busbar_contract::abi::mechanism::route::RouteAuth;
+    mounts
+        .iter()
+        .flat_map(|mount| {
+            super::off_path::serve::METHODS
+                .into_iter()
+                .map(move |method| {
+                    (
+                        busbar_core_admin::provision::mount_path(&mount.name),
+                        method,
+                        RouteAuth::None,
+                    )
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn mount_routes(
+    mut router: busbar_kernel::core_routes::CoreRouter,
+    mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
+) -> busbar_kernel::core_routes::CoreRouter {
+    use busbar_contract::abi::mechanism::route::RouteAuth;
+    for mount in mounts {
+        for method in super::off_path::serve::METHODS {
+            let mounted = Arc::clone(mount);
+            router = router.route(
+                busbar_core_admin::provision::mount_path(&mount.name),
+                method,
+                RouteAuth::None,
+                move |request: axum::extract::Request| {
+                    let mounted = Arc::clone(&mounted);
+                    async move { mounted.handle(request).await }
+                },
+            );
+        }
+    }
+    router
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

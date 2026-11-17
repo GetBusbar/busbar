@@ -77,6 +77,7 @@ impl Effects for LineEffects<'_> {
 /// A served request's effects: the line carriers' emits, and the client's streamed items when the route layer
 /// gave a sink.
 struct ServeEffects<'a> {
+    data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     admission: Option<Arc<super::port_admission::Pending>>,
     lines: LineEffects<'a>,
     client: Option<Arc<dyn ClientSink>>,
@@ -85,6 +86,12 @@ struct ServeEffects<'a> {
 }
 
 impl Effects for ServeEffects<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.admission.as_ref()
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.data.as_ref()
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         self.admission.as_deref()
     }
@@ -131,7 +138,14 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
 /// of its config block, `None` when it states none), what its intents run against and who it is to the store.
 #[derive(Clone)]
 pub struct PortSeat {
+    /// Actual admitted image metadata retained by the same read that opened this seat.
+    pub image: Arc<super::image_identity::PlaneImageIdentity>,
     pub instance: String,
+    /// Exact catalog and registration request domains retained by this serving generation.
+    pub request_routes: Arc<super::request_admission::RequestRoutes>,
+    /// The same stable instance capacity used by this seat's channel driver.
+    /// Original unit allocation derives one unit account here and retains it through every attach.
+    pub channel_budget: crate::channels::budget::InstanceBudget,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
@@ -240,6 +254,12 @@ impl PortDriver {
         })
     }
 
+    pub(crate) fn has_hooks(&self, route: u32) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|binder| binder.active(route))
+    }
+
     /// The exact instance owner admitted by root; callers must never mint a lookalike.
     pub fn caller(&self) -> &Caller {
         &self.caller
@@ -325,6 +345,56 @@ impl PortDriver {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        self.serve_inner(input, None).await
+    }
+
+    /// Consume the actual DATA/physical preparatory owner, retaining its charged original input.
+    pub async fn serve_admitted(
+        &self,
+        mut input: ServeIn<'_>,
+        data: Arc<crate::auth::native_data::NativeDataPending>,
+    ) -> Result<Served, ServeError> {
+        let snapshot = data.snapshot();
+        if !data.accepts(self, input.route)
+            || input.unit.is_some()
+            || !input.request.same_request(snapshot.request())
+            || input.http.request_id != data.binding().invocation().request_id().get()
+            || input.http.method != snapshot.method()
+            || input.http.path != snapshot.path()
+            || input.http.query != snapshot.query()
+            || input.http.body.as_ref() != snapshot.body()
+            || input.now_s != snapshot.now_s()
+            || !input
+                .http
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_slice()))
+                .eq(snapshot.headers())
+            || input
+                .invocation
+                .as_ref()
+                .is_some_and(|context| !context.same_unit(data.context()))
+            || input
+                .admission
+                .as_ref()
+                .is_some_and(|pending| !Arc::ptr_eq(pending, data.pending()))
+        {
+            return Err(ServeError::Invocation(
+                "DATA input does not match its original physical request",
+            ));
+        }
+        input.http.body = snapshot.body_bytes();
+        input.invocation = Some(data.context().clone());
+        input.admission = Some(Arc::clone(data.pending()));
+        input.principal = Some(Arc::from(data.identity().subject()));
+        self.serve_inner(input, Some(data)).await
+    }
+
+    async fn serve_inner(
+        &self,
+        input: ServeIn<'_>,
+        data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
+    ) -> Result<Served, ServeError> {
         if input.admission.is_some() && (input.unit.is_some() || input.invocation.is_none()) {
             return Err(ServeError::Invocation(
                 "pending admission must own one unbilled invocation",
@@ -356,19 +426,26 @@ impl PortDriver {
             .find(|m| m.route == input.route)
             .cloned()
             .ok_or(ServeError::NoRoute)?;
-        let admission = admit(
-            route.route,
-            route.effective,
-            &input.creds,
-            &*self.tickets,
-            &*self.refusals,
-            input.audience,
-            input.now_s,
-        )
-        .await;
+        let admission = if let Some(data) = data {
+            ServingAdmission::Data(data)
+        } else {
+            ServingAdmission::Credentials(
+                admit(
+                    route.route,
+                    route.effective,
+                    &input.creds,
+                    &*self.tickets,
+                    &*self.refusals,
+                    input.audience,
+                    input.now_s,
+                )
+                .await,
+            )
+        };
         let hook_binder = self.hooks.clone();
         let arrived = input.now_s;
         let ServeIn {
+            request,
             http,
             principal,
             unit,
@@ -387,6 +464,9 @@ impl PortDriver {
         let services = Arc::clone(&self.services);
         let owner = self.caller.incarnation().clone();
         tokio::task::spawn_blocking(move || {
+            // Capture the count owner itself, including when the HTTP body is empty.
+            // Cancelling the caller's await does not cancel an executing blocking call.
+            let _request = request;
             serve_blocking(
                 &*port,
                 &*refusals,
@@ -433,12 +513,14 @@ impl PortDriver {
     pub async fn render_refusal(
         &self,
         route: u32,
+        request: crate::limits::process_admission::RequestLease,
         http: HttpIn,
         refusal: ClientRefusal,
     ) -> Result<Vec<ToClient>, ServeError> {
         let auth = self.refusal_auth(route)?;
         let port = Arc::clone(&self.port);
         tokio::task::spawn_blocking(move || {
+            let _request = request;
             render_native_refusal(&*port, route, auth, http, refusal)
         })
         .await
@@ -631,6 +713,7 @@ impl Seated {
     /// A session's effects: emits to the line carriers; no client sink (the items are collected).
     fn effects(&self) -> ServeEffects<'_> {
         ServeEffects {
+            data: None,
             admission: None,
             lines: LineEffects {
                 carriers: self.services.line_carriers(),
@@ -676,7 +759,7 @@ impl PortSeat {
         &self,
         carrier: NonZeroU64,
         request_id: u64,
-        line: Vec<u8>,
+        line: crate::plane_driver::SessionInput,
         from: &LineCaller,
     ) -> Result<Vec<u8>, LineRefused> {
         let route = self
@@ -699,6 +782,9 @@ impl PortSeat {
         let principal = from.authenticated.then(|| Arc::clone(&from.principal));
         let seated = self.seated();
         tokio::task::spawn_blocking(move || {
+            // Capture the complete owner, including custody. Capturing only `line.bytes`
+            // would let cancellation of the waiting caller retire a still-running input.
+            let input = line;
             line_blocking(
                 &seated,
                 &route,
@@ -706,7 +792,7 @@ impl PortSeat {
                 principal.as_deref(),
                 carrier.get(),
                 request_id,
-                &line,
+                &input.bytes,
             )
         })
         .await
@@ -845,7 +931,8 @@ pub struct HttpIn {
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<u8>)>,
-    pub body: Vec<u8>,
+    /// Shared inbound backing; clones retain its process byte credit without copying payload.
+    pub body: bytes::Bytes,
     pub request_id: u64,
 }
 
@@ -859,6 +946,8 @@ pub struct Unit {
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
 pub struct ServeIn<'a> {
+    /// The original process admission, retained through the blocking call even for an empty body.
+    pub request: crate::limits::process_admission::RequestLease,
     /// The exact pre-money allocation and one callback; mutually exclusive with `unit`.
     pub admission: Option<Arc<super::port_admission::Pending>>,
     /// Checked root dispatch authority for the exact selected seat, unit and serving generation.
@@ -907,6 +996,11 @@ pub enum ServeError {
 }
 
 /// One request, on a blocking thread: the admission's refusal, or the session.
+enum ServingAdmission {
+    Credentials(Result<Admitted, ClientRefusal>),
+    Data(Arc<crate::auth::native_data::NativeDataPending>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serve_blocking(
     port: &dyn PlanePort,
@@ -915,7 +1009,7 @@ fn serve_blocking(
     carriers: &LineCarriers,
     owner: &Incarnation,
     route: &Mounted,
-    admission: Result<Admitted, ClientRefusal>,
+    admission: ServingAdmission,
     http: HttpIn,
     principal: Option<Arc<str>>,
     unit: Option<Unit>,
@@ -960,6 +1054,10 @@ fn serve_blocking(
                 unit,
             });
     let effects = ServeEffects {
+        data: match &admission {
+            ServingAdmission::Data(data) => Some(Arc::clone(data)),
+            ServingAdmission::Credentials(_) => None,
+        },
         admission: pending_admission,
         hooks,
         lines: LineEffects { carriers, owner },
@@ -1000,15 +1098,21 @@ fn serve_blocking(
         work: "",
         ticket_record,
     });
-    let admitted = match admission {
-        Ok(admitted) => admitted,
-        Err(refusal) => {
+    let req = match &admission {
+        ServingAdmission::Data(data) => build(
+            busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+            data.identity().identity_records(),
+            &[],
+        ),
+        ServingAdmission::Credentials(Ok(admitted)) => {
+            build(admitted.auth, &admitted.identity, admitted.ticket_record())
+        }
+        ServingAdmission::Credentials(Err(refusal)) => {
             let lowest = route.effective & route.effective.wrapping_neg();
             let req = build(lowest, &[], &[]);
-            return Ok(Served::Refused(refuse(port, &req, &refusal, &effects)));
+            return Ok(Served::Refused(refuse(port, &req, refusal, &effects)));
         }
     };
-    let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
     if route.catalog {
         // A ROUTE_CATALOG route lists models: the plane renders core's list in its dialect, no session runs.
         let names: Vec<&str> = models.iter().map(String::as_str).collect();
@@ -1060,7 +1164,15 @@ fn drive_blocking(
         None => Resolver::new(intents, None),
     }
     .with_route(route);
-    let session = carrier.map(|carrier| carrier.session());
+    let session = carrier.map(|carrier| {
+        carrier.session_with_budget(
+            effects
+                .admission
+                .as_ref()
+                .and_then(|pending| pending.channel_budget())
+                .cloned(),
+        )
+    });
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
         None => resolver,
@@ -1109,10 +1221,7 @@ fn drive_blocking(
                             })
                         })
                         .unwrap_or(busbar_contract::UnitKey::new(0)),
-                    pending: effects
-                        .admission
-                        .as_ref()
-                        .map(|pending| pending.context().clone()),
+                    pending: effects.admission.clone(),
                 };
                 let mut ran = None;
                 upstream.walk(facts, &mut |members, send| {
@@ -1125,6 +1234,10 @@ fn drive_blocking(
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::CoreRefused(code)) => {
+            let refusal = refusals.for_core(req.route, code);
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
         Err(SessionError::HookRefused(refusal) | SessionError::AdmissionRefused(refusal)) => {
             Ok(Served::Refused(refuse(port, req, &refusal, effects)))
         }
@@ -1142,3 +1255,7 @@ fn drive_blocking(
 #[cfg(test)]
 #[path = "tests/port_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/port_input_custody.rs"]
+mod input_custody_tests;

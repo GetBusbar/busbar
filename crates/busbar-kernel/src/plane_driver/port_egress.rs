@@ -50,12 +50,48 @@ use super::port_upstream::{
 use super::request_admission::{AdmittedRequest, RequestPoolReceipt, RequestWalk};
 use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
 use crate::teller::Kernel;
+use crate::upstreams::UpstreamDef;
+
+#[path = "port_selected_send.rs"]
+mod selected_send;
+pub use selected_send::{OwnedPreparation, SelectedHandoff, SelectedOpen};
+
+/// The actual immutable definition retained by the route materializer.
+#[derive(Clone)]
+pub struct TargetDefinition(Arc<UpstreamDef>);
+
+impl TargetDefinition {
+    #[must_use]
+    pub fn new(definition: Arc<UpstreamDef>) -> Self {
+        Self(definition)
+    }
+
+    #[must_use]
+    pub fn as_arc(&self) -> &Arc<UpstreamDef> {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for TargetDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TargetDefinition").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for TargetDefinition {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for TargetDefinition {}
 
 /// How a member reads as the plane's `Target` (§6.1): the plane-owned provider keys, the base path, TGT_* flags
 /// and the route's configured parameters. Operator vocabulary only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberTarget {
     pub identity: TargetIdentity,
+    /// Actual root-created definition; a matching name alone does not supply this association.
+    pub definition: Option<TargetDefinition>,
     /// Optional operator-configured rate resource from this exact target record.
     pub resource: Option<Box<str>>,
     /// Exact admitted registration name. Provider models have no registration authority.
@@ -73,6 +109,7 @@ impl MemberTarget {
     pub fn bare() -> Self {
         Self {
             identity: TargetIdentity::Registration,
+            definition: None,
             resource: None,
             registered_upstream: None,
             provider: "{}".into(),
@@ -91,12 +128,16 @@ pub type Targets = Arc<dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync>
 #[derive(Clone)]
 pub struct SessionFacts {
     pub unit: busbar_contract::UnitKey,
-    pub pending: Option<crate::host_services::InvocationContext>,
+    pub pending: Option<Arc<super::port_admission::Pending>>,
 }
 
 /// The production seam of `PortDriver::serve`: runs one session's walk. `run` gets the members and the carrier of
 /// the walk and runs on the calling (blocking) thread.
 pub trait PortUpstream: Send + Sync {
+    /// Read the immutable current target projection; this does not select or admit a dispatch.
+    fn target(&self, _pool: &str, _qualified_member: &str) -> Option<MemberTarget> {
+        None
+    }
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend));
 }
 
@@ -105,8 +146,9 @@ struct Shared<'a, F: FarEnd> {
     make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
     far: OnceCell<F>,
     request_walk: Option<RequestWalk>,
+    pending: Option<Arc<super::port_admission::Pending>>,
     admitted: OnceCell<AdmittedRequest>,
-    selected: RefCell<Option<(Candidate, u32, Box<str>)>>,
+    selected: RefCell<Option<(Candidate, u32, Box<str>, Option<TargetDefinition>)>>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
@@ -136,6 +178,7 @@ pub(crate) struct SelectedWalkAttempt {
     target: Candidate,
     preparation: u32,
     provider: Box<str>,
+    definition: Option<TargetDefinition>,
 }
 impl SelectedWalkAttempt {
     pub(crate) fn walk(&self) -> &RequestWalk {
@@ -159,6 +202,9 @@ impl SelectedWalkAttempt {
     pub(crate) fn provider(&self) -> &str {
         &self.provider
     }
+    pub(crate) fn definition(&self) -> Option<&Arc<UpstreamDef>> {
+        self.definition.as_ref().map(TargetDefinition::as_arc)
+    }
 }
 
 /// A walk over any [`FarEnd`]: the [`Members`] and the [`UpSend`] of one session, sharing its far end.
@@ -179,6 +225,7 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
                 make,
                 far: OnceCell::new(),
                 request_walk: None,
+                pending: None,
                 admitted: OnceCell::new(),
                 selected: RefCell::new(None),
                 token,
@@ -195,9 +242,10 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
 
     pub(crate) fn pending(
         mut self,
-        context: &crate::host_services::InvocationContext,
+        pending: Arc<super::port_admission::Pending>,
     ) -> Result<Self, super::request_admission::AdmissionError> {
-        self.shared.request_walk = Some(RequestWalk::new(context)?);
+        self.shared.request_walk = Some(RequestWalk::new(pending.context())?);
+        self.shared.pending = Some(pending);
         Ok(self)
     }
 
@@ -238,16 +286,17 @@ impl<F: FarEnd> WalkSend<'_, '_, F> {
             return None;
         }
         let mut selected = shared.selected.borrow_mut();
-        let (actual, ordinal, _) = selected.as_ref()?;
+        let (actual, ordinal, _, _) = selected.as_ref()?;
         if actual != target || *ordinal != preparation {
             return None;
         }
-        let (target, preparation, provider) = selected.take()?;
+        let (target, preparation, provider, definition) = selected.take()?;
         Some(SelectedWalkAttempt {
             walk: walk.clone(),
             target,
             preparation,
             provider,
+            definition,
         })
     }
 }
@@ -370,8 +419,12 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     };
                     let preparation = s.preparations.get().checked_add(1)?;
                     s.preparations.set(preparation);
-                    *s.selected.borrow_mut() =
-                        Some((candidate.clone(), preparation, provider.into()));
+                    *s.selected.borrow_mut() = Some((
+                        candidate.clone(),
+                        preparation,
+                        provider.into(),
+                        target.definition,
+                    ));
                     return Some(candidate);
                 }
                 Pick::Exhausted { retry_after, .. } => {
@@ -492,6 +545,14 @@ fn open_on<'a, F: FarEnd>(
     if !handle.block_on(far.send(token, request)) {
         return Err(SendFailed);
     }
+    read_open(far, token, handle)
+}
+
+fn read_open<'a, F: FarEnd>(
+    far: &'a F,
+    token: &'a Pass<Route>,
+    handle: &'a Handle,
+) -> Result<UpOpen<'a>, SendFailed> {
     let first = handle.block_on(far.next(token)).ok_or(SendFailed)?;
     // The walk's own status table failed this attempt over before the plane could see it.
     if first.fail_over || (first.last && first.cut) {
@@ -523,6 +584,50 @@ fn open_on<'a, F: FarEnd>(
 }
 
 impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
+    fn open_selected<'a>(
+        &'a mut self,
+        owned: OwnedPreparation,
+    ) -> Result<SelectedOpen<'a>, SendFailed> {
+        let pending = Arc::clone(self.0.pending.as_ref().ok_or(SendFailed)?);
+        let selection = self
+            .take_selected(owned.prepared.target(), owned.prepared.attempt())
+            .ok_or(SendFailed)?;
+        let prepared = match owned.data {
+            Some(data) => owned
+                .prepared
+                .bind_resource(&selection, data)
+                .map_err(|_| SendFailed)?,
+            None => owned.prepared,
+        };
+        let money = pending
+            .admitted()
+            .and_then(|unit| unit.selected.as_ref())
+            .ok_or(SendFailed)?;
+        let prepared = money.prepare(selection, prepared).map_err(|_| SendFailed)?;
+        let mut handoff = SelectedHandoff::new(pending, prepared)?;
+        let s = self.0;
+        let far = s.far.get().ok_or(SendFailed)?;
+        let request = request_of(
+            &s.member.borrow(),
+            &s.pool.borrow(),
+            s.picks.get(),
+            handoff.exchange().ok_or(SendFailed)?,
+        )
+        .ok_or(SendFailed)?;
+        let sent = s
+            .handle
+            .block_on(far.send_selected(s.token, request, &mut handoff));
+        let attempt = handoff.take_committed().ok_or(SendFailed)?;
+        Ok(SelectedOpen {
+            opened: if sent {
+                read_open(far, s.token, s.handle)
+            } else {
+                Err(SendFailed)
+            },
+            attempt,
+        })
+    }
+
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
         let mut open = self.open(member, exchange)?;
         let mut body = Vec::new();
@@ -753,6 +858,7 @@ pub fn upstream_targets(
         let mut target = MemberTarget::bare();
         target.registered_upstream = Some(name.into());
         target.resource = upstream.resource.clone();
+        target.definition = Some(TargetDefinition::new(upstream));
         Some(target)
     })
 }
@@ -793,6 +899,7 @@ impl PortEgress {
     #[must_use]
     pub fn probes(&self, members: Vec<ProbeTarget>) -> EgressProbes {
         EgressProbes {
+            pool: self.pool.clone(),
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
@@ -804,6 +911,10 @@ impl PortEgress {
 }
 
 impl PortUpstream for PortEgress {
+    fn target(&self, pool: &str, qualified_member: &str) -> Option<MemberTarget> {
+        (self.targets)(pool, qualified_member)
+    }
+
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend)) {
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
         let make = |wants: &Wants, receipt: Option<&RequestPoolReceipt>| {
@@ -816,14 +927,14 @@ impl PortUpstream for PortEgress {
                 route.authorization = facts
                     .pending
                     .as_ref()
-                    .map(|context| Arc::clone(context.generation().core().units()));
+                    .map(|pending| Arc::clone(pending.context().generation().core().units()));
             }
             self.egress.unit(route)
         };
         let targets = &*self.targets;
         let mut walk = EgressWalk::new(&make, &token, &self.handle, targets);
-        if let Some(context) = &facts.pending {
-            let Ok(pending) = walk.pending(context) else {
+        if let Some(pending) = &facts.pending {
+            let Ok(pending) = walk.pending(Arc::clone(pending)) else {
                 return;
             };
             walk = pending;
@@ -835,6 +946,7 @@ impl PortUpstream for PortEgress {
 /// The probe service's far end: one probe exchange to one member, judged like any other dial, and the finding
 /// handed to the breaker.
 pub struct EgressProbes {
+    pool: String,
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
     handle: Handle,

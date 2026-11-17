@@ -385,6 +385,20 @@ pub trait PlanePort: Send + Sync + 'static {
         t: &TargetIn<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+    /// Pure preparation after the caller establishes live selected-command admission and runs hooks.
+    /// A successful answer contains exactly one channel and non-effectful facts; it is not authority.
+    fn channel(
+        &self,
+        _s: &mut PlaneSession,
+        _target: &TargetIn<'_>,
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "selected channel preparation is unavailable".into(),
+            error: None,
+        })
+    }
     /// Round 18: the adapter accepts Forward/Want/Expect in a FROM_CORE answer only and FAULTs them beside an intent
     /// or in a FROM_CLIENT/FROM_UPSTREAM answer; K8's session task, which alone knows whether this session already
     /// forwarded or began its response, applies the once rule (a second or late Forward is handled exactly as an
@@ -398,6 +412,42 @@ pub trait PlanePort: Send + Sync + 'static {
         bytes: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+    /// Calls piece once using charged caller-owned output, returning its fully validated record length.
+    /// The caller must establish admission and live lease authority before entry, classify the complete
+    /// answer, and acquire any required general capacity before applying effects. No sink runs here.
+    /// Foreign/test ports must opt into this contract; the default never falls back to pooled `piece`.
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        let _ = (s, from, exchange, flags, bytes, out);
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "".into(),
+            error: None,
+        })
+    }
+
+    /// Decode a fixed piece answer with this instance's declaration. No plugin is invoked. The caller
+    /// retains the bytes returned by piece_fixed and admits the complete general answer before effects.
+    fn decode_fixed_piece(
+        &self,
+        _from: u32,
+        _exchange: u32,
+        _bytes: &[u8],
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "fixed piece decoding is unavailable".into(),
+            error: None,
+        })
+    }
     fn rewrite(
         &self,
         s: &mut PlaneSession,

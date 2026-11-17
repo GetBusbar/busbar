@@ -50,6 +50,13 @@ use busbar_ports::store::StoreHandle;
 use busbar_ports::transport::TransportPort;
 use busbar_ports::PluginCode;
 
+/// The real native auth instance's settled limits and method table, retained at open.
+pub struct AuthOpening {
+    pub port: Arc<dyn AuthPort>,
+    pub limits: InstanceLimits,
+    pub methods: u64,
+}
+
 /// Admission and description, before any binder, Needs or instance exists (HOST M3a).
 pub struct ImagesBuilder {
     host: &'static Host,
@@ -526,6 +533,8 @@ pub enum OpenPurpose {
 
 pub struct InstanceSpec<'a> {
     pub purpose: OpenPurpose,
+    /// One Store-open recovery verdict. Never copied to Applied or a serving/reopen context.
+    pub store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -886,6 +895,16 @@ impl Registry {
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn AuthPort>, OpenError>> {
+        let opened = self.open_auth_reserved_with_metadata(prepared, needs, refs);
+        Box::pin(async move { opened.await.map(|opened| opened.port) })
+    }
+
+    pub fn open_auth_reserved_with_metadata<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<AuthOpening, OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -896,6 +915,8 @@ impl Registry {
                 .await?;
             let proxy =
                 busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let limits = proxy.instance().limits;
+            let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
             let adapter = crate::adapters::auth::AuthAdapter::new(
                 proxy,
@@ -910,7 +931,11 @@ impl Registry {
             })?;
             self.remember(&spec, KindCode::Auth, &needs, &refs, None);
             let port: Arc<dyn AuthPort> = Arc::new(adapter);
-            Ok(port)
+            Ok(AuthOpening {
+                port,
+                limits,
+                methods,
+            })
         })
     }
 
@@ -1113,9 +1138,24 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .map(Box::from)
                 .collect();
-            let adapter =
-                crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::answer::open_error)?;
+            let listener_slots = busbar_ports::codec::transport::decode_listener_slots(
+                opened.described.facts,
+                opened
+                    .described
+                    .items
+                    .iter()
+                    .map(|(tag, body)| (*tag, body.as_slice())),
+            )
+            .map_err(|_| {
+                OpenError::Unknown(format!("{}: invalid initial listener slots", spec.name))
+            })?;
+            let adapter = crate::adapters::transport::TransportAdapter::open(
+                proxy,
+                opened.errors,
+                protocols,
+                listener_slots,
+            )
+            .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport, &needs, &refs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -1275,6 +1315,7 @@ impl Registry {
                 })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1321,6 +1362,7 @@ impl Registry {
             })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,

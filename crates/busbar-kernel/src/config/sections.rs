@@ -137,6 +137,9 @@ impl SecretModuleCfg {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedCfg {
+    /// Operator deregistration allowance, captured at boot; edit through the config document.
+    #[serde(default)]
+    pub shutdown: super::shutdown::AdvancedShutdownCfg,
     /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays
     /// the full retain (default 256).
     #[serde(default = "default_rate_sweep_interval")]
@@ -242,6 +245,7 @@ impl super::RootCfg {
 impl Default for AdvancedCfg {
     fn default() -> Self {
         Self {
+            shutdown: super::shutdown::AdvancedShutdownCfg::default(),
             rate_sweep_interval: default_rate_sweep_interval(),
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
             worker_threads: None,

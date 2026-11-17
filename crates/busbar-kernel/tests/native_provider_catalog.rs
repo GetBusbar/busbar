@@ -17,6 +17,51 @@ fn configured_model_accepts_its_adopted_dialect_override() {
 }
 
 #[test]
+fn selected_resource_is_shared_by_actual_direct_and_pool_targets() {
+    let deployment = DEPLOY.replace(
+        "upstream_model: wire-model-a",
+        "upstream_model: wire-model-a\n    resource: shared",
+    );
+    let result = resolved(
+        CATALOG,
+        &deployment,
+        &[plane("chat", &["wire-a", "wire-b"], SCHEMA)],
+    );
+    let plan = &result.catalogs["chat"];
+    for selector in ["fast", "slow", "m0"] {
+        assert_eq!(
+            plan.target(plan.select(selector).unwrap(), "chat\u{1f}m0")
+                .unwrap()
+                .resource
+                .as_deref(),
+            Some("shared")
+        );
+    }
+    assert!(plan
+        .target(plan.select("fast").unwrap(), "chat\u{1f}m1")
+        .unwrap()
+        .resource
+        .is_none());
+    for value in [
+        "''".to_owned(),
+        "x".repeat(129),
+        "é".repeat(65),
+        "\"bad\\nlabel\"".to_owned(),
+    ] {
+        let invalid = DEPLOY.replace(
+            "upstream_model: wire-model-a",
+            &format!("upstream_model: wire-model-a\n    resource: {value}"),
+        );
+        assert!(refused(
+            CATALOG,
+            &invalid,
+            &[plane("chat", &["wire-a", "wire-b"], SCHEMA)]
+        )
+        .contains("resource"));
+    }
+}
+
+#[test]
 fn both_model_dialect_spellings_are_not_two_independent_overrides() {
     let source = "provider: deployment\nprotocol: first\ndialect: second\n";
     assert!(busbar_contract::yaml::from_str::<ModelCfg>(source).is_err());
@@ -375,4 +420,28 @@ fn declared_nested_optional_nulls_unset_without_dropping_required_nulls() {
         "    capabilities: [{models: null}]\n    api_key:",
     );
     assert!(refused(CATALOG, &required, &planes).contains("/capabilities/0/models"));
+}
+
+#[test]
+fn auth_binding_form_retains_catalog_style_deployment_instance_and_explicit_unset() {
+    use busbar_kernel::plane_driver::provider_catalog::ProviderAuthSelection;
+    let planes = [plane("chat", &["wire-a", "wire-b"], SCHEMA)];
+    let catalog = CATALOG.replace(
+        "  protocol: wire-a",
+        "  auth: catalogue-style\n  protocol: wire-a",
+    );
+    let inherited = resolved(&catalog, DEPLOY, &planes);
+    assert!(inherited.catalogs["chat"].targets().values().all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Style(name) if name == "catalogue-style")));
+    let explicit = DEPLOY.replace(
+        "    api_key:",
+        "    auth: actual-auth-instance\n    api_key:",
+    );
+    let explicit = resolved(&catalog, &explicit, &planes);
+    assert!(explicit.catalogs["chat"].targets().values().all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Instance(name) if name == "actual-auth-instance")));
+    let unset = DEPLOY.replace("    api_key:", "    auth: null\n    api_key:");
+    let unset = resolved(&catalog, &unset, &planes);
+    assert!(unset.catalogs["chat"]
+        .targets()
+        .values()
+        .all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Implicit)));
 }

@@ -259,6 +259,7 @@ fn walk_secret_refs_with_boot_token<'a>(
             settings: _,
             insecure_transport: _,
             provisioning: _,
+            issued_kinds: _,
         } = def;
 
         if let (Some(tok), TokenRefs::Every) = (token, tokens) {
@@ -274,6 +275,9 @@ fn walk_secret_refs_with_boot_token<'a>(
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
             verdict_cache: _,
+            outbound: _,
+            unknown_key_refresh_s: _,
+            require_if_match: _,
             signing_key,
             chain,
             admin_auth,

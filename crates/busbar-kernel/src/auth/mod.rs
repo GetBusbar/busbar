@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
 use crate::diagnostics::{
@@ -24,6 +24,9 @@ use busbar_kernel_identity::operator::Judgement;
 mod admin_sender_constraint;
 mod admitted;
 pub mod effect;
+pub mod native_admin;
+pub mod native_chain;
+pub mod native_data;
 pub mod native_policy;
 pub mod relend;
 pub mod verdicts;
@@ -251,16 +254,19 @@ impl ReplayClaim {
     }
 }
 
-pub struct PendingClaim {
-    claim: ReplayClaim,
-    gov: Option<std::sync::Arc<crate::governance::GovState>>,
+pub struct PendingClaim(PendingKind);
+
+enum PendingKind {
+    Legacy {
+        claim: ReplayClaim,
+        gov: Option<std::sync::Arc<crate::governance::GovState>>,
+    },
+    Native(native_admin::Pending),
 }
 
 impl std::fmt::Debug for PendingClaim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingClaim")
-            .field("provider", &self.claim.provider)
-            .finish_non_exhaustive()
+        f.debug_struct("PendingClaim").finish_non_exhaustive()
     }
 }
 
@@ -277,11 +283,36 @@ impl PendingClaim {
         claim: Option<ReplayClaim>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
     ) -> Option<Self> {
-        claim.map(|claim| PendingClaim { claim, gov })
+        claim.map(|claim| PendingClaim(PendingKind::Legacy { claim, gov }))
     }
 
     pub async fn win(&self) -> bool {
-        self.claim.win(self.gov.as_deref()).await
+        match &self.0 {
+            PendingKind::Legacy { claim, gov } => claim.win(gov.as_deref()).await,
+            PendingKind::Native(_) => false,
+        }
+    }
+
+    fn native(
+        invocation: native_admin::Invocation,
+        prepared: std::sync::Arc<dyn native_admin::PreparedIdentity>,
+    ) -> Self {
+        Self(PendingKind::Native(native_admin::Pending::new(
+            invocation, prepared,
+        )))
+    }
+
+    pub async fn complete_admin(
+        &self,
+    ) -> Result<native_admin::ExecutionAdmission, native_admin::AdmissionRefused> {
+        match &self.0 {
+            PendingKind::Native(pending) => pending.complete().await,
+            PendingKind::Legacy { claim, gov } => claim
+                .win(gov.as_deref())
+                .await
+                .then(native_admin::ExecutionAdmission::legacy)
+                .ok_or(native_admin::AdmissionRefused),
+        }
     }
 
     #[must_use]
@@ -413,6 +444,14 @@ static AUTH_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub fn admin_call_context(id: crate::state::InvocationId) -> busbar_ports::CallCx {
+    busbar_ports::CallCx {
+        deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
+        request_id: id.request_id().get(),
+        stack: Default::default(),
+    }
+}
 
 static ADMIN_ADMISSION_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(ADMIN_ADMISSION_MAX_INFLIGHT));
@@ -1132,6 +1171,7 @@ type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 /// 503 with `Retry-After`, SIGN-auth-kind 2026-10-30).
 #[derive(Debug, Default)]
 pub(crate) struct AdminCarried {
+    native: Option<std::sync::Arc<dyn native_admin::PreparedIdentity>>,
     strips: Vec<Strip>,
     replay: Option<(String, Box<Replay>)>,
     no_verdict: bool,
@@ -1169,6 +1209,7 @@ async fn run_admin_chain(
     headers: &HeaderMap,
     probe: bool,
     carried: &mut AdminCarried,
+    invocation: Option<&native_admin::Invocation>,
 ) -> AdminChainAnswer {
     if app.admin_chain.is_empty() {
         return (ChainVerdict::Open, None);
@@ -1210,6 +1251,78 @@ async fn run_admin_chain(
             continue;
         }
         let operator = app.admin_modules.operator.is(name);
+        if let Some(native) = app.native_admin.as_ref() {
+            let cx = invocation.map_or_else(
+                || busbar_ports::CallCx {
+                    deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
+                    request_id: app.next_request_id(),
+                    stack: Default::default(),
+                },
+                |invocation| invocation.cx,
+            );
+            let Some(invocation) = invocation else {
+                // A diagnostic header-only call owns no original admission to charge. It may
+                // not fabricate a native request or spend the physical request's custody.
+                carried.no_verdict = true;
+                return (ChainVerdict::Denied, None);
+            };
+            let request = std::sync::Arc::clone(&invocation.request);
+            let answer = if probe {
+                let mut future = native.prepare(name, cx, request);
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                match std::future::Future::poll(future.as_mut(), &mut cx) {
+                    std::task::Poll::Ready(answer) => Some(answer),
+                    std::task::Poll::Pending => None,
+                }
+            } else {
+                let Ok(permit) = admin_admission_permit().await else {
+                    carried.no_verdict = true;
+                    return (ChainVerdict::Denied, None);
+                };
+                let answer =
+                    tokio::time::timeout(ADMIN_ADMISSION_WAIT, native.prepare(name, cx, request))
+                        .await
+                        .ok();
+                drop(permit);
+                answer
+            };
+            match answer {
+                Some(Ok(native_admin::PreparedAnswer::NotMine)) => continue,
+                Some(Ok(native_admin::PreparedAnswer::Identity(prepared))) => {
+                    if admin_sender_constraint::downgraded(app, name, headers)
+                        || admin_sender_constraint::downgraded_in(
+                            headers,
+                            prepared.credential_headers(),
+                        )
+                    {
+                        return (ChainVerdict::Denied, None);
+                    }
+                    let identity = prepared.identity();
+                    carried
+                        .strips
+                        .extend(identity.strip().map(|name| Strip::field(name.to_owned())));
+                    let verdict = ChainVerdict::Identified {
+                        module: name.clone(),
+                        principal: Principal {
+                            id: identity.subject().to_owned(),
+                            name: None,
+                            roles: identity.groups().map(str::to_owned).collect(),
+                            ttl_secs: identity.cache_s().map(u64::from),
+                        },
+                        resolved: None,
+                    };
+                    carried.native = Some(prepared);
+                    return (verdict, module_admin_scope_cap(app, name));
+                }
+                Some(Ok(
+                    native_admin::PreparedAnswer::Rejected | native_admin::PreparedAnswer::Held,
+                )) => return (ChainVerdict::Denied, None),
+                Some(Err(_)) | None => {
+                    carried.no_verdict = true;
+                    return (ChainVerdict::Denied, None);
+                }
+            }
+        }
         let outcome = match name.as_str() {
             // The operator arm stays first. A backed provider with an opened instance is judged
             // through the same bounded admission call as every admin module; an unset one passes.
@@ -1483,7 +1596,8 @@ async fn judge_admin_chain(
     Option<&'static str>,
 ) {
     let mut carried = AdminCarried::default();
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe, &mut carried).await;
+    let (verdict, cap) =
+        run_admin_chain(app, method, target, headers, probe, &mut carried, None).await;
     (
         verdict,
         cap,
@@ -1584,11 +1698,37 @@ pub struct AdminWhoSlot(pub Option<AdminWho>);
 /// the gate read it. `None` when the chain refuses the credential (the gate answered first, so a
 /// handler never sees that).
 pub async fn admin_who(app: &App, headers: &HeaderMap) -> Option<AdminWho> {
-    let (verdict, cap, _, no_verdict, _, _) =
-        judge_admin_chain(app, "GET", "/api/v1/admin/whoami", headers, false).await;
-    if no_verdict {
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(
+        app,
+        "GET",
+        "/api/v1/admin/whoami",
+        headers,
+        false,
+        &mut carried,
+        None,
+    )
+    .await;
+    if carried.no_verdict {
         return None;
     }
+    admin_who_of(
+        app,
+        verdict,
+        cap,
+        carried
+            .native
+            .as_ref()
+            .and_then(|p| p.identity().expires_at_s()),
+    )
+}
+
+fn admin_who_of(
+    app: &App,
+    verdict: ChainVerdict,
+    cap: Option<busbar_contract::authz::Scope>,
+    native_expiry: Option<u64>,
+) -> Option<AdminWho> {
     let (kind, id, provider, expires_at) = match &verdict {
         ChainVerdict::Denied => return None,
         ChainVerdict::Open => ("open", None, None, None),
@@ -1624,8 +1764,64 @@ pub async fn admin_who(app: &App, headers: &HeaderMap) -> Option<AdminWho> {
         kind,
         id,
         provider,
-        expires_at,
+        expires_at: expires_at.or(native_expiry),
     })
+}
+
+/// Authoritative entry supplied with the exact selected generation and original request. The
+/// returned pending object is completed only after the caller's revocation/approval checks.
+pub async fn admin_verdict_for(
+    invocation: native_admin::Invocation,
+    headers: &HeaderMap,
+) -> AdminVerdict {
+    match judge_admin_invocation(&invocation, headers).await {
+        Ok((verdict, _, _)) => verdict,
+        Err(why) => AdminDoor::Unavailable(why).into(),
+    }
+}
+
+async fn judge_admin_invocation(
+    invocation: &native_admin::Invocation,
+    headers: &HeaderMap,
+) -> Result<(AdminVerdict, Vec<Strip>, Option<AdminWho>), VerifierUnavailable> {
+    let app = &invocation.selected;
+    let method = invocation.request.method();
+    let target = invocation.request.target();
+    if !native_admin::snapshot_matches_http(
+        &invocation.request,
+        method,
+        target,
+        headers,
+        invocation.request.body(),
+    ) {
+        return Ok((AdminDoor::Denied.into(), Vec::new(), None));
+    }
+    let mut carried = AdminCarried::default();
+    let (verdict, cap) = run_admin_chain(
+        app,
+        method,
+        target,
+        headers,
+        false,
+        &mut carried,
+        Some(invocation),
+    )
+    .await;
+    let verdict = admin_chain_outcome(verdict, carried.no_verdict)?;
+    let who = admin_who_of(
+        app,
+        verdict.clone(),
+        cap,
+        carried
+            .native
+            .as_ref()
+            .and_then(|p| p.identity().expires_at_s()),
+    );
+    let (door, mut claim) = admin_door_claim_of(app, verdict, cap, carried.replay, carried.denial);
+    if let Some(prepared) = carried.native {
+        claim = Some(PendingClaim::native(invocation.clone(), prepared));
+    }
+    Ok((AdminVerdict { door, claim }, carried.strips, who))
 }
 
 pub fn admin_verdict(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminVerdict {
@@ -2082,7 +2278,8 @@ async fn claimed_ticket_verdict(
 )]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
-
+    handle: std::sync::Arc<crate::state::AppHandle>,
+    body_limit: usize,
     core_routes: &crate::core_routes::CoreRouteTable,
     mut req: Request<Body>,
     next: Next,
@@ -2292,7 +2489,7 @@ pub(crate) async fn auth_middleware(
             }
             return Err(rate_limited_after(retry_after));
         }
-        let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
+        let target = uri.path_and_query().map_or("/", |t| t.as_str());
         // The root deliberately defers core Admin routes to this verifier, independent
         // of the data chain. Their unverified open guest verdict is not an admin grant.
         let deferred_core_admin = declared_core_admin
@@ -2301,35 +2498,161 @@ pub(crate) async fn auth_middleware(
                 crate::guest::Claimant::Clean(name) if name == "core")
                     && matches!(admission.selected_line().auth, crate::guest::LineAuth::None)
             });
-        let (door, strips) =
-            if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
-                let verdict = admission.admin_verdict();
-                if admin_door_admits(&verdict.door, req.method().as_str(), target)
-                    && !admission.claim_admin_replay().await
-                {
-                    admission.refuse(
-                        busbar_contract::caps::StepName::Authenticate,
-                        busbar_contract::caps::ReasonCode::Unauthenticated,
-                    );
-                    return Err(admin_unauthorized_response());
-                }
-                (verdict.door, Vec::new())
-            } else {
-                let Ok(judged) = judge_admin_door(
-                    &app,
-                    req.method().as_str(),
-                    target,
-                    inbound_headers.unwrap_or_else(|| req.headers()),
-                    false,
-                    true,
-                )
+        let completed = req
+            .extensions()
+            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+            .filter(|e| e.native().is_some())
+            .cloned();
+        let (door, strips, who) = if let Some(execution) = completed {
+            let original = req
+                .extensions()
+                .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            let request_lease = req
+                .extensions()
+                .get::<crate::limits::process_admission::RequestLease>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            let (lease, prepared) = execution.native().ok_or_else(admin_unauthorized_response)?;
+            if !std::sync::Arc::ptr_eq(lease.generation(), &app)
+                || !std::sync::Arc::ptr_eq(prepared.request(), &original)
+                || !original.request().same_request(&request_lease)
+            {
+                return Err(admin_unauthorized_response());
+            }
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
                 .await
-                else {
-                    return Err(admin_unavailable_response());
-                };
-                judged
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body exceeds configured limit",
+                    )
+                        .into_response(),
+                })?;
+            if !execution.matches_http(
+                req.method().as_str(),
+                target,
+                inbound_headers.unwrap_or_else(|| req.headers()),
+                &bytes,
+            ) {
+                return Err(admin_unauthorized_response());
+            }
+            *req.body_mut() = Body::from(original.body_bytes());
+            let door = execution
+                .door_for(lease.generation())
+                .ok_or_else(admin_unauthorized_response)?;
+            let strips = prepared
+                .identity()
+                .strip()
+                .map(|name| Strip::field(name.to_owned()))
+                .collect();
+            (door, strips, execution.who())
+        } else if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
+            let verdict = admission.admin_verdict();
+            if admin_door_admits(&verdict.door, req.method().as_str(), target)
+                && !admission.claim_admin_replay().await
+            {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Authenticate,
+                    busbar_contract::caps::ReasonCode::Unauthenticated,
+                );
+                return Err(admin_unauthorized_response());
+            }
+            if let Some(execution) = admission.admin_execution() {
+                req.extensions_mut().insert(execution);
+            }
+            (verdict.door, Vec::new(), admission.admin_who())
+        } else if app.native_admin.is_none() {
+            let headers = inbound_headers.unwrap_or_else(|| req.headers());
+            let (verdict, cap, replay, no_verdict, strips, denial) =
+                judge_admin_chain(&app, req.method().as_str(), target, headers, false).await;
+            let verdict = admin_chain_outcome(verdict, no_verdict)
+                .map_err(|_| admin_unavailable_response())?;
+            let who = admin_who_of(&app, verdict.clone(), cap, None);
+            let (door, pending) = admin_door_claim_of(&app, verdict, cap, replay, denial);
+            let door =
+                claimed_admin_door(door, pending.as_ref(), req.method().as_str(), target, true)
+                    .await;
+            (door, strips, who)
+        } else {
+            let original = req
+                .extensions()
+                .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            let request_lease = req
+                .extensions()
+                .get::<crate::limits::process_admission::RequestLease>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            if !original.request().same_request(&request_lease) {
+                return Err(admin_unauthorized_response());
+            }
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
+                .await
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body exceeds configured limit",
+                    )
+                        .into_response(),
+                })?;
+            let headers = inbound_headers
+                .cloned()
+                .unwrap_or_else(|| req.headers().clone());
+            if !native_admin::snapshot_matches_http(
+                &original,
+                req.method().as_str(),
+                target,
+                &headers,
+                &bytes,
+            ) {
+                return Err(admin_unauthorized_response());
+            }
+            *req.body_mut() = Body::from(original.body_bytes());
+            drop(bytes);
+            let request_id = inbound
+                .as_ref()
+                .map_or_else(|| app.next_request_id(), |a| a.unit_key().get());
+            let Some(request_id) = std::num::NonZeroU64::new(request_id) else {
+                return Err(admin_unauthorized_response());
             };
-        let effect_context = effect::Context::new(
+            let id = crate::state::InvocationId::from_request_id(request_id);
+            let invocation = native_admin::Invocation {
+                handle: std::sync::Arc::clone(&handle),
+                selected: std::sync::Arc::clone(&app),
+                id,
+                cx: admin_call_context(id),
+                request: original,
+            };
+            let Ok((verdict, strips, projected)) =
+                judge_admin_invocation(&invocation, &headers).await
+            else {
+                return Err(admin_unavailable_response());
+            };
+            if admin_door_admits(&verdict.door, req.method().as_str(), target) {
+                if let Some(pending) = verdict.claim {
+                    let execution = pending
+                        .complete_admin()
+                        .await
+                        .map_err(|_| admin_unauthorized_response())?;
+                    req.extensions_mut().insert(std::sync::Arc::new(execution));
+                }
+            }
+            (verdict.door, strips, projected)
+        };
+        let mut effect_context = effect::Context::new(
             req.method().as_str(),
             target,
             inbound_headers
@@ -2337,11 +2660,18 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or_else(|| req.headers().clone()),
             &door,
         );
+        if let Some(execution) = req
+            .extensions()
+            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+        {
+            effect_context
+                .attach_execution(execution.clone())
+                .map_err(|_| admin_unauthorized_response())?;
+        }
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
             || (req.method() == axum::http::Method::POST && path == crate::admin::gate::KEYS_PATH)
         {
-            let who = admin_who(&app, inbound_headers.unwrap_or_else(|| req.headers())).await;
             req.extensions_mut().insert(AdminWhoSlot(who));
         }
         strike_named(&mut req, &mut consumed, strips.iter());

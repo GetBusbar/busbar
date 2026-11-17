@@ -115,6 +115,33 @@ impl IdentityPolicy for BindingsPolicy {
     }
 }
 
+/// The immutable policies of an effective chain. Each policy is bound to one reserved instance;
+/// an instance outside this chain can never borrow another provider's bindings.
+pub struct ChainPolicy {
+    epoch: u64,
+    policies: Vec<BindingsPolicy>,
+}
+
+impl ChainPolicy {
+    pub fn new(epoch: u64, policies: Vec<BindingsPolicy>) -> Self {
+        Self { epoch, policies }
+    }
+}
+
+impl IdentityPolicy for ChainPolicy {
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn authorize(&self, instance: u64, identity: &Identity, req: &AuthIn<'_>) -> Result<(), u32> {
+        self.policies
+            .iter()
+            .find(|policy| policy.instance == instance && policy.epoch == self.epoch)
+            .ok_or(R_POLICY)?
+            .authorize(instance, identity, req)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/native_policy_tests.rs"]
 mod tests;

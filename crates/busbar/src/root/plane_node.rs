@@ -250,7 +250,6 @@ impl Node {
         })
     }
 
-    #[cfg(any(test, distribution_root))]
     pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let (journal, sealing) = {
             let held = book.lock().unwrap_or_else(|poison| poison.into_inner());

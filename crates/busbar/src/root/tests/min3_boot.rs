@@ -259,25 +259,32 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
     use crate::root::migrate::admit_for_host;
     let configured = SecretRef::None;
     let hex = "ab".repeat(32);
-    publish_at_rest(Some(&configured), |_, _| {
+    let verdict = publish_at_rest(Some(&configured), |_, _| {
         let hex = hex.clone();
         async move { Ok(SecureVec::from(hex.into_bytes())) }
     })
     .await;
+    assert_eq!(verdict, Ok(true));
     assert_eq!(
         admit_for_host(3),
         Ok(()),
         "a configured key admits the store's recoverable rows"
     );
 
-    publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
+    let verdict =
+        publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
+    assert_eq!(verdict, Ok(false));
     let no_key = admit_for_host(3).unwrap_err();
     assert!(no_key.contains("Set `auth.signing_key`"), "{no_key}");
 
-    publish_at_rest(Some(&configured), |what, _| async move {
+    let verdict = publish_at_rest(Some(&configured), |what, _| async move {
         Err(format!("{what} could not be resolved (Denied)"))
     })
     .await;
+    assert_eq!(
+        verdict,
+        Err("the signing key could not be resolved (Denied)".to_owned())
+    );
     assert_eq!(
         admit_for_host(3),
         Err("CONFIG: the signing key could not be resolved (Denied)".to_owned())
@@ -351,6 +358,36 @@ fn configured_hooks_join_the_typed_plan_with_their_exact_settings() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&hook.config).unwrap(),
         serde_json::json!({"mode":"strict"})
+    );
+}
+
+#[test]
+fn configured_auth_uses_the_named_instance_and_only_its_plugin_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    cfg.identity_providers.insert(
+        "employees".into(),
+        busbar_contract::json::parse_str(
+            r#"{"module":"fixture-auth","settings":{"audience":"staff"},"max_admin_scope":"read-only"}"#,
+        ).unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let auth = instances
+        .iter()
+        .find(|one| one.kind == KindCode::Auth)
+        .expect("the real configured auth participates in the same typed boot plan");
+    assert_eq!(auth.name, "employees");
+    assert_eq!(auth.identity, "fixture-auth");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&auth.config).unwrap(),
+        serde_json::json!({"audience":"staff"})
     );
 }
 

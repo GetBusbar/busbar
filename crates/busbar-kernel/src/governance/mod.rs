@@ -22,6 +22,7 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 pub(crate) mod raw_recovery;
+pub mod selected_policy;
 pub(crate) mod selected_resource;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;

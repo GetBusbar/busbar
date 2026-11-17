@@ -900,6 +900,7 @@ impl Harness {
     ) -> InstanceSpec<'a> {
         InstanceSpec {
             purpose: OpenPurpose::Canonical,
+            store_migration: None,
             identity: module,
             name,
             config_json: config,

@@ -59,7 +59,7 @@ async fn serve_with_effect(
     let mut document = serde_json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
-                  "policy": { "require_if_match": require_if_match } },
+                  "require_if_match": require_if_match },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
         "identity-providers": {},
@@ -197,6 +197,9 @@ async fn failed_reply_after_effect_is_replayed_without_a_second_effect() {
 async fn every_get_has_etag_and_304() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("every-get-has-etag", false).await;
+    let whoami = s.get("/whoami").send().await.unwrap();
+    let whoami = json::parse_value(&whoami.bytes().await.unwrap()).unwrap();
+    assert_eq!(whoami["require_if_match"], false);
     for path in [
         "/info",
         "/kinds/core/instances",
@@ -276,6 +279,9 @@ async fn generation_etag_moves_on_write_and_if_match_guards() {
 async fn require_if_match_428() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("require-if-match", true).await;
+    let whoami = s.get("/whoami").send().await.unwrap();
+    let whoami = json::parse_value(&whoami.bytes().await.unwrap()).unwrap();
+    assert_eq!(whoami["require_if_match"], true);
     let refused = s
         .send(reqwest::Method::DELETE, "/overlay/groups")
         .send()

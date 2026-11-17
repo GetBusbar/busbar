@@ -109,10 +109,6 @@ fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli
 
 const MAX_WORKER_THREADS: usize = 128;
 
-/// Allocation ceiling for each startup migration frame/page/semantic working buffer. Fixed; there
-/// is no config key for it.
-const MIGRATION_VALUE_BYTES: usize = 64 * 1024 * 1024;
-
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
@@ -386,11 +382,8 @@ fn main() {
     for w in warnings {
         eprintln!("{w}");
     }
-    // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
-    // 1.5.5 printed its deprecation line, before the config load that can refuse.
-    for w in root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
-    }
+    // Refuse retired launch inputs before migration or any configuration is read.
+    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
@@ -582,6 +575,7 @@ async fn run(
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
     );
+    let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -670,6 +664,7 @@ async fn run(
     let LoadedConfig {
         deploy,
         defs,
+        resource_ownership: _,
         providers_path,
         overlay_path: _,
         config_locked,
@@ -746,22 +741,25 @@ async fn run(
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
-            &plugin_process, file_images, &base_cfg, boot_guard.clone(),
+            process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(),
         ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
             let conversion = root::min3_boot::prepare_serving(
-                bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
+                bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
+                &Default::default(), boot_guard,
             ).unwrap_or_else(|error| die(error));
+            let observation_reservation = export_observers.reserve(conversion.export_names())
+                .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
-                conversion, process_io.handle(), store_admission, None,
+                conversion, store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
                 None,
+                &observation_reservation,
             )
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
         }
-        let secret_resolver = bootstrap_ready.resolver(process_io.handle());
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -861,10 +859,13 @@ async fn run(
             eprintln!("[info] {notice}");
         }
 
-        let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            deploy.groups.keys().cloned().collect();
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
+        let base_hook_names = resource_ownership.hook_names().clone();
+        let base_group_names = resource_ownership.group_names().clone();
         if let Some(doc) = overlay_doc.as_ref() {
+            resource_ownership.validate_named_maps(doc).unwrap_or_else(|error| {
+                die(boot_error("Store overlay refused", error))
+            });
             config::overlay::apply_root_to_deploy(&mut deploy, doc).unwrap_or_else(|error| {
                 die(boot_error(
                     "Store overlay refused",
@@ -887,8 +888,11 @@ async fn run(
             .unwrap_or_else(|error| die(error));
             // This branch precedes governors, usage recovery, correction tasks and listeners.
             // Reconstruct the same effective config that normal application boot consumes.
-            let mut effective = config::resolve(&deploy, &defs)
-                .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+            let provider_planes = root::min3_provider_plan::descriptors(&effective_images)
+                .unwrap_or_else(|error| die(error));
+            let mut effective = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+                .unwrap_or_else(|_| die("principal transition effective configuration refused"))
+                .config;
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
@@ -948,7 +952,6 @@ async fn run(
             operator_reference,
             effective_images,
             bootstrap_ready,
-            secret_resolver,
         ))
     }))
     .await;
@@ -967,7 +970,6 @@ async fn run(
         operator_reference,
         effective_images,
         bootstrap_ready,
-        secret_resolver,
     )) = bootstrap
     else {
         return;
@@ -988,6 +990,7 @@ async fn run(
         selected
     };
 
+    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
     let response_headers_cfg = deploy.advanced.response_headers.clone();
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
@@ -1050,8 +1053,12 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg =
-        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
+    let provider_planes =
+        root::min3_provider_plan::descriptors(&effective_images).unwrap_or_else(|error| die(error));
+    let resolved = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+        .unwrap_or_else(|errs| die_list("config errors", errs));
+    let mut cfg = resolved.config;
+    let provider_catalogs = resolved.catalogs;
     boot_instances
         .check(&cfg)
         .unwrap_or_else(|error| die(error));
@@ -1107,6 +1114,9 @@ async fn run(
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    let request_admission =
+        busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1178,12 +1188,12 @@ async fn run(
         &plugin_process,
         effective_images,
         &cfg,
+        &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));
-    let native_config = cfg.clone();
     let preparation = root::boot_app::Preparation {
-        secret_resolver,
+        secret_resolver: serving_ready.resolver(),
         startup: store_admission,
         config: cfg,
         judged,
@@ -1255,6 +1265,7 @@ async fn run(
         deploy,
         ..
     } = ready;
+    root::plane_node::node().bind_book(Arc::clone(&book.durability));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
@@ -1328,19 +1339,19 @@ async fn run(
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
 
+    let observation_reservation = export_observers
+        .reserve(serving_ready.export_names())
+        .unwrap_or_else(|error| die(error));
     let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
         serving_ready,
-        process_io.handle(),
         store_admission,
         services.kernel(),
         busbar_kernel::plane_driver::port_work::governed_binder(
             app.governance.clone(),
             app.role_bindings.clone(),
         ),
-        Some(
-            root::min3_boot::hooks::Environment::new(&native_config, &app)
-                .unwrap_or_else(|error| die(error)),
-        ),
+        Some(root::min3_boot::ServingEnvironment::new(&app)),
+        &observation_reservation,
     )
     .await
     .unwrap_or_else(|error| die(error));
@@ -1351,14 +1362,16 @@ async fn run(
         Arc::clone(&app.amendments),
     )
     .unwrap_or_else(|error| die_list("config errors", [error]));
+    let mut app = Arc::unwrap_or_clone(app);
+    app.secret_resolver = Arc::clone(&native.resolver);
+    let auth_epoch = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    root::min3_admin_auth::install(&mut app, Arc::clone(&native.auth), auth_epoch)
+        .unwrap_or_else(|error| die(error));
     let app = Arc::new(
-        export::plugin::assemble_routes(
-            Arc::unwrap_or_clone(app),
-            &export_config,
-            native.seats.clone(),
-            export_registry,
-        )
-        .unwrap_or_else(|error| die_list("config errors", [error])),
+        export::plugin::assemble_routes(app, &export_config, native.seats.clone(), export_registry)
+            .unwrap_or_else(|error| die_list("config errors", [error])),
     );
 
     let door_live_handle = Arc::default();
@@ -1467,6 +1480,11 @@ async fn run(
 
     drop(served);
     let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    // Publication owns every reserved observer through producer shutdown. Failed construction
+    // above drops the uncommitted reservation and returns its unused capacity.
+    let _export_generation = observation_reservation.commit();
+    // Reload carries this exact owner, including captures accepted by a retiring App.
+    let export_captures = Arc::clone(&app_handle.load().exports);
     services.prepare_workers(&mut generation_workers);
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
@@ -1524,6 +1542,7 @@ async fn run(
     recovery_served.spawn_ticks();
     export::plugin::start(&app_handle.load().exports)
         .unwrap_or_else(|e| die_list("config errors", [e]));
+    let export_observer_retry = root::shutdown::ExportRetry::start(Arc::clone(&export_observers));
     exports.start().unwrap_or_else(|error| die(error));
     let on_host = LINKED.on_host;
     let boot_host =
@@ -1648,56 +1667,35 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the fixed budget from the first broadcast to exit.
+    // The fixed drain starts after operator deregistration; Safety and Force bypass it.
     let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
         busbar_kernel::governance::drain::DRAIN_TIMEOUT,
     );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
-    // Persistence failure can request shutdown before a listener exists. A watch
-    // receiver carries that level into the listener's broadcast shutdown path.
-    {
-        let mut stop = control_work.shutdown_rx.clone();
-        let shutdown = shutdown_tx.clone();
-        let probes = probes.clone();
-        tokio::spawn(async move {
-            if !*stop.borrow_and_update() {
-                let _ = stop.wait_for(|stopping| *stopping).await;
-            }
-            probes.begin_stopping();
-            let _ = shutdown.send(());
-        });
-    }
-    let worker_shutdown_rx = control_work.shutdown_rx.clone();
-    // The first broadcast, from any sender, arms the drain clock.
-    {
-        let rx = shutdown_tx.subscribe();
-        let shutdown_level = control_work.shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
-        let probes = probes.clone();
-        tokio::spawn(async move {
-            recv_shutdown(rx).await;
-            probes.begin_stopping();
-            clock.arm(tokio::time::Instant::now() + clock.budget());
-            let _ = shutdown_level.send(true);
-        });
-    }
-
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
+    // Keep persistence's safety input distinct from the delayed listener/data-worker stop level.
+    let shutdown_request = drain.start_deregister(
+        deregister_delay,
+        probes.clone(),
+        root::shutdown::ShutdownSignals {
+            safety: control_work.shutdown_rx.clone(),
+            support: control_work.shutdown_tx.clone(),
+            workers: worker_shutdown_tx,
+            listeners: shutdown_tx.clone(),
+        },
+    );
+    busbar_kernel::detached::set_worker_shutdown(worker_shutdown_rx.clone());
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
-
-    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone(), probes.clone());
-    // The first signal starts the drain; a second one ends it at once (the deadline branch).
+    busbar_core_admin::restart::publish_shutdown(shutdown_request.clone());
     {
-        let shutdown_tx = shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
-        let probes = probes.clone();
         tokio::spawn(async move {
+            use busbar_kernel::governance::drain::ShutdownIntent;
             shutdown_signal().await;
-            probes.begin_stopping();
-            let _ = shutdown_tx.send(());
+            shutdown_request.request(ShutdownIntent::Operator);
             shutdown_signal().await;
             tracing::warn!("second shutdown signal: the drain deadline is now");
-            clock.expire_now();
+            shutdown_request.request(ShutdownIntent::Force);
         });
     }
     // The listener's handler drains on a signal from here on.
@@ -1721,7 +1719,11 @@ async fn run(
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    let predecessor = spawn_predecessor_task(
+        governance.as_ref(),
+        book.as_ref(),
+        control_work.shutdown_rx.clone(),
+    );
     // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
     if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
         audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
@@ -1736,6 +1738,7 @@ async fn run(
             served,
             app_handle.clone(),
             || root::kernel::ROOT_CARD.pin(),
+            Arc::clone(&request_admission),
             stop,
         )));
     } else {
@@ -1772,6 +1775,7 @@ async fn run(
         }
         for (limits, framer, tls, addr, router) in plugin_listeners {
             threads.push(serve_private_listener(
+                request_admission.connection_storage(AdmissionClass::Data),
                 addr,
                 limits,
                 router,
@@ -1807,6 +1811,7 @@ async fn run(
                     });
             if let Some(framer) = framer {
                 threads.extend(serve_thread_per_core(
+                    request_admission.connection_storage(AdmissionClass::Data),
                     data_workers,
                     listen.clone(),
                     bound_at("listen", &listen),
@@ -1824,6 +1829,7 @@ async fn run(
                 "admin listening through the connector"
             );
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -1842,6 +1848,7 @@ async fn run(
             if let Some(framer) = framer {
                 let resolver = tls_secret_resolver.clone();
                 let shutdown = shutdown_tx.subscribe();
+                let storage = request_admission.connection_storage(AdmissionClass::Data);
                 threads.push(spawn_multithread_data(
                     data_workers,
                     worker_shutdown_rx,
@@ -1849,6 +1856,7 @@ async fn run(
                         let data_listener =
                             root::listener::SocketAdmits::new(bind_listener(&listen).await);
                         serve_listener(
+                            storage,
                             data_listener,
                             data_router,
                             tls_cfg,
@@ -1864,6 +1872,7 @@ async fn run(
                 ));
             }
             admin = Some(Box::pin(serve_listener(
+                request_admission.connection_storage(AdmissionClass::Operator),
                 admin_listener,
                 admin_router,
                 admin_tls_cfg,
@@ -1884,6 +1893,9 @@ async fn run(
         work_recovery,
         generation_workers,
         exports,
+        export_observers,
+        export_observer_retry,
+        export_captures,
         control_drain: Box::pin(control_work.drain()),
         node_lease: node_lease_task,
         flusher: budget_flusher,
@@ -1891,7 +1903,6 @@ async fn run(
         late: Arc::clone(&services),
         book,
         startup: store_admission,
-        shutdown_tx: shutdown_tx.clone(),
         predecessor,
     };
     let code = root::shutdown::finish(post, &drain).await;
@@ -1904,6 +1915,7 @@ async fn run(
 /// boundary; the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    book: Option<&root::durability::NodeBook>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Option<(
     tokio::task::JoinHandle<()>,
@@ -1919,9 +1931,13 @@ fn spawn_predecessor_task(
             return None;
         }
     };
+    let sealing = book
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_predecessor());
+    let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
     let handle = tokio::spawn(root::measurements::maintenance(async move {
-        task.run(stop).await;
+        root::durability::predecessor::run(task, sealing, book, stop).await;
     }));
     Some((handle, fence))
 }
@@ -2097,6 +2113,7 @@ fn spawn_multithread_data(
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
+    storage: busbar_contract::storage::StorageSource,
     n: usize,
     addr: String,
 
@@ -2142,6 +2159,7 @@ fn serve_thread_per_core(
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
         let framer = framer.clone();
+        let storage = storage.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -2176,6 +2194,7 @@ fn serve_thread_per_core(
                         "data door listening through the connector"
                     );
                     serve_listener(
+                        storage,
                         listener,
                         router,
                         tls,
@@ -2203,6 +2222,7 @@ fn serve_thread_per_core(
 
 #[allow(clippy::too_many_arguments)]
 fn serve_private_listener(
+    storage: busbar_contract::storage::StorageSource,
     addr: String,
     limits: AcceptLimits,
     router: Router,
@@ -2227,6 +2247,7 @@ fn serve_private_listener(
                 let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
                     .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
                 serve_listener(
+                    storage,
                     listener,
                     router,
                     tls,
@@ -2250,6 +2271,7 @@ fn serve_private_listener(
 
 #[allow(clippy::too_many_arguments)]
 async fn serve_listener(
+    storage: busbar_contract::storage::StorageSource,
     listener: impl busbar_core_connector::listen::Admits,
     router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
@@ -2288,6 +2310,7 @@ async fn serve_listener(
     let result = match framer {
         Some(framer) => {
             root::listener::serve_admitted_framed(
+                storage,
                 listener,
                 router,
                 security,
@@ -2298,7 +2321,8 @@ async fn serve_listener(
             .await
         }
         None => {
-            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
+            root::listener::serve_admitted(storage, listener, router, security, shutdown, balancer)
+                .await
         }
     };
     if let Err(e) = result {
@@ -2376,11 +2400,7 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
-    // The drain has begun: the refresher starts nothing more, and a refresh in flight commits
-    // nothing and reports at debug (a renewal failing because the process is stopping is not an
-    // outage).
-    busbar_kernel::refresh::begin_stopping();
-    tracing::info!("shutdown signal received; draining in-flight requests");
+    tracing::info!("shutdown signal received");
 }
 
 mod root;

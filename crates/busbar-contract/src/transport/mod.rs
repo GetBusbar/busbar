@@ -34,7 +34,8 @@ pub use trust::{ClientIdentity, EgressTrust};
 
 /// The transport wire vocabulary a plane still touches, re-exported at the transport module root so
 pub use wire::{
-    ArrivalRecord, CertFacts, CloseReason, Conn, ConnFacts, ConnHandle, Decode, Direction,
-    DiscardCode, Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, RawIo, RawStream, Side,
-    StatusAt, TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
+    ArrivalRecord, CertFacts, CloseReason, Conn, ConnFacts, ConnHandle, ConnectionIo, Decode,
+    Direction, DiscardCode, Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, RawIo,
+    RawStream, Side, StatusAt, TransportError, Unit0Trigger, WireFault, WireStatus,
+    WireStatusClass,
 };

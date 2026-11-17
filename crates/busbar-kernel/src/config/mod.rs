@@ -27,6 +27,8 @@ pub mod named_map;
 pub mod operator_file;
 pub use operator_file::{operator_file_policy, OperatorFileDefs};
 pub mod readback;
+mod resource_ownership;
+pub use resource_ownership::ResourceOwnership;
 pub(crate) mod restart;
 
 pub mod parse;
@@ -637,6 +639,9 @@ pub fn resolve_auth(
 
     AuthCfg {
         verdict_cache: auth.verdict_cache,
+        outbound: auth.outbound,
+        unknown_key_refresh_s: auth.unknown_key_refresh_s,
+        require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
         chain,
         admin_auth,
@@ -1648,7 +1653,11 @@ pub fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
-    resolve_with_provider_planes(deploy, defs, &[]).map(|resolved| resolved.config)
+    let planes = deploy
+        .grammar
+        .prepared()
+        .map_or(&[][..], |read| read.provider_planes());
+    resolve_with_provider_planes(deploy, defs, planes).map(|resolved| resolved.config)
 }
 
 /// Configuration and immutable provider projections validated against this read's admitted images.
@@ -2051,6 +2060,7 @@ pub fn resolve_with_provider_planes(
 
     if errors.is_empty() {
         let security = deploy.security.clone().unwrap_or_default();
+        let retained_catalogs = std::sync::Arc::new(catalogs.clone());
         Ok(ResolvedConfig {
             catalogs,
             config: RootCfg {
@@ -2110,7 +2120,10 @@ pub fn resolve_with_provider_planes(
                 operator_file_defs: None,
                 export_defs: deploy.export.clone(),
                 plane_sections,
-                grammar: deploy.grammar.clone(),
+                grammar: deploy
+                    .grammar
+                    .clone()
+                    .with_provider_catalogs(retained_catalogs),
                 min3,
             },
         })
@@ -2312,3 +2325,6 @@ impl std::fmt::Debug for FetchTarget {
             .finish()
     }
 }
+
+mod shutdown;
+pub use shutdown::AdvancedShutdownCfg;

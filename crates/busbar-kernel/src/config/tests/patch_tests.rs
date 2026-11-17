@@ -50,6 +50,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
     };
 
     let crate::config::AdvancedCfg {
+        shutdown: _,
         rate_sweep_interval,
         usage_flush_interval_ms,
         response_headers,
