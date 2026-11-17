@@ -42,6 +42,22 @@ pub(crate) struct Prepared {
 }
 
 impl Prepared {
+    /// Validate the actual selected association before attaching its destination's retained table.
+    pub(crate) fn for_route(
+        &self,
+        key: &SelectedRouteKey,
+        destination: DestinationId,
+    ) -> Result<AuthBinding, String> {
+        let (selected_destination, _) = self
+            .rows
+            .get(key)
+            .ok_or("native outbound selected route is absent")?;
+        if *selected_destination != destination {
+            return Err("native outbound selected route has another destination".into());
+        }
+        self.for_destination(&key.plane, destination)
+    }
+
     /// Attach this value to the MemberRoute's sole auth slot before candidate publication.
     pub(crate) fn for_destination(
         &self,
