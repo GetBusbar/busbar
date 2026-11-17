@@ -105,7 +105,7 @@ pub struct Attachment {
     pub generation: u64,
     pub slot: u64,
     pub greet: bool,
-    pub ready_tail: Box<[u8]>,
+    pub ready_tail: bytes::Bytes,
     rx: mpsc::Receiver<ChannelMsg>,
     link: Arc<Link>,
     budget: budget::UnitBudget,
@@ -120,7 +120,7 @@ impl Attachment {
         generation: u64,
         slot: u64,
         greet: bool,
-        ready_tail: Box<[u8]>,
+        ready_tail: bytes::Bytes,
         rx: mpsc::Receiver<ChannelMsg>,
     ) -> Result<Self, RecordsDenied> {
         if !budget.accepts_link(link.budget()) {
@@ -145,7 +145,7 @@ impl Attachment {
         generation: u64,
         slot: u64,
         greet: bool,
-        ready_tail: Box<[u8]>,
+        ready_tail: bytes::Bytes,
         rx: mpsc::Receiver<ChannelMsg>,
     ) -> Result<Self, RecordsDenied> {
         if !budget.accepts_link(link.budget()) {
@@ -187,17 +187,34 @@ impl Attachment {
     pub fn link_budget(&self) -> &budget::LinkBudget {
         self.link.budget()
     }
-    pub fn ready(&mut self, tail: &[u8]) {
-        if self.greet {
-            self.link.ready(tail);
+    pub fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied> {
+        if self.greet && self.link.ready_tail().is_none() {
+            if tail.len() > frame::MAX_MESSAGE {
+                return Err(RecordsDenied::Invalid);
+            }
+            let mut owned = crate::limits::output::OutputBuffer::with_source(
+                &self.budget.storage(),
+                tail.len(),
+            )
+            .map_err(|_| RecordsDenied::Unavailable)?;
+            owned
+                .write_bytes(tail)
+                .map_err(|_| RecordsDenied::Unavailable)?;
+            self.link
+                .ready(
+                    self.slot,
+                    owned.into_bytes().map_err(|_| RecordsDenied::Unavailable)?,
+                )
+                .map_err(|_| RecordsDenied::Unavailable)?;
         }
+        Ok(())
     }
     pub fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {
         Box::pin(async move { self.rx.recv().await.or(Some(ChannelMsg::Ended)) })
     }
 }
 pub enum ChannelMsg {
-    Message(Box<[u8]>),
+    Message(bytes::Bytes),
     Ended,
 }
 /// Round 18 (K8): the DETACH-key registry SIGNAL already uses, shared with `UpstreamChannels` for DX_BROADCAST.
