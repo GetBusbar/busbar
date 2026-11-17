@@ -465,7 +465,8 @@ fn arrival_with_fields(
                 method: "POST".into(),
                 target: "/resource".into(),
                 fields,
-                ..Default::default()
+                authority: String::new(),
+                query: None,
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
             Some(deadline),

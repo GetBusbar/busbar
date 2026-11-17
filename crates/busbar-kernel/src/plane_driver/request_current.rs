@@ -76,7 +76,7 @@ impl RequestRoutes {
                     && registration
                         .members
                         .iter()
-                        .any(|m| m.upstream == member_name)
+                        .any(|m| &*m.upstream == member_name)
             });
         }
         let Some(catalog) = &self.catalog else {

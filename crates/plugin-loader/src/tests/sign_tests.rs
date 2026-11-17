@@ -3,6 +3,7 @@
 
 use super::*;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueMutTrait as _;
 
 fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -718,7 +719,7 @@ fn unknown_manifest_field_fails_parse() {
     let mut v = json::to_value(&m).unwrap();
     v.as_object_mut()
         .unwrap()
-        .insert("surprise".into(), json::json!(true));
+        .insert("surprise", json::json!(true));
     assert!(json::from_value::<Manifest>(&v).is_err());
 }
 
@@ -1629,7 +1630,7 @@ fn only_a_secret_source_may_declare_a_disk_need() {
     validate_identity(&secret, HOST_IDENTITY).expect("a secret source may read the disk");
 
     assert_eq!(
-        json::to_value(Declares::default()).expect("encode"),
+        json::to_value(&Declares::default()).expect("encode"),
         json::json!({}),
         "no disk need is left off the wire"
     );

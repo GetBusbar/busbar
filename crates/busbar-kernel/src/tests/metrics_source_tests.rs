@@ -35,7 +35,7 @@ fn first_denial_in_the_visited_counter_shard_is_reported_only_after_capture() {
     let source = identity_source();
     let denied = Key::from_parts(
         crate::snapshot::ADMISSION_DENIED_TOTAL,
-        [metrics::Label::new("gate", "inbound_body_bytes")],
+        vec![metrics::Label::new("gate", "inbound_body_bytes")],
     );
     // Pinned metrics-util registry chooses the low hash bits with this exact shard count.
     let mask = std::thread::available_parallelism()
@@ -91,7 +91,7 @@ fn real_family_builder_allocation_traffic_fits_reserved_projection_credit() {
     let request = process.try_enter(AdmissionClass::Operator).unwrap();
     let key = Key::from_parts(
         "allocation_probe",
-        [metrics::Label::new("pool", "long-label".repeat(100))],
+        vec![metrics::Label::new("pool", "long-label".repeat(100))],
     );
     let mut scope = CaptureScope::new(&request).unwrap();
     let mut building = Building::new();

@@ -162,7 +162,7 @@ fn target_definition_retains_the_actual_registration_allocation() {
 
     let definition = crate::upstreams::UpstreamDef::from_config(
         "actual",
-        &serde_json::json!({"url": "https://example.com"}),
+        &busbar_contract::json::json!({"url": "https://example.com"}),
         &crate::config::min3::UpstreamCfg::default(),
         &|_| unreachable!("this registration has no custom trust anchor"),
     )

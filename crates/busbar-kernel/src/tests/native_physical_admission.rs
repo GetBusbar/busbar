@@ -106,7 +106,9 @@ fn head(path: &str) -> Head {
     Head {
         method: "POST".into(),
         target: path.into(),
-        ..Head::default()
+        authority: String::new(),
+        query: None,
+        fields: Vec::new(),
     }
 }
 
