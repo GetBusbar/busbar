@@ -12,28 +12,31 @@ use std::collections::VecDeque;
 
 /// One queued ask: the slot that sent it and its message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ask {
+pub struct Ask<M = Box<[u8]>, G = ()> {
     pub slot: u64,
-    pub message: Box<[u8]>,
+    message: Option<M>,
+    _guard: G,
 }
 
 /// What core does with one EX_MSG.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Write {
+pub enum Write<M = Box<[u8]>> {
     /// Write it to the channel now.
-    Now(Box<[u8]>),
+    Now(M),
     /// Under CH_SERIAL another ask is outstanding: it waits its turn.
     Queued,
+    /// The bounded ask line is full. No message or ask was retained.
+    Rejected,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AskLine {
+pub struct AskLine<M = Box<[u8]>, G = ()> {
     serial: bool,
     /// Every open ask, in write order; under CH_SERIAL only the head has been written.
-    line: VecDeque<Ask>,
+    line: VecDeque<Ask<M, G>>,
 }
 
-impl AskLine {
+impl<M, G> AskLine<M, G> {
     #[must_use]
     pub fn new(serial: bool) -> Self {
         Self {
@@ -42,20 +45,29 @@ impl AskLine {
         }
     }
 
-    /// One EX_MSG of `slot`; `ask` = it carried MSG_ASK.
-    pub fn send(&mut self, slot: u64, message: &[u8], ask: bool) -> Write {
-        if !ask {
-            return Write::Now(message.into());
+    /// Move one message into the line. Its independent ask guard stays until final/detach/end,
+    /// while the payload moves to the writer once and retires after actual write completion.
+    pub fn send_owned(&mut self, slot: u64, message: M, ask: Option<G>) -> Write<M> {
+        let Some(guard) = ask else {
+            return Write::Now(message);
+        };
+        if self.line.len() >= 64 {
+            return Write::Rejected;
         }
         let waits = self.serial && !self.line.is_empty();
+        let mut message = Some(message);
         self.line.push_back(Ask {
             slot,
-            message: message.into(),
+            message: if waits { message.take() } else { None },
+            _guard: guard,
         });
         if waits {
             Write::Queued
         } else {
-            Write::Now(message.into())
+            match message {
+                Some(message) => Write::Now(message),
+                None => Write::Rejected,
+            }
         }
     }
 
@@ -67,7 +79,7 @@ impl AskLine {
 
     /// DX_FINAL to `slot`: its oldest ask leaves the line. Returns the messages that may now be written
     /// (under CH_SERIAL the next head's, if it was waiting).
-    pub fn finished(&mut self, slot: u64) -> Vec<Box<[u8]>> {
+    pub fn finished(&mut self, slot: u64) -> Vec<M> {
         let was_head = self.head() == Some(slot);
         if let Some(at) = self.line.iter().position(|a| a.slot == slot) {
             self.line.remove(at);
@@ -76,7 +88,7 @@ impl AskLine {
     }
 
     /// `slot` detached: every ask of it leaves the line. Returns what may now be written.
-    pub fn detached(&mut self, slot: u64) -> Vec<Box<[u8]>> {
+    pub fn detached(&mut self, slot: u64) -> Vec<M> {
         let was_head = self.head() == Some(slot);
         self.line.retain(|a| a.slot != slot);
         self.handed_on(was_head)
@@ -94,13 +106,14 @@ impl AskLine {
     }
 
     /// Under CH_SERIAL a new head that was waiting is written now; `head_left` = the old head left.
-    fn handed_on(&self, head_left: bool) -> Vec<Box<[u8]>> {
+    fn handed_on(&mut self, head_left: bool) -> Vec<M> {
         if !self.serial || !head_left {
             return Vec::new();
         }
         self.line
-            .front()
-            .map(|a| vec![a.message.clone()])
+            .front_mut()
+            .and_then(|a| a.message.take())
+            .map(|message| vec![message])
             .unwrap_or_default()
     }
 
@@ -112,5 +125,12 @@ impl AskLine {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.line.is_empty()
+    }
+}
+
+impl AskLine<Box<[u8]>, ()> {
+    /// Borrowing convenience for byte-only callers of the shared ordering algorithm.
+    pub fn send(&mut self, slot: u64, message: &[u8], ask: bool) -> Write {
+        self.send_owned(slot, message.into(), ask.then_some(()))
     }
 }

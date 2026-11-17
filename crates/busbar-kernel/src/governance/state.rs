@@ -240,6 +240,7 @@ impl GovState {
                 admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            selected_rates: Arc::new(super::selected_resource::SelectedRates::new()),
             recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::AsyncClaimSet::new(),
             corrections: std::sync::Mutex::default(),
@@ -766,6 +767,7 @@ impl GovState {
             MeterCounts::request(exact)
         } else {
             MeterCounts {
+                pricing: None,
                 requests: 1,
                 tokens_input: whole_count(usage.map(|u| u.input).unwrap_or(0)),
                 tokens_output: whole_count(usage.map(|u| u.output).unwrap_or(0)),

@@ -12,6 +12,11 @@ mod op_id;
 pub use op_id::OpId;
 
 mod count_scale;
+mod metering_pricing;
+pub use metering_pricing::{MeteringPricingV1, MeteringRole};
+
+#[cfg(test)]
+mod selected_metering_tests;
 
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
 /// admission-topology substrate: everywhere busbar used
@@ -653,6 +658,9 @@ impl UsageDelta {
 /// separately (design: expose the inputs of the cost computation, not just busbar's own result).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringDelta {
+    /// Explicit selected accounting role. Absent retains the legacy interpretation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<MeteringPricingV1>,
     /// Scale of token columns and usage_units; request counters always remain whole.
     #[serde(default, skip_serializing_if = "count_scale::is_whole")]
     pub scale: u32,
@@ -732,6 +740,9 @@ pub struct MeteringDelta {
 /// by_key aggregations — the service aggregates in memory; buckets are bounded by (keys × models)).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringRow {
+    /// Immutable selected role and additive original fee outcome evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<MeteringPricingV1>,
     /// Scale of token columns and usage_units; request counters always remain whole.
     #[serde(default, skip_serializing_if = "count_scale::is_whole")]
     pub scale: u32,

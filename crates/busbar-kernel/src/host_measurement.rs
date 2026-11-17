@@ -335,6 +335,7 @@ impl MeasurementRuntime {
                 reported_revision: 0,
             }),
             unread: None,
+            partitions: None,
         };
         let operation = Arc::new(MeasurementOperation {
             gov,
