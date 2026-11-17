@@ -577,9 +577,9 @@ fn probes_of(
     let probers: Vec<ProbeMember> = members
         .iter()
         .enumerate()
-        .map(|(index, (_, name))| ProbeMember {
+        .map(|(index, member)| ProbeMember {
             index,
-            name: name.clone(),
+            name: member.name().to_owned(),
             cfg: ProbeCfg::resolve(
                 HealthModeInput::Dead,
                 None,
@@ -638,7 +638,7 @@ pub(crate) fn compose(
                 rt.clone(),
                 pool.pool.clone(),
                 accept,
-                upstream_targets(Arc::clone(&table_upstreams)),
+                upstream_targets(instance, Arc::clone(&table_upstreams)),
             );
             let probes = probes_of(&port, &walk, &pool);
             let held: Arc<dyn HeldHttp> = Arc::new(UpstreamHttp {
