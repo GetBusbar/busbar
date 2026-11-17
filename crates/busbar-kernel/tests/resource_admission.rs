@@ -102,6 +102,93 @@ fn exchange() -> UpExchange {
 }
 
 #[test]
+fn wire_echo_cannot_rebind_instance_route_generation_or_invocation() {
+    let inventory = build(&caller(), vec![fact("chat", 1)]).unwrap();
+    let selected = inventory
+        .select(request(1), &[ScopeRef::pool("chat")])
+        .unwrap();
+    let bound = selected.forward(1).unwrap();
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    bound.write_admission(&mut out).unwrap();
+    let good = busbar_plugin_abi::resource_admission::decode_echo(out.as_bytes()).unwrap();
+    assert!(bound.resolve_echo(good).is_ok());
+    for bad in [
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            invocation: 2,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            generation: 8,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho { route: 4, ..good },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            descriptor: 2,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            instance: "plane/other",
+            ..good
+        },
+    ] {
+        assert!(matches!(
+            bound.resolve_echo(bad),
+            Err(ResourceError::Binding)
+        ));
+    }
+}
+
+#[test]
+fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
+    use busbar_kernel::plane_driver::port_routes::Mounted;
+    use busbar_plugin_abi::resource_admission::{write_selection, Scope};
+    let inventory = build(&caller(), vec![fact("chat", 1)]).unwrap();
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    write_selection(
+        &mut out,
+        &[Scope {
+            kind: "pool",
+            value: "chat",
+        }],
+    )
+    .unwrap();
+    let mut mounted = Mounted {
+        route: 3,
+        methods: 4,
+        flags: 0,
+        auth: 1,
+        effective: 1,
+        pattern: "/requests".into(),
+        cred_header: None,
+        catalog: false,
+        resource_kinds: vec!["agent".into()],
+    };
+    assert!(inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .is_err());
+    mounted.resource_kinds = vec!["pool".into()];
+    mounted.route = 4;
+    assert!(inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .is_err());
+    mounted.route = 3;
+    let selected = inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .unwrap();
+    selected
+        .request()
+        .with_selection_input(|input, body| {
+            assert_eq!(input.route, 3);
+            assert_eq!(input.request_id, 1);
+            assert_eq!(input.auth, 0);
+            assert!(input.identity.is_empty());
+            assert_eq!(input.path, "/requests");
+            assert_eq!(body, b"request");
+        })
+        .unwrap();
+}
+
+#[test]
 fn valid_chat_reference_cannot_authorize_secret_at_the_same_endpoint() {
     let owner = caller();
     let inventory = build(&owner, vec![fact("chat", 1), fact("secret", 2)]).unwrap();
