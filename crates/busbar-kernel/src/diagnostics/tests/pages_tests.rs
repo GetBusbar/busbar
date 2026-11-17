@@ -2,15 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The error pages and the code ledger: the committed `docs/errors/` tree is exactly what the
-//! catalog renders, and no code is ev
-/// Where the proposed pages and ledger are written for review (`target/diagnostics-generated/`).
-fn generated_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
-        .join("diagnostics-generated")
-}
-er dropped, renumbered or reused.
+//! catalog renders, and no code is ever dropped, renumbered or reused.
 
 use super::pages::render_all;
 use super::{all_texts, REGISTRY};
