@@ -1265,3 +1265,63 @@ async fn the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name() {
     assert_eq!(authority.host, deployment);
     assert_ne!(authority.host, crate::root::durability::host_identity());
 }
+
+/// UPG-7 (#332), PRD-4/ARC-5 migrate-on-boot: floors a 1.6 build already wrote under host names
+/// are carried into the deployment's slot on the first boot that keys by the deployment, and the
+/// host rows are deleted. Two hosts sharing one Store fold into the highest floor, so no host's
+/// floor is lowered; rerunning the step is a kernel test
+/// (`plugin_floor_tests`).
+#[tokio::test]
+async fn host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot() {
+    use busbar_kernel::persistence::plugin_floor::{Candidate, PluginFloor};
+    if !isolated_card_case("host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot")
+        .await
+    {
+        return;
+    }
+    let candidate = |version| Candidate {
+        name: "busbar-store-sqlite",
+        version,
+        file: "busbar-store-sqlite.so",
+        first_party: true,
+        linked: false,
+        rollback_pinned: false,
+    };
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    let seed = PluginFloor::new(core.clone()).unwrap();
+    for (host, version, keys) in [("pod-a", "1.6.2", 5), ("pod-b", "1.6.5", 7)] {
+        seed.enforce_candidate(host, candidate(version), true)
+            .await
+            .unwrap();
+        seed.enforce_release_keys(host, &[keys], true)
+            .await
+            .unwrap();
+    }
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core.clone())
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let floor = PluginFloor::new(core).unwrap();
+    assert_eq!(floor.release_keys_floor(&deployment).await.unwrap(), 7);
+    assert!(floor
+        .enforce_candidate(&deployment, candidate("1.6.4"), false)
+        .await
+        .is_err());
+    floor
+        .enforce_candidate(&deployment, candidate("1.6.5"), false)
+        .await
+        .unwrap();
+    for host in ["pod-a", "pod-b"] {
+        assert_eq!(floor.release_keys_floor(host).await.unwrap(), 0);
+        floor
+            .enforce_candidate(host, candidate("1.0.0"), false)
+            .await
+            .unwrap();
+    }
+}
