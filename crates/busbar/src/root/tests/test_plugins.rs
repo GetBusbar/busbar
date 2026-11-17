@@ -600,6 +600,14 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
     })
 }
 
+/// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
+pub fn native_schema_bomb_path() -> Option<PathBuf> {
+    let file = plugin_library_filename("native_schema_bomb");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+}
+
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
     let file = plugin_library_filename("neutral_frame_door");
     libraries()

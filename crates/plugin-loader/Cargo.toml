@@ -91,6 +91,12 @@ name = "native_pack_fixture"
 path = "tests/fixtures/native_pack_fixture.rs"
 crate-type = ["cdylib"]
 
+# A MIN-3 store whose describe answers a recursion-bomb D_SCHEMA (core's D_SCHEMA validator; admin inspect).
+[[example]]
+name = "native_schema_bomb"
+path = "tests/fixtures/native_schema_bomb.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
