@@ -418,3 +418,55 @@ fn reference_source_receives_a_distinct_stable_binding_ordinal() {
     run(binder.resolve_refs(71, 9, bound, &source)).expect("repeat same bindings");
     assert_eq!(*source.0.lock().expect("ordinals"), [0, 1, 2, 0, 1, 2]);
 }
+
+/// A reference source whose every resolve fails.
+struct Refusing;
+impl RefSource for Refusing {
+    fn resolve<'a>(
+        &'a self,
+        _: u64,
+        _: u32,
+        _: u32,
+        _: &'a SecretRef,
+    ) -> BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async { None })
+    }
+}
+
+/// DES-454 I1 (T1, binder side): `committed` reads the digest of each D_REF_PATH value `resolve_refs` wrote, in
+/// binding order. A failed resolve for another instance (a refused rotation successor) leaves it unchanged.
+#[test]
+fn committed_reads_each_ref_digest_and_a_failed_successor_changes_nothing() {
+    let b = binder("unused");
+    let cfg = json!({"a": {"env": "A"}, "b": {"env": "B"}});
+    let paths = ["/a", "/b"];
+    let bound = b
+        .bind(3, &bytes(&cfg), &[], &[], &[], &paths)
+        .expect("binds");
+    assert_eq!(b.committed(3), None, "nothing resolved yet");
+    run(b.resolve_refs(3, 0, bound, &Fixed("sk-live-0010-ref"))).expect("resolves");
+    let digest = busbar_contract::crypto::sha256(b"sk-live-0010-ref");
+    assert_eq!(b.committed(3), Some(vec![digest, digest]));
+
+    let successor = b
+        .bind(4, &bytes(&cfg), &[], &[], &[], &paths)
+        .expect("binds");
+    assert!(run(b.resolve_refs(4, 0, successor, &Refusing)).is_err());
+    assert_eq!(b.committed(4), None, "a refused successor commits nothing");
+    assert_eq!(
+        b.committed(3),
+        Some(vec![digest, digest]),
+        "the predecessor is unchanged"
+    );
+    assert_eq!(
+        read(
+            &b.unbind_refs(3, &bytes(&json!({"a": "sk-live-0010-ref"})))
+                .expect("unbinds")
+        ),
+        json!({"a": {"env": "A"}}),
+        "the read-back is unchanged"
+    );
+    assert_eq!(b.committed(9), None, "an unknown instance");
+    b.unbind(3);
+    assert_eq!(b.committed(3), None);
+}
