@@ -206,7 +206,7 @@ pub struct ConnBalancer {
 }
 
 impl ConnBalancer {
-    fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
+    pub(crate) fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
         let mine = self.counts[self.me].0.load(Ordering::Relaxed);
         let (min_idx, min_val) = self
@@ -233,7 +233,7 @@ impl ConnBalancer {
         }
     }
 
-    fn place_local(&self) -> ConnCountGuard {
+    pub(crate) fn place_local(&self) -> ConnCountGuard {
         use std::sync::atomic::Ordering;
         self.counts[self.me].0.fetch_add(1, Ordering::Relaxed);
         ConnCountGuard {
@@ -242,7 +242,7 @@ impl ConnBalancer {
         }
     }
 
-    fn adopt(&self) -> ConnCountGuard {
+    pub(crate) fn adopt(&self) -> ConnCountGuard {
         ConnCountGuard {
             counts: self.counts.clone(),
             idx: self.me,
@@ -250,7 +250,7 @@ impl ConnBalancer {
     }
 }
 
-struct ConnCountGuard {
+pub(crate) struct ConnCountGuard {
     counts: Arc<[PaddedCount]>,
     idx: usize,
 }
