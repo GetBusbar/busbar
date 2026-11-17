@@ -268,6 +268,37 @@ pub(crate) async fn finish_settled_checked(
     .map_err(text_of)
 }
 
+/// Steps 4 and 5 together for a converting boot: step 5's refusals are judged before the store is
+/// converted (#328), then the records are converted and config.yaml is written.
+///
+/// # Errors
+/// The records step's refusal, or CONFIG text for a refused document.
+pub(crate) async fn convert_and_finish_checked(
+    core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    keys: crate::root::migrate_records::Keys,
+    settled: Vec<busbar_migrate::Settled>,
+    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+) -> Result<Option<Written>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let config = CONFIG_PATH.get().cloned().unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let check = |text: &str, catalog: Option<&str>| {
+            strict_parse(text, catalog)?;
+            candidate(text)
+        };
+        let store = crate::root::migrate_records::Store::new(core, runtime);
+        crate::root::migrate_records::convert_and_write(
+            &store, &keys, plan, &settled, &check, &config, false,
+        )
+        .map(Some)
+    })
+    .await
+    .map_err(|error| format!("the config.yaml upgrade did not finish its write: {error}"))?
+}
+
 /// 5W (MIGRATE-ON-BOOT r42 §3): on a stamped boot and on a reload, write what the instances settled back into
 /// config.yaml through the patch writer, under the directory lock. `seen` is the text the boot read; when
 /// config.yaml is no longer those bytes (an operator edit, a peer's write-back) nothing is written and the

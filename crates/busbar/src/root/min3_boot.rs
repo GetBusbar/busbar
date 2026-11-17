@@ -1716,10 +1716,10 @@ pub(crate) async fn finish(
             .store()
             .ok_or("CONFIG: conversion has no admitted core store")?;
         let keys = super::migrate_records::Keys::from_core(&core_secrets)?;
-        super::migrate::records_with_keys(Arc::clone(&core), keys).await?;
-        let written = super::migrate::finish_settled_checked(
+        let written = super::migrate::convert_and_finish_checked(
+            Arc::clone(&core),
+            keys,
             settled,
-            Some(Arc::clone(&core)),
             Arc::new(move |text| settlement::candidate(text, &plane_checks)),
         )
         .await?
