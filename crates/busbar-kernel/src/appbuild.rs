@@ -1179,24 +1179,6 @@ impl RootRules for AcceptAll {
     }
 }
 
-/// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
-/// Historical transformation is supplied by the composition root, not this projection.
-pub async fn prepare_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or("no Store axis is installed")?;
-    axis()
-        .prepare(door, &label, settings.as_bytes())
-        .await
-        .map_err(|_| format!("Store '{label}' native preparation refused"))
-}
-
 pub async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
@@ -1519,44 +1501,6 @@ pub fn instance_limits(
         limits.accept = accepted.accept;
     }
     limits
-}
-
-fn config_store_inputs(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<
-    (
-        busbar_contract::persistence::axis::StoreDoor,
-        String,
-        busbar_contract::secure::SecureString,
-    ),
-    String,
-> {
-    let store = store.ok_or_else(config::store_required)?;
-    let row = registry.resolve(&store.module);
-    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
-        Default::default()
-    } else {
-        config::secret::resolve_settings(
-            &store.settings,
-            &registry.secret_slots(&store.module),
-            &registry.reference_slots(&store.module),
-            &store.module,
-            resolver,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
-    };
-    let bytes = resolved.encode().map_err(|error| error.to_string())?;
-    let settings = busbar_contract::secure::SecureString::from(
-        String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
-            .map_err(|_| "settings encoding was not UTF-8")?,
-    );
-    drop(resolved);
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let door = registry.store_door(&store.module).map_err(failed)?;
-    Ok((door, store.module.clone(), settings))
 }
 
 /// The 1.5.5 `plugins.fetch` refusal: a header line, then one `  - ` bullet per failed target.
