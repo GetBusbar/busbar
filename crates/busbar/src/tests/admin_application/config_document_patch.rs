@@ -887,6 +887,20 @@ pub(super) async fn ephemeral_admin(
         Arc<dyn busbar_kernel::appbuild::RootRules>,
     ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> EphemeralAdmin {
+    configured_admin(tag, rules, true).await
+}
+
+pub(super) async fn durable_admin(tag: &str) -> EphemeralAdmin {
+    configured_admin(tag, |rules| rules, false).await
+}
+
+async fn configured_admin(
+    tag: &str,
+    rules: impl FnOnce(
+        Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ) -> Arc<dyn busbar_kernel::appbuild::RootRules>,
+    ephemeral: bool,
+) -> EphemeralAdmin {
     crate::dist_root_install::install();
     let directory = plugins::scratch(tag);
     let library_path = plugins::application_store_library();
@@ -944,16 +958,25 @@ pub(super) async fn ephemeral_admin(
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, boot_rules.clone())
         .await
         .expect("the actual configured Store opens");
-    let anchor = crate::root::real_store::core_over(Arc::new(
-        crate::root::real_store::EphemeralInfo(opened),
-    ))
-    .await;
+    let anchor = if ephemeral {
+        crate::root::real_store::core_over(Arc::new(crate::root::real_store::EphemeralInfo(opened)))
+            .await
+    } else {
+        crate::root::real_store::core_over(opened).await
+    };
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the in-memory Store still carries the config overlay");
-    assert_eq!(
-        overlay.core_store_handle().unwrap().info().durability,
-        busbar_contract::persistence::Durability::Ephemeral
-    );
+    if ephemeral {
+        assert_eq!(
+            overlay.core_store_handle().unwrap().info().durability,
+            busbar_contract::persistence::Durability::Ephemeral
+        );
+    } else {
+        assert_ne!(
+            overlay.core_store_handle().unwrap().info().durability,
+            busbar_contract::persistence::Durability::Ephemeral
+        );
+    }
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
