@@ -155,6 +155,15 @@ pub const REASONS: &[ReasonRow] = &[
     row!("outcome_not_applied", "conflict", 409, details OUTCOME_NOT_APPLIED_DETAILS),
     // DES-331 §B10.8: an administrative write refused while the node is in restore quarantine.
     row!("restore_quarantine", "unavailable", 503, details RESTORE_QUARANTINE_DETAILS),
+    // DES-331 §B10.2, §B10.3: the restore tail refusals (store-restore, its verify dry run, the
+    // chunked tail upload).
+    row!("restore_tail_too_large", "request_too_large", 413),
+    row!("tail_encoding_invalid", "invalid_request", 422),
+    row!("tail_digest_mismatch", "invalid_request", 422),
+    row!("tail_chain_broken", "invalid_request", 422),
+    row!("tail_seal_invalid", "invalid_request", 422),
+    row!("tail_unsealed_end", "invalid_request", 422),
+    row!("tail_missing_chain", "invalid_request", 422),
 ];
 
 /// The closed list of `refusal` names a `plugin_refused` carries: the snake-case names of the 22
