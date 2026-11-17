@@ -419,3 +419,63 @@ async fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
         .verify()
         .expect("the untouched empty amendment chain verifies");
 }
+
+/// DES-EXPORT-1.6 r3 §2 (E0): an amendment whose class word this build does not know is never
+/// taken into the run (fail closed), and the restart finding names the word, the code, and both
+/// readings of it: a newer release's class in a rolling upgrade, or a damaged or tampered chain.
+#[tokio::test]
+async fn unknown_amend_class_names_itself() {
+    let core = crate::root::real_store::core().await;
+    let mut book = native_book(core, 8).await;
+    let mut future = BodyWriter::new();
+    future
+        .text(AMENDMENT)
+        .num(1)
+        .text("")
+        .text(&"0".repeat(64))
+        .text("x-future")
+        .text("a member this build cannot read");
+    let staged = book
+        .stage_entries(&[Entry::new(RecordClass::Access, future.finish())])
+        .expect("record staged");
+    book.journal
+        .confirm(&staged)
+        .await
+        .expect("record journalled");
+    let journal = NodeAmendments::new();
+    let token = crate::root::kernel::new_kernel().durability_token();
+    book.restore_amendments(&journal, &token)
+        .await
+        .expect("the chain reads back");
+    assert!(
+        journal.recent().is_empty(),
+        "an amendment of an unknown class never joins the run"
+    );
+    let finding = book
+        .restart_findings
+        .iter()
+        .find(|f| f.contains("x-future"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no restart finding names the unknown class: {:?}",
+                book.restart_findings
+            )
+        });
+    assert!(finding.starts_with("BUSBAR-2059: "), "{finding}");
+    assert!(
+        finding.contains("unknown amendment class `x-future`"),
+        "{finding}"
+    );
+    assert!(
+        finding.contains("written by a newer busbar, or the chain is damaged"),
+        "{finding}"
+    );
+    assert!(
+        finding.contains("if every node runs this release, treat it as tampering"),
+        "{finding}"
+    );
+    assert!(
+        finding.contains("https://getbusbar.com/download"),
+        "{finding}"
+    );
+}
