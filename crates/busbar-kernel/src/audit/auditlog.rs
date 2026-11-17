@@ -1828,10 +1828,13 @@ pub(crate) fn publish_export_observers(app: &crate::state::App) -> Result<(), St
 
 fn publish_export_observers_on(
     owners: &mut std::collections::HashMap<u32, Arc<NativeAudit>>,
-    _store: &Arc<CoreStore>,
+    store: &Arc<CoreStore>,
     exports: &Arc<crate::export::plugin::Exports>,
 ) -> Result<(), String> {
-    for native in owners.values() {
+    for native in owners
+        .values()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
         if native
             .exports
             .as_ref()
@@ -1840,7 +1843,10 @@ fn publish_export_observers_on(
             return Err("audit export observers already belong to another serving registry".into());
         }
     }
-    for native in owners.values_mut() {
+    for native in owners
+        .values_mut()
+        .filter(|native| Arc::ptr_eq(&native.storage.store, store))
+    {
         *native = Arc::new(NativeAudit {
             storage: Arc::clone(&native.storage),
             exports: Some(Arc::clone(exports)),
