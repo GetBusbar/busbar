@@ -1175,6 +1175,9 @@ async fn settle_export_observations(
             return Err("export producer callback arrived after intake closure".into());
         }
         if observers.is_settled() {
+            if clock.expired() || tokio::time::Instant::now() >= deadline {
+                return Err("export observation pass completed after the shutdown deadline".into());
+            }
             return Ok(());
         }
         if let Err(error) = busbar_kernel::audit::auditlog::flush_pending().await {
