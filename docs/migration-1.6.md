@@ -264,8 +264,8 @@ assume a code emitted by one implementation applies to another.
 
 Configure clients to call a declared endpoint, including any explicitly configured prefix.
 1.6.0 does not infer an inference endpoint from an arbitrary path suffix or an Anthropic
-header. For example, `/v1/chat/completions` is declared; `/x/v1/chat/completions` returns404
-when `/x` is not configured. Unknown paths return the ordinary audited404 without an
+header. For example, `/v1/chat/completions` is declared; `/x/v1/chat/completions` returns 404
+when `/x` is not configured. Unknown paths return the ordinary audited 404 without an
 upstream request. Deliberately declared named-pool and provider/model paths remain routes;
 their path parameters do not establish a general catch-all. A missing model or price on a
 declared route remains a separate request error.
@@ -282,16 +282,16 @@ native error contract:
 | Cohere | 402 | Native message envelope |
 | Bedrock Runtime | 400 | `ServiceQuotaExceededException` |
 
-Anthropic's spend-cap status changes from429 to400 and Cohere's from429 to402. The
+Anthropic's spend-cap status changes from 429 to 400 and Cohere's from 429 to 402. The
 Anthropic error type is `invalid_request_error`; a local operator cap is distinct from an
-upstream payment failure. These are caller API conventions: HTTP itself reserves402 for
+upstream payment failure. These are caller API conventions: HTTP itself reserves 402 for
 future use and does not require it for every monetary limit.
 
-Request/token/concurrency quota limits remain429. For a spend refusal, review the configured
+Request/token/concurrency quota limits remain 429. For a spend refusal, review the configured
 limit and its reset period before retrying. Busbar supplies `Retry-After` only when the
-policy provides a known wait; a429 alone does not promise that a short retry will succeed.
-Refusals retain the normal audit and no-upstream-call behavior. Correlated policy detail is
-available through authorized operational diagnostics, without new proprietary client fields.
+policy provides a known wait; a 429 alone does not promise that a short retry will succeed.
+Refusals retain the normal audit and no-upstream-call behavior. This change adds no proprietary
+client fields exposing internal policy identifiers.
 
 ## Administrative clients
 
@@ -347,7 +347,7 @@ rely on the retired host journal for rate-card recovery.
 ## Release-candidate checks
 
 - Exercise the HTTP spend-cap matrix above through the actual listener and live policy.
-  Confirm declared routes and configured prefixes, unknown/unconfigured paths returning404,
+  Confirm declared routes and configured prefixes, unknown/unconfigured paths returning 404,
   and refusal audit/no-upstream-call behavior. Renderer-only tests do not establish these
   end-to-end guarantees.
 
