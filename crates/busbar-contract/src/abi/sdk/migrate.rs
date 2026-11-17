@@ -28,7 +28,6 @@
 //! }
 //! ```
 
-use crate::plugin::KindMarker;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 

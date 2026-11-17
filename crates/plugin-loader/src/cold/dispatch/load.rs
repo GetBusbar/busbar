@@ -258,15 +258,6 @@ pub(crate) fn spilled_labels<'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
-// dispatch::migrate: cold settings and credential migration refusals.
-
-/// A credential owner that could not migrate the original reference.
-#[cold]
-pub(crate) fn credential_refused() -> String {
-    "credential owner could not migrate the original reference".to_owned()
-}
-
-// ---------------------------------------------------------------------------------------------
 // dispatch::log_file: config-apply and bind-time words, file names and refusals.
 
 /// A `plugins.logs.level` that names no level.
