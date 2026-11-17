@@ -1341,6 +1341,15 @@ impl<N: Needs> PlaneAdapter<N> {
         ))
     }
 
+    fn declaration(&self) -> Result<Declaration<'_>, PortError> {
+        Declaration::new(
+            self.proxy.instance().facts,
+            &self.describe.usage_classes,
+            &self.describe.attempt_classes,
+        )
+        .map_err(|r| PortError::Call(CallError::Fault(fault(r))))
+    }
+
     /// An answer of `call` into the sink, whole or not at all.
     fn finish(
         &self,
@@ -1352,16 +1361,10 @@ impl<N: Needs> PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         self.failure(answer)?;
         let demux = self.proxy.instance().methods & p::M_DEMUX != 0;
-        let declaration = Declaration::new(
-            self.proxy.instance().facts,
-            &self.describe.usage_classes,
-            &self.describe.attempt_classes,
-        )
-        .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?;
         decode_answer(
             call,
             demux,
-            declaration,
+            self.declaration()?,
             selected,
             exchange,
             answer.records(),
@@ -1664,7 +1667,8 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let answer = owned.answer();
             self.failure(&answer)?;
             let recs = answer.records();
-            admin_answer(op, recs).map_err(|r| PortError::Call(CallError::Fault(r)))?;
+            admin_answer(op, self.declaration()?, recs)
+                .map_err(|r| PortError::Call(CallError::Fault(r)))?;
             let mut copy = Reply::new();
             for rec in recs {
                 let rec = rec.map_err(|e| PortError::Call(CallError::Fault(fault(e))))?;
@@ -1687,9 +1691,20 @@ fn no_room() -> PortError {
 
 /// ADMIN_TICK answers PUSH* and EMIT* only; ADMIN_CARRIER_END answers nothing; EMIT and PUSH are BadRecords in any
 /// other admin answer (§8.6). CATALOG and HYDRATE answers go to core as they are.
-fn admin_answer(op: u32, recs: Records<'_>) -> Result<(), FaultReason> {
+fn admin_answer(
+    op: u32,
+    declaration: Declaration<'_>,
+    recs: Records<'_>,
+) -> Result<(), FaultReason> {
     if op == p::ADMIN_TICK {
-        return walk(Call::Tick, false, recs, &mut |_: PlaneOut<'_>| {});
+        return walk(
+            Call::Tick,
+            false,
+            declaration,
+            None,
+            recs,
+            &mut |_: PlaneOut<'_>| {},
+        );
     }
     for rec in recs {
         let rec = rec.map_err(fault)?;
