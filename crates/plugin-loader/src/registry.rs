@@ -198,56 +198,6 @@ impl LoadablePlugin {
                 }
             )
     }
-
-    pub fn validate_migrated(&self, settings: &serde_json::Value) -> Result<(), String> {
-        use crate::dispatch::migrate::{validate_migrated_door, validate_migrated_library};
-        match self.door() {
-            Some(door) => validate_migrated_door(door, settings),
-            None => validate_migrated_library(&self.lib_bytes, &self.file, settings),
-        }
-    }
-
-    /// Discover credential references in a registered owner's borrowed source sections.
-    pub fn migrate_references(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
-        match self.door() {
-            Some(door) => migrate_references_door(door, settings, from),
-            None => migrate_references_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
-
-    /// Route guarded credential custody through the receiving owner's migration door.
-    pub fn migrate_credential(
-        &self,
-        credential: &busbar_contract::Secret<String>,
-        from: &str,
-        seal: &dyn busbar_contract::plugin::KernelSeal,
-    ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
-        use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
-        match self.door() {
-            Some(door) => migrate_credential_door(door, credential, from, seal),
-            None => migrate_credential_library(&self.lib_bytes, &self.file, credential, from, seal),
-        }
-    }
-
-    pub fn migrate(
-        &self,
-        settings: &serde_json::Value,
-        from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
-        use crate::dispatch::migrate::{migrate_door, migrate_library};
-        match &self.entry {
-            Some(LinkedEntry::Store { door }) => {
-                migrate_door(crate::dispatch::load::raw(*door), settings, from)
-            }
-            Some(LinkedEntry::Door(door)) => migrate_door(*door, settings, from),
-            None => migrate_library(&self.lib_bytes, &self.file, settings, from),
-        }
-    }
 }
 
 /// Why a loadable row did not open: its Statement did not read, it has no door, the site's

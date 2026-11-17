@@ -453,12 +453,26 @@ impl CoreStore {
         self.drive(id, attempt).await
     }
 
+    /// [`CoreStore::submit`] for a plain write made under `domain`: the attempt is registered
+    /// with the domain's owner and this call's foreground reservation before the first crossing,
+    /// so a canceled caller leaves it discoverable to that owner's maintenance, exactly as a
+    /// logical (conditional) write does.
+    pub(crate) async fn submit_in(
+        &self,
+        candidate: PreparedCandidate,
+        domain: Option<&DomainCall>,
+    ) -> Result<Submission, AccessError> {
+        let (id, attempt) = self.register_owned(candidate, None, false, domain)?;
+        self.drive_with(id, attempt, domain.map(|call| &call.foreground))
+            .await
+    }
+
     /// Identity's canonical owner marks custody before its first native crossing.
     pub(crate) async fn submit_identity(
         &self,
         candidate: PreparedCandidate,
     ) -> Result<Submission, AccessError> {
-        let (id, attempt) = self.register_owned(candidate, None, true)?;
+        let (id, attempt) = self.register_owned(candidate, None, true, None)?;
         self.drive(id, attempt).await
     }
 
@@ -499,7 +513,7 @@ impl CoreStore {
         candidate: PreparedCandidate,
         logical: Option<&LogicalPermit<'_>>,
     ) -> Result<(PendingId, Arc<Attempt>), AccessError> {
-        self.register_owned(candidate, logical, false)
+        self.register_owned(candidate, logical, false, None)
     }
 
     fn register_owned(
@@ -507,7 +521,13 @@ impl CoreStore {
         candidate: PreparedCandidate,
         logical: Option<&LogicalPermit<'_>>,
         identity_owned: bool,
+        domain: Option<&DomainCall>,
     ) -> Result<(PendingId, Arc<Attempt>), AccessError> {
+        // The owning domain: a logical permit carries its own; a plain write names it directly.
+        let owned_by = logical.and_then(|permit| permit.domain.as_ref()).or(domain);
+        if owned_by.is_some_and(|call| !call.belongs_to(self)) {
+            return Err(AccessError::Authority);
+        }
         let id = candidate.candidate().id;
         let pending_id = PendingId(id.operation);
         let attempt = {
@@ -538,9 +558,7 @@ impl CoreStore {
                     || held.identity_owned != identity_owned
                     || !domain::same_owner(
                         held.domain.as_ref().map(|entry| &entry.owner),
-                        logical
-                            .and_then(|permit| permit.domain.as_ref())
-                            .map(|call| &call.owner.id),
+                        owned_by.map(|call| &call.owner.id),
                     )
                 {
                     return Err(AccessError::OperationConflict);
@@ -580,12 +598,10 @@ impl CoreStore {
                         driving: false,
                         logical: logical.map(|permit| permit.id),
                         identity_owned,
-                        domain: logical
-                            .and_then(|permit| permit.domain.as_ref())
-                            .map(|call| domain::Entry {
-                                owner: call.owner.id.clone(),
-                                foreground: Arc::downgrade(&call.foreground),
-                            }),
+                        domain: owned_by.map(|call| domain::Entry {
+                            owner: call.owner.id.clone(),
+                            foreground: Arc::downgrade(&call.foreground),
+                        }),
                         slot,
                     },
                 );

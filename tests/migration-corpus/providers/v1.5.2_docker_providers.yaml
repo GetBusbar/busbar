@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Matthew Jackson
+#
 anthropic:
   protocol: anthropic
   base_url: https://api.anthropic.com

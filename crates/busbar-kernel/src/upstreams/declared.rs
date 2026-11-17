@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Pure ownership split for an admitted plane's declared registration maps.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +20,7 @@ const CORE_KEYS: &[&str] = &[
     "auth",
     "upstream_credentials",
     "allow_private",
+    "resource",
 ];
 const MAX_PATHS: usize = 4;
 

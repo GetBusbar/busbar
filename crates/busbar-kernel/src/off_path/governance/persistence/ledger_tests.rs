@@ -272,6 +272,7 @@ fn delta(amount: i128) -> UsageDelta {
 }
 fn meter(key: &str, bucket: u64) -> MeteringDelta {
     MeteringDelta {
+        pricing: None,
         scale: 6,
         key_id: key.into(),
         bucket,
@@ -444,6 +445,95 @@ fn canonical_records_reject_unknown_versions_nested_fields_and_retain_i128() {
 }
 
 #[tokio::test]
+async fn selected_roles_share_legacy_scan_prefix_without_merging_and_replay_once() {
+    use busbar_contract::records::MeteringPricingV1 as Pricing;
+    let backend = Arc::new(Backend::default());
+    let store = attach(backend.clone()).await;
+    let legacy = meter("key", 1);
+    let mut usage = legacy.clone();
+    usage.pricing = Some(Pricing::SelectedUsage);
+    usage.requests = 0;
+    usage.billable_requests = 0;
+    let mut request = legacy.clone();
+    request.pricing = Some(Pricing::SelectedRequest);
+    request.tokens_input = 0;
+    let mut fee = request.clone();
+    fee.requests = 0;
+    fee.billable_requests = 0;
+    fee.pricing = Some(Pricing::SelectedFee {
+        lane: Some("original\u{1f}pool".into()),
+        charged: 0,
+        refunded: 0,
+        unknown: 1,
+    });
+    let deltas = [legacy.clone(), usage, request, fee];
+    let operation = OpId([0x78; 16]);
+    store
+        .ledger()
+        .add_metering_batch_deduped(operation, &deltas)
+        .await
+        .unwrap();
+    store
+        .ledger()
+        .add_metering_batch_deduped(operation, &deltas)
+        .await
+        .unwrap();
+    let rows = store.ledger().list_metering(1).await.unwrap();
+    let scoped = store
+        .ledger()
+        .metering(&mut Tx::new(&store), 1, Some("key"))
+        .await
+        .unwrap();
+    assert_eq!(rows, scoped);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.iter().map(|row| row.requests).sum::<u64>(), 2);
+    let legacy_address = meter_address(1, &empty_meter(&legacy)).unwrap();
+    {
+        let state = backend.0.lock().unwrap();
+        let stored: Vec<_> = state
+            .rows
+            .iter()
+            .filter(|(at, _)| at.key.starts_with(&legacy_address.key))
+            .collect();
+        assert_eq!(stored.len(), 4);
+        for (at, value) in stored {
+            let components = keys::components(&at.key, b'M').unwrap();
+            let row: MeteringRow = decode(value).unwrap();
+            assert_eq!(components.len(), if row.pricing.is_some() { 12 } else { 8 });
+            assert!(migration_authorizes(at));
+            let wire: Record<MeteringRow> =
+                busbar_contract::json::parse(value.expose(&crate::seal::lend())).unwrap();
+            assert_eq!(wire.version, if row.pricing.is_some() { 2 } else { 1 });
+            if row.pricing.is_some() {
+                // The pinned predecessor's envelope/version check must refuse matching selected rows.
+                assert_ne!(wire.version, 1);
+            }
+        }
+    }
+    assert_eq!(store.ledger().prune_metering_before(2).await.unwrap(), 4);
+    assert!(store.ledger().list_metering(1).await.unwrap().is_empty());
+}
+
+#[test]
+fn selected_meter_address_refuses_malformed_suffix_and_envelope_downgrade() {
+    use busbar_contract::records::MeteringPricingV1 as Pricing;
+    let mut delta = meter("key", 1);
+    delta.requests = 0;
+    delta.billable_requests = 0;
+    delta.pricing = Some(Pricing::SelectedUsage);
+    let mut row = empty_meter(&delta);
+    row.checked_add_delta(&delta).unwrap();
+    let address = meter_address(1, &row).unwrap();
+    assert!(migration_authorizes(&address));
+    let mut bad = address;
+    bad.key.push(0);
+    assert!(!migration_authorizes(&bad));
+    let text = String::from_utf8(encode(&row).unwrap()).unwrap();
+    let changed = text.replacen("\"version\":2", "\"version\":1", 1);
+    assert!(decode::<MeteringRow>(&Secret::new(changed.into_bytes())).is_err());
+}
+
+#[tokio::test]
 async fn correction_guards_complete_selection_and_usage_prestate() {
     let backend = Arc::new(Backend::default());
     let store = attach(backend.clone()).await;
@@ -452,10 +542,8 @@ async fn correction_guards_complete_selection_and_usage_prestate() {
         enabled: true,
         ..Default::default()
     };
-    backend.0.lock().unwrap().rows.insert(
-        super::super::identity::key_address("key").unwrap(),
-        Secret::new(encode(&key).unwrap()),
-    );
+    store.identity().put_key(&key).await.unwrap();
+    backend.0.lock().unwrap().attempts.clear();
     let mut replacement = UsageLedger::default();
     replacement.checked_apply_delta(&delta(50)).unwrap();
     let request = correction::Request {

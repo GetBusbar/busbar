@@ -12,7 +12,7 @@ use busbar_plugin_abi::host_side::caller::Accept;
 
 use super::*;
 use crate::plane_driver::port_egress::{
-    upstream_targets, PortEgress, PortUpstream, SeatPool, SessionFacts,
+    upstream_targets, PortEgress, PortUpstream, ProbeTarget, SeatPool, SessionFacts,
 };
 use crate::plane_driver::port_session::UpExchange;
 use crate::plane_driver::port_upstream::{Members, UpSend, Wants};
@@ -67,8 +67,16 @@ fn a_seat_walks_one_member_per_network_upstream_in_name_order_under_its_lane() {
     assert_eq!(
         pool.probe_members(),
         [
-            (DestinationId::new(0), "alpha".to_owned()),
-            (DestinationId::new(1), "beta".to_owned())
+            ProbeTarget {
+                destination: DestinationId::new(0),
+                pool: "mcp".into(),
+                qualified_member: "mcp\u{1f}alpha".into()
+            },
+            ProbeTarget {
+                destination: DestinationId::new(1),
+                pool: "mcp".into(),
+                qualified_member: "mcp\u{1f}beta".into()
+            },
         ]
     );
 }
@@ -105,10 +113,20 @@ fn an_upstream_pin_is_held_and_a_check_this_path_cannot_hold_refuses_the_seat() 
 #[test]
 fn a_seat_reads_only_its_own_upstreams_as_targets() {
     let table: Arc<dyn Upstreams> = three();
-    let targets = upstream_targets(table);
-    assert!(targets("alpha").is_some());
-    assert!(targets("files").is_some());
-    assert!(targets("ghost").is_none());
+    let targets = upstream_targets("mcp", table);
+    assert!(targets("mcp", "mcp\u{1f}alpha").is_some());
+    assert!(targets("mcp", "mcp\u{1f}files").is_some());
+    assert!(targets("mcp", "mcp\u{1f}ghost").is_none());
+    assert!(targets("other", "mcp\u{1f}alpha").is_none());
+    assert!(targets("mcp", "other\u{1f}alpha").is_none());
+    assert!(targets("mcp", "alpha").is_none());
+    assert_eq!(
+        targets("mcp", "mcp\u{1f}alpha")
+            .unwrap()
+            .registered_upstream
+            .as_deref(),
+        Some("alpha")
+    );
 }
 
 #[test]
@@ -141,7 +159,7 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
         rt.handle().clone(),
         pool.pool.clone(),
         Accept::default(),
-        upstream_targets(three()),
+        upstream_targets("mcp", three()),
     );
     let exchange = UpExchange {
         method: Some("POST".into()),
@@ -153,6 +171,7 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
     let mut status = None;
     walk.walk(
         SessionFacts {
+            pending: None,
             unit: busbar_contract::UnitKey::new(9),
         },
         &mut |members: &mut dyn Members, send: &mut dyn UpSend| {

@@ -93,14 +93,12 @@ fn a_missing_anchor_symbol_is_named_and_a_present_one_is_not() {
         ("busbar_migrate::plan", 10),
         ("busbar::root::migrate::run", 10),
         ("busbar_kernel::persistence::startup::Manifest::decode", 10),
-        ("plugin_loader::dispatch::migrate::settings_migration", 10),
         ("busbar_contract::abi::sdk::migrate::read_answer", 10),
     ]);
     assert!(anchors_missing(&all).is_empty());
     let renamed = bloat(&[
         ("busbar_migrate::planned", 10),
         ("busbar_kernel::persistence::startup::Manifest::decode", 10),
-        ("plugin_loader::dispatch::migrate::settings_migration", 10),
         ("busbar_contract::abi::sdk::migrate::read_answer", 10),
     ]);
     let missing = anchors_missing(&renamed);
@@ -109,7 +107,7 @@ fn a_missing_anchor_symbol_is_named_and_a_present_one_is_not() {
         .iter()
         .any(|m| m.contains("busbar::root::migrate::run")));
     assert!(missing.iter().all(|m| m.contains("anchor not found")));
-    assert_eq!(anchors_missing(&[]).len(), 5);
+    assert_eq!(anchors_missing(&[]).len(), 4);
 }
 
 /// (3d) Linked plugins are counted from the manifest: the fixture row adds its `migrate::` prefix,

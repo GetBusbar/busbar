@@ -253,6 +253,7 @@ fn rows_of(native: &Native) -> Result<Vec<(Address, SecureVec)>, StoreFail> {
                 .parse()
                 .map_err(|_| fail("metering row", "a bucket that is not a whole number"))?;
             let metering = MeteringRow {
+                pricing: None,
                 scale: busbar_contract::COUNT_SCALE,
                 key_id: row.key_id.clone(),
                 model: row.model.clone(),
@@ -422,19 +423,6 @@ impl Keys {
             at_rest: keys.at_rest,
         })
     }
-
-    /// Legacy bootstrap keys only. The MIN-3 caller passes its owned core keys explicitly
-    /// through `from_core` before any serving generation exists.
-    pub(crate) fn from_bootstrap() -> Self {
-        let keys = busbar_kernel::appbuild::take_bootstrap_records_keys();
-        Self {
-            seed: keys
-                .as_ref()
-                .and_then(|keys| keys.signer.as_ref())
-                .map(busbar_kernel::governance::signing::TokenSigner::secret_bytes),
-            at_rest: keys.and_then(|keys| keys.at_rest),
-        }
-    }
 }
 
 /// Steps 4b and 4a over `store`, blocking. `Ok(None)` when IMPORT is empty (one one-row scan).
@@ -484,20 +472,6 @@ pub(crate) fn run_blocking(
     };
     let report = records::run(store, &inputs).map_err(|r| r.to_string())?;
     Ok(report)
-}
-
-/// Step 4 (§3 4a, 4b): after FST admission, before step 5 and before anything serves.
-///
-/// # Errors
-/// As [`run_blocking`]; the boot refuses with the text.
-#[cold]
-#[inline(never)]
-pub(crate) async fn step4(
-    core: Arc<CoreStore>,
-    config: PathBuf,
-    stamped: bool,
-) -> Result<(), String> {
-    step4_with_keys(core, Keys::from_bootstrap(), config, stamped).await
 }
 
 /// Step 4 with custody supplied by the boot owner, without consulting published MIN-3 state.

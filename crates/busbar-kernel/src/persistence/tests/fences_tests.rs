@@ -4,6 +4,22 @@
 use super::*;
 
 #[test]
+fn initialization_declares_the_registrar_epoch_required_by_register() {
+    let prepared = initialize(DatasetId([1; 16]), [2; 16], [3; 16]).unwrap();
+    let epoch = control::epoch_row([2; 16], 1);
+    assert!(prepared.candidate().predicates.iter().any(|predicate| {
+        predicate.address == epoch && matches!(predicate.expected, ExpectedValue::Absent)
+    }));
+    assert!(prepared.candidate().mutations.iter().any(|mutation| {
+        matches!(mutation, Mutation::Put { address, value }
+            if *address == epoch && value.expose(&crate::seal::lend()) == control::EPOCH_VALUE)
+    }));
+    assert!(control::initialization(&prepared, DatasetId([1; 16])));
+    assert_eq!(control::admit(&prepared), Ok(()));
+    assert_eq!(control::fences(&prepared).len(), 1);
+}
+
+#[test]
 fn writer_transitions_declare_every_native_control_effect() {
     let id = AttemptId {
         dataset: DatasetId([1; 16]),
@@ -63,7 +79,7 @@ fn initialization_records_are_absent_puts_outside_reserved_namespaces() {
     )
     .unwrap();
     assert!(control::initialization(&prepared, dataset));
-    assert_eq!(prepared.candidate().mutations.len(), 3);
+    assert_eq!(prepared.candidate().mutations.len(), 4);
     for namespace in [control::NAMESPACE.0, control::GENERATION_NAMESPACE.0] {
         assert!(matches!(
             initialize_with_records(

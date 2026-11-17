@@ -85,7 +85,7 @@ impl Context {
     pub fn attach_execution(
         &mut self,
         execution: Arc<super::native_admin::ExecutionAdmission>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), TxnError> {
         let Some((lease, prepared)) = execution.native() else {
             return Ok(());
         };
@@ -94,14 +94,16 @@ impl Context {
             .request()
             .view(|req| req.method == self.method && req.path == path && req.query == query)
         {
-            return Err(());
+            return Err(TxnError::Forbidden);
         }
-        let door = execution.door_for(lease.generation()).ok_or(())?;
+        let door = execution
+            .door_for(lease.generation())
+            .ok_or(TxnError::Forbidden)?;
         if actor(&door) != self.actor.as_deref()
             || crate::off_path::auth::keys::effect::roles(&door) != self.roles
             || !super::admin_door_admits(&door, &self.method, &self.target)
         {
-            return Err(());
+            return Err(TxnError::Forbidden);
         }
         self.native = Some(execution);
         Ok(())

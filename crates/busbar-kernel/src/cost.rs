@@ -282,6 +282,9 @@ impl CostModel {
                 let mut buckets: Vec<GroupBucket> = Vec::new();
                 let mut concurrent_cap: Option<u64> = None;
                 for l in &g.limits {
+                    if l.selected.is_some() {
+                        continue;
+                    }
                     match (l.metric, l.per) {
                         (LimitMetric::Concurrent, _) => {
                             concurrent_cap =
@@ -522,6 +525,16 @@ impl CostModel {
             Some(plan) if self.walks_to(key, &plan.0) => Ok(self.chain_of(key, plan.0.to_vec())),
             _ => self.chain_for(key),
         }
+    }
+
+    /// Read the actual admission's chain, refusing a mismatch instead of resolving another chain.
+    pub(crate) fn admitted_chain<'a>(
+        &'a self,
+        key: &'a busbar_contract::records::VirtualKey,
+        plan: &ChainPlan,
+    ) -> Option<Chain<'a>> {
+        self.walks_to(key, &plan.0)
+            .then(|| self.chain_of(key, plan.0.to_vec()))
     }
 
     /// Whether [`Self::chain_for`]'s walk for `key` reaches exactly `groups`, in order: the key's

@@ -676,14 +676,6 @@ impl ExportAxis for DeclaringAxis {
     ) -> Option<Vec<String>> {
         None
     }
-    fn open(
-        &self,
-        module: &str,
-        _: &str,
-        _: &busbar_contract::export_calls::PreparedExport,
-    ) -> Result<Arc<dyn ExportCalls>, String> {
-        Err(format!("{module} opens nothing here"))
-    }
     fn linked(&self, _: &str) -> bool {
         true
     }
@@ -1170,7 +1162,8 @@ async fn failed_export_read_amendment_reports_integrity_without_line_loss() {
         )],
         completion: CaptureCompletion {
             sinks: vec![sink.clone()],
-            ..CaptureCompletion::default()
+            capture: None,
+            finished: false,
         },
         permits: Vec::new(),
     }

@@ -19,7 +19,7 @@ use busbar_kernel::plane_driver::port_routes::PortRoutes;
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::HeadFields;
 
-use super::{DispatchSnapshot, NEST_PARENT_GONE, NEST_REPLY_MAX, NEST_UNREAD};
+use super::{DispatchSnapshot, NEST_INPUT_FULL, NEST_PARENT_GONE, NEST_REPLY_MAX, NEST_UNREAD};
 
 const CONSTRAINTS_UNAVAILABLE: &str = "native child target and spend constraints are not available";
 const PARENT_ADMISSION: &str = "native child has no live parent billing admission";
@@ -147,7 +147,7 @@ impl NativeNests {
         {
             return NestReply::Unserved(NEST_PARENT_GONE);
         }
-        let Some(app) = snapshot
+        let Some(frame) = snapshot
             .frames
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -163,6 +163,13 @@ impl NativeNests {
         }
         let Some(billing) = &snapshot.served.billing else {
             return NestReply::Unserved(PARENT_ADMISSION);
+        };
+        let request = frame.request.clone();
+        // This is an independent retained input copy. Reserve from the same admitted
+        // request before allocating, and let its Bytes backing own the credit thereafter.
+        let body = match request.copy_input(&nest.ask.body) {
+            Ok(body) => body.into_bytes(),
+            Err(_) => return NestReply::Unserved(NEST_INPUT_FULL),
         };
         let unit = match billing.child(
             UnitKey::new(nest.parent),
@@ -199,7 +206,7 @@ impl NativeNests {
             .frames
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id.get(), app);
+            .insert(id.get(), frame);
         let invocation = match seat
             .driver
             .invocation(Arc::clone(context.generation()), id.get())
@@ -223,6 +230,8 @@ impl NativeNests {
         let result = seat
             .driver
             .serve(ServeIn {
+                request,
+                admission: None,
                 invocation: Some(invocation),
                 route,
                 http: HttpIn {
@@ -230,7 +239,7 @@ impl NativeNests {
                     path: path.into(),
                     query: query.into(),
                     headers: Vec::new(),
-                    body: nest.ask.body.clone(),
+                    body,
                     request_id: id.get(),
                 },
                 creds: Credentials {

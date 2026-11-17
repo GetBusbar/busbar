@@ -1983,3 +1983,82 @@ fn a_peer_row_whose_statement_does_not_read_back_does_not_block_a_healthy_row() 
     )
     .expect("an unreadable, never-serving peer does not block a healthy row");
 }
+
+/// One captured event: its level and every field by name, as the stock formatter would receive them.
+#[derive(Debug, Default)]
+struct Captured {
+    level: Option<tracing::Level>,
+    fields: Vec<(String, String)>,
+}
+
+/// A subscriber that keeps each event's level and fields, so a test can see which field a plugin's
+/// text reached (`message` is core's words; plugin text is the plain `text` field, IF §12.16).
+#[derive(Clone, Default)]
+struct EventCapture(Arc<std::sync::Mutex<Vec<Captured>>>);
+
+struct FieldVisit<'a>(&'a mut Captured);
+
+impl tracing::field::Visit for FieldVisit<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.fields.push((field.name().into(), value.into()));
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .fields
+            .push((field.name().into(), format!("{value:?}")));
+    }
+}
+
+impl tracing::Subscriber for EventCapture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut captured = Captured {
+            level: Some(*event.metadata().level()),
+            ..Captured::default()
+        };
+        event.record(&mut FieldVisit(&mut captured));
+        self.0.lock().unwrap().push(captured);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// #359 SEC-L4: an auth plugin's diagnostic text is logged as the plain `text` field, never as the
+/// event message, so plugin-echoed caller input cannot forge log lines.
+#[test]
+fn an_auth_plugin_diagnostic_is_a_text_field_never_the_message() {
+    use crate::auth_door::AuthSink;
+    let capture = EventCapture::default();
+    let forged = "bad key\n2026-01-01T00:00:00Z ERROR forged";
+    tracing::subscriber::with_default(capture.clone(), || {
+        AuthSink::new("judge")
+            .bind()
+            .diag(crate::dispatch::Diagnostic {
+                id: 0,
+                name: b"",
+                severity: 0,
+                text: forged.as_bytes(),
+            });
+    });
+    let events = capture.0.lock().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let field = |name: &str| {
+        events[0]
+            .fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(field("text").as_deref(), Some(forged), "{events:?}");
+    assert!(
+        !field("message").unwrap_or_default().contains("forged"),
+        "plugin text never reaches the message: {events:?}"
+    );
+}

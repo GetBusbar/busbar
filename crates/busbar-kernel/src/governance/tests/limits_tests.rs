@@ -17,6 +17,7 @@ async fn gov() -> GovState {
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per,
@@ -734,6 +735,7 @@ async fn rate_headroom_reads_the_chain() {
 
 fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric,
         amount,
         per: Some(per),
@@ -1184,6 +1186,7 @@ async fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
         .unwrap()
         .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key_id.to_string(),
             bucket: crate::governance::metering_bucket(now),

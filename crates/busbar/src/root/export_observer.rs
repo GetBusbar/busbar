@@ -282,7 +282,7 @@ fn reclaim(state: &mut State, rollback: bool) {
 }
 
 fn capacity_refusal(detail: &str) -> String {
-    busbar_kernel::diagnostics::coded::config_export_invalid(detail)
+    busbar_kernel::diagnostics::coded::config_export_invalid(detail).to_string()
 }
 
 fn notice(first: bool, instance: &str) {

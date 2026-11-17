@@ -853,6 +853,7 @@ mod tests {
                     pub upstream: Str<'a>,
                     pub provider: Str<'a>,
                     pub params: Slice<'a, Pair<'a>>,
+                    pub admission: Bytes<'a>,
                 }
             }
             pods {}
@@ -888,6 +889,10 @@ mod tests {
             }
             sync fn demux(&self, h: &Host, path: Str<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
                 let _ = (h, path, body, out);
+                Err(crate::fail::Fail::unsupported())
+            }
+            sync fn select_resources(&self, h: &Host, mode: u32, req: &PlaneReq<'_>, body: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let _ = (h, mode, req, body, out);
                 Err(crate::fail::Fail::unsupported())
             }
         }
@@ -1122,7 +1127,7 @@ mod tests {
             ]
         );
         let mut fps: Vec<u64> = kinds.iter().map(|k| k.3).collect();
-        fps.sort_unstable();
+        fps.sort();
         fps.dedup();
         assert_eq!(fps.len(), 7, "every kind block hashes to its own FP");
         assert_eq!(store::tag::ROW, 0x0100);

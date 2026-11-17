@@ -280,6 +280,7 @@ mod signed_ingress {
             effective,
             pattern: "/hooks/in".into(),
             cred_header: None,
+            resource_kinds: Vec::new(),
             catalog: false,
         }
     }

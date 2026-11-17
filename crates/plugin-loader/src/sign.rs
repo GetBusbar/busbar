@@ -143,8 +143,8 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 pub const HOST_IDENTITY: &str = "busbar";
 
 /// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
-/// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
-/// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
+/// A root key vouches for keys documents ([`crate::release_trust`]); plugin admission requires
+/// a delegated release seal, never a bare root signature on an artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstPartyKey {
     /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry

@@ -213,6 +213,7 @@ pub mod views {
         pub upstream: Str<'a>,
         pub provider: Str<'a>,
         pub params: Slice<'a, Pair<'a>>,
+        pub admission: Bytes<'a>,
     }
 
     /// One connection (transport `begin`).
@@ -240,7 +241,7 @@ const BYTES: usize = size_of::<Bytes<'static>>();
 const PAIRS: usize = size_of::<Slice<'static, Pair<'static>>>();
 const _: () = assert!(size_of::<AuthReq<'static>>() == 8 + 5 * STR + PAIRS + 3 * BYTES + 8);
 const _: () = assert!(size_of::<PlaneReq<'static>>() == 16 + 4 * STR + PAIRS + 2 * BYTES + 16);
-const _: () = assert!(size_of::<Target<'static>>() == 8 + 5 * STR + PAIRS);
+const _: () = assert!(size_of::<Target<'static>>() == 8 + 5 * STR + PAIRS + BYTES);
 const _: () = assert!(size_of::<ConnInfo<'static>>() == 8 + 5 * STR + 3 * BYTES + 8);
 
 impl seal::Sealed for AuthReq<'_> {}
@@ -524,6 +525,7 @@ pub mod plane {
         pub admin: VtEntry<Starts<EntryFn2<u32, B>>>,
         pub probe: VtEntry<Opens<EntryFn1<TargetRef>>>,
         pub demux: VtEntry<Plain<EntryFn2<St, B>>>,
+        pub select_resources: VtEntry<Plain<EntryFn3<u32, PlaneRef, B>>>,
     }
 
     impl Vt {
@@ -538,7 +540,8 @@ pub mod plane {
                 + Call3<PlaneRef, u32, B, 5>
                 + Start2<u32, B, 6>
                 + Opener1<TargetRef, 7>
-                + Call2<St, B, 8>,
+                + Call2<St, B, 8>
+                + Call3<u32, PlaneRef, B, 9>,
         {
             Built::new(Vt {
                 request: VtEntry::new(Opens(shim::opener2::<M, PlaneRef, B, 0>)),
@@ -550,6 +553,7 @@ pub mod plane {
                 admin: VtEntry::new(Starts(shim::start2::<M, u32, B, 6>)),
                 probe: VtEntry::new(Opens(shim::opener1::<M, TargetRef, 7>)),
                 demux: VtEntry::new(Plain(shim::sync2::<M, St, B, 8>)),
+                select_resources: VtEntry::new(Plain(shim::sync3::<M, u32, PlaneRef, B, 9>)),
             })
         }
         /// The first null entry, named (admit refuses it, step 9).
@@ -564,6 +568,7 @@ pub mod plane {
                 ("admin", self.admin.is_null()),
                 ("probe", self.probe.is_null()),
                 ("demux", self.demux.is_null()),
+                ("select_resources", self.select_resources.is_null()),
             ]
             .into_iter()
             .find_map(|(name, null)| null.then_some(name))

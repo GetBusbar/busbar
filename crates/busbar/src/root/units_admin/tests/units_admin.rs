@@ -2436,6 +2436,57 @@ async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
 }
 
 #[tokio::test]
+async fn audit_verifying_keys_use_the_shared_cursor_page() {
+    let mut audit = a_sealed_chain();
+    for seed in [11u8, 19, 23] {
+        let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[seed; 32]);
+        audit.keys.insert(
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex()).unwrap(),
+        );
+    }
+    let mut expected: Vec<String> = audit
+        .keys
+        .keys()
+        .iter()
+        .map(|key| key.key_id().to_owned())
+        .collect();
+    expected.sort();
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_audit_view(Arc::new(audit) as Arc<dyn AuditView>);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let mut path = "/api/v1/admin/audit/keys?limit=1".to_string();
+    let mut ids = Vec::new();
+    for page in 0..4 {
+        let answer = node.answer(a_ledger_request(&path)).await;
+        assert_eq!(answer.status, 200);
+        let body: json::Value = json::parse_value(&answer.body).unwrap();
+        let items = body["items"].as_array().expect("every list uses items");
+        assert_eq!(items.len(), 1);
+        ids.push(items[0]["key_id"].as_str().unwrap().to_string());
+        assert_eq!(body["algorithm"].as_str(), Some("ed25519"));
+        assert!(body.get("keys").is_none(), "one collection member only");
+        if page == 3 {
+            assert!(body["next_cursor"].is_null());
+        } else {
+            let cursor = body["next_cursor"].as_str().expect("another key remains");
+            assert!(cursor.starts_with("k1."), "use the common cursor format");
+            path = format!("/api/v1/admin/audit/keys?limit=1&cursor={cursor}");
+        }
+    }
+    assert_eq!(ids, expected, "each public key appears exactly once");
+    let answer = node
+        .answer(a_ledger_request("/api/v1/admin/audit/keys?cursor=invalid"))
+        .await;
+    assert_eq!(answer.status, 400);
+    assert!(String::from_utf8(answer.body)
+        .unwrap()
+        .contains("malformed_cursor"));
+}
+
+#[tokio::test]
 async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head")).await;
     assert_eq!(head.status, 200, "the head read did not answer");

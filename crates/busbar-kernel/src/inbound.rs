@@ -868,7 +868,7 @@ async fn claim_request_replay(
                     let _ = replay.execution.set(Arc::new(execution));
                     true
                 }
-                Err(()) => false,
+                Err(_) => false,
             }
         }),
     )

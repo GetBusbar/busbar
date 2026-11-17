@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::sync::Arc;
 
 use super::super::hooks::{Constraint, HooksRan, Restrict};
@@ -13,34 +13,7 @@ use crate::host_services::InvocationContext;
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{plane::PlaneIn, FactVal, PortError};
 
-/// Sink-time output is held as securely as the projection until enforcement succeeds.
-pub(crate) struct Buffered<'a> {
-    inner: &'a dyn Effects,
-    emits: RefCell<Vec<(u64, busbar_contract::secure::SecureVec)>>,
-}
-impl<'a> Buffered<'a> {
-    pub(crate) fn new(inner: &'a dyn Effects) -> Self {
-        Self {
-            inner,
-            emits: RefCell::new(Vec::new()),
-        }
-    }
-    pub(crate) fn release(&self) {
-        for (carrier, bytes) in self.emits.borrow_mut().drain(..) {
-            self.inner.emit(carrier, &bytes);
-        }
-    }
-}
-impl Effects for Buffered<'_> {
-    fn invocation(&self) -> Option<&InvocationContext> {
-        self.inner.invocation()
-    }
-    fn emit(&self, carrier: u64, bytes: &[u8]) {
-        self.emits
-            .borrow_mut()
-            .push((carrier, bytes.to_vec().into()));
-    }
-}
+pub(crate) use super::super::port_session::Buffered;
 
 #[derive(Clone)]
 pub(crate) struct Stage {
@@ -88,6 +61,24 @@ impl Stage {
             context: &self.context,
         }
     }
+    fn response_tap(&self, status: u16, gate: bool, output: Option<u64>) {
+        let outcome = if gate {
+            "rejected_by_gate"
+        } else if (200..300).contains(&status) {
+            "ok"
+        } else {
+            "failed"
+        };
+        let mut facts = vec![
+            (abi::S_STAGE, FactVal::U(abi::STAGE_RESPONSE)),
+            (abi::S_STATUS, FactVal::U(status.into())),
+            (abi::S_OUTCOME, FactVal::Text(outcome.into())),
+        ];
+        if let Some(output) = output {
+            facts.push((abi::S_RESPONSE_TOKENS_OUT, FactVal::U(output)));
+        }
+        self.taps(&self.selected.taps.response, facts);
+    }
     fn report(&self, hooks: Vec<busbar_kernel_audit::record::HookApplied>) {
         if let Some(journal) = &self.journal {
             journal.hooks_ran(&HooksRan {
@@ -97,24 +88,23 @@ impl Stage {
         }
     }
     fn taps(&self, calls: &[Arc<super::Call>], facts: Vec<(u32, FactVal)>) {
-        if calls.is_empty() {
-            return;
-        }
-        let mut held = self.clone();
-        if !facts.is_empty() {
-            held.projection = held.projection.shape();
-        }
-        let calls = calls.to_vec();
-        crate::hooks::taps::spawn_bounded_tap(async move {
-            let selection = held.selection();
-            let input = held.input(&selection, &facts);
-            let mut ran = Vec::new();
-            for call in calls {
-                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-                ran.push(call::record(&call, result.as_ref().ok()));
+        for call in calls {
+            let mut held = self.clone();
+            if !facts.is_empty() {
+                held.projection = held.projection.shape();
             }
-            held.report(ran);
-        });
+            let facts = facts.clone();
+            let call = Arc::clone(call);
+            crate::hooks::taps::spawn_bounded_tap(async move {
+                let selection = held.selection();
+                let input = held.input(&selection, &facts);
+                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
+                held.report(vec![call::record(
+                    &call,
+                    result.as_ref().ok().map(|reply| &**reply),
+                )]);
+            });
+        }
     }
 }
 
@@ -123,6 +113,7 @@ pub(crate) struct Observed<'a> {
     pub(crate) inner: &'a dyn Effects,
     pub(crate) stage: Stage,
     responded: Cell<bool>,
+    output: Cell<Option<u64>>,
 }
 impl<'a> Observed<'a> {
     pub(crate) fn new(inner: &'a dyn Effects, stage: Stage) -> Self {
@@ -130,10 +121,14 @@ impl<'a> Observed<'a> {
             inner,
             stage,
             responded: Cell::new(false),
+            output: Cell::new(None),
         }
     }
 }
 impl Effects for Observed<'_> {
+    fn admission(&self) -> Option<&super::super::port_admission::Pending> {
+        self.inner.admission()
+    }
     fn invocation(&self) -> Option<&InvocationContext> {
         self.inner.invocation()
     }
@@ -143,26 +138,39 @@ impl Effects for Observed<'_> {
     fn client(&self) -> Option<&dyn ClientSink> {
         self.inner.client()
     }
-    fn routing(&self, attempt: u32, model: &str) {
-        self.stage.taps(
-            &self.stage.selected.taps.routing,
-            vec![
-                (abi::S_STAGE, FactVal::U(abi::STAGE_ROUTING)),
-                (abi::S_ATTEMPT, FactVal::U(attempt.into())),
-                (abi::S_STAGE_MODEL, FactVal::Text(model.into())),
-            ],
-        );
-        self.inner.routing(attempt, model);
+    fn routing(&self, attempt: u32, model: &str, remaining: Option<usize>, failed: Option<&str>) {
+        let mut facts = vec![
+            (abi::S_STAGE, FactVal::U(abi::STAGE_ROUTING)),
+            (abi::S_ATTEMPT, FactVal::U(attempt.into())),
+            (abi::S_STAGE_MODEL, FactVal::Text(model.into())),
+        ];
+        if let Some(remaining) = remaining {
+            facts.push((abi::S_REMAINING_CANDIDATES, FactVal::U(remaining as u64)));
+        }
+        if let Some(failed) = failed {
+            facts.push((abi::S_PREVIOUS_FAILURE, FactVal::Text(failed.into())));
+        }
+        self.stage.taps(&self.stage.selected.taps.routing, facts);
+        self.inner.routing(attempt, model, remaining, failed);
+    }
+    fn observed_usage(&self, usage: &super::super::usage::SessionUsage) {
+        let output = usage
+            .last()
+            .iter()
+            .find(|reported| {
+                &*reported.class == "output"
+                    && reported.source == busbar_plugin_abi::plane::SRC_REPORTED
+            })
+            .and_then(|reported| {
+                let divisor = 10_u64.pow(reported.scale);
+                (reported.amount % divisor == 0).then_some(reported.amount / divisor)
+            });
+        self.output.set(output);
+        self.inner.observed_usage(usage);
     }
     fn response(&self, status: u16) {
         if !self.responded.replace(true) {
-            self.stage.taps(
-                &self.stage.selected.taps.response,
-                vec![
-                    (abi::S_STAGE, FactVal::U(abi::STAGE_RESPONSE)),
-                    (abi::S_STATUS, FactVal::U(status.into())),
-                ],
-            );
+            self.stage.response_tap(status, false, self.output.get());
         }
         self.inner.response(status);
     }
@@ -244,8 +252,9 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         for rewrite in stage.selected.rewrites.clone() {
             let selection = stage.selection();
             let input = stage.input(&selection, &[]);
-            let (called, answer) =
-                handle.block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran));
+            let (called, mut answer) = handle
+                .block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran))
+                .map_err(|_| unavailable(req.route, drive.refusals))?;
             if answer.verb == abi::VERB_REJECT {
                 return Err(SessionError::HookRefused(drive.refusals.for_hook(
                     req.route,
@@ -257,7 +266,8 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             if answer.verb != abi::VERB_REWRITE || !called.prompt.can_rewrite() {
                 continue;
             }
-            if let Some(bytes) = answer.rewrite {
+            if let Some(bytes) = answer.rewrite.take() {
+                let bytes = busbar_contract::secure::SecureVec::from(bytes);
                 match task.rewrite(&bytes, effects) {
                     Ok(answer) => {
                         stage.projection.rewritten(bytes, &answer);
@@ -276,28 +286,80 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         let selection = stage.selection();
         let input = stage.input(&selection, &[]);
         let gate_results = handle.block_on(futures::future::join_all(
-            stage.selected.gates.iter().map(|gate| async {
-                let mut records = Vec::new();
-                let result = call::chain(gate, abi::POINT_ROUTE, &input, &mut records).await;
-                (result, records)
+            stage.selected.gates.iter().map(|gate| {
+                let input = &input;
+                async move {
+                    let mut records = Vec::new();
+                    let result = call::chain(gate, abi::POINT_ROUTE, input, &mut records).await;
+                    (result, records)
+                }
             }),
         ));
-        let mut constraint = Constraint::default();
-        for ((called, answer), records) in gate_results {
+        let mut outcomes = Vec::new();
+        for (outcome, records) in gate_results {
             ran.extend(records);
-            apply(
-                &mut constraint,
-                &called,
-                &answer,
-                req.route,
-                drive.refusals,
-                &stage.candidates,
-            )?;
+            outcomes.push(outcome);
         }
-        if constraint.order.is_none() && constraint.prioritize.is_none() {
+        let mut judged = Vec::new();
+        for outcome in outcomes {
+            let (called, mut answer) =
+                outcome.map_err(|_| unavailable(req.route, drive.refusals))?;
+            normalize(&mut answer, &stage.candidates);
+            if answer.verb == abi::VERB_REJECT {
+                return Err(SessionError::HookRefused(drive.refusals.for_hook(
+                    req.route,
+                    &called.name,
+                    answer.reject_status,
+                    answer.message.as_deref(),
+                )));
+            }
+            judged.push((called, answer));
+        }
+        let mut constraint = Constraint::default();
+        // Restrictions are reconciled before any order.
+        for (called, answer) in &judged {
+            if answer.verb == abi::VERB_RESTRICT {
+                apply(
+                    &mut constraint,
+                    called,
+                    answer,
+                    req.route,
+                    drive.refusals,
+                    &stage.candidates,
+                )?;
+            }
+        }
+        let kept = constraint
+            .enforce(
+                stage
+                    .candidates
+                    .iter()
+                    .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
+            )
+            .map_err(|_| unavailable(req.route, drive.refusals))?;
+        stage
+            .candidates
+            .retain(|candidate| kept.contains(&candidate.facts.idx));
+        for (called, answer) in &judged {
+            if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
+                apply(
+                    &mut constraint,
+                    called,
+                    answer,
+                    req.route,
+                    drive.refusals,
+                    &stage.candidates,
+                )?;
+            }
+        }
+        let selection = stage.selection();
+        let input = stage.input(&selection, &[]);
+        if constraint.order.is_none() {
             if let Some(policy) = &stage.selected.policy {
-                let (called, answer) =
-                    handle.block_on(call::chain(policy, abi::POINT_ROUTE, &input, &mut ran));
+                let (called, mut answer) = handle
+                    .block_on(call::chain(policy, abi::POINT_ROUTE, &input, &mut ran))
+                    .map_err(|_| unavailable(req.route, drive.refusals))?;
+                normalize(&mut answer, &stage.candidates);
                 apply(
                     &mut constraint,
                     &called,
@@ -315,10 +377,11 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     .iter()
                     .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
             )
-            .map_err(|r| {
-                SessionError::HookRefused(drive.refusals.for_hook(req.route, &r.name, None, None))
-            })?;
+            .map_err(|_| unavailable(req.route, drive.refusals))?;
         if !constraint.restricts.is_empty() {
+            stage
+                .candidates
+                .retain(|candidate| kept.contains(&candidate.facts.idx));
             constraint.keep = Some(kept);
         }
         if let Some(wants) = &wants {
@@ -332,11 +395,20 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         }
         stage.taps(
             &stage.selected.taps.candidate,
-            vec![(abi::S_STAGE, FactVal::U(abi::STAGE_CANDIDATE))],
+            vec![
+                (abi::S_STAGE, FactVal::U(abi::STAGE_CANDIDATE)),
+                (
+                    abi::S_REMAINING_CANDIDATES,
+                    FactVal::U(stage.candidates.len() as u64),
+                ),
+            ],
         );
         Ok(())
     })();
     stage.report(ran);
+    if let Err(SessionError::HookRefused(refusal)) = &result {
+        stage.response_tap(refusal.status, true, None);
+    }
     result?;
     // Request content is no longer needed by the synchronous runtime after its request taps own it.
     stage.projection = stage.projection.shape();
@@ -361,8 +433,14 @@ fn apply(
             )))
         }
         abi::VERB_RESTRICT => constraint.restricts.push(Restrict {
-            tags_any: answer.restrict.iter().map(ToString::to_string).collect(),
-            on_empty: call.on_empty,
+            tags_any: answer
+                .restrict
+                .iter()
+                .map(|tag| tag.trim())
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            on_empty: call.on_empty.clone(),
             name: call.name.clone(),
         }),
         abi::VERB_PREFER | abi::VERB_PRIORITIZE => {
@@ -379,15 +457,47 @@ fn apply(
             if !order.is_empty() {
                 if answer.verb == abi::VERB_PREFER {
                     constraint.order = Some(order);
-                    constraint.prioritize = None;
                 } else {
                     constraint.prioritize = Some(order);
-                    constraint.order = None;
                 }
                 constraint.policy = Some(call.name.clone());
+            } else if answer.verb == abi::VERB_PREFER {
+                constraint.order = None;
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+fn normalize(answer: &mut busbar_ports::hook::HookAnswer, candidates: &[CandidateView]) {
+    if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
+        let mut seen = Vec::new();
+        answer.order.retain(|index| {
+            let valid = candidates
+                .iter()
+                .any(|candidate| candidate.facts.idx == *index as usize)
+                && !seen.contains(index);
+            if valid {
+                seen.push(*index);
+            }
+            valid
+        });
+        if answer.order.is_empty() {
+            answer.verb = abi::VERB_ABSTAIN;
+        }
+    }
+}
+
+fn unavailable(route: u32, refusals: &dyn crate::refusal::RefusalMap) -> SessionError {
+    SessionError::HookRefused(refusals.for_port(
+        route,
+        &PortError::Failed {
+            code: busbar_plugin_abi::fail::failed::F_UNAVAILABLE,
+            text: "a required native hook could not complete".into(),
+            retry_after_s: None,
+            backend_status: None,
+            error: None,
+        },
+    ))
 }

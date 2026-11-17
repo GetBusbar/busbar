@@ -69,6 +69,7 @@ const CATALOG_PROTOCOL: &str = "proto-a";
 
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
+        authored: Default::default(),
         protocol: protocol.to_string(),
         base_url: base_url.to_string(),
         error_map: HashMap::new(),
@@ -86,6 +87,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
+        authored: Default::default(),
         api_key: crate::config::secret::descriptor_reference(env_var),
         protocol: None,
         base_url: None,
@@ -1475,6 +1477,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         policy: Default::default(),
         login_limits: Default::default(),
         verdict_cache: Default::default(),
+        outbound: Default::default(),
         unknown_key_refresh_s: 30,
     };
     let mut deploy = base_deploy();
@@ -2722,7 +2725,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
             message,
             format!(
                 "auth.bogus_key: unknown field `bogus_key`, expected one of `unknown_key_refresh_s`, `require_if_match`, `signing_key`, `chain`, \
-                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache` at line {line} \
+                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache`, `outbound` at line {line} \
                  column 3"
             )
         );

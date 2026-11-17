@@ -238,7 +238,7 @@ h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94d2da01a448d348b5d14945e29192e511b8452" }
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
-sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "10b80cdcbfb07c0edc6535df28f7b248dc4f5223" }
+sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
 
 [profile.dev]
