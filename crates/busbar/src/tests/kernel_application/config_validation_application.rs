@@ -4448,3 +4448,109 @@ fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
     let ((), lines) = heterogeneous_warnings(|| advise(&cfg));
     assert_eq!(lines, 1, "the boot narration advises once");
 }
+
+/// A configuration read from `tail` (YAML) as an operator's config.yaml, resolved (#359 SEC-L1 fixtures).
+fn listener_doc(tail: &str) -> Result<RootCfg, Vec<String>> {
+    let text =
+        format!("providers: {{}}\nmodels: {{}}\nauth: {{ chain: [], admin_auth: [] }}\n{tail}");
+    let deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&text, &crate::root::boot::axis_test_grammar())
+            .map_err(|e| vec![e.to_string()])?;
+    busbar_kernel::config::resolve(&deploy, &Default::default())
+}
+
+/// Every refusal of `tail`: its read, its resolve and the validation pass.
+fn listener_refusals(tail: &str) -> Vec<String> {
+    match listener_doc(tail) {
+        Ok(cfg) => validate(&cfg).err().unwrap_or_default(),
+        Err(errors) => errors,
+    }
+}
+
+const LISTENER_TLS: &str = "{ cert: { module: source, settings: { id: cert } }, key: { module: source, settings: { id: key } } }";
+
+/// #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener without TLS refuses to boot unless its
+/// explicit, audited acceptance is written beside it. No address is exempt (the default loopback admin
+/// listener included), the refusal is coded and carries the one-line remedy, and only `plaintext` with a real
+/// reason is an acceptance.
+#[test]
+fn a_root_listener_without_tls_refuses_unless_its_plaintext_acceptance_is_written() {
+    let refused = |errors: &[String], key: &str| {
+        let setting = key.trim_end_matches("_insecure_transport");
+        errors.iter().any(|error| {
+            error.contains("BUSBAR-3172")
+                && error.contains(&format!("`{setting}` "))
+                && error.contains(&format!("{key}: {{ accept: [plaintext], reason:"))
+        })
+    };
+
+    // Neither TLS nor an acceptance: both listeners refuse, loopback admin included, each with its remedy.
+    let errors = listener_refusals("");
+    assert!(
+        refused(&errors, "listen_insecure_transport"),
+        "a plaintext data listener refuses with its remedy: {errors:?}"
+    );
+    assert!(
+        refused(&errors, "admin_listen_insecure_transport"),
+        "the default loopback admin listener has no exemption: {errors:?}"
+    );
+    let errors = listener_refusals("admin_listen: 0.0.0.0:9090\nadmin_require_mtls: false\n");
+    assert!(
+        refused(&errors, "admin_listen_insecure_transport"),
+        "a token-only exposed admin listener still needs its plaintext acceptance: {errors:?}"
+    );
+
+    // Both acceptances written with a real reason: no listener refusal.
+    let accepted = "listen_insecure_transport: { accept: [plaintext], reason: \"lab bench, CHG-7\" }\n\
+                    admin_listen_insecure_transport: { accept: plaintext, reason: \"loopback only\" }\n";
+    let errors = listener_refusals(accepted);
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.contains("BUSBAR-3172") || error.contains("BUSBAR-3163")),
+        "explicit acceptances boot: {errors:?}"
+    );
+
+    // TLS on one listener, the acceptance on the other.
+    let errors = listener_refusals(&format!(
+        "tls: {LISTENER_TLS}\nadmin_listen_insecure_transport: {{ accept: [plaintext], reason: \"local admin\" }}\n"
+    ));
+    assert!(
+        !errors.iter().any(|error| error.contains("BUSBAR-3172")),
+        "a listener with TLS needs no acceptance: {errors:?}"
+    );
+
+    // A malformed acceptance is refused by name: no reason, the placeholder reason, unverified_tls.
+    for (tail, key) in [
+        (
+            "listen_insecure_transport: { accept: [plaintext] }\n",
+            "listen_insecure_transport.reason",
+        ),
+        (
+            "listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }\n",
+            "listen_insecure_transport.reason",
+        ),
+        (
+            "admin_listen_insecure_transport: { accept: [unverified_tls], reason: \"r\" }\n",
+            "admin_listen_insecure_transport.accept",
+        ),
+    ] {
+        let errors = listener_refusals(tail);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("BUSBAR-3163") && error.contains(key)),
+            "{tail}: refused naming {key}: {errors:?}"
+        );
+    }
+
+    // TLS and an acceptance written together in the file contradict each other.
+    let errors = listener_refusals(&format!(
+        "tls: {LISTENER_TLS}\nlisten_insecure_transport: {{ accept: [plaintext], reason: \"r\" }}\n"
+    ));
+    assert!(
+        errors.iter().any(|error| error.contains("BUSBAR-3172")
+            && error.contains("`listen_insecure_transport` is written beside `tls`")),
+        "TLS beside an acceptance is refused as contradictory: {errors:?}"
+    );
+}
