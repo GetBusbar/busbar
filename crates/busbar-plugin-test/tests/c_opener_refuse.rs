@@ -298,6 +298,7 @@ pub(crate) mod fixture {
             upstream: Str::new("member-0"),
             provider: Str::EMPTY,
             params: Slice::EMPTY,
+            admission: Bytes::EMPTY,
         }
     }
 

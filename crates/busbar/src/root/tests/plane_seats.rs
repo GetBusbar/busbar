@@ -243,11 +243,255 @@ fn upstreams() -> Arc<ConfiguredUpstreams> {
 fn shared(table: Option<ConnTable>) -> SeatShared {
     SeatShared {
         upstreams: BTreeMap::from([("mcp".to_owned(), upstreams())]),
+        catalogs: BTreeMap::new(),
         signals: SignalRegistry::new(),
         secrets: Arc::new(Fixed),
         kernel: Arc::new(Kernel::new()),
         table,
     }
+}
+
+/// Keyless catalog fixtures must never exercise an inbound owner or mint a credential.
+struct UnusedAuth;
+
+impl busbar_kernel::issued::IssuedCredentials for UnusedAuth {
+    fn lookup<'a>(
+        &'a self,
+        _: u64,
+        _: &'a str,
+        _: &'a str,
+    ) -> BoxFut<'a, busbar_contract::secure::SecureVec> {
+        panic!("keyless catalog attempted issued lookup")
+    }
+}
+
+impl busbar_kernel::plane_grants::ReplayGuard for UnusedAuth {
+    fn claim<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        panic!("keyless catalog attempted replay admission")
+    }
+    fn claim_until<'a>(
+        &'a self,
+        _: &'a busbar_plugin_abi::host_side::caller::Caller<'_>,
+        _: &'a [u8],
+        _: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
+        panic!("keyless catalog attempted replay admission")
+    }
+}
+
+async fn catalog() -> (CatalogSeat, String, String) {
+    use super::super::{min3_auth, min3_outbound_auth, min3_provider_catalog};
+    use busbar_kernel::config::{self, Grammar};
+    use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
+    let grammar = Grammar::empty();
+    let deploy = config::deploy_from_yaml_str(
+        "providers:\n  p: {api_key: none}\nmodels:\n  m: {provider: p, upstream_model: wire-model, max_concurrent: 1, attempt_timeout_ms: 321}\npools:\n  fast:\n    members: [{model: m, weight: 7}]\n    breaker: {base_cooldown_secs: 37}\n    failover: {timeout_secs: 17, max_hops: 2, exclusions: [m]}\n    on_exhausted: {fallback_pool: slow}\n  slow:\n    members: [m]\n    on_exhausted: {queue: {max_ms: 100}}\n",
+        &grammar,
+    ).unwrap();
+    let defs = config::providers::catalog_from_str(
+        "p: {protocol: wire, base_url: 'https://provider.example/api', path: /invoke}",
+        &grammar,
+    )
+    .unwrap();
+    let mut resolved = config::resolve_with_provider_planes(
+        &deploy,
+        &defs,
+        &[ProviderPlane {
+            instance: "mcp".into(),
+            image: "admitted-kind-fixture".into(),
+            dialects: ["wire".to_owned()].into(),
+            schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
+        }],
+    )
+    .unwrap();
+    let plan = resolved.catalogs.remove("mcp").unwrap();
+    let fast = plan.select("fast").unwrap().to_owned();
+    let slow = plan.select("slow").unwrap().to_owned();
+    let allocations = plan
+        .targets()
+        .keys()
+        .enumerate()
+        .map(|(i, pair)| {
+            (
+                pair.clone(),
+                min3_provider_catalog::Allocation {
+                    destination: busbar_contract::dest::DestinationId::new(100 + i as u64),
+                    need: NeedId(100 + i as u32),
+                    upstream: format!("catalog-{i}").into(),
+                },
+            )
+        })
+        .collect();
+    let definitions = upstreams();
+    let registration = SeatPool::of("mcp", &definitions).unwrap();
+    let bindings = busbar_kernel::auth_bindings::ProviderBindings::default();
+    let mut staged = min3_provider_catalog::prepare(
+        &resolved.config,
+        &plan,
+        &allocations,
+        &registration,
+        &definitions,
+        &bindings,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults).await;
+    let (_directory, holds, _refresh) = busbar_kernel::directory::KernelDirectory::prepare(
+        store,
+        Arc::new(busbar_kernel::directory::LogEvents),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let auth = min3_auth::AuthSet::new(
+        Vec::new(),
+        &holds,
+        min3_auth::AuthOwners {
+            issued: Arc::new(UnusedAuth),
+            replay: Arc::new(UnusedAuth),
+            cache: Arc::new(busbar_kernel::auth::verdicts::Verdicts::new(
+                busbar_kernel::auth::verdicts::VerdictPolicy::DEFAULT,
+            )),
+        },
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let cache = Arc::new(busbar_kernel::custody::CredCache::new(
+        busbar_kernel::custody::CredPolicy::DEFAULT,
+        |_, _| panic!("keyless catalog attempted credential retry"),
+        |_, _| panic!("keyless catalog attempted credential mint"),
+    ));
+    let prepared = min3_outbound_auth::prepare(
+        &bindings,
+        staged.take_auth_rows(),
+        &auth,
+        &BTreeMap::new(),
+        cache,
+    )
+    .unwrap();
+    (
+        CatalogSeat {
+            sealed: staged.seal(&prepared).unwrap(),
+            pools: plan.pools().clone(),
+            plan: Arc::new(plan),
+        },
+        fast,
+        slow,
+    )
+}
+
+#[tokio::test]
+async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() {
+    let (catalog, fast, slow) = catalog().await;
+    let mut pool = SeatPool::of("mcp", &upstreams()).unwrap();
+    extend_catalog("mcp", &mut pool, &catalog).unwrap();
+    let fast_pool = &pool.pools[&fast];
+    assert_eq!(fast_pool.members[0].weight, 7);
+    assert_eq!(fast_pool.members[0].attempt_timeout_ms, Some(321));
+    assert_eq!(fast_pool.failover.timeout_secs, 17);
+    assert_eq!(fast_pool.failover.max_hops, 2);
+    assert_eq!(fast_pool.failover.exclusions, ["mcp\u{1f}m"]);
+    assert_eq!(
+        fast_pool.on_exhausted,
+        busbar_kernel_egress::OnExhausted::FallbackPool(slow.clone())
+    );
+    assert_eq!(
+        pool.pools[&slow].on_exhausted,
+        busbar_kernel_egress::OnExhausted::Queue { max_ms: 100 }
+    );
+    let table = Arc::new(Table::default());
+    let egress = egress_of(
+        "mcp",
+        seat_owner(7),
+        &ConnTable {
+            declared: table.clone(),
+            conns: table.clone(),
+        },
+        &pool,
+        Some(&catalog),
+    )
+    .unwrap();
+    let held = egress
+        .capacity
+        .try_acquire(fast_pool.members[0].destination)
+        .unwrap();
+    assert!(egress
+        .capacity
+        .try_acquire(pool.pools[&slow].members[0].destination)
+        .is_none());
+    assert!(catalog
+        .sealed
+        .capacity
+        .values()
+        .all(|slots| slots.available_permits() == 0));
+    drop(held);
+    assert!(egress
+        .capacity
+        .try_acquire(pool.pools[&slow].members[0].destination)
+        .is_some());
+    let probes = probe_targets(&pool);
+    for (pair, association) in &catalog.sealed.associations {
+        assert!(probes.iter().any(|probe| probe.pool == pair.0
+            && probe.qualified_member == pair.1
+            && probe.destination == association.destination));
+        assert!(Arc::ptr_eq(
+            &association.definition,
+            &catalog
+                .sealed
+                .model_upstreams
+                .get(&association.definition.name)
+                .unwrap()
+        ));
+        let target = (catalog.sealed.targets)(&pair.0, &pair.1).unwrap();
+        assert!(
+            matches!(target.identity, busbar_kernel::plane_driver::port_upstream::TargetIdentity::Model {dialect, model} if &*dialect == "wire" && &*model == "wire-model")
+        );
+    }
+    assert_eq!(table.declared.lock().unwrap().len(), pool.members.len());
+    assert_eq!(table.anchored.lock().unwrap().len(), pool.members.len());
+}
+
+#[tokio::test]
+async fn catalog_composition_keeps_model_definitions_out_of_channel_registrations() {
+    let (catalog, _, _) = catalog().await;
+    let model_names: Vec<_> = catalog
+        .sealed
+        .members
+        .iter()
+        .map(|member| member.upstream.clone())
+        .collect();
+    let table = Arc::new(Table::default());
+    let mut shared = shared(Some(ConnTable {
+        declared: table.clone(),
+        conns: table.clone(),
+    }));
+    shared.catalogs.insert("mcp".into(), Arc::new(catalog));
+    let wiring = compose(
+        &shared,
+        "mcp",
+        Accept::default(),
+        &who(7),
+        Arc::new(Quiet),
+        Handle::current(),
+    )
+    .unwrap();
+    let session = wiring.carrier.session();
+    session.map.point("alpha");
+    assert!(session.map.of(0).is_some());
+    for name in model_names {
+        session.map.point(&name);
+        assert!(
+            session.map.of(0).is_none(),
+            "model destination became a CHANNEL registration"
+        );
+    }
+    assert_eq!(table.declared.lock().unwrap().len(), 5);
 }
 
 fn who(instance: u64) -> Namespace {
@@ -402,6 +646,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
 
 fn stdio(argv: &[&str]) -> UpstreamDef {
     UpstreamDef {
+        resource: None,
         allow_private: false,
         name: "files".into(),
         url: None,

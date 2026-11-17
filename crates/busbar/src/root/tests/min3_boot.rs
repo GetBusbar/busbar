@@ -324,6 +324,67 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
 }
 
 #[test]
+fn configured_hooks_join_the_typed_plan_with_their_exact_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    cfg.hooks.insert(
+        "guard".into(),
+        busbar_contract::json::parse_str(
+            r#"{"kind":"gate","module":"fixture-hook","settings":{"mode":"strict"}}"#,
+        )
+        .unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let hook = instances
+        .iter()
+        .find(|one| one.kind == KindCode::Hook)
+        .expect("configured hook participates in the same typed boot plan");
+    assert_eq!(hook.name, "guard");
+    assert_eq!(hook.identity, "fixture-hook");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&hook.config).unwrap(),
+        serde_json::json!({"mode":"strict"})
+    );
+}
+
+#[test]
+fn configured_auth_uses_the_named_instance_and_only_its_plugin_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    cfg.identity_providers.insert(
+        "employees".into(),
+        busbar_contract::json::parse_str(
+            r#"{"module":"fixture-auth","settings":{"audience":"staff"},"max_admin_scope":"read-only"}"#,
+        ).unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let auth = instances
+        .iter()
+        .find(|one| one.kind == KindCode::Auth)
+        .expect("the real configured auth participates in the same typed boot plan");
+    assert_eq!(auth.name, "employees");
+    assert_eq!(auth.identity, "fixture-auth");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&auth.config).unwrap(),
+        serde_json::json!({"audience":"staff"})
+    );
+}
+
+#[test]
 fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
     let grammar =
         busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());

@@ -207,6 +207,24 @@ check. A client with a missing or wrong certificate is dropped at handshake; the
 rejection is contained to that one connection and never affects the server or other
 clients.
 
+### Readiness propagation before shutdown
+
+The first operator signal or an admin restart released by its asking unit immediately makes
+`/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
+ordinary request handling and credential refresh continue for the boot-captured
+`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
+requests do not restart the allowance. Native writer renewal continues until retirement.
+
+A persistence safety failure or natural end of serving skips propagation and starts draining.
+A second OS signal skips propagation and permanently expires the drain clock. These safety
+paths intentionally give up the ordinary propagation allowance.
+
+Set supervisor grace to at least `deregister_delay + 20s + 6s + operator margin`. The default
+therefore requires 31 seconds before margin; the Kubernetes example uses 40 seconds. Increase
+both the allowance and grace if your endpoint/load-balancer propagation needs more time. The
+allowance does not guarantee delivery through an arbitrarily slow external load balancer.
+
 ### Certificate rotation
 
 Certs are loaded once at startup, so rotation always needs a restart. It does not, however, need a

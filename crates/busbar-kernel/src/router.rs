@@ -692,6 +692,7 @@ fn apply_common_layers_for_mounts(
     observe_mounts: bool,
 ) -> Router {
     let core_routes = std::sync::Arc::new(core_routes);
+    let auth_handle = handle.clone();
     let router = router
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
@@ -699,7 +700,18 @@ fn apply_common_layers_for_mounts(
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
                 let core_routes = core_routes.clone();
-                async move { auth::auth_middleware(app, &core_routes, req, next).await }
+                let auth_handle = auth_handle.clone();
+                async move {
+                    auth::auth_middleware(
+                        app,
+                        auth_handle,
+                        request_body_max_bytes,
+                        &core_routes,
+                        req,
+                        next,
+                    )
+                    .await
+                }
             },
         ))
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
@@ -1209,6 +1221,16 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Complete root-owned routes and their authentication declarations together before publication.
+    pub fn with_core_routes(
+        mut self,
+        mount: impl FnOnce(crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter,
+    ) -> Self {
+        let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
+        (self.router, self.core_routes) = mount(routes).into_parts();
+        self
+    }
+
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()

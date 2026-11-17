@@ -18,6 +18,7 @@ fn admin(route: u32, methods: u32, pattern: &str) -> Mounted {
         effective: AUTH_OPERATOR,
         pattern: pattern.into(),
         cred_header: None,
+        resource_kinds: Vec::new(),
         catalog: false,
     }
 }
@@ -80,12 +81,16 @@ fn the_client_items_make_one_answer_and_no_head_is_a_bad_gateway() {
 
 #[tokio::test]
 async fn with_no_plane_installed_no_admin_route_is_answered() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
     let request = AdminRequest {
+        request: ProcessAdmission::new(2)
+            .try_enter(AdmissionClass::Operator)
+            .unwrap(),
         method: "GET".into(),
         path: "/admin/health".into(),
         query: String::new(),
         headers: Vec::new(),
-        body: Vec::new(),
+        body: bytes::Bytes::new(),
         request_id: 1,
         now_s: 1,
     };

@@ -40,6 +40,8 @@ The thousands digit is the area.
 | [BUSBAR-2046](/docs/1.6/errors/BUSBAR-2046/) | Persisted journal record could not be reframed on restore (skipped, not dropped) | 1.6.0 |
 | [BUSBAR-2047](/docs/1.6/errors/BUSBAR-2047/) | Persisted admin audit record could not be decoded on restore (skipped, not dropped) | 1.6.0 |
 | [BUSBAR-2048](/docs/1.6/errors/BUSBAR-2048/) | A plane journal scope failed hash-chain verification on resume (tamper evidence) | 1.6.0 |
+| [BUSBAR-2052](/docs/1.6/errors/BUSBAR-2052/) | An exporter first observed lost delivery or failed evidence | 1.6.0 |
+| [BUSBAR-2053](/docs/1.6/errors/BUSBAR-2053/) | Exporter loss evidence remains unconfirmed or a producer reported after quiescence | 1.6.0 |
 
 ## 3xxx: Config
 

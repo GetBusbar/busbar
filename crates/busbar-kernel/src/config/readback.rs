@@ -80,6 +80,7 @@ impl ConfiguredView {
             }),
         );
         if let Some(Value::Object(advanced)) = view.sections.get_mut("advanced") {
+            advanced.insert("shutdown".into(), json!(deploy.advanced.shutdown));
             advanced.insert(
                 "worker_threads".into(),
                 json!(deploy.advanced.worker_threads),
@@ -284,6 +285,7 @@ impl ConfiguredView {
                 "providers_file",
                 "admin_require_mtls",
                 "advanced.worker_threads",
+                "advanced.shutdown.deregister_delay",
             ],
         }
     }

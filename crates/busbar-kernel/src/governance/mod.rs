@@ -17,6 +17,7 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 pub(crate) mod raw_recovery;
+pub(crate) mod selected_resource;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;
 pub use crate::off_path::governance::unit_checkpoint_store;
@@ -660,6 +661,11 @@ pub struct FeeCharge {
 }
 
 impl FeeCharge {
+    /// The exact fee lane charged by the original admission; `None` is the flat base.
+    pub(crate) fn fee_lane(&self) -> Option<&str> {
+        self.lane.as_deref()
+    }
+
     pub fn raw_era(&self) -> RawRateEra {
         self.era
     }
@@ -746,6 +752,8 @@ pub struct GovState {
     admin_token_hash: RwLock<Option<String>>,
 
     budget: Sharded<BudgetCell>,
+
+    selected_rates: Arc<selected_resource::SelectedRates>,
 
     recovery_book: recovery::RecoveryBook,
 
@@ -892,6 +900,7 @@ pub mod mint_policy;
 pub mod group_provision;
 
 mod state;
+pub use state::admitted_view::{AdmissionViewUnavailable, AdmittedView};
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{

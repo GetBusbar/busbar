@@ -31,6 +31,7 @@ struct GroupBucketRead {
 
 fn usage_group_cfg() -> GroupCfg {
     let limit = |metric, amount, per, pool: Option<&str>| LimitCfg {
+        selected: None,
         metric,
         amount,
         per: Some(per),

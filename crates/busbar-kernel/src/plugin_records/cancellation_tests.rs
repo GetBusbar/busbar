@@ -10,6 +10,7 @@ use futures::FutureExt;
 use std::{collections::VecDeque, sync::Mutex};
 
 enum Crossing {
+    Conflict,
     Pending,
     LostReply,
     Unavailable,
@@ -20,6 +21,7 @@ struct Faults {
     backend: Arc<dyn PersistenceBackend>,
     script: Mutex<Option<VecDeque<Crossing>>>,
     sent: Mutex<Vec<(PreparedCandidate, CommitKey)>>,
+    read_clock: Mutex<VecDeque<u64>>,
 }
 
 impl Faults {
@@ -43,7 +45,15 @@ impl PersistenceBackend for Faults {
         self.backend.info()
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
-        self.backend.read(request)
+        Box::pin(async move {
+            let read = self.backend.read(request).await?;
+            let next = self.read_clock.lock().unwrap().pop_front();
+            if let Some(now) = next {
+                tokio::task::yield_now().await;
+                set_now(now);
+            }
+            Ok(read)
+        })
     }
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.backend.scan(request)
@@ -61,6 +71,7 @@ impl PersistenceBackend for Faults {
         };
         Box::pin(async move {
             match step {
+                Some(Crossing::Conflict) => Ok(Decision::ConditionConflict),
                 Some(Crossing::Pending) => std::future::pending().await,
                 Some(Crossing::Unavailable) => Err(Failure::Unavailable),
                 Some(Crossing::Fenced) => Ok(Decision::Fenced),
@@ -79,6 +90,7 @@ async fn rig() -> (Arc<Faults>, StoreRecords) {
         backend: crate::real_store::native_backend().await,
         script: Mutex::new(None),
         sent: Mutex::default(),
+        read_clock: Mutex::default(),
     });
     let mut startup = crate::persistence::startup::Startup::new(
         backend.clone(),
@@ -100,6 +112,89 @@ async fn rig() -> (Arc<Faults>, StoreRecords) {
     }
     let records = StoreRecords::with_clock(startup.store().unwrap(), clock);
     (backend, records)
+}
+
+#[tokio::test]
+async fn absolute_claim_keeps_original_cutoff_after_a_suspended_read() {
+    set_now(START);
+    let (backend, records) = rig().await;
+    let who = caller("test-auth", "verifier");
+    set_now(START + 4);
+    backend.read_clock.lock().unwrap().push_back(START + 9);
+    assert!(records
+        .claim_until(&who, Scope::default(), b"claim", b"1", START + 10)
+        .await
+        .unwrap());
+    let scope = records.scoped(&who).unwrap();
+    let raw = scope
+        .get(
+            RECORDS,
+            &super::super::store::scoped_key(Scope::default(), b"claim"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        super::super::store::opened(raw.expose(&crate::seal::lend()))
+            .unwrap()
+            .0,
+        START + 10
+    );
+}
+
+#[tokio::test]
+async fn absolute_claim_submits_nothing_after_read_or_conflict_passes_cutoff() {
+    for conflict in [false, true] {
+        set_now(START);
+        let (backend, records) = rig().await;
+        let who = caller("test-auth", "verifier");
+        backend.arm(if conflict {
+            vec![Crossing::Conflict]
+        } else {
+            vec![]
+        });
+        *backend.read_clock.lock().unwrap() = if conflict {
+            VecDeque::from([START + 9, START + 10])
+        } else {
+            VecDeque::from([START + 10])
+        };
+        assert!(!records
+            .claim_until(&who, Scope::default(), b"claim", b"1", START + 10)
+            .await
+            .unwrap());
+        assert_eq!(backend.sent.lock().unwrap().len(), usize::from(conflict));
+        assert_eq!(get(&records, &who, Scope::default(), b"claim").await, None);
+    }
+}
+
+#[tokio::test]
+async fn absolute_claim_settlement_keeps_the_submitted_cutoff() {
+    set_now(START);
+    let (backend, records) = rig().await;
+    let who = caller("test-auth", "verifier");
+    backend.arm([Crossing::LostReply, Crossing::Pending]);
+    assert!(records
+        .claim_until(&who, Scope::default(), b"claim", b"1", START + 10)
+        .now_or_never()
+        .is_none());
+    set_now(START + 11);
+    assert_eq!(records.settle().await, 0);
+    backend.same_attempt();
+    let scope = records.scoped(&who).unwrap();
+    let raw = scope
+        .get(
+            RECORDS,
+            &super::super::store::scoped_key(Scope::default(), b"claim"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        super::super::store::opened(raw.expose(&crate::seal::lend()))
+            .unwrap()
+            .0,
+        START + 10
+    );
 }
 
 #[tokio::test]

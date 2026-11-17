@@ -283,3 +283,21 @@ without false positives, so it is enforced by review, not CI.
 the rest of the gate tooling, and no CI check holds the rule today ([what CI checks](ci.md)).
 
 ---
+
+### Export loss observation
+
+The root observer distinguishes terminal line loss from capture refusal, audit-integrity failure and retained ciphertext. Its constructor binds each observation to one configured logical instance; generation replacement shares that instance's first-loss state.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `busbar_export_dropped_total` | `instance`, `reason` | Terminally discarded lines; reasons are `queue_full`, `stopped`, `attempts_exhausted`, `refused`, `foreign_destination`, `expired`, `key_unavailable`. |
+| `busbar_export_custody_total` | `instance`, `stream`, `level` | Accepted prefix lines at checked `accepted`, `durable` or `indexed` custody. |
+| `busbar_export_capture_refusals_total` | `instance`, `reason` | Capture refusal occurrences; reason is `admission_rejected`. |
+| `busbar_export_audit_integrity_failures_total` | `instance` | Audit-integrity failure occurrences, independent of later delivery. |
+| `busbar_export_held_lines` | `instance`, `reason` | Absolute retained ciphertext lines; reason is `key_unavailable`. Held bytes are not counted as dropped. |
+
+The first loss or failure retains its original timestamp, class and count until native audit confirms it. Later observations continue updating metrics without manufacturing additional first-loss records. A failed notification does not require a later request to retry. BUSBAR-2052 reports the first observation; BUSBAR-2053 reports unconfirmed evidence or a callback after producer quiescence. These coded warnings remain visible on stderr and are excluded from exported events and trace records, including events attached to an ordinary exported span.
+
+The reservation bound is the native audit pending-queue bound, currently 256 logical names. Removed instances with unresolved evidence retain their reservation, and a retiring producer keeps its cell alive until it stops. A candidate configuration that cannot reserve all required names is refused atomically while the current generation continues. This can temporarily prevent configuration admission during an audit outage. It does not evict evidence or refuse customer content to obtain a reservation.
+
+Production activation requires the serving generation to inject its reserved observer into every export producer and retain the generation guard. Shutdown must quiesce those producers before closing observer intake, then confirm retained evidence before native writer retirement. The observer API alone does not establish pump quiescence or successful shutdown; unresolved evidence or late callbacks require incomplete-shutdown reporting.

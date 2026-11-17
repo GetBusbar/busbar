@@ -211,6 +211,12 @@ pub trait FarEnd: Sync {
         None
     }
 
+    /// The exact pricing lane behind an index in `candidates`, never its display model name.
+    fn candidate_lane(&self, token: &Pass<Route>, index: usize) -> Option<String> {
+        let _ = (token, index);
+        None
+    }
+
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }

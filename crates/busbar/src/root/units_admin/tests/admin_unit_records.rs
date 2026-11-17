@@ -69,7 +69,9 @@ async fn a_refused_admin_unit_seals_a_refused_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
     let refusing: AdminDoorFn = Arc::new(|_: &AdminRequest| {
-        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Denied)
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            busbar_kernel::auth::AdminDoor::Denied,
+        )))
     });
     let (answer, records) = walk(refusing, walked).await;
     assert_eq!(answer.status, 401, "the door refuses the caller");

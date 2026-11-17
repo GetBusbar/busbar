@@ -30,7 +30,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 
 #[path = "invocation.rs"]
 mod invocation;
-pub use invocation::{InvocationContext, ServingGeneration};
+pub use invocation::{InvocationContext, NativeInvocationAdmission, ServingGeneration};
 
 #[cfg(test)]
 #[path = "tests/invocation_context_tests.rs"]
@@ -953,6 +953,7 @@ pub struct KernelServices {
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    native_invocations: Mutex<std::collections::HashSet<busbar_contract::services::Incarnation>>,
     trust_decisions: Mutex<HashMap<TrustDecisionKey, GrantedCounterparty>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
@@ -1088,6 +1089,7 @@ impl KernelServices {
             wall_ms: Arc::new(crate::store::now_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            native_invocations: Mutex::default(),
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
@@ -1134,6 +1136,7 @@ impl KernelServices {
             wall_ms: Arc::new(crate::store::now_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            native_invocations: Mutex::default(),
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),

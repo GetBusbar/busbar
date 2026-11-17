@@ -17,6 +17,7 @@ use busbar_core_connector::framer::{instant_of, now_ns};
 use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
 use busbar_kernel::detached::{self, DetachedTasks};
+use busbar_kernel::limits::process_admission::RequestLease;
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::sync::{oneshot, Notify};
 
@@ -360,6 +361,7 @@ impl ClaimDoor {
 }
 
 pub(crate) struct CallerLeg {
+    request: RequestLease,
     lease: Mutex<Option<AssociationLease>>,
     me: Weak<CallerLeg>,
     door: Weak<ClaimDoor>,
@@ -459,8 +461,9 @@ impl Drop for Draining {
 }
 
 impl CallerLeg {
-    fn new(door: &Arc<ClaimDoor>, to_session: Arc<Messages>) -> Arc<Self> {
+    fn new(door: &Arc<ClaimDoor>, to_session: Arc<Messages>, request: RequestLease) -> Arc<Self> {
         Arc::new_cyclic(|me| CallerLeg {
+            request,
             lease: Mutex::new(None),
             me: me.clone(),
             door: Arc::downgrade(door),
@@ -521,14 +524,14 @@ impl CallerLeg {
         self.take_batch_keeping(session, now, None).map(drop)
     }
 
-    /// Take a published batch, passing over the piece at `keep` (whose bytes the caller took) and
-    /// handing back the custody it pairs with.
+    /// Retain decoded caller payload only after obtaining its process credit. The kept opening
+    /// description and queued messages inherit the same admitted request as this logical line.
     fn take_batch_keeping(
         &self,
         session: SessionBatch,
         _now: Instant,
         keep: Option<usize>,
-    ) -> Result<Option<Custody>, String> {
+    ) -> Result<Option<Description>, String> {
         let SessionBatch {
             pieces,
             custody,
@@ -552,7 +555,18 @@ impl CallerLeg {
         for (at, g) in pieces.into_iter().enumerate() {
             let owner = owners.next().unwrap_or_else(|| fallback.clone());
             if keep == Some(at) {
-                kept = Some(owner);
+                let credit = self
+                    .request
+                    .try_reserve(g.bytes.len())
+                    .map_err(|_| "the gateway is at input capacity".to_owned())?;
+                let custody = owner
+                    .reader_on(Leg::Caller)
+                    .with_owner(Arc::new(credit))
+                    .map_err(|_| "the caller's input already has an owner".to_owned())?;
+                kept = Some(Description {
+                    bytes: busbar_contract::secure::SecureVec::from(g.bytes),
+                    custody,
+                });
                 continue;
             }
             if g.fields {
@@ -596,16 +610,28 @@ impl CallerLeg {
                 continue;
             }
             drop(g.reason);
+            let credit = self
+                .request
+                .try_reserve(g.bytes.len())
+                .map_err(|_| "the gateway is at input capacity".to_owned())?;
+            let custody = owner
+                .reader_on(Leg::Caller)
+                .with_owner(Arc::new(credit))
+                .map_err(|_| "the caller's input already has an owner".to_owned())?;
             let to_session = lock(&self.to_session).clone();
-            let sent = to_session.is_some_and(|tx| {
-                tx.send(Message {
-                    bytes: g.bytes,
-                    end: g.end_of_frame,
-                    consumed: 0,
-                    custody: owner.reader_on(Leg::Caller),
-                })
-                .is_ok()
-            });
+            let message = Message {
+                bytes: g.bytes,
+                end: g.end_of_frame,
+                consumed: 0,
+                custody,
+            };
+            let sent = match to_session {
+                Some(tx) => tx.send(message).is_ok(),
+                None => {
+                    drop(message);
+                    false
+                }
+            };
             if !sent {
                 return Err("the caller's channel reader did not accept its output".into());
             }
@@ -909,18 +935,16 @@ impl CallerEnd for DatagramCaller {
 }
 
 impl SessionCaller for DatagramCaller {
+    /// Budgeted input must be consumed through read_owned, retaining its payload custody.
     async fn read(&self) -> Option<Vec<u8>> {
-        if !self.opened.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return Some(Vec::new());
-        }
-        self.from.recv().await.map(|message| message.bytes)
+        None
     }
 
     async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
         if !self.opened.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return Some(busbar_kernel::plane_driver::SessionInput {
                 bytes: Vec::new(),
-                custody: None,
+                custody: Some(Arc::new(self.leg.request.clone())),
             });
         }
         let message = self.from.recv().await?;
@@ -949,11 +973,11 @@ pub(super) struct Opened {
 
 pub(super) struct Description {
     bytes: busbar_contract::secure::SecureVec,
-    _custody: Custody,
+    custody: busbar_core_connector::publication::ReaderCustody,
 }
 
 impl Description {
-    pub(super) fn into_bytes(mut self) -> bytes::Bytes {
+    pub(super) fn into_bytes(self) -> bytes::Bytes {
         struct Delivered {
             bytes: busbar_contract::secure::SecureVec,
             _custody: busbar_core_connector::publication::ReaderCustody,
@@ -965,10 +989,10 @@ impl Description {
             }
         }
 
-        let custody = self._custody.reader();
+        let Self { bytes, custody } = self;
         let transfer = custody.copying();
         bytes::Bytes::from_owner(Delivered {
-            bytes: std::mem::take(&mut self.bytes),
+            bytes,
             _custody: custody,
             _transfer: transfer,
         })
@@ -1000,12 +1024,13 @@ impl Opened {
         door: &Arc<ClaimDoor>,
         framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,
         description: &[u8],
+        request: RequestLease,
     ) -> Result<Self, String> {
         let (mut framing, _) =
             DatagramFraming::accept_minted(framer, door.local()).map_err(|r| r.error)?;
         let from = Messages::new(CALLER_QUEUE);
         let to_session = Arc::clone(&from);
-        let leg = CallerLeg::new(door, to_session);
+        let leg = CallerLeg::new(door, to_session, request);
         let pairing = Pairing::new(Arc::clone(&leg) as Arc<dyn LegSink>, door.local());
         let pairing = OpeningPairing {
             pairing,
@@ -1015,22 +1040,15 @@ impl Opened {
         framing.memory(pairing.pairing.memory_account());
         let now = instant_of(now_ns());
         let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
-        let mut session = pairing.pairing.publish(Leg::Caller, yielded, now);
+        let session = pairing.pairing.publish(Leg::Caller, yielded, now);
         let index = session
             .pieces
             .iter()
             .position(|piece| piece.stream == 0 && !piece.fields)
             .ok_or("the framer answered no description of its own")?;
-        let answer = busbar_contract::secure::SecureVec::from(std::mem::take(
-            &mut session.pieces[index].bytes,
-        ));
-        let custody = leg
+        let answer = leg
             .take_batch_keeping(session, now, Some(index))?
             .ok_or("the framer answered no description of its own")?;
-        let answer = Description {
-            bytes: answer,
-            _custody: custody,
-        };
         let (head_tx, head) = oneshot::channel();
         Ok(Opened {
             description: answer,
