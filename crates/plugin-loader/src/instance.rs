@@ -2575,6 +2575,9 @@ mod transport_endpoint_tests;
 
 /// The recognizer's plane instance names and the `--stdio` judgement (WP1-GAP r3).
 pub mod plane_sections;
+/// Native metadata readers for the composition root (LIFECYCLE-A-PLAN WP1).
+mod facts;
+pub use facts::{AuthStyle, PublicSettings};
 
 #[cfg(test)]
 mod needs_tests;
