@@ -398,10 +398,18 @@ fn native_physical_pending_claim_is_not_an_execution_capability() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
     let (request, owner) = arrive(&f, &conn, 1);
+    assert_eq!(
+        request.binding().check_executing(),
+        Err(ArrivalRefusal::Cancelled)
+    );
     let credit = request.binding().request().try_reserve(0).unwrap();
     let request = request.finish_input(SecureVec::new(), credit).unwrap();
     let pending = request.begin_completion().unwrap();
     assert!(pending.binding().check_live().is_ok());
+    assert_eq!(
+        pending.binding().check_executing(),
+        Err(ArrivalRefusal::Cancelled)
+    );
     assert!(conn.cancel(&owner));
     assert_eq!(
         pending.binding().check_live(),
