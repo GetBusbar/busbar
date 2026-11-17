@@ -250,6 +250,12 @@ fn settle_block(
     }
     let index = answer.index;
     let shown = answer.path.join(".");
+    // Core authors the bag's key: a binding's `config:` object, else the instance's `settings:`.
+    let bag_key = if answer.placement == BagPlacement::Config {
+        "config"
+    } else {
+        "settings"
+    };
     if let Some(settings) = &answer.settings {
         let bag: Value = yaml::from_str(settings.as_str()).map_err(|_| {
             refuse(
@@ -257,7 +263,7 @@ fn settle_block(
                 "the settled settings are not a YAML value; nothing was written",
             )
         })?;
-        block.insert_key("settings", bag);
+        block.insert_key(bag_key, bag);
     }
     let mut limits_seen = false;
     let mut lifted: Vec<&str> = Vec::new();
@@ -299,7 +305,7 @@ fn settle_block(
                     ));
                 }
                 lifted.push(pointer);
-                let bag = block.get_key_mut("settings").ok_or_else(|| {
+                let bag = block.get_key_mut(bag_key).ok_or_else(|| {
                     refuse(
                         index,
                         "a lift names a slot, but the instance has no settings",
