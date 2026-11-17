@@ -76,7 +76,8 @@ tikv-jemallocator = { workspace = true }
 close_fds = { workspace = true }
 
 [features]
-test-harness = []
+# The harness build (never shipped): HARNESS-SIGN's first-party key hook and `--store-kit`.
+test-harness = ["busbar-kernel/store-kit"]
 
 [build-dependencies]
 serde_json = { workspace = true }

@@ -5,8 +5,7 @@
 //!
 //! A crossing that enters an image inline arms that image's own `std` thread-exit key on the
 //! caller's thread; a caller that retires after the image is unloaded then jumps into the hole
-//! from `__nptl_deallocate_tsd` (`ffi_thread`). The secret checker's `check` crashed that way
-//! (`secret_calls_tests::a_dropped_checker_never_enters_plugin_code_on_the_checking_thread`).
+//! from `__nptl_deallocate_tsd` (`ffi_thread`). The retired door secret checker's `check` crashed that way.
 //! Transport `locate` before open and export `check` are the same shape — per load or per
 //! configuration check, not per request — so they are confined to the permanent FFI workers too.
 //! The crash itself fires only at thread exit and races process exit, so each test counts the

@@ -52,6 +52,9 @@ pub(super) const CLOSED: control::Writer = control::Writer {
 pub(super) type Rows = BTreeMap<Address, Secret<Vec<u8>>>;
 /// Runs inside the next fence commit, after its time guard and before its predicates.
 pub(super) type FenceHook = Box<dyn FnOnce(&mut Rows) + Send>;
+/// Runs inside the next non-fence commit, after its time guard and before its predicates.
+pub(super) type CommitHook =
+    Box<dyn FnOnce(&busbar_contract::persistence::Candidate, &mut Rows) + Send>;
 
 #[derive(Default)]
 struct State {
@@ -98,6 +101,10 @@ pub(super) struct Store {
     hold_fence: Mutex<Option<Arc<TestHold>>>,
     before_fence: Mutex<Option<FenceHook>>,
     scan_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// DES-264 tests: runs inside the next non-fence commit, before its predicates.
+    before_commit: Mutex<Option<CommitHook>>,
+    /// DES-264 tests: holds the next receipt-generation sweep unanswered.
+    hold_sweep: Mutex<Option<Arc<TestHold>>>,
 }
 
 pub(super) fn root_address() -> Address {
@@ -147,6 +154,14 @@ pub(super) fn fence_target(candidate: &PreparedCandidate) -> Option<Address> {
         })
 }
 
+/// Whether `candidate` sweeps a receipt generation (it deletes an owner row).
+pub(super) fn sweep_of_generation(candidate: &PreparedCandidate) -> bool {
+    candidate.candidate().mutations.iter().any(|mutation| {
+        matches!(mutation, Mutation::Delete(at)
+            if at.namespace == crate::persistence::record_ops::OWNERS.0)
+    })
+}
+
 impl Store {
     pub(super) fn new() -> Arc<Self> {
         let store = Arc::new(Self::default());
@@ -168,7 +183,7 @@ impl Store {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn put(&self, address: Address, bytes: Vec<u8>) {
+    pub(super) fn put(&self, address: Address, bytes: Vec<u8>) {
         let mut state = self.lock();
         state.bump(address.namespace);
         state.rows.insert(address, Secret::new(bytes));
@@ -217,7 +232,7 @@ impl Store {
         self.row(&node_address(key))
     }
 
-    fn row(&self, at: &Address) -> Option<Vec<u8>> {
+    pub(super) fn row(&self, at: &Address) -> Option<Vec<u8>> {
         self.lock()
             .rows
             .get(at)
@@ -268,6 +283,33 @@ impl Store {
 
     pub(super) fn before_next_fence(&self, hook: FenceHook) {
         *self.before_fence.lock().unwrap_or_else(|p| p.into_inner()) = Some(hook);
+    }
+
+    /// DES-264 tests: runs `hook` inside the next non-fence commit, before its predicates.
+    pub(super) fn before_next_commit(&self, hook: CommitHook) {
+        *self.before_commit.lock().unwrap_or_else(|p| p.into_inner()) = Some(hook);
+    }
+
+    /// DES-264 tests: holds the next receipt-generation sweep commit unanswered.
+    pub(super) fn hold_next_sweep(&self, hold: Arc<TestHold>) {
+        *self.hold_sweep.lock().unwrap_or_else(|p| p.into_inner()) = Some(hold);
+    }
+
+    /// How many rows `namespace` holds.
+    pub(super) fn rows_in(&self, namespace: [u8; 16]) -> usize {
+        self.lock()
+            .rows
+            .keys()
+            .filter(|at| at.namespace == namespace)
+            .count()
+    }
+
+    /// Removes one row as if it had never been written.
+    pub(super) fn remove_row(&self, at: &Address) -> Option<Vec<u8>> {
+        self.lock()
+            .rows
+            .remove(at)
+            .map(|value| value.expose(&crate::seal::lend()).clone())
     }
 
     /// Every scan from now on returns only once `parties` scans have taken their snapshot.
@@ -349,6 +391,14 @@ impl Store {
     fn decide(&self, prepared: &PreparedCandidate, fence: bool) -> Result<Decision, Failure> {
         control::admit(prepared)?;
         let hook = if fence { self.armed_hook() } else { None };
+        let commit_hook = if fence {
+            None
+        } else {
+            self.before_commit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+        };
         let mut state = self.lock();
         let candidate = prepared.candidate();
         if let Some(digest) = state.receipts.get(&candidate.id.operation) {
@@ -383,6 +433,9 @@ impl Store {
                     unix_seconds: now,
                 },
             });
+        }
+        if let Some(hook) = commit_hook {
+            hook(candidate, &mut state.rows);
         }
         if let Some(hook) = hook {
             hook(&mut state.rows);
@@ -487,7 +540,16 @@ impl PersistenceBackend for Store {
 
     fn commit(&self, prepared: PreparedCandidate, _key: CommitKey) -> Call<'_, Decision> {
         let fence = fence_target(&prepared).is_some();
-        let hold = if fence { self.armed_hold() } else { None };
+        let hold = if fence {
+            self.armed_hold()
+        } else if sweep_of_generation(&prepared) {
+            self.hold_sweep
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+        } else {
+            None
+        };
         self.lock().sent.push(prepared.clone());
         Box::pin(async move {
             if let Some(hold) = hold {

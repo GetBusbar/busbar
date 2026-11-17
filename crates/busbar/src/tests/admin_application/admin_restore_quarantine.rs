@@ -6,7 +6,7 @@
 //! write with the typed `restore_quarantine` refusal, answers `/readyz` with its reasons, and
 //! refuses the data plane while `/livez` still answers.
 
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 #[tokio::test]
 async fn a_quarantined_node_serves_reads_and_the_allow_list_and_refuses_the_rest() {
