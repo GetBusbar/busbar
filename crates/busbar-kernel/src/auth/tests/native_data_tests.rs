@@ -218,14 +218,11 @@ fn fixture(allowed: bool) -> Fixture {
         BTreeMap::from([(
             "reader".into(),
             crate::config::RoleBindingCfg {
-                allowed_pools: None,
+                allowed_pools: Some(vec![if allowed { "chat" } else { "other" }.into()]),
                 group: Some("g".into()),
                 admin_scope: None,
                 verbs: None,
-                plane_grants: BTreeMap::from([(
-                    "pool".into(),
-                    vec![if allowed { "chat" } else { "other" }.into()],
-                )]),
+                plane_grants: BTreeMap::new(),
             },
         )]),
     )]);
@@ -596,4 +593,59 @@ async fn native_data_selection_from_another_physical_request_is_refused() {
     ));
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_publication_before_final_gate_prevents_replay() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let handle = request.binding().handle().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    handle.swap(app()).await;
+    assert!(matches!(pending.complete().await, Err(DataRefused::Policy)));
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_reset_after_authorization_cannot_register_effects() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    assert!(f.connection.cancel(&owner));
+    assert!(NativeDataAllocation::register(authorized).is_err());
+    assert!(binding.check_executing().is_err());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_data_reset_after_registration_closes_the_exact_context() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    assert!(f.connection.cancel(&owner));
+    let pending = allocation.into_pending(|_| panic!("reset request must not acquire money"));
+    assert!(pending.pending().admit(None, None).is_err());
+    assert!(pending.execution().is_none());
+    assert!(!context.effects_allowed());
+    assert!(binding.check_executing().is_err());
+    drop(pending);
+    assert!(!context.is_live());
 }
