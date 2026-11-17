@@ -17,9 +17,14 @@ mod store;
 pub use callback::{callback_paths, CallbackAnswer, CallbackPath};
 pub use store::{settle_outbound, ConnectLogins, StoreConnections, LOGIN_TTL_S};
 
+pub mod grant;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "grant/owner_tests.rs"]
+mod grant_owner_tests;
 
 /// Grants are custody: stored encrypted (core at-rest key), keyed by (plane plugin, plane instance **name**,
 /// caller subject hash, configured upstream name), never by a runtime id, so they survive restart, reconfigure

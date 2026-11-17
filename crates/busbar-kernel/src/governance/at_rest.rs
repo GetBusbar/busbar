@@ -10,6 +10,12 @@ use busbar_contract::crypto::{self, Aes256Gcm};
 use busbar_contract::records::CredentialMeta;
 use busbar_contract::secure::{SecureArray, SecureString, SecureVec};
 
+#[path = "at_rest/caller.rs"]
+mod caller;
+pub use caller::{
+    CallerProtectedRecords, CallerRecordContext, CallerRecordError, CallerRecordKind,
+};
+
 pub const LABEL: &[u8] = b"busbar credential-at-rest v1";
 
 pub(crate) const KID_LABEL: &[u8] = b"busbar credential-at-rest kid v1";
@@ -122,6 +128,7 @@ impl CredentialKek {
 pub struct AtRestKeys {
     key: CredentialKek,
     previous: Option<CredentialKek>,
+    caller: std::sync::Arc<caller::CallerKeys>,
 }
 
 impl std::fmt::Debug for AtRestKeys {
@@ -139,6 +146,7 @@ impl AtRestKeys {
         Self {
             key: CredentialKek::derive(key),
             previous: previous.map(CredentialKek::derive),
+            caller: std::sync::Arc::new(caller::CallerKeys::new(key, previous)),
         }
     }
 
@@ -162,6 +170,15 @@ impl AtRestKeys {
 
     pub fn seal(&self, meta: &CredentialMeta, plain: &[u8]) -> Result<String, String> {
         self.key.seal(meta, plain)
+    }
+
+    /// Retains actual domain keys. Root must refuse retirement until its writer
+    /// barrier and complete grant/guard/intent rewrap have proven no old users.
+    pub fn caller_records(
+        &self,
+        max_bytes: usize,
+    ) -> Result<CallerProtectedRecords, CallerRecordError> {
+        CallerProtectedRecords::new(self.caller.clone(), max_bytes)
     }
 
     fn open_sealed(&self, meta: &CredentialMeta, rest: &str) -> Option<(SecureString, bool)> {
@@ -281,3 +298,7 @@ pub struct Rewrap {
 #[cfg(test)]
 #[path = "tests/at_rest_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "at_rest/caller_tests.rs"]
+mod caller_tests;
