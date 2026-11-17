@@ -409,7 +409,12 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
         },
         approved: std::collections::BTreeMap::from([("tool".into(), "one".into())]),
     };
-    let h = Host::new();
+    // Trust custody, as production has (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(real_store::core().await)
+        .expect("a fresh record attaches");
+    let h = Host::new().with_demotions(record, "");
     h.admit(
         "plane",
         InstanceFacts {

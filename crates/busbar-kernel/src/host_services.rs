@@ -1211,6 +1211,7 @@ fn trust_refused(why: Undecided) -> TrustRefused {
         Undecided::NothingSighted => TrustRefused::NothingSighted,
         Undecided::Rootless => TrustRefused::Rootless,
         Undecided::Stale => TrustRefused::Stale,
+        Undecided::InProgress => TrustRefused::InProgress,
         Undecided::Unverified => TrustRefused::Unverified,
     }
 }
@@ -1225,7 +1226,7 @@ fn trust_decision_answer(result: Result<KeyRow, TrustRefused>) -> Stored {
             return failed(DECISION_UNKEPT)
         }
         Err(TrustRefused::Unavailable) => return failed(DECISION_UNKEPT),
-        Err(TrustRefused::Earlier) => svc::UNDECIDED_STALE,
+        Err(TrustRefused::Earlier | TrustRefused::InProgress) => svc::UNDECIDED_STALE,
     })
 }
 
@@ -2886,6 +2887,8 @@ pub enum TrustRefused {
     /// The decision could not be kept: the store decided it did not apply. The store's words, for
     /// the node's log.
     Store(String),
+    /// Another local decision currently owns this key (r3 §4.5, `decision_in_progress`).
+    InProgress,
     /// No bound durable decision record: no decision can be kept (r3 §4.2 step 1).
     Unavailable,
     /// An earlier unsettled write for the same key could not be settled first; nothing was
@@ -2908,6 +2911,7 @@ impl TrustRefused {
             | TrustRefused::Unverified => "state_conflict",
             TrustRefused::Stale => "reviewed_digest_stale",
             TrustRefused::Earlier => "action_in_flight",
+            TrustRefused::InProgress => "decision_in_progress",
             TrustRefused::Store(_) | TrustRefused::Unavailable => "service_unavailable",
             TrustRefused::Unknown { .. } => "service_unavailable",
         }
@@ -4402,6 +4406,10 @@ mod trust_rule_tests;
 mod trust_admin_custody_tests;
 
 #[cfg(test)]
+#[path = "tests/trust_resolution_tests.rs"]
+mod trust_resolution_tests;
+
+#[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
 
@@ -4492,10 +4500,11 @@ fn is_loopback_text(host: &str) -> bool {
         || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TrustDecisionAuthority {
     /// An authority admitting both rulings, as the admin gate builds one for a full grant.
-    pub(crate) fn for_test() -> Self {
+    #[must_use]
+    pub fn for_test() -> Self {
         Self {
             principal: "op".to_string(),
             approve: true,
@@ -4504,11 +4513,11 @@ impl TrustDecisionAuthority {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl KernelServices {
     /// An operator who reviews the key's current state and then decides: the admin decision with
     /// the key's present `seen` as the review (TRUST-ADMIN-PRODUCER-DESIGN r3 §10.1 (R)).
-    pub(crate) async fn trust_rule_reviewed(
+    pub async fn trust_rule_reviewed(
         &self,
         key: &str,
         ruling: Ruling,
@@ -4526,12 +4535,13 @@ impl KernelServices {
 
     /// This kernel with trust custody: a decision record bound to an in-memory test Store
     /// (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
-    pub(crate) async fn with_test_custody(self) -> Self {
+    #[must_use]
+    pub async fn with_test_custody(self) -> Self {
         let record = Arc::new(DemotionRecord::new());
         record
             .set_store(Arc::new(
-                crate::persistence::host_records::tests::attach(Arc::new(
-                    crate::persistence::host_records::tests::Backend::default(),
+                crate::persistence::test_backend::attach(Arc::new(
+                    crate::persistence::test_backend::Backend::default(),
                 ))
                 .await,
             ))

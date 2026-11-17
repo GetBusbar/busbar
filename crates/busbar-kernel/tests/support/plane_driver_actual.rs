@@ -2078,6 +2078,17 @@ async fn stored() -> Arc<KernelServices> {
     Arc::new(host_over(actual_store().await))
 }
 
+/// A host with trust custody over the same in-memory store, as production has
+/// (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+async fn stored_with_custody() -> Arc<KernelServices> {
+    let store = actual_store().await;
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(Arc::clone(&store))
+        .expect("a fresh record attaches");
+    Arc::new(host_over(store).with_demotions(record, ""))
+}
+
 #[tokio::test]
 async fn a_built_driver_admits_its_instance_to_the_host_services() {
     let services = stored().await;
@@ -2146,7 +2157,7 @@ fn untrusted(outcome: &busbar_contract::caps::Outcome) -> bool {
 #[tokio::test]
 async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     use busbar_kernel::plane_driver::refusal_status;
-    let services = stored().await;
+    let services = stored_with_custody().await;
     let section: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;

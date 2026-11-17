@@ -33,9 +33,9 @@ async fn a_queued_drift_cannot_resurrect_quarantine_after_a_completed_approval()
     ));
     assert_eq!(
         node.trust_rule_reviewed(KEY, Ruling::Approve).await,
-        Err(TrustRefused::Stale)
+        Err(TrustRefused::InProgress)
     );
-    node.decide_key(INSTANCE, PEER, Some("other-tool"), Ruling::Revoke, None)
+    node.trust_rule_reviewed(&format!("{KEY}/other-tool"), Ruling::Revoke)
         .await
         .unwrap();
     assert!(record.read().await.unwrap().is_empty());

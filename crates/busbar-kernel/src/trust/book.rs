@@ -301,9 +301,11 @@ pub enum Undecided {
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
     Rootless,
-    /// The fingerprint the caller reviewed is not the key's current sighting, or another local
-    /// mutation currently owns its durable decision key.
+    /// The digest the caller reviewed is not what the key is at now (r3 §4.1).
     Stale,
+    /// Another local decision or sighting currently owns this key's durable decision: retry the
+    /// same review shortly (r3 §4.5, `decision_in_progress`).
+    InProgress,
     /// The key's current sighting is a document that failed its verification
     /// ([`UNVERIFIED_SIGHTING`]): there is nothing verified to approve.
     Unverified,
@@ -515,7 +517,7 @@ impl TrustBook {
         }
         let key = (counterparty.to_string(), item.map(str::to_string));
         if !book.deciding.insert(key.clone()) {
-            return Err(Undecided::Stale);
+            return Err(Undecided::InProgress);
         }
         if invalidate_on_drop {
             if let Some((_, s)) = book.subject_mut(counterparty) {

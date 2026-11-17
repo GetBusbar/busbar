@@ -92,7 +92,7 @@ async fn approve(services: &KernelServices) {
 }
 
 async fn approved() -> KernelServices {
-    let services = KernelServices::new();
+    let services = KernelServices::new().with_test_custody().await;
     prepare_admission(&declaration(), &services, ("peers", &section("root-a", 32)))
         .unwrap()
         .commit()
