@@ -124,39 +124,56 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     let context = input.context.clone();
     let call = Arc::clone(call);
     let handle = tokio::runtime::Handle::current();
-    let worker = tokio::task::spawn_blocking(move || {
-        let selection = Selection {
-            route,
-            pool: &pool,
-            container: &container,
-            dialect: &dialect,
-            principal: principal.as_deref(),
-            key: context.principal().map(AsRef::as_ref),
-            request_id,
-            now_s,
-        };
-        let input = Input {
-            projection: &projection,
-            selected: &selected,
-            selection: &selection,
-            identity: &identity,
-            candidates: &candidates,
-            quantities: &quantities,
-            stage: &stage,
-            context: &context,
-        };
-        handle.block_on(crate::hook_child::SCOPE.scope(
-            crate::hook_child::Scope::new(context.clone()),
-            invoke(&call, point, &input),
-        ))
-    });
+    let (sent, worker) = tokio::sync::oneshot::channel();
+    let owner = context.clone();
+    owner
+        .offload_hook(Box::new(move || {
+            let selection = Selection {
+                route,
+                pool: &pool,
+                container: &container,
+                dialect: &dialect,
+                principal: principal.as_deref(),
+                key: context.principal().map(AsRef::as_ref),
+                request_id,
+                now_s,
+            };
+            let input = Input {
+                projection: &projection,
+                selected: &selected,
+                selection: &selection,
+                identity: &identity,
+                candidates: &candidates,
+                quantities: &quantities,
+                stage: &stage,
+                context: &context,
+            };
+            let result = handle.block_on(async {
+                tokio::time::timeout_at(
+                    deadline.into(),
+                    crate::hook_child::SCOPE.scope(
+                        crate::hook_child::Scope::new(context.clone()),
+                        invoke(&call, point, &input, deadline),
+                    ),
+                )
+                .await
+                .map_err(|_| Failed::Port)?
+            });
+            let _ = sent.send(result);
+        }))
+        .map_err(|_| Failed::Port)?;
     tokio::time::timeout_at(deadline.into(), worker)
         .await
         .map_err(|_| Failed::Port)?
         .map_err(|_| Failed::Port)?
 }
 
-async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
+async fn invoke(
+    call: &Call,
+    point: u32,
+    input: &Input<'_>,
+    deadline: Instant,
+) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
         input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
@@ -309,7 +326,7 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<Reply, Fai
         identity: identity.then_some(input.identity),
     };
     let cx = CallCx {
-        deadline: Instant::now() + call.timeout,
+        deadline,
         request_id: input.selection.request_id,
         stack: Default::default(),
     };
