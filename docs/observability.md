@@ -232,7 +232,7 @@ keeps the type tracing-opentelemetry 0.33 gave it: an `i64`, `bool` or `f64` fie
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
 filters. Logs are always written to stderr, never stdout, so stdout stays free for a
-plane serving its protocol there (the MCP plane's `--mcp-stdio` flag, which the plane declares; see [mcp.md](mcp.md)). Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
+plane serving its protocol there (the core `--stdio` flag, which serves the one configured plane line route; see [mcp.md](mcp.md)). Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
 `DEBUG` unconditionally, specifically so pointing an OTLP-exporting `kind: export` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way. Set

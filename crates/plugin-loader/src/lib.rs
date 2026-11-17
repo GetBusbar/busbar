@@ -246,7 +246,8 @@ mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
-#[cfg(feature = "pack")]
+// Ungated (no `pack` dependency: it reads the stamp and header only): the root's admission and inspect
+// judge whether an upload is a native image with `is_native`. `jsonschema` stays behind `pack`.
 #[deny(unsafe_code)]
 pub mod pack_native;
 #[deny(unsafe_code)]
