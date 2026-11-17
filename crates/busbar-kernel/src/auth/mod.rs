@@ -2515,7 +2515,17 @@ pub(crate) async fn auth_middleware(
             let body = std::mem::replace(req.body_mut(), Body::empty());
             let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
                 .await
-                .map_err(|_| admin_unavailable_response())?;
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body exceeds configured limit",
+                    )
+                        .into_response(),
+                })?;
             if !execution.matches_http(
                 req.method().as_str(),
                 target,
@@ -2578,7 +2588,17 @@ pub(crate) async fn auth_middleware(
             let body = std::mem::replace(req.body_mut(), Body::empty());
             let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
                 .await
-                .map_err(|_| admin_unavailable_response())?;
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body exceeds configured limit",
+                    )
+                        .into_response(),
+                })?;
             let headers = inbound_headers
                 .cloned()
                 .unwrap_or_else(|| req.headers().clone());
