@@ -1,5 +1,77 @@
 use super::*;
 
+#[test]
+fn current_rows_follow_current_ancestors_and_keep_per_rule_coverage() {
+    let groups: BTreeMap<String, GroupCfg> = busbar_contract::yaml::from_str(
+        "parent:\n  limits:\n    - {id: shared, upstream_resource: p/r, requests: 2, per: minute, per_key: true, enforcement: process}\nchild:\n  parent: parent\n  limits:\n    - {id: shared, upstream_resource: p/r, tokens: 8, per: minute, per_key: true, enforcement: process}",
+    ).unwrap();
+    let first = compiled(&groups, None).activate(None, 1, 10).unwrap();
+    let key = busbar_contract::records::VirtualKey {
+        id: "original-key".into(),
+        enabled: true,
+        group: Some("child".into()),
+        ..Default::default()
+    };
+    let rows = first.applicable_rows(&key, "p", Some("r")).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].group_id(), "child");
+    assert_eq!(rows[0].metric(), RateMetric::Tokens);
+    assert_eq!(rows[1].group_id(), "parent");
+    assert_eq!(rows[1].threshold(), 2);
+    assert!(rows.iter().all(|row| row.activated_minute() == 10));
+
+    let mut changed = groups.clone();
+    changed.get_mut("parent").unwrap().limits.clear();
+    let second = compiled(&changed, Some(&first))
+        .activate(Some(&first), 2, 11)
+        .unwrap();
+    let current = second.applicable_rows(&key, "p", Some("r")).unwrap();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].policy_revision(), 2);
+    assert_eq!(current[0].activated_minute(), 10);
+    assert_eq!(
+        first.applicable_rows(&key, "p", Some("r")).unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn unlabelled_and_nonmatching_targets_still_require_an_enabled_current_chain() {
+    let mut groups = groups(2);
+    let key = busbar_contract::records::VirtualKey {
+        id: "original-key".into(),
+        enabled: true,
+        group: Some("team".into()),
+        ..Default::default()
+    };
+    let policy = compiled(&groups, None).activate(None, 1, 10).unwrap();
+    assert!(policy.applicable_rows(&key, "p", None).unwrap().is_empty());
+    assert!(policy
+        .applicable_rows(&key, "other", Some("r"))
+        .unwrap()
+        .is_empty());
+    groups.get_mut("team").unwrap().enabled = false;
+    let disabled = compiled(&groups, Some(&policy))
+        .activate(Some(&policy), 2, 11)
+        .unwrap();
+    assert!(matches!(
+        disabled.applicable_rows(&key, "p", None),
+        Err(SelectedPolicyRefusal::CurrentAuthority)
+    ));
+    let removed = compiled(&BTreeMap::new(), Some(&disabled))
+        .activate(Some(&disabled), 3, 12)
+        .unwrap();
+    assert!(matches!(
+        removed.applicable_rows(&key, "p", None),
+        Err(SelectedPolicyRefusal::CurrentAuthority)
+    ));
+    assert_eq!(
+        key.group.as_deref(),
+        Some("team"),
+        "current resolution cannot rewrite the original key"
+    );
+}
+
 fn groups(amount: u64) -> BTreeMap<String, GroupCfg> {
     busbar_contract::yaml::from_str(&format!("team:\n  limits:\n    - {{id: rpm, upstream_resource: p/r, requests: {amount}, per: minute, per_key: true, enforcement: process}}" )).unwrap()
 }
