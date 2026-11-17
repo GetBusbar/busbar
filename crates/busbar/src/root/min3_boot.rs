@@ -63,6 +63,8 @@ pub(crate) type Directory = Arc<KernelDirectory>;
 /// The Need handlers the registry runs every plugin under.
 pub(crate) type Needs = HostNeeds<BootCustody, Records, Directory>;
 type BootstrapNeeds = HostNeeds<BootCustody, BootstrapRecords, BootstrapDirectory>;
+#[path = "min3_hooks.rs"]
+pub(crate) mod hooks;
 /// The process's MIN-3 registry.
 pub(crate) type MinRegistry = Registry;
 
@@ -500,6 +502,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         planes,
         &super::door_steps::raw_sections(cfg),
     )?);
+    out.extend(hooks::configured(cfg)?);
     for (name, def) in &cfg.export_defs {
         out.push(Configured {
             kind: KindCode::Export,
@@ -798,6 +801,8 @@ impl Steps<'_> {
         &self,
         spec: &InstanceSpec<'_>,
         prepared: PreparedInstance,
+        hooks: &hooks::Environment<'_>,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<(), OpenError> {
         let services = self.services.clone().ok_or_else(|| {
             OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
@@ -833,6 +838,9 @@ impl Steps<'_> {
             &|_| None,
         )
         .map_err(|error| OpenError::Unknown(format!("plane route declaration refused: {error}")))?;
+        let driver = hooks
+            .bind(self.registry, spec.name, driver, opened_hooks)
+            .map_err(OpenError::Unknown)?;
         let invocation = services
             .admit_native_invocation(&caller)
             .map_err(|why| OpenError::Unknown(why.into()))?;
@@ -923,6 +931,8 @@ impl Steps<'_> {
         &self,
         index: u32,
         prepared: PreparedInstance,
+        hooks: Option<&hooks::Environment<'_>>,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<Option<OpenedPort>, OpenError> {
         let Some((kind, spec)) = self.instances.get(index as usize) else {
             return Err(OpenError::Unknown("unconfigured serving step".into()));
@@ -935,7 +945,12 @@ impl Steps<'_> {
                 if spec.purpose
                     != busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
             {
-                self.open_plane(spec, prepared).await.map(|()| None)
+                let hooks = hooks.ok_or_else(|| {
+                    OpenError::Unknown("native plane has no frozen hook construction inputs".into())
+                })?;
+                self.open_plane(spec, prepared, hooks, opened_hooks)
+                    .await
+                    .map(|()| None)
             }
             _ => self.open_port(index, prepared).await.map(Some),
         }
@@ -1337,6 +1352,7 @@ pub(crate) async fn finish(
     startup: Startup,
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
+    hooks: Option<hooks::Environment<'_>>,
 ) -> Result<
     (
         Startup,
@@ -1360,6 +1376,9 @@ pub(crate) async fn finish(
         converting,
         normalization_source,
     } = ready;
+    if let Some(hooks) = &hooks {
+        hooks.check_pools(&instances)?;
+    }
     let core = startup
         .store()
         .ok_or("S6 did not retain the admitted Store")?;
@@ -1402,6 +1421,7 @@ pub(crate) async fn finish(
     let mut opened = leases.opened;
     let mut serving_instances = std::collections::BTreeMap::new();
     let mut export_doors = Vec::new();
+    let mut opened_hooks = std::collections::BTreeMap::new();
     for (index, prepared) in reserved {
         let instance_id = prepared.id();
         serving_instances.insert(
@@ -1413,10 +1433,25 @@ pub(crate) async fn finish(
                 slot: prepared.slot(),
             },
         );
-        let port = steps
-            .open_reserved(index, prepared)
+        let port = if prepared.kind() == KindCode::Hook {
+            let hook = hooks::open(
+                &built,
+                prepared,
+                steps.prefix(),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            )
             .await
-            .map_err(|error| format!("serving open {index}: {error:?}"))?;
+            .map_err(|error| format!("serving hook {index}: {error:?}"))?;
+            let port = Arc::clone(&hook.port);
+            opened_hooks.insert(hook.who.name.to_string(), hook);
+            Some(OpenedPort::Hook(port))
+        } else {
+            steps
+                .open_reserved(index, prepared, hooks.as_ref(), &opened_hooks)
+                .await
+                .map_err(|error| format!("serving open {index}: {error:?}"))?
+        };
         if let Some(OpenedPort::Export(port)) = &port {
             let instance = instances
                 .get(index as usize)
