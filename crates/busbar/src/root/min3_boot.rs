@@ -1457,8 +1457,8 @@ fn specifications<'a>(
         .collect()
 }
 
-pub(crate) fn prepare_serving(
-    ready: BootstrapReady,
+pub(crate) async fn prepare_serving(
+    mut ready: BootstrapReady,
     process: &busbar_plugin_loader::process::ProcessResources,
     effective_images: super::boot::images::FileImages,
     cfg: &RootCfg,
@@ -1471,6 +1471,7 @@ pub(crate) fn prepare_serving(
         cfg,
         process,
     )?;
+    ready.core = Arc::new(core_secrets_of(cfg, candidate_secrets.prefix()).await?);
     prepare_serving_owned(
         ready,
         effective_images,
