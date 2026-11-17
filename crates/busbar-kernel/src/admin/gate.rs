@@ -537,3 +537,22 @@ pub fn scope_insufficient_for(needed_scope: &str, needed_verb: Option<&str>) -> 
 #[cfg(test)]
 #[path = "tests/correlation_tests.rs"]
 mod correlation_tests;
+
+/// The refusal of an administrative write while this process is in restore quarantine (DES-331
+/// §B10.8): 503 `unavailable`, reason `restore_quarantine`, with the restore epoch and the
+/// admitted writes in `details`. No `Retry-After`: quarantine ends on an operator's declaration,
+/// not after a delay.
+#[must_use]
+pub fn restore_quarantine_response(restore_epoch: u64) -> Response {
+    let allowed: Vec<String> = crate::persistence::restore::QUARANTINE_ALLOWED
+        .iter()
+        .map(|(method, path)| format!("{method} {ADMIN_PREFIX}{path}"))
+        .collect();
+    admin_error_envelope_details(
+        503,
+        "unavailable",
+        Some("restore_quarantine"),
+        "this node is in restore quarantine: it admits reads and the restore and revocation verbs only, until the restore is declared",
+        &busbar_contract::json::json!({ "restore_epoch": restore_epoch, "allowed": allowed }),
+    )
+}

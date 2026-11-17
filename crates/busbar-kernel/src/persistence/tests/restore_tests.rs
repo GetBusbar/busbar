@@ -6,6 +6,7 @@
 use super::*;
 use crate::persistence::startup::{classify, Format};
 use crate::persistence::test_backend::{attach, Backend};
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::Secret;
 
 fn row(epoch: u64, state: RestoreState) -> Restore {
@@ -125,4 +126,66 @@ async fn a_declared_row_goes_back_to_pending_at_its_own_epoch() {
             ..declared
         }
     );
+}
+
+/// DES-331 §B5.2, §B10.8: in quarantine every read and only the allow-listed writes pass.
+#[test]
+fn quarantine_admits_reads_and_the_allow_listed_writes_only() {
+    for (method, rel) in [
+        ("GET", "/keys"),
+        ("HEAD", "/config"),
+        ("POST", "/store-restore"),
+        ("POST", "/store-restore/verify"),
+        ("PUT", "/store-restore/tail/abc/0"),
+        ("POST", "/trust/revoke"),
+        ("POST", "/keys/vk_1/revoke"),
+        ("DELETE", "/keys/vk_1"),
+        ("DELETE", "/groups/g"),
+        ("DELETE", "/hooks/h"),
+        ("DELETE", "/hooks/h/attachments/t"),
+        ("DELETE", "/overlay/limits"),
+        ("DELETE", "/plugins/p.so"),
+    ] {
+        assert!(admits_in_quarantine(method, rel), "{method} {rel}");
+    }
+    for (method, rel) in [
+        ("POST", "/keys"),
+        ("PATCH", "/keys/vk_1"),
+        ("POST", "/keys/vk_1/rotate"),
+        ("PUT", "/hooks/h"),
+        ("POST", "/config/apply"),
+        ("POST", "/trust/approve"),
+        ("DELETE", "/keys/vk_1/extra"),
+        ("POST", "/store-restore/other"),
+    ] {
+        assert!(!admits_in_quarantine(method, rel), "{method} {rel}");
+    }
+}
+
+/// DES-331 §B10.8: the refusal is 503 `unavailable`, reason `restore_quarantine`, with the epoch
+/// and the allow-list in `details`, and no `Retry-After`.
+#[tokio::test]
+async fn the_quarantine_refusal_names_its_reason_epoch_and_allow_list() {
+    let response = crate::admin::gate::restore_quarantine_response(3);
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .is_none());
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = busbar_contract::json::parse_value(&body).unwrap();
+    let error = &body["error"];
+    assert_eq!(error["code"].as_str(), Some("unavailable"));
+    assert_eq!(error["reason"].as_str(), Some("restore_quarantine"));
+    assert_eq!(error["details"]["restore_epoch"].as_u64(), Some(3));
+    let allowed = error["details"]["allowed"].as_array().unwrap();
+    assert_eq!(allowed.len(), QUARANTINE_ALLOWED.len());
+    assert!(allowed
+        .iter()
+        .any(|a| a.as_str() == Some("POST /api/v1/admin/store-restore")));
 }

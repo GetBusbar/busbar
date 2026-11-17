@@ -33,6 +33,8 @@ const PLUGIN_TEXT_DETAILS: &str = r#"{"type":"object","required":["text","plugin
 const SERVICE_UNAVAILABLE_DETAILS: &str = r#"{"type":"object","properties":{"key":{"type":"string"},"ruling":{"enum":["approve","revoke"]},"decided_at":{"type":"integer","description":"Wall seconds the attempt was stamped at"},"decided_by":{"type":"object","required":["kind","id"],"properties":{"kind":{"const":"principal"},"id":{"type":"string"}}},"operation":{"type":["string","null"],"description":"The deciding request's Idempotency-Key"}}}"#;
 /// The `details` of `outcome_not_applied` (r3 §4.6): the replayed operation and its stamp.
 const OUTCOME_NOT_APPLIED_DETAILS: &str = r#"{"type":"object","required":["operation","decided_at"],"properties":{"operation":{"type":["string","null"]},"decided_at":{"type":"integer"}}}"#;
+/// The `details` of `restore_quarantine` (DES-331 §B10.8): the restore epoch and the admitted writes.
+const RESTORE_QUARANTINE_DETAILS: &str = r#"{"type":"object","required":["restore_epoch","allowed"],"properties":{"restore_epoch":{"type":"integer"},"allowed":{"type":"array","items":{"type":"string"}}}}"#;
 
 macro_rules! row {
     ($r:literal, $c:literal, $h:literal) => {
@@ -151,6 +153,8 @@ pub const REASONS: &[ReasonRow] = &[
     row!("reviewed_digest_stale", "conflict", 409),
     row!("decision_in_progress", "conflict", 409),
     row!("outcome_not_applied", "conflict", 409, details OUTCOME_NOT_APPLIED_DETAILS),
+    // DES-331 §B10.8: an administrative write refused while the node is in restore quarantine.
+    row!("restore_quarantine", "unavailable", 503, details RESTORE_QUARANTINE_DETAILS),
 ];
 
 /// The closed list of `refusal` names a `plugin_refused` carries: the snake-case names of the 22

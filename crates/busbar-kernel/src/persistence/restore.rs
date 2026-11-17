@@ -295,6 +295,7 @@ pub async fn mark_pending(core: &CoreStore) -> Result<Restore, String> {
                     busbar_contract::persistence::Decision::Applied(_)
                 ) =>
             {
+                record_pending(next);
                 return Ok(next);
             }
             // A conflict, an uncertain or busy send: the next read shows what holds.
@@ -306,6 +307,61 @@ pub async fn mark_pending(core: &CoreStore) -> Result<Restore, String> {
         }
     }
     Err("the restore pending marker did not settle".into())
+}
+
+/// The audit row of the pending marker (DES-331 §B10.6, D1): kind `store_restore_pending`, naming
+/// the restore epoch the declaration will create, so a consumer resets here, before any
+/// re-application row.
+fn record_pending(row: Restore) {
+    let target = row.epoch.saturating_add(1);
+    crate::audit_ring::AUDIT.record_row(crate::audit::auditlog::AuditRowInput {
+        action: "store.restore.pending".into(),
+        resource: "store".into(),
+        outcome: crate::audit_ring::OUTCOME_APPLIED.into(),
+        principal: "core".into(),
+        kind: Some("store_restore_pending".into()),
+        message: format!(
+            "restore pending: restore epoch {} begins at this row (restore_phase pending)",
+            target
+        ),
+        ..Default::default()
+    });
+}
+
+/// The administrative writes a quarantined process still admits (DES-331 §B5.2, §B10.8), as
+/// `(method, path under /api/v1/admin)` with `*` matching one path segment: the restore verbs,
+/// the revocation verbs and the §B3.2a delete verbs. Every admin read is admitted too.
+pub const QUARANTINE_ALLOWED: &[(&str, &str)] = &[
+    ("POST", "/store-restore"),
+    ("POST", "/store-restore/verify"),
+    ("PUT", "/store-restore/tail/*/*"),
+    ("POST", "/trust/revoke"),
+    ("POST", "/keys/*/revoke"),
+    ("DELETE", "/keys/*"),
+    ("DELETE", "/groups/*"),
+    ("DELETE", "/hooks/*"),
+    ("DELETE", "/hooks/*/attachments/*"),
+    ("DELETE", "/overlay/*"),
+    ("DELETE", "/plugins/*"),
+];
+
+/// Whether a quarantined process admits the admin request `method rel` (`rel` is the path under
+/// `/api/v1/admin`): every `GET` and `HEAD`, and the [`QUARANTINE_ALLOWED`] writes.
+#[must_use]
+pub fn admits_in_quarantine(method: &str, rel: &str) -> bool {
+    if matches!(method, "GET" | "HEAD") {
+        return true;
+    }
+    let segments: Vec<&str> = rel.trim_matches('/').split('/').collect();
+    QUARANTINE_ALLOWED.iter().any(|(allowed, pattern)| {
+        let pattern: Vec<&str> = pattern.trim_matches('/').split('/').collect();
+        *allowed == method
+            && pattern.len() == segments.len()
+            && pattern
+                .iter()
+                .zip(&segments)
+                .all(|(want, have)| *want == "*" || want == have)
+    })
 }
 
 #[cfg(test)]

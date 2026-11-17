@@ -115,7 +115,42 @@ pub(crate) fn base_data_router_scoped(
             r.fallback(private_not_found)
         };
         r.method_not_allowed_fallback(method_not_allowed_handler)
+            // DES-331 §B5.2: no data-plane request is served while this process is in restore
+            // quarantine; the probes still answer.
+            .layer(axum::middleware::from_fn(refuse_in_restore_quarantine))
     })
+}
+
+/// 503 for every data-listener request but `/livez`, `/readyz` and `/healthz` while this process is
+/// in restore quarantine (DES-331 §B5.2).
+async fn refuse_in_restore_quarantine(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let probe = matches!(
+        req.uri().path(),
+        crate::auth::LIVEZ_PATH | crate::auth::READYZ_PATH | crate::auth::HEALTHZ_PATH
+    );
+    if probe || !crate::persistence::restore::gate().quarantined() {
+        return next.run(req).await;
+    }
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )],
+        busbar_contract::json::json!({
+            "error": {
+                "code": "unavailable",
+                "reason": "restore_quarantine",
+                "message": "this node is in restore quarantine and serves no requests until the restore is declared",
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 fn unclaimed_verbs(claimed: axum::routing::MethodFilter) -> Option<axum::routing::MethodFilter> {

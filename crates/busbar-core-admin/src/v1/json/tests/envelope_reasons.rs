@@ -130,6 +130,10 @@ const TRUST_REASONS: &[&str] = &[
 ];
 
 #[cfg(feature = "openapi-schema")]
+/// DES-331 §B10.8: the restore reasons registered so far (each problem names itself in `reason`).
+const RESTORE_REASONS: &[&str] = &["restore_quarantine"];
+
+#[cfg(feature = "openapi-schema")]
 const PLUGIN_REFUSALS: &[&str] = &[
     "integrity",
     "signature",
@@ -316,6 +320,7 @@ fn reason_table_is_closed() {
         .chain(ADDED_REASONS)
         .chain(CODE_REASONS)
         .chain(TRUST_REASONS)
+        .chain(RESTORE_REASONS)
         .map(|s| s.to_string())
         .collect();
     let have: std::collections::BTreeSet<String> = table.keys().cloned().collect();
