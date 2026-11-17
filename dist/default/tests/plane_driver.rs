@@ -127,6 +127,7 @@ fn load_open_capped(
     cap: u32,
 ) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
     let bind = Bind {
+ accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: cap,
         sink,

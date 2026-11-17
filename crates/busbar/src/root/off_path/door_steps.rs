@@ -1448,6 +1448,7 @@ impl OutboundAuths {
             );
         let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink, self.catalogue));
         crate::root::loader::dispatch::Bind {
+            accept: Default::default(),
             instance: Arc::from(name),
             max_inflight_cap: 64,
             sink,

@@ -57,6 +57,7 @@ pub(crate) fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
 
 fn bind(sink: Arc<dyn EnvelopeSink>) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 4,
         sink,

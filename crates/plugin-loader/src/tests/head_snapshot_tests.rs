@@ -10,6 +10,7 @@ fn lifecycle_head_is_owned_before_its_ffi_worker_returns_and_restored_after_cons
     let plugin = crate::dispatch::load_linked::<crate::dispatch_tests::TestKind>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("head-snapshot"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),

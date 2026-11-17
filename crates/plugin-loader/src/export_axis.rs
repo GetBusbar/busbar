@@ -103,6 +103,7 @@ impl<'r> ExportRows<'r> {
                 }
             };
             Ok(Bind {
+                accept: Default::default(),
                 instance: crate::cold::export_axis::instance(label),
                 max_inflight_cap: opening.unwrap_or(DEFAULT_INFLIGHT),
                 sink,

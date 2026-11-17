@@ -738,6 +738,7 @@ fn plane_rig() -> (
     let plugin = super::super::load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "conditional-plane".into(),
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
@@ -1626,6 +1627,7 @@ fn actual_bound_instance_drop_and_quarantine_release_completed_retired_owners() 
         let plugin = super::super::load_linked::<super::super::kinds::plane::Plane>(
             &LinkedRow::of(door).unwrap(),
             Bind {
+                accept: Default::default(),
                 instance: "settlement-teardown".into(),
                 max_inflight_cap: 2,
                 sink: Arc::new(NoSink),

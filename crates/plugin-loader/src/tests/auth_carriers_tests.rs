@@ -438,6 +438,7 @@ mod observed {
         let plugin = crate::dispatch::load_linked::<Auth>(
             &crate::dispatch::LinkedRow::of(door).unwrap(),
             crate::dispatch::Bind {
+                accept: Default::default(),
                 instance: "observed".into(),
                 max_inflight_cap: 8,
                 sink: sink.bind(),

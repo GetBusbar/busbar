@@ -50,6 +50,7 @@ fn load(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::dispatch:
     load_linked::<Store>(
         &LinkedRow::of(door).expect("SDK descriptor states itself"),
         Bind {
+            accept: Default::default(),
             instance: Arc::from("declared-metadata"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -141,6 +142,7 @@ async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
     let plugin = load_linked::<Store>(
         &LinkedRow::of(observed_store).expect("observed SDK Store descriptor"),
         Bind {
+            accept: Default::default(),
             instance: Arc::from("observed-store-open"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

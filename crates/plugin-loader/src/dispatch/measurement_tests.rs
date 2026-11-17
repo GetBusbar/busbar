@@ -236,6 +236,7 @@ fn rig<K: Kind>(door: DoorFn, installed: bool) -> (Dispatcher, Plugin<K>, Arc<Ho
     let p = dispatch::load_linked::<K>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "configured-measurement".into(),
             max_inflight_cap: 4,
             sink: Arc::new(NoSink),
@@ -345,6 +346,7 @@ fn measurement_plane_common_and_legacy_class_ownership_must_be_disjoint() {
     let result = dispatch::load_linked::<dispatch::kinds::plane::Plane>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: "overlap".into(),
             max_inflight_cap: 1,
             sink: Arc::new(NoSink),

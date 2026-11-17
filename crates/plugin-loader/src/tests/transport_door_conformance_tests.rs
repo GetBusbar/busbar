@@ -20,6 +20,7 @@ fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
         busbar_contract::services::test_caller_binding(),
     ));
     let bind = || Bind {
+        accept: Default::default(),
         instance: "transport-kind-refusal".into(),
         max_inflight_cap: 16,
         sink: Arc::new(NoSink),

@@ -9,6 +9,7 @@ use crate::dispatch::{
 use std::sync::Arc;
 fn binding() -> Bind {
     Bind {
+        accept: Default::default(),
         instance: "witness-lifecycle".into(),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
@@ -510,6 +511,7 @@ mod lifecycle_connections {
 
 fn served_lifecycle_binding(dispatcher: &Arc<crate::dispatch::Dispatcher>) -> Bind {
     Bind {
+        accept: Default::default(),
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Host(crate::dispatch::test_admissions(Arc::new(
             lifecycle_connections::Table::default(),

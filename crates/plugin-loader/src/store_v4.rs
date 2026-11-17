@@ -69,6 +69,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                     owned::lifecycle::Error::Unavailable
                 })?;
             let bind = crate::dispatch::Bind {
+                accept: Default::default(),
                 instance: crate::cold::store_v4::instance(label),
                 max_inflight_cap: u32::MAX,
                 sink: Arc::new(sink),
@@ -100,6 +101,7 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                 .logs
                 .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
             let bind = crate::dispatch::Bind {
+                accept: Default::default(),
                 instance: crate::cold::store_v4::instance(label),
                 max_inflight_cap: u32::MAX,
                 sink: Arc::new(sink),

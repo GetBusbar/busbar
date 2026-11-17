@@ -91,6 +91,7 @@ fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) ->
     load_linked::<Plane>(
         &LinkedRow::of(door).expect("neutral SDK plane metadata"),
         Bind {
+            accept: Default::default(),
             instance: "suite-wake-control".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

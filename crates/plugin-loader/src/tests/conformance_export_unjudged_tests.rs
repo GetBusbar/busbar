@@ -132,6 +132,7 @@ fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
     let p = load_linked::<Export>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("export-unjudged"),
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),

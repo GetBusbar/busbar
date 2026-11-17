@@ -41,6 +41,7 @@ fn fixture_path() -> std::path::PathBuf {
 
 fn bind() -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

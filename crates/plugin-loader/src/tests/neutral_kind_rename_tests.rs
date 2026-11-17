@@ -62,6 +62,7 @@ fn compare<K: Kind>(original: DoorFn, substitute: DoorFn, run: impl Fn(&Plugin<K
         load_linked::<K>(
             row,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from("configured-instance"),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),

@@ -3671,6 +3671,7 @@ async fn try_publish_door(
             let plane = load_linked::<Plane>(
                 &row,
                 Bind {
+                    accept: Default::default(),
                     instance: Arc::from(instance.as_str()),
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),

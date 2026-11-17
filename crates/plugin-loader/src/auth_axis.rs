@@ -125,6 +125,7 @@ impl AuthRows {
             None => sink.bind(),
         };
         let bind = Bind {
+            accept: Default::default(),
             instance: cold::instance(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: envelope,

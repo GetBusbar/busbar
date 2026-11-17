@@ -24,6 +24,7 @@ fn a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines() {
         busbar_contract::services::test_caller_binding(),
     );
     let bind = Bind {
+ accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
