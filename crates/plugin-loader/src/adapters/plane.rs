@@ -13,6 +13,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub mod protected_reply;
+
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -1585,6 +1587,25 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
+    }
+
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        self.live()?;
+        let (answer, len) = s
+            .piece_fixed(out, from, exchange, flags, bytes)
+            .map_err(PortError::Call)?;
+        // Same whole-answer validation and failure translation as pooled piece. No effect escapes
+        // until the caller classifies the validated fixed backing and admits its complete answer.
+        self.finish(Call::Piece(from), &answer, &mut |_| {})?;
+        Ok(len)
     }
 
     fn rewrite(
