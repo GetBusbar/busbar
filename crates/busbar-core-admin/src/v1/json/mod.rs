@@ -393,7 +393,7 @@ fn mount_one_admin_spec(
               principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
               consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
               axum::extract::RawQuery(query): axum::extract::RawQuery,
-              headers: axum::http::HeaderMap,
+              headers: busbar_kernel::inbound::http_projection::AdminHeaders,
               body: axum::body::Bytes| {
             let handler = handler.clone();
             async move {

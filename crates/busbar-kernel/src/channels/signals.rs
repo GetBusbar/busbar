@@ -100,6 +100,9 @@ impl SignalRegistry {
         }
         let key = (Scope::Command(instance, authority.clone()), key.into());
         let mut table = self.lock();
+        if !authority.is_live() {
+            return Err(RecordsDenied::Invalid);
+        }
         table.next = table
             .next
             .checked_add(1)
@@ -174,7 +177,7 @@ impl SessionSignals for SignalRegistry {
         flags: u32,
         bytes: &[u8],
     ) -> u32 {
-        if !authority.is_live() {
+        if !authority.is_live() || key.is_empty() || key.len() > super::carrier::MAX_KEY {
             return 0;
         }
         self.deliver(
@@ -198,6 +201,9 @@ impl SignalRegistry {
             .filter(|m| subject.is_none() || m.subject == subject)
             .take(MAX_FANOUT as usize)
         {
+            if matches!(&key.0, Scope::Command(_, authority) if !authority.is_live()) {
+                break;
+            }
             let signalled = Signalled {
                 flags,
                 bytes: bytes.into(),

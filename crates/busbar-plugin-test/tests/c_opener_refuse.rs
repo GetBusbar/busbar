@@ -613,7 +613,7 @@ mod fixed_piece {
         let (link, mut queue) = Link::new(false, Framing::Ndjson, link_budget);
         let (_tx, rx) = mpsc::channel(1);
         let mut attachment =
-            Attachment::linked(link, unit.clone(), 1, 1, true, Box::new([]), rx).unwrap();
+            Attachment::linked(link, unit.clone(), 1, 1, true, Default::default(), rx).unwrap();
 
         // Input is already owned and charged INSIDE the saturated general capacity before entry.
         let input_charge = unit

@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::Extension;
 use busbar_contract::json::{JsonValueTrait as _, Value as WireValue};
@@ -183,7 +182,7 @@ pub(super) async fn put(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     original: Option<Extension<OriginalConfigPrecondition>>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let Some(Extension(original)) = original else {

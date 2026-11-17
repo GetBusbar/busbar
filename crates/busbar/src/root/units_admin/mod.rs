@@ -20,6 +20,8 @@ pub(crate) struct AdminRequest {
     snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
     binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
     physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+    refusal_carrier: Option<busbar_kernel::inbound::native::AdminPhysicalRequest>,
+    projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
 
@@ -36,6 +38,8 @@ impl AdminRequest {
             unit,
             binding: None,
             physical: None,
+            refusal_carrier: None,
+            projection: Arc::new(Mutex::new(None)),
         }
     }
     pub(crate) fn from_binding(
@@ -47,6 +51,8 @@ impl AdminRequest {
             unit: binding.invocation().request_id().get(),
             binding: Some(binding),
             physical: None,
+            refusal_carrier: None,
+            projection: Arc::new(Mutex::new(None)),
         })
     }
     pub(crate) fn attach_physical(
@@ -109,6 +115,9 @@ impl AdminRequest {
             })
     }
     pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
+        if self.binding.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in self.headers() {
             headers.append(
@@ -118,6 +127,27 @@ impl AdminRequest {
             );
         }
         Ok(headers)
+    }
+
+    pub(crate) fn http_projection(
+        &self,
+    ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
+        self.projection.lock().ok()?.as_ref().cloned()
+    }
+
+    pub(crate) fn attach_projection(
+        &self,
+        projection: busbar_kernel::inbound::http_projection::HttpProjection,
+    ) -> Result<(), AdminHeadersInvalid> {
+        if !Arc::ptr_eq(projection.snapshot(), &self.snapshot) {
+            return Err(AdminHeadersInvalid);
+        }
+        let mut slot = self.projection.lock().map_err(|_| AdminHeadersInvalid)?;
+        if slot.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
+        *slot = Some(Arc::new(projection));
+        Ok(())
     }
 }
 
@@ -1789,6 +1819,9 @@ pub(crate) struct AdminWalk {
     claim: Option<busbar_kernel::auth::PendingClaim>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
     physical_pending: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    /// A real pre-claim denial or request-bound confirmed duplicate, never an uncertain claim.
+    expected_refusal: Option<Outcome>,
+    claim_failure: Option<busbar_kernel::auth::native_admin::AdminCompletionRefused>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1806,6 +1839,8 @@ impl AdminWalk {
             claim: None,
             execution: None,
             physical_pending: None,
+            expected_refusal: None,
+            claim_failure: None,
             answer: None,
         }
     }
@@ -1972,8 +2007,19 @@ pub(crate) async fn decide(
     .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
     .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
     .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    walk.expected_refusal = ran
+        .as_ref()
+        .err()
+        .copied()
+        .filter(|ended| !matches!(ended, Outcome::Refused(_, ReasonCode::Internal)));
     let ran = match ran {
-        Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
+        Ok(()) => claim(walk).await.map_err(|reason| {
+            if walk.claim_failure.is_some() && walk.expected_refusal.is_none() {
+                Outcome::Failed(StepName::Authenticate, reason)
+            } else {
+                Outcome::Refused(StepName::Authenticate, reason)
+            }
+        }),
         Err(ended) => Err(ended),
     };
     let ran = match ran {
@@ -2015,20 +2061,21 @@ pub(crate) async fn authenticate(
         Some(admission) => admission.admin_verdict(),
         None => (binding.door)(request).await,
     };
-    let headers = request
-        .http_headers()
-        .map_err(|_| ReasonCode::DecodeFailed)?;
-    walk.effect_context = Some(walk.admission.as_ref().map_or_else(
-        || {
-            busbar_kernel::auth::effect::Context::new(
+    // Native effects are built only after the actual replay and physical join below. Their
+    // retained proof already owns this snapshot; no HTTP metadata projection is needed here.
+    if walk.physical_pending.is_none() {
+        walk.effect_context = Some(match &walk.admission {
+            Some(admission) => admission.effect_context(),
+            None => busbar_kernel::auth::effect::Context::new(
                 request.method(),
                 request.path(),
-                headers,
+                request
+                    .http_headers()
+                    .map_err(|_| ReasonCode::DecodeFailed)?,
                 &verdict.door,
-            )
-        },
-        busbar_kernel::inbound::RequestAdmission::effect_context,
-    ));
+            ),
+        });
+    }
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -2092,12 +2139,33 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
         return complete_physical(walk);
     }
     if let Some(pending) = walk.claim.take() {
-        let execution = Arc::new(
-            pending
-                .complete_admin()
-                .await
-                .map_err(|_| ReasonCode::Unauthenticated)?,
-        );
+        let execution = match pending.complete_admin_classified().await {
+            Ok(execution) => Arc::new(execution),
+            Err(error) => {
+                if let busbar_kernel::auth::native_admin::AdminCompletionRefused::ReplayDenied(
+                    denial,
+                ) = &error
+                {
+                    if walk
+                        .physical_pending
+                        .as_ref()
+                        .is_some_and(|pending| denial.matches(pending.binding()))
+                    {
+                        walk.expected_refusal = Some(Outcome::Refused(
+                            busbar_contract::caps::StepName::Authenticate,
+                            ReasonCode::Unauthenticated,
+                        ));
+                    }
+                }
+                walk.claim_failure = Some(error);
+                return if walk.expected_refusal.is_some() {
+                    Err(ReasonCode::Unauthenticated)
+                } else {
+                    walk.answer = Some(authentication_unavailable_answer());
+                    Err(ReasonCode::Internal)
+                };
+            }
+        };
         if let Some(context) = &mut walk.effect_context {
             context
                 .attach_execution(execution.clone())
@@ -2117,11 +2185,10 @@ fn complete_physical(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
                     .complete_admin(execution.clone())
                     .map_err(|_| ReasonCode::Unauthenticated)?,
             );
-            if let Some(context) = &mut walk.effect_context {
-                context
-                    .attach_physical(physical.clone())
-                    .map_err(|_| ReasonCode::Unauthenticated)?;
-            }
+            walk.effect_context = Some(
+                busbar_kernel::auth::effect::Context::from_physical(physical.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
             walk.request.attach_physical(physical)
         }
         None if walk

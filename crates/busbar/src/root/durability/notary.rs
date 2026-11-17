@@ -29,6 +29,14 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use super::signer::{Live, SignFailure, SignerHandle, SIGN_DEADLINE};
 
+#[path = "original_notary.rs"]
+pub(crate) mod original;
+use busbar_contract::storage::StorageCredit;
+use original::{
+    OriginalNotaryReady, OriginalPageCursor, OriginalPageReceipt, OriginalPageReceiver,
+    OriginalPageTarget, PageDelivery, PageFunding,
+};
+
 /// The longest backoff after a refused store or a failing signer.
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -40,11 +48,13 @@ const SIGN_FAILURES_ALERT: u32 = 3;
 pub(crate) struct HeadFeed {
     cell: HeadCell,
     wake: Notify,
+    pub(super) original: Arc<original::OriginalChain>,
 }
 
 impl HeadFeed {
     /// Publish a newly staged line (the caller holds the node's `Durability` lock).
     pub(crate) fn publish(&self, head: &Head) {
+        self.original.unwitnessed();
         if self.cell.publish(head) {
             self.wake.notify_one();
         }
@@ -52,6 +62,7 @@ impl HeadFeed {
 
     /// Publish a recovery line only if it is newer than the head (SEALING-FIX §3.5).
     pub(crate) fn publish_max(&self, head: &Head) {
+        self.original.unwitnessed();
         if self.cell.publish_max(head) {
             self.wake.notify_one();
         }
@@ -61,6 +72,47 @@ impl HeadFeed {
     #[must_use]
     pub(crate) fn head(&self) -> Head {
         self.cell.read().1
+    }
+
+    pub(super) fn publish_original(
+        &self,
+        head: Head,
+        witness: Option<&original::OriginalLineWitness>,
+    ) {
+        self.original.publish(head, witness);
+        if self.cell.publish(&head) {
+            self.wake.notify_one();
+        }
+    }
+
+    pub(super) fn bind_original(
+        &self,
+        journal: Arc<RuntimeJournal>,
+        key: busbar_kernel_audit::AuditVerifyingKey,
+    ) -> Result<(), &'static str> {
+        self.original.bind(journal, key, self.head())
+    }
+
+    pub(crate) fn register_original_receiver(
+        &self,
+        receiver: std::sync::Weak<dyn OriginalPageReceiver>,
+    ) -> Result<(), &'static str> {
+        self.original.register(receiver)
+    }
+
+    pub(crate) fn original_ready(&self) -> Option<OriginalNotaryReady> {
+        self.original.ready()
+    }
+
+    pub(super) fn configure_original(&self, template: &Stamp) -> Result<(), &'static str> {
+        if self.original.is_bound() {
+            self.original.configure(template)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn stop_original(&self) {
+        self.original.invalidate();
     }
 }
 
@@ -156,11 +208,30 @@ impl NotaryTask {
 }
 
 /// A page being signed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 struct Page {
     to: u64,
     to_node_seq: u64,
     first_ms: Option<u64>,
+    original: Option<OriginalPageTarget>,
+    upper: Option<u64>,
+}
+
+struct Funding {
+    page: Page,
+    cursor: Option<OriginalPageCursor>,
+    credit: Option<StorageCredit>,
+}
+
+impl Funding {
+    fn retry(page: Page, credit: Option<StorageCredit>) -> Self {
+        let cursor = page.upper.map(OriginalPageCursor::start);
+        Self {
+            page,
+            cursor,
+            credit,
+        }
+    }
 }
 
 /// The one outstanding sign.
@@ -168,6 +239,8 @@ struct Signing {
     page: Page,
     rx: oneshot::Receiver<Result<Stamp, SignFailure>>,
     deadline: Instant,
+    submitted_ms: u64,
+    credit: Option<StorageCredit>,
 }
 
 /// The one staged, not yet confirmed stamp.
@@ -177,6 +250,9 @@ struct Inflight {
     driver: Option<JoinHandle<Result<(), RuntimeError>>>,
     backoff: Duration,
     retry_at: Instant,
+    credit: Option<StorageCredit>,
+    receipt: Option<OriginalPageReceipt>,
+    cursor: Option<OriginalPageCursor>,
 }
 
 struct Notary {
@@ -191,6 +267,7 @@ struct Notary {
     stamped_node_seq: u64,
     inflight: Option<Inflight>,
     signing: Option<Signing>,
+    funding: Option<Funding>,
     sign_failures: u32,
     sign_backoff: Duration,
     sign_retry_at: Option<Instant>,
@@ -238,6 +315,7 @@ pub(crate) fn spawn(
         stamped_node_seq: start.stamped_node_seq,
         inflight: None,
         signing: None,
+        funding: None,
         sign_failures: 0,
         sign_backoff: Duration::ZERO,
         sign_retry_at: None,
@@ -251,6 +329,7 @@ pub(crate) fn spawn(
         drain_clock,
     };
     let exited = Arc::new(AtomicBool::new(false));
+    notary.feed.original.started(exited.clone());
     let flag = ExitFlag(Arc::clone(&exited));
     NotaryTask {
         join: tokio::spawn(async move {
@@ -447,7 +526,7 @@ impl Notary {
         }
         if self.signing.as_ref().is_some_and(|s| now >= s.deadline) {
             if let Some(gone) = self.signing.take() {
-                self.give_back(gone.page.first_ms);
+                self.funding = Some(Funding::retry(gone.page, gone.credit));
             }
             self.sign_failed(SignFailure::Deadline, now);
         }
@@ -464,6 +543,10 @@ impl Notary {
         };
         match self.journal.is_confirmed(&inflight.run) {
             Ok(true) => {
+                if !self.deliver_applied(&mut inflight) {
+                    self.inflight = Some(inflight);
+                    return false;
+                }
                 self.stamped_through = inflight.page.to;
                 self.stamped_node_seq = inflight.page.to_node_seq;
                 if self.store_alerted {
@@ -535,6 +618,50 @@ impl Notary {
         }
     }
 
+    fn deliver_applied(&mut self, inflight: &mut Inflight) -> bool {
+        if let Some(credit) = inflight.credit.take() {
+            let Some(target) = inflight.page.original.clone() else {
+                inflight.credit = Some(credit);
+                self.halt("original page lost its producer witness".into());
+                return false;
+            };
+            match self
+                .feed
+                .original
+                .applied(target, inflight.run.clone(), credit)
+            {
+                Ok(receipt) => inflight.receipt = Some(receipt),
+                Err(credit) => {
+                    inflight.credit = Some(credit);
+                    self.halt("original applied page did not verify".into());
+                    return false;
+                }
+            }
+        }
+        let Some(receipt) = &inflight.receipt else {
+            return true;
+        };
+        if inflight.cursor.is_none() || inflight.page.upper.is_none() {
+            self.halt("original page delivery lost its captured scan horizon".into());
+            return false;
+        }
+        let Some(receiver) = self.feed.original.receiver() else {
+            self.halt("original page receiver is unavailable".into());
+            return false;
+        };
+        match receiver.deliver_original_page(receipt, inflight.cursor) {
+            PageDelivery::Complete => true,
+            PageDelivery::Pending(next) if next.advances(inflight.cursor, inflight.page.upper) => {
+                inflight.cursor = Some(next);
+                false
+            }
+            PageDelivery::Pending(_) | PageDelivery::Refused => {
+                self.halt("original page delivery refused or failed to progress".into());
+                false
+            }
+        }
+    }
+
     /// Step 5: start a sign over `committed_through + 1 ..= head.seq`, or park.
     fn maybe_sign(&mut self, now: Instant, head: &Head) {
         if self.signing.is_some() || self.inflight.is_some() || self.stopping {
@@ -554,21 +681,104 @@ impl Notary {
             self.sign_failed(SignFailure::Busy, now);
             return;
         }
-        let page = Page {
-            to: head.seq,
-            to_node_seq: head.node_seq,
-            first_ms: self.tail_first_ms.take(),
+        let mut funding = match self.funding.take() {
+            Some(funding) => funding,
+            None => {
+                let original = self
+                    .feed
+                    .original
+                    .page(self.committed_through.saturating_add(1), *head);
+                if self.feed.original.is_bound() && original.is_none() {
+                    return;
+                }
+                Funding {
+                    page: Page {
+                        to: head.seq,
+                        to_node_seq: head.node_seq,
+                        first_ms: self.tail_first_ms.take(),
+                        original,
+                        upper: None,
+                    },
+                    cursor: None,
+                    credit: None,
+                }
+            }
         };
+        let credit = if let Some(credit) = funding.credit.take() {
+            Some(credit)
+        } else if let Some(target) = &funding.page.original {
+            let Some(receiver) = self.feed.original.receiver() else {
+                self.funding = Some(funding);
+                self.halt("original page receiver is unavailable before signing".into());
+                return;
+            };
+            let Some(bytes) = self.feed.original.bytes() else {
+                self.funding = Some(funding);
+                self.halt("original page retention bound is unavailable".into());
+                return;
+            };
+            match receiver.fund_original_page(target, bytes, funding.cursor) {
+                PageFunding::Reserved(credit, upper)
+                    if credit.len() >= bytes
+                        && funding.page.upper.is_none_or(|held| held == upper) =>
+                {
+                    funding.page.upper = Some(upper);
+                    Some(credit)
+                }
+                PageFunding::Empty(upper)
+                    if funding.page.upper.is_none_or(|held| held == upper) =>
+                {
+                    funding.page.upper = Some(upper);
+                    None
+                }
+                PageFunding::Pending(next) if next.advances(funding.cursor, funding.page.upper) => {
+                    funding.page.upper = Some(next.upper);
+                    funding.cursor = Some(next);
+                    self.funding = Some(funding);
+                    return;
+                }
+                PageFunding::Refused(cursor) => {
+                    if let Some(cursor) = cursor {
+                        if !cursor.preserves(funding.cursor, funding.page.upper) {
+                            self.funding = Some(funding);
+                            self.halt("original funding refusal changed its scan horizon".into());
+                            return;
+                        }
+                        funding.page.upper = Some(cursor.upper);
+                        funding.cursor = Some(cursor);
+                    }
+                    self.funding = Some(funding);
+                    self.halt("original page storage refused".into());
+                    return;
+                }
+                PageFunding::Reserved(credit, _) => {
+                    funding.credit = Some(credit);
+                    self.funding = Some(funding);
+                    self.halt("original page reservation or scan horizon differs".into());
+                    return;
+                }
+                PageFunding::Pending(_) | PageFunding::Empty(_) => {
+                    self.funding = Some(funding);
+                    self.halt("original funding scan changed horizon or failed to progress".into());
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let page = funding.page;
+        let endpoint = page.original.as_ref().map_or(*head, |target| target.head());
+        let submitted_ms = busbar_kernel::store::now_ms();
         let stamp = Stamp {
             node: self.cfg.node,
             from: self.committed_through.saturating_add(1),
-            to: head.seq,
-            fingerprint: Fingerprint(head.fp),
+            to: page.to,
+            fingerprint: Fingerprint(endpoint.fp),
             kind: StampKind::Live,
             sealer: self.cfg.node,
             host: self.cfg.host.clone(),
             every: self.cfg.every_ms,
-            stamped_ms: busbar_kernel::store::now_ms(),
+            stamped_ms: submitted_ms,
             down_from_ms: 0,
             down_to_ms: 0,
             crypto: String::new(),
@@ -583,10 +793,12 @@ impl Notary {
                     page,
                     rx,
                     deadline: now + SIGN_DEADLINE,
+                    submitted_ms,
+                    credit,
                 });
             }
             Err(failure) => {
-                self.give_back(page.first_ms);
+                self.funding = Some(Funding::retry(page, credit));
                 self.sign_failed(failure, now);
             }
         }
@@ -601,16 +813,30 @@ impl Notary {
         let stamp = match answer {
             Ok(stamp) => stamp,
             Err(failure) => {
-                self.give_back(signing.page.first_ms);
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 self.sign_failed(failure, now);
                 return;
             }
         };
+        if let Some(target) = &signing.page.original {
+            if stamp.host != self.cfg.host
+                || stamp.every != self.cfg.every_ms
+                || stamp.stamped_ms != signing.submitted_ms
+                || stamp.signature.len() != 64
+                || stamp.crypto != busbar_contract::crypto::BACKEND
+                || stamp.sig_alg != busbar_kernel_audit::SIGNATURE_ALGORITHM
+                || !self.feed.original.verify(target, &stamp)
+            {
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
+                self.halt("the original notary reply differs from its submitted page".into());
+                return;
+            }
+        }
         self.sign_ok();
         let entry = match stamp_body(&stamp) {
             Ok(body) => Entry::new(RecordClass::Transaction, body).at(stamp.stamped_ms / 1000, 0),
             Err(_) => {
-                self.give_back(signing.page.first_ms);
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 self.halt("a stamp body exceeds the journal field bound".into());
                 return;
             }
@@ -620,19 +846,23 @@ impl Notary {
                 self.committed_through = signing.page.to;
                 // The next request confirm carries it; only if none does within a tick does
                 // step 3 drive it alone (§3.3 step 5, r17).
+                let cursor = signing.page.upper.map(OriginalPageCursor::start);
                 self.inflight = Some(Inflight {
                     run,
                     page: signing.page,
                     driver: None,
                     backoff: Duration::ZERO,
                     retry_at: now + self.every,
+                    credit: signing.credit,
+                    receipt: None,
+                    cursor,
                 });
             }
             Err(RuntimeError::Closed) if self.stopping => {
-                self.give_back(signing.page.first_ms);
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
             }
             Err(refused) => {
-                self.give_back(signing.page.first_ms);
+                self.funding = Some(Funding::retry(signing.page, signing.credit));
                 if let Some(failed) = self.journal.failed() {
                     self.halt(format!("journal failed: {failed:?}"));
                 } else if refused == RuntimeError::Closed {
@@ -650,13 +880,6 @@ impl Notary {
         self.publish_progress();
     }
 
-    /// Give a page's oldest-line date back to the tail, keeping the earlier of the two.
-    fn give_back(&mut self, first_ms: Option<u64>) {
-        if let Some(first) = first_ms {
-            self.tail_first_ms = Some(self.tail_first_ms.map_or(first, |t| t.min(first)));
-        }
-    }
-
     fn sign_ok(&mut self) {
         if self.signer_alerted {
             tracing::info!(node = self.cfg.node, "audit stamp signer answering again");
@@ -671,6 +894,7 @@ impl Notary {
     /// backoff, alert after three in a row. A gone thread stops stamping for good.
     fn sign_failed(&mut self, failure: SignFailure, now: Instant) {
         if failure == SignFailure::Gone {
+            self.feed.original.invalidate();
             busbar_kernel::diag_error!(
                 busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
                 node = self.cfg.node,
@@ -701,6 +925,7 @@ impl Notary {
     /// Stop stamping for this process (the journal failed, or an invariant broke). Lines after
     /// `stamped_through` are left to the next process on the host.
     fn halt(&mut self, why: String) {
+        self.feed.original.invalidate();
         if self.halted.is_none() {
             busbar_kernel::diag_error!(
                 busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
@@ -728,6 +953,7 @@ impl Notary {
             .as_ref()
             .and_then(|f| f.page.first_ms)
             .or_else(|| self.signing.as_ref().and_then(|s| s.page.first_ms))
+            .or_else(|| self.funding.as_ref().and_then(|s| s.page.first_ms))
             .or(self.tail_first_ms)
             .unwrap_or(0);
         p.oldest_unstamped_ms.store(oldest, Ordering::Relaxed);

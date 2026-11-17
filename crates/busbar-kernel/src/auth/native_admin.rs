@@ -32,6 +32,55 @@ pub enum PreparedAnswer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdmissionRefused;
 
+/// The actual single replay call result; only Duplicate is a confirmed rejection.
+pub enum NativeReplayClaim {
+    Claimed,
+    Duplicate,
+    Unknown(crate::plugin_records::RecordsDenied),
+    Inconsistent,
+}
+
+pub struct AdminReplayDenial {
+    _lease: AdmissionLease,
+    invocation: Invocation,
+    _prepared: Arc<dyn PreparedIdentity>,
+}
+
+impl AdminReplayDenial {
+    pub fn matches(&self, binding: &crate::inbound::native::RequestBinding) -> bool {
+        Arc::ptr_eq(binding.handle(), &self.invocation.handle)
+            && Arc::ptr_eq(binding.app(), &self.invocation.selected)
+            && binding.invocation() == self.invocation.id
+            && binding
+                .snapshot()
+                .is_ok_and(|snapshot| Arc::ptr_eq(&snapshot, &self.invocation.request))
+    }
+}
+
+/// Retains original preparation/operation custody without manufacturing a duplicate refusal.
+pub struct AdminReplayUnknown {
+    _lease: AdmissionLease,
+    _invocation: Invocation,
+    _prepared: Arc<dyn PreparedIdentity>,
+    _error: crate::plugin_records::RecordsDenied,
+}
+
+pub enum AdminCompletionRefused {
+    Unavailable,
+    ReplayDenied(AdminReplayDenial),
+    ReplayUnknown(AdminReplayUnknown),
+}
+
+impl std::fmt::Debug for AdminCompletionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "AdminCompletionRefused::Unavailable",
+            Self::ReplayDenied(_) => "AdminCompletionRefused::ReplayDenied",
+            Self::ReplayUnknown(_) => "AdminCompletionRefused::ReplayUnknown",
+        })
+    }
+}
+
 /// Host-only immutable verification state. Neither identity projection nor STRIP certifies that
 /// every declared credential field was verified; field provenance needs its own attestation.
 pub trait PreparedIdentity: Send + Sync {
@@ -41,6 +90,16 @@ pub trait PreparedIdentity: Send + Sync {
     fn request(&self) -> &Arc<ChargedRequestSnapshot>;
     fn authorize(&self, now_s: u64) -> Result<(), u32>;
     fn claim(&self) -> BoxFut<'_, bool>;
+    fn claim_classified(&self) -> BoxFut<'_, NativeReplayClaim> {
+        Box::pin(async move {
+            if self.claim().await {
+                NativeReplayClaim::Claimed
+            } else {
+                // Compatibility implementations expose no confirmed-false distinction.
+                NativeReplayClaim::Unknown(crate::plugin_records::RecordsDenied::Unavailable)
+            }
+        })
+    }
 }
 
 impl std::fmt::Debug for dyn PreparedIdentity {
@@ -76,13 +135,21 @@ impl Pending {
     }
 
     pub(super) async fn complete(&self) -> Result<ExecutionAdmission, AdmissionRefused> {
+        self.complete_classified()
+            .await
+            .map_err(|_| AdmissionRefused)
+    }
+
+    pub(super) async fn complete_classified(
+        &self,
+    ) -> Result<ExecutionAdmission, AdminCompletionRefused> {
         // Consume before the first await. A cancelled or failed store call cannot retry this right.
         if self.spent.swap(true, Ordering::AcqRel)
             || !Arc::ptr_eq(&self.invocation.request, self.prepared.request())
             || self.invocation.cx.request_id != self.invocation.id.request_id().get()
             || std::time::Instant::now() >= self.invocation.cx.deadline
         {
-            return Err(AdmissionRefused);
+            return Err(AdminCompletionRefused::Unavailable);
         }
         let lease = self
             .invocation
@@ -90,9 +157,25 @@ impl Pending {
             .admit_current(&self.invocation.selected, self.invocation.id, |_| {
                 self.prepared.authorize(crate::store::now())
             })
-            .map_err(|_| AdmissionRefused)?;
-        if !self.prepared.claim().await {
-            return Err(AdmissionRefused);
+            .map_err(|_| AdminCompletionRefused::Unavailable)?;
+        match self.prepared.claim_classified().await {
+            NativeReplayClaim::Claimed => {}
+            NativeReplayClaim::Duplicate => {
+                return Err(AdminCompletionRefused::ReplayDenied(AdminReplayDenial {
+                    _lease: lease,
+                    invocation: self.invocation.clone(),
+                    _prepared: Arc::clone(&self.prepared),
+                }))
+            }
+            NativeReplayClaim::Unknown(error) => {
+                return Err(AdminCompletionRefused::ReplayUnknown(AdminReplayUnknown {
+                    _lease: lease,
+                    _invocation: self.invocation.clone(),
+                    _prepared: Arc::clone(&self.prepared),
+                    _error: error,
+                }))
+            }
+            NativeReplayClaim::Inconsistent => return Err(AdminCompletionRefused::Unavailable),
         }
         // Publication after the lease is not cancellation of this already-admitted operation.
         Ok(ExecutionAdmission {

@@ -34,6 +34,19 @@ pub(crate) fn install_initial(
     install(app, native, services, None)
 }
 
+/// Runtime preparation retains inert work until the existing publication callback.
+pub(crate) fn install_prepared(
+    app: &mut busbar_kernel::state::App,
+    native: Arc<super::min3_boot::Booted>,
+    services: Arc<super::serve::Services>,
+    workers: PreparedWorkers,
+) -> Result<(), String> {
+    if app.prepared_generation().is_none() {
+        return Err("native workers have no reserved publication generation".into());
+    }
+    install(app, native, services, Some(workers))
+}
+
 fn install(
     app: &mut busbar_kernel::state::App,
     native: Arc<super::min3_boot::Booted>,
@@ -43,8 +56,15 @@ fn install(
     if native.config_version != app.config_version {
         return Err("native generation belongs to another configuration".into());
     }
-    if services.kernel().is_none() {
-        return Err("native generation requires actual serving services".into());
+    let kernel = services
+        .kernel()
+        .ok_or("native generation requires actual serving services")?;
+    if native
+        .seats
+        .iter()
+        .any(|seat| !Arc::ptr_eq(seat.driver.core(), &kernel))
+    {
+        return Err("native generation services differ from its admitted plane services".into());
     }
     let mut config = app
         .config_projection
@@ -219,6 +239,161 @@ impl Workers {
             None => Ok(()),
         }
     }
+}
+
+/// Immutable runtime producer. Only fixed bootstrap/physical authority is shared;
+/// each preparation creates its own read-bound registry, secret prefix and serving services.
+pub(crate) struct Factory {
+    process: Arc<busbar_plugin_loader::process::ProcessResources>,
+    bootstrap: Arc<super::min3_boot::BootstrapSources>,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    transports: super::min3_boot::TransportSources,
+    listeners: Arc<super::min3_listener_plan::NativeListenerPlan>,
+    node: Arc<super::plane_node::Node>,
+    observers: Arc<super::export_observer::ExportObservers>,
+    boot_has_exports: bool,
+}
+
+impl Factory {
+    pub(crate) fn new(
+        process: Arc<busbar_plugin_loader::process::ProcessResources>,
+        bootstrap: Arc<super::min3_boot::BootstrapSources>,
+        core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        native: &super::min3_boot::Booted,
+        listeners: Arc<super::min3_listener_plan::NativeListenerPlan>,
+        node: Arc<super::plane_node::Node>,
+        observers: Arc<super::export_observer::ExportObservers>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            process,
+            bootstrap,
+            core,
+            transports: native.transport_sources.clone(),
+            listeners,
+            node,
+            observers,
+            boot_has_exports: native.has_exports(),
+        })
+    }
+
+    pub(crate) fn prepare<'a>(
+        self: &'a Arc<Self>,
+        cfg: &'a busbar_kernel::config::RootCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+    > {
+        Box::pin(async move {
+            // The required desired-versus-boot export evidence and aggregate CHECK
+            // producer are not supplied by this native request-side construction.
+            // Never reopen an immutable export or silently relabel its boot backend.
+            if self.boot_has_exports || !cfg.export_defs.is_empty() {
+                return Err(
+                    "native export reload requires its retained boot-evidence producer".into(),
+                );
+            }
+            let dest = super::connector::guard_for(&cfg.destinations())?;
+            let ready = self
+                .bootstrap
+                .prepare_next(&self.process, cfg, dest.guard().clone(), &self.transports)
+                .await?;
+            Ok(Some(Box::new(Candidate {
+                owner: Arc::clone(self),
+                ready,
+                dest,
+            })
+                as Box<dyn busbar_kernel::appbuild::CandidatePreparation>))
+        })
+    }
+}
+
+struct Candidate {
+    owner: Arc<Factory>,
+    ready: super::min3_boot::ServingReady,
+    dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
+}
+
+impl busbar_kernel::appbuild::CandidatePreparation for Candidate {
+    fn secret_resolver(&self) -> Arc<busbar_kernel::config::secret::SecretResolver> {
+        self.ready.resolver()
+    }
+
+    fn finish<'a>(
+        self: Box<Self>,
+        app: &'a mut busbar_kernel::state::App,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>> {
+        Box::pin(async move {
+            let Self { owner, ready, dest } = *self;
+            let epoch = app
+                .prepared_generation()
+                .ok_or("native candidate has no durable publication reservation")?;
+            let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
+                .iter()
+                .map(|plane| &plane.declaration)
+                .collect();
+            let services = super::serve::compose(dest, app, Arc::clone(&owner.core), &planes);
+            let observations = owner.observers.reserve(ready.export_names())?;
+            let (_, mut workers, _exports, native, selected) = super::min3_boot::finish_with_store(
+                ready,
+                Arc::clone(&owner.core),
+                None,
+                services.kernel(),
+                busbar_kernel::plane_driver::port_work::governed_binder(
+                    app.governance.clone(),
+                    app.role_bindings.clone(),
+                ),
+                Some(super::min3_boot::ServingEnvironment::new(app)),
+                &observations,
+            )
+            .await?;
+            if !Arc::ptr_eq(&app.secret_resolver, &native.resolver) {
+                return Err("native completion changed its early secret resolver".into());
+            }
+            app.prepare_selected_policy(selected)?;
+            let served = native_served(Arc::clone(&native), app, &owner.node);
+            let owners = super::min3_physical::SlotOwners {
+                auth: Arc::clone(&native.auth),
+                epoch,
+                inventories: Arc::clone(&native.inventories),
+                keys: owner.node.kernel_and_keys().1,
+                core: super::min3_listener_plan::core_lines(app, &served).into(),
+            };
+            super::door_steps::prepare_native_candidate(&owner.listeners, app, &served, &owners)?;
+            services.prepare_workers(&mut workers);
+            install_prepared(app, native, services, workers)
+        })
+    }
+}
+
+fn native_served(
+    native: Arc<super::min3_boot::Booted>,
+    app: &busbar_kernel::state::App,
+    node: &Arc<super::plane_node::Node>,
+) -> super::serve::Served {
+    let mut served = super::serve::Served {
+        ports: native.seats.clone(),
+        native: Some(native),
+        tables: app.serve_tables.clone(),
+        ..Default::default()
+    };
+    if let Some(governance) = &app.governance {
+        let post = Arc::new(super::plane_node::NodeEndPost::new(Arc::clone(node)));
+        let money = Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
+            Arc::clone(governance),
+            Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        ));
+        served.billing = Some(
+            busbar_kernel::plane_driver::port_billing::PortBilling::new(
+                money,
+                Arc::clone(governance),
+                node.kernel_and_keys().1,
+                Arc::new(busbar_kernel::plane_driver::CoreAudit),
+            )
+            .with_journal(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
+        );
+        served.post = Some(post);
+    }
+    served
 }
 
 #[cfg(test)]

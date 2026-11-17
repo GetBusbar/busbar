@@ -35,6 +35,49 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
+// Preserve the existing physical fixtures while using the production one-shot preparation.
+trait PreparePhysicalFixture {
+    async fn prepare_test(
+        &self,
+        physical: crate::inbound::native::CompletingPhysicalRequest,
+        selected: SelectedResources,
+        cx: CallCx,
+    ) -> Result<PreparedPhysicalFixture, DataRefused>;
+}
+struct PreparedPhysicalFixture {
+    physical: crate::inbound::native::CompletingPhysicalRequest,
+    pending: PendingData,
+}
+impl PreparedPhysicalFixture {
+    async fn complete(self) -> Result<AuthorizedPhysicalData, DataRefused> {
+        let authorization = self
+            .pending
+            .complete()
+            .await
+            .map_err(|error| error.reason())?;
+        self.physical
+            .complete(authorization)
+            .map_err(|_| DataRefused::Cancelled)
+    }
+}
+impl PreparePhysicalFixture for Arc<NativeDataRoute> {
+    async fn prepare_test(
+        &self,
+        mut physical: crate::inbound::native::CompletingPhysicalRequest,
+        selected: SelectedResources,
+        cx: CallCx,
+    ) -> Result<PreparedPhysicalFixture, DataRefused> {
+        let preparation = physical
+            .begin_data_preparation()
+            .map_err(|_| DataRefused::Cancelled)?;
+        let pending = self
+            .prepare(preparation, selected, cx)
+            .await
+            .map_err(|error| error.reason())?;
+        Ok(PreparedPhysicalFixture { physical, pending })
+    }
+}
+
 struct Owners(AtomicUsize);
 impl IssuedCredentials for Owners {
     fn lookup<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> BoxFut<'a, SecureVec> {
@@ -210,7 +253,7 @@ fn fixture(allowed: bool) -> Fixture {
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let core = Arc::new(KernelServices::new());
     let native = core.admit_native_invocation(&caller).unwrap();
-    let generation = Arc::new(ServingGeneration::new(core, Arc::new(NoChildren)));
+    let generation = Arc::new(ServingGeneration::try_new(core, Arc::new(NoChildren)).unwrap());
     let mut app = (*app()).clone();
     app.config_generation.store(7, Ordering::Release);
     app.role_bindings = BTreeMap::from([(
@@ -469,10 +512,96 @@ fn arrival_with_fields(
 async fn native_data_selected_scope_denial_never_claims_replay() {
     let f = fixture(false);
     let (request, selected, cx, _owner) = arrival(&f, 1);
-    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
     assert!(matches!(pending.complete().await, Err(DataRefused::Policy)));
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 1);
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_preparation_latch_is_spent_before_verification() {
+    let f = fixture(true);
+    let (mut request, _selected, _cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let preparation = request.begin_data_preparation().unwrap();
+    assert!(request.begin_data_preparation().is_err());
+    assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    drop(preparation);
+    assert!(binding.check_live().is_err());
+    assert!(request.begin_data_preparation().is_err());
+    assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_policy_denial_retains_original_physical_completion() {
+    let f = fixture(false);
+    let (mut request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let preparation = request.begin_data_preparation().unwrap();
+    let pending = f.route.prepare(preparation, selected, cx).await.unwrap();
+    let Err(DataPreparationFailed::Denied(denied)) = pending.complete().await else {
+        panic!("expected actual policy denial");
+    };
+    assert_eq!(denied.decision(), DataRefused::Policy);
+    assert!(Arc::ptr_eq(denied.binding(), &binding));
+    assert!(request.begin_data_preparation().is_err());
+    let refusal = request.refuse_data(denied).unwrap();
+    assert!(Arc::ptr_eq(refusal.binding(), &binding));
+    assert!(binding.check_live().is_err());
+    assert!(binding.check_executing().is_err());
+    assert_eq!(f.calls.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_without_node_audit_custody_refuses_before_money_or_effects() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare_test(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Post)));
+    let book = money.clone();
+    let commits = Arc::new(AtomicUsize::new(0));
+    let observed = commits.clone();
+    let pending = Arc::new(allocation.into_pending(move |receipt| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        let admitted = book
+            .admit_existing(
+                receipt.begin().unwrap(),
+                Arc::from(Vec::<String>::new()),
+                FeeRefund::CallerStatus,
+                ExhaustionMode::FinishUnit,
+            )
+            .unwrap();
+        Ok(ordinary_unit(&book, admitted, None))
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let mut task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    assert!(
+        pending.pending().admit(None, None, declaration).is_err(),
+        "original physical and money owners cannot replace Node audit custody"
+    );
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert_eq!(money.open_units(), 0);
+    assert!(!context.effects_allowed());
+    assert!(binding.check_executing().is_err());
+    assert!(pending.execution().is_none());
 }
 
 #[tokio::test]
@@ -482,14 +611,16 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     let binding = request.binding().clone();
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
         .await
         .unwrap();
     assert!(binding.check_executing().is_err());
-    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+    let audit = audit_custody(&mut allocation);
+    let audit_context = audit.owner.context().clone();
     let context = allocation.context().clone();
     assert!(context.is_live());
     assert!(!context.effects_allowed());
@@ -530,7 +661,7 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
                 .is_none(),
             "direct UnitRecords must enforce the same gate"
         );
-        Ok(ordinary_unit(&book, admitted))
+        Ok(ordinary_unit(&book, admitted, Some(&audit_context)))
     });
     let pending = Arc::new(pending);
     let calls = PlaneCalls(AtomicUsize::new(0));
@@ -582,10 +713,61 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
 }
 
 #[tokio::test]
+async fn native_data_billing_books_keep_registered_key_and_generation_without_reminting() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare_test(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(Post)));
+    let keys = Arc::new(crate::door::UnitKeyMint::default());
+    let billing = crate::plane_driver::port_billing::PortBilling::new(
+        money.clone(),
+        gov,
+        keys.clone(),
+        Arc::new(crate::plane_driver::CoreAudit),
+    );
+    let unit = billing
+        .allocated_data(&allocation, Arc::from(Vec::<String>::new()))
+        .unwrap();
+    assert_eq!(unit.ctx.key.get(), allocation.context().unit());
+    assert_eq!(
+        Some(unit.ctx.generation),
+        allocation.context().generation().routing_generation()
+    );
+    assert_eq!(
+        keys.mint().get(),
+        1,
+        "attaching books must not consume another unit identity"
+    );
+    assert_eq!(
+        money.open_units(),
+        0,
+        "book attachment is not monetary admission"
+    );
+    assert!(!allocation.context().effects_allowed());
+    allocation.context().retire();
+    assert!(billing
+        .allocated_data(&allocation, Arc::from(Vec::<String>::new()))
+        .is_err());
+}
+
+#[tokio::test]
 async fn native_data_cancellation_between_verification_and_replay_grants_nothing() {
     let f = fixture(true);
     let (request, selected, cx, owner) = arrival(&f, 1);
-    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
     drop(owner);
     assert!(matches!(
         pending.complete().await,
@@ -600,7 +782,7 @@ async fn native_data_selection_from_another_physical_request_is_refused() {
     let (first, _selected, cx, _owner) = arrival(&f, 1);
     let (_second, foreign, _, _other_owner) = arrival(&f, 2);
     assert!(matches!(
-        f.route.prepare(first, foreign, cx).await,
+        f.route.prepare_test(first, foreign, cx).await,
         Err(DataRefused::Binding)
     ));
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
@@ -612,7 +794,7 @@ async fn native_data_publication_before_final_gate_prevents_replay() {
     let f = fixture(true);
     let (request, selected, cx, _owner) = arrival(&f, 1);
     let handle = request.binding().handle().clone();
-    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
     handle.swap(app()).await;
     assert!(matches!(pending.complete().await, Err(DataRefused::Policy)));
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
@@ -625,7 +807,7 @@ async fn native_data_reset_after_authorization_cannot_register_effects() {
     let binding = request.binding().clone();
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
@@ -644,7 +826,7 @@ async fn native_data_reset_after_registration_closes_the_exact_context() {
     let binding = request.binding().clone();
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
@@ -672,7 +854,7 @@ async fn native_data_uncertain_replay_cancellation_never_opens_execution() {
     let f = fixture(true);
     let (request, selected, cx, owner) = arrival(&f, 1);
     let binding = request.binding().clone();
-    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
     let mut completion = Box::pin(pending.complete());
     assert!(futures::poll!(completion.as_mut()).is_pending());
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
@@ -691,7 +873,7 @@ async fn native_data_publication_after_lease_retains_original_authority() {
     let f = fixture(true);
     let (request, selected, cx, _owner) = arrival(&f, 1);
     let binding = request.binding().clone();
-    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let pending = f.route.prepare_test(request, selected, cx).await.unwrap();
     let mut completion = Box::pin(pending.complete());
     assert!(futures::poll!(completion.as_mut()).is_pending());
     binding.handle().swap(app()).await;
@@ -710,7 +892,7 @@ async fn native_data_final_physical_join_refuses_foreign_request() {
     let (request, selected, cx, _owner) = arrival(&f, 1);
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
@@ -743,7 +925,7 @@ async fn native_data_scans_later_duplicate_bound_carrier_before_verification() {
             ],
         );
         assert!(matches!(
-            f.route.prepare(request, selected, cx).await,
+            f.route.prepare_test(request, selected, cx).await,
             Err(DataRefused::Credential)
         ));
         assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
@@ -757,7 +939,7 @@ async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
     let (request, selected, cx, owner) = arrival(&f, 1);
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
@@ -965,7 +1147,7 @@ async fn native_data_task_refuses_substituted_physical_request_id() {
     let (request, selected, cx, _owner) = arrival(&f, 1);
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
@@ -1010,9 +1192,53 @@ async fn native_data_task_refuses_substituted_physical_request_id() {
     assert!(pending.execution().is_none());
 }
 
-fn ordinary_unit(book: &Arc<PlaneMoney>, admitted: AdmittedRequest) -> AdmittedUnit {
+struct AuditFixtureDoor;
+impl crate::inflight::ArrivalDoor for AuditFixtureDoor {
+    fn arrival_hold(
+        &self,
+        principal: busbar_contract::caps::PrincipalId,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::Admittance>,
+    ) -> busbar_contract::caps::Hold {
+        busbar_contract::caps::Hold::open(token, principal)
+    }
+}
+struct AuditFixtureCustody {
+    owner: crate::teller::native_data_audit::NativeAuditOwner,
+    inflight: crate::inflight::InFlight,
+    _credit: busbar_contract::storage::StorageCredit,
+}
+fn audit_custody(allocation: &mut NativeDataAllocation) -> Box<AuditFixtureCustody> {
+    let credit = allocation
+        .authorization
+        .binding
+        .request()
+        .storage()
+        .try_reserve(std::mem::size_of::<AuditFixtureCustody>())
+        .unwrap();
+    let owner = allocation
+        .take_audit_registration()
+        .unwrap()
+        .bind(Arc::new(crate::teller::Kernel::new()))
+        .unwrap();
+    let mut custody = Box::new(AuditFixtureCustody {
+        owner,
+        inflight: crate::inflight::InFlight::new(1),
+        _credit: credit,
+    });
+    custody
+        .owner
+        .enter(&custody.inflight, &AuditFixtureDoor, 1)
+        .unwrap();
+    custody
+}
+
+fn ordinary_unit(
+    book: &Arc<PlaneMoney>,
+    admitted: AdmittedRequest,
+    original: Option<&crate::teller::UnitCtx>,
+) -> AdmittedUnit {
     let rollback = book.admission_rollback(&admitted).unwrap();
-    let ctx = crate::teller::UnitCtx {
+    let ctx = original.cloned().unwrap_or(crate::teller::UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
         key: admitted.unit(),
         origin: busbar_contract::caps::OriginKind::Client,
@@ -1020,7 +1246,7 @@ fn ordinary_unit(book: &Arc<PlaneMoney>, admitted: AdmittedRequest) -> AdmittedU
         generation: crate::registry::Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
-    };
+    });
     let unit = crate::plane_driver::port::Unit {
         ctx,
         money: crate::plane_driver::port_money::PortMoney::new(
@@ -1040,13 +1266,15 @@ async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() 
     let binding = request.binding().clone();
     let authorized = f
         .route
-        .prepare(request, selected, cx)
+        .prepare_test(request, selected, cx)
         .await
         .unwrap()
         .complete()
         .await
         .unwrap();
-    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+    let audit = audit_custody(&mut allocation);
+    let audit_context = audit.owner.context().clone();
     let context = allocation.context().clone();
     let gov = Arc::new(
         crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
@@ -1064,7 +1292,7 @@ async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() 
                 ExhaustionMode::FinishUnit,
             )
             .unwrap();
-        let admitted = ordinary_unit(&book, admitted);
+        let admitted = ordinary_unit(&book, admitted, Some(&audit_context));
         assert_eq!(book.open_units(), 1);
         drop(owner); // Actual physical reset wins after the grant and before DATA starts.
         Ok(admitted)

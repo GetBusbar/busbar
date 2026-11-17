@@ -371,6 +371,9 @@ impl LeaseTick {
         type JournalFlush =
             std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
         let mut flushing: Option<JournalFlush> = None;
+        // The existing native audit queue owns uncertain refusal/export originals. Keep its
+        // driver independent of the journal so an isolated lost ACK needs no later request.
+        let mut auditing: Option<JournalFlush> = None;
         // The store settle pass is its own future: a stalled store never blocks the flush.
         let mut settling: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
             None;
@@ -385,6 +388,13 @@ impl LeaseTick {
                     if flushing.is_none() {
                         let tick = Arc::clone(&this);
                         flushing = Some(Box::pin(async move { tick.tick().await }));
+                    }
+                    if auditing.is_none() && busbar_kernel::audit::auditlog::has_unsettled_audit() {
+                        auditing = Some(Box::pin(async {
+                            busbar_kernel::audit::auditlog::flush_pending()
+                                .await
+                                .map_err(|error| error.to_string())
+                        }));
                     }
                     if sweep.is_none() {
                         let custody = Arc::clone(&this.node.ticket_custody);
@@ -403,6 +413,15 @@ impl LeaseTick {
                 } => {
                     flushing = None;
                     if let Err(error) = result { tracing::warn!(reason = error, "native journal custody is still pending"); }
+                }
+                result = async {
+                    match auditing.as_mut() {
+                        Some(auditing) => auditing.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    auditing = None;
+                    if let Err(error) = result { tracing::warn!(reason = error, "native audit originals are still pending"); }
                 }
                 () = async {
                     match sweep.as_mut() {

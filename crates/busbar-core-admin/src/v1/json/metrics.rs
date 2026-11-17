@@ -63,7 +63,7 @@ pub(crate) fn negotiate(headers: &HeaderMap) -> Representation {
 
 pub(crate) async fn get(
     State(handle): State<Arc<AppHandle>>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     request: Option<Extension<RequestLease>>,
 ) -> Response {
     let Some(Extension(request)) = request else {
@@ -79,7 +79,7 @@ pub(crate) async fn get(
 
 pub(crate) async fn get_hooks(
     State(handle): State<Arc<AppHandle>>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     request: Option<Extension<RequestLease>>,
 ) -> Response {
     let Some(Extension(request)) = request else {

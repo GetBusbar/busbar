@@ -112,6 +112,35 @@ impl Drop for SelectedTerminalReceipt {
 }
 
 impl NativeRequestMoney {
+    /// Root binds the actual registered response to its original checkpoint attachment. This
+    /// loan first proves the journal uses the same real Store as the original governor; root
+    /// then compares its captured audit node/incarnation/nonce against the same registered ACK.
+    pub fn checkpoint_for_response(
+        &self,
+        journal: &crate::persistence::journal::runtime::RuntimeJournal,
+    ) -> Result<Arc<UnitCheckpoint>, NativeAdmissionError> {
+        let core = self
+            .money
+            .gov
+            .core_store_handle()
+            .map_err(NativeAdmissionError::Custody)?;
+        if !journal.is_bound_to(&core) {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let all = self.money.shard(self.request.unit());
+        let open = all
+            .get(&self.request.unit())
+            .ok_or(NativeAdmissionError::NotLive)?;
+        self.check_open_identity(open)
+            .map_err(|_| NativeAdmissionError::NotLive)?;
+        Ok(open
+            .native
+            .as_ref()
+            .ok_or(NativeAdmissionError::Declaration)?
+            .checkpoint()
+            .clone())
+    }
+
     /// Root lends both values from the same privately registered response owner. That owner
     /// binds the full ACK key to the original admission and captured audit identity before output.
     /// This consumer additionally checks the exact retained admission and requires a frozen
@@ -146,6 +175,11 @@ impl NativeRequestMoney {
             let (disposition, written, cut) = delivery_facts(ending, observed)?;
             end.cut |= cut;
             let mut snapshot = native.checkpoint().as_ref().clone();
+            self.capture_checkpoint_facts(&mut snapshot)
+                .map_err(|error| match error {
+                    NativeAttemptError::Custody(error) => NativeAdmissionError::Custody(error),
+                    _ => NativeAdmissionError::NotLive,
+                })?;
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
@@ -189,6 +223,21 @@ impl NativeRequestMoney {
                     return Err(NativeAdmissionError::Declaration)
                 }
             };
+            let unspent = open.last.iter().all(|count| count.amount == 0)
+                && snapshot
+                    .partitions
+                    .as_ref()
+                    .expect("checked partitions")
+                    .attempts
+                    .iter()
+                    .all(|attempt| {
+                        attempt.usage.classes.values().all(|facts| {
+                            [facts.reported, facts.floor, facts.estimated]
+                                .into_iter()
+                                .flatten()
+                                .all(|count| count.is_zero())
+                        })
+                    });
             let terminal = match self.money.gov.finish_selected_checkpoint_with_fee(
                 snapshot,
                 Some(expected),
@@ -208,7 +257,7 @@ impl NativeRequestMoney {
                 all.remove(&self.request.unit())
                     .expect("same checked Open under shard"),
                 terminal,
-                end.refused_unspent && !has_bill,
+                end.refused_unspent && unspent,
             )
         };
         if release_request {
@@ -304,7 +353,9 @@ fn delivery_facts(
 
 impl PlaneMoney {
     /// The callback guard proves no Task effect or connector attempt has started. Transfer its
-    /// empty failed terminal before consuming the original fee participant outside money locks.
+    /// failed terminal before consuming the original fee participant outside money locks.
+    /// An initial request answer may already have reported session quantities or original fee
+    /// markers before a later admission check refuses; retain them with the failed disposition.
     pub(super) fn abort_selected_startup(
         &self,
         request: &AdmittedRequest,
@@ -328,13 +379,18 @@ impl PlaneMoney {
                 .native
                 .as_ref()
                 .ok_or(NativeAttemptError::Unavailable)?;
-            if native.work.is_some()
+            if native.work == Some(crate::plane_driver::usage::Ending::End)
                 || !Arc::ptr_eq(&native.terminal, slot)
                 || native.checkpoint().id != slot.id
             {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
+            snapshot.audit = Some(self.post.checkpoint_facts(request.unit()).ok_or_else(|| {
+                NativeAttemptError::Custody(RecordStoreError(
+                    "selected request lost its original audit capture owner".into(),
+                ))
+            })?);
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
@@ -342,15 +398,23 @@ impl PlaneMoney {
                 .ok_or(NativeAttemptError::Binding)?;
             if parts.disposition != Disposition::Running
                 || !parts.attempts.is_empty()
-                || parts.session.is_some()
                 || parts.far_end_answered
                 || parts.caller_bytes_committed
                 || parts.final_target.is_some()
-                || open.last.iter().any(|count| count.amount != 0)
             {
                 return Err(NativeAttemptError::Binding);
             }
-            parts.disposition = Disposition::Failed;
+            parts.disposition = match native.work {
+                Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
+                    Disposition::Cancel {
+                        reason: cause.as_str().to_owned(),
+                    }
+                }
+                None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,
+                Some(crate::plane_driver::usage::Ending::End) => {
+                    return Err(NativeAttemptError::Binding)
+                }
+            };
             let (fee, completion) = open.fee.selected_fee();
             parts.fee = fee;
             snapshot.ended = true;
@@ -376,8 +440,10 @@ impl PlaneMoney {
                 terminal,
             )
         };
-        self.gov.release_request(&removed.money.charge);
-        removed.fee.refundable = true;
+        if removed.last.iter().all(|count| count.amount == 0) {
+            self.gov.release_request(&removed.money.charge);
+        }
+        removed.fee.refundable = removed.money.fee.refunds(500, &removed.last);
         drop(removed); // Resolves the actual fee account; observer cannot retain participation.
         slot.publish(Ok(terminal));
         Ok(())

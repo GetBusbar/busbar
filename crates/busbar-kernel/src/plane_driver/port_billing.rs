@@ -136,6 +136,40 @@ impl PortBilling {
         self.unit(self.keys.mint(), classes)
     }
 
+    /// Attach books to the DATA allocation's original registered unit without minting another.
+    pub fn allocated_data(
+        &self,
+        allocation: &crate::auth::native_data::NativeDataAllocation,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, NativeAdmissionError> {
+        let context = allocation.context();
+        if !context.is_live() || context.principal().is_none() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let generation = context
+            .generation()
+            .routing_generation()
+            .ok_or(NativeAdmissionError::NotLive)?;
+        let mut unit = self.unit(UnitKey::new(context.unit()), classes);
+        unit.ctx.generation = generation;
+        Ok(unit)
+    }
+
+    /// Bind billing to the original call minted by the allocation's audit registration.
+    pub fn allocated_data_audited(
+        &self,
+        allocation: &crate::auth::native_data::NativeDataAllocation,
+        owner: &crate::teller::native_data_audit::NativeAuditOwner,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, NativeAdmissionError> {
+        if !owner.invocation().same_unit(allocation.context()) || owner.slot().is_none() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let mut unit = self.allocated_data(allocation, classes)?;
+        unit.ctx = owner.context().clone();
+        Ok(unit)
+    }
+
     pub fn admit_existing(
         &self,
         request: CommittingRequest,

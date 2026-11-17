@@ -6,6 +6,27 @@ use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use std::io::Write;
 
 #[test]
+fn reader_loan_and_logical_shrink_keep_the_complete_allocation_charged() {
+    let process = ProcessAdmission::with_limits(0, 64, 0);
+    let request = process.try_enter(AdmissionClass::Data).unwrap();
+    let mut output = OutputBuffer::with_capacity(&request, 64).unwrap();
+    let loan = output.read_loan().unwrap();
+    assert_eq!(loan.len(), 64);
+    let backing = loan.as_ptr();
+    loan[..4].copy_from_slice(b"read");
+    output.truncate(4);
+    assert_eq!(output.as_ref(), b"read");
+    assert_eq!(process.used(), (64, 64));
+    output.clear();
+    assert_eq!(process.used(), (64, 64));
+    let loan = output.read_loan().unwrap();
+    assert_eq!(loan.as_ptr(), backing);
+    assert!(loan.iter().all(|byte| *byte == 0));
+    drop(output);
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[test]
 fn retained_output_uses_the_same_operator_floor_as_input() {
     let process = ProcessAdmission::with_limits(4, 4096, 1024);
     let data = process.try_enter(AdmissionClass::Data).unwrap();

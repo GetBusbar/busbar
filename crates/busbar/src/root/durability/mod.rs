@@ -48,7 +48,7 @@ pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub(crate) use audit::{AuditWindowAt, LineIdentity};
+pub(crate) use audit::{AuditWindowAt, LineIdentity, NativeStagedAudit};
 
 mod audit_page;
 
@@ -606,4 +606,4 @@ mod signer_tests;
 
 #[cfg(test)]
 #[path = "../tests/response_intent.rs"]
-mod response_intent_tests;
+pub(crate) mod response_intent_tests;

@@ -191,9 +191,10 @@ impl Opened {
         Ok(admitted)
     }
 
-    /// Exit b: unload a refused image. Call it on the loader's ffi worker.
-    pub fn close(self) {
-        drop(self.lib);
+    /// Exit b: explicitly unload a refused image on the permanent lifecycle worker.
+    /// An error consumes the handle without a second close; its host must retain staging backing.
+    pub fn close(self) -> Result<(), libloading::Error> {
+        self.lib.close()
     }
 }
 

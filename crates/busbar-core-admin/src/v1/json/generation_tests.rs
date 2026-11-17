@@ -4,6 +4,93 @@
 use super::*;
 use axum::http::HeaderMap;
 
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn settings_openapi_declares_the_actual_instance_edit_idempotency_header() {
+    let doc = crate::v1::json::openapi_doc();
+    let operation = &doc["paths"]["/api/v1/admin/config/settings"]["put"];
+    let headers: Vec<_> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|parameter| parameter["in"] == "header" && parameter["name"] == "Idempotency-Key")
+        .collect();
+    assert_eq!(headers.len(), 1);
+    let header = headers[0];
+    assert_eq!(
+        header["required"], false,
+        "other settings modes retain optional replay"
+    );
+    assert_eq!(header["schema"]["minLength"], 1);
+    assert_eq!(header["schema"]["maxLength"], 128);
+    assert_eq!(header["schema"]["pattern"], "^[A-Za-z0-9._:-]+$");
+    assert!(header["description"]
+        .as_str()
+        .unwrap()
+        .contains("instance_edit"));
+    assert_eq!(
+        operation["x-busbar-instance-edit"]["idempotency"],
+        "required_exact_method_path_query_body"
+    );
+    for valid in ["a", "Aa09._:-", &"a".repeat(128)] {
+        assert!(valid_idempotency_key(valid));
+    }
+    for invalid in ["", "two words", "slash/value", "é", &"a".repeat(129)] {
+        assert!(!valid_idempotency_key(invalid));
+    }
+}
+
+#[test]
+fn original_precondition_clone_retains_first_backing_and_all_duplicate_counts() {
+    let mut headers = HeaderMap::new();
+    let value = HeaderValue::from_str(&format!("\"{}\"", "original".repeat(32))).unwrap();
+    let pointer = value.as_bytes().as_ptr();
+    headers.append(header::IF_MATCH, value);
+    for count in 1..=12 {
+        let retained = OriginalConfigPrecondition::capture(&headers).clone();
+        assert_eq!(retained.count, count);
+        assert_eq!(
+            retained.first.as_ref().unwrap().as_bytes().as_ptr(),
+            pointer
+        );
+        if count == 1 {
+            assert!(retained.require_strong().is_ok());
+        } else {
+            assert_eq!(
+                retained.require_strong().unwrap_err().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        headers.append(header::IF_MATCH, HeaderValue::from_static("\"another\""));
+    }
+}
+
+#[test]
+fn conditional_read_keeps_first_field_and_existing_weak_comparison() {
+    for (field, expected) in [
+        ("*", true),
+        (" \"tag\" ", true),
+        ("W/\"tag\"", true),
+        ("\"other\", W/\"tag\"", true),
+        ("\"other\"", false),
+        ("", false),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, HeaderValue::from_str(field).unwrap());
+        headers.append(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        let first = headers.get(header::IF_NONE_MATCH).cloned();
+        drop(headers);
+        assert_eq!(
+            if_none_match(first.as_ref(), "W/\"tag\""),
+            expected,
+            "{field}"
+        );
+    }
+    assert!(!if_none_match(None, "\"tag\""));
+    let invalid = HeaderValue::from_bytes(b"\xff").unwrap();
+    assert!(!if_none_match(Some(&invalid), "\"tag\""));
+}
+
 #[test]
 fn original_precondition_keeps_multiplicity_and_bytes_before_translation() {
     let mut headers = HeaderMap::new();

@@ -341,8 +341,7 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     };
     assert_eq!(from_a, 1, "plugin A answers with A's bytes");
 
-    crate::stage::dlclose_on_worker(lib_a);
-    drop(staged_a);
+    assert!(crate::stage::close_library_with_backing(lib_a, staged_a));
 
     let (lib_b, staged_b) = load_library_from_bytes(&b, "probe-b").expect("stage plugin B");
     // SAFETY: as above.
@@ -366,8 +365,7 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     let only_a = unsafe { lib_b.get::<Probe>(b"busbar_stage_only_a") };
     assert!(only_a.is_err(), "A's symbol must not answer on B's handle");
 
-    crate::stage::dlclose_on_worker(lib_b);
-    drop(staged_b);
+    assert!(crate::stage::close_library_with_backing(lib_b, staged_b));
 }
 
 mod staged_file_pin {
@@ -385,8 +383,7 @@ mod staged_file_pin {
 
     pub(super) fn release(loaded: (Library, Staged)) {
         let (lib, staged) = loaded;
-        crate::stage::dlclose_on_worker(lib);
-        drop(staged);
+        assert!(crate::stage::close_library_with_backing(lib, staged));
     }
 
     pub(super) fn tamper_then_load(
@@ -442,6 +439,23 @@ mod on_unix {
     use super::staged_file_pin::*;
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn failed_native_open_keeps_its_staged_identity() {
+        let bytes = b"invalid native image for retained staging identity";
+        let mut staged_path = None;
+        let opened = load_via_staged_file(bytes, "failed-open-custody", &mut |path| {
+            staged_path = Some(path.to_path_buf());
+        });
+        assert!(opened.is_err(), "the invalid image must not open");
+        let path = staged_path.expect("the real native open was attempted");
+        assert_eq!(
+            std::fs::read(path).expect("uncertain open must retain its staging identity"),
+            bytes
+        );
+        // The production owner intentionally keeps this name and pin until process exit.
+        // The ordinary dead-process staging sweep owns its eventual removal.
+    }
 
     #[test]
     fn the_staged_bytes_are_the_verified_bytes() {

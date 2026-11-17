@@ -4,6 +4,7 @@
 //! The shared channel account. Budget handles establish capacity, never invocation authority.
 //! Root retains one process account and one instance account across serving/draining epochs.
 
+use busbar_contract::storage::{StorageAccount, StorageDenied, StorageSource};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::frame::MAX_MESSAGE;
@@ -193,21 +194,23 @@ pub struct InstanceBudget {
 impl InstanceBudget {
     /// One actual admitted unit. Clones retain this account; constructing another is not admission.
     pub fn unit(&self) -> UnitBudget {
+        let scope = Scope {
+            process: Arc::clone(&self.process),
+            instance: Arc::clone(&self.account),
+            unit: Some(Account::new(Claim {
+                bytes: UNIT_BYTES,
+                outbound_bytes: UNIT_BYTES,
+                leases: 8,
+                keys: usize::MAX,
+                completions: 16,
+                asks: 32,
+                messages: 64,
+            })),
+            channel: None,
+        };
         UnitBudget {
-            scope: Scope {
-                process: Arc::clone(&self.process),
-                instance: Arc::clone(&self.account),
-                unit: Some(Account::new(Claim {
-                    bytes: UNIT_BYTES,
-                    outbound_bytes: UNIT_BYTES,
-                    leases: 8,
-                    keys: usize::MAX,
-                    completions: 16,
-                    asks: 32,
-                    messages: 64,
-                })),
-                channel: None,
-            },
+            storage: StorageSource::new(Arc::new(ChannelStorage(scope.clone()))),
+            scope,
         }
     }
 
@@ -272,6 +275,7 @@ impl InstanceBudget {
 #[derive(Clone)]
 pub struct UnitBudget {
     scope: Scope,
+    storage: StorageSource,
 }
 
 #[derive(Clone)]
@@ -287,6 +291,11 @@ impl LinkBudget {
 }
 
 impl UnitBudget {
+    /// Backing storage from this exact unit's existing general account. This cannot spend the
+    /// protected reply reserve, mint another unit, or supply invocation authority.
+    pub fn storage(&self) -> StorageSource {
+        self.storage.clone()
+    }
     pub(super) fn accepts_link(&self, link: &LinkBudget) -> bool {
         Arc::ptr_eq(&self.scope.instance, &link.instance)
     }
@@ -339,6 +348,15 @@ struct Scope {
 
 impl Scope {
     fn reserve(self, claim: Claim, class: Class) -> Result<Charge, CapacityDenied> {
+        self.acquire(claim, class)?;
+        Ok(Charge {
+            scope: self,
+            claim,
+            class,
+        })
+    }
+
+    fn acquire(&self, claim: Claim, class: Class) -> Result<(), CapacityDenied> {
         self.transaction(|accounts| {
             if !accounts.iter().all(|account| account.addable(claim, class)) {
                 return Err(CapacityDenied);
@@ -351,12 +369,16 @@ impl Scope {
                 }
             }
             Ok(())
-        })?;
-        Ok(Charge {
-            scope: self,
-            claim,
-            class,
         })
+    }
+
+    fn release(&self, claim: Claim, class: Class) {
+        self.transaction(|accounts| {
+            for account in accounts {
+                let used = account.used_mut(class);
+                *used = used.subtract(claim);
+            }
+        });
     }
 
     fn transaction<R>(&self, f: impl FnOnce(&mut [&mut Counts]) -> R) -> R {
@@ -441,11 +463,32 @@ impl Charge {
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        self.scope.transaction(|accounts| {
-            for account in accounts {
-                let used = account.used_mut(self.class);
-                *used = used.subtract(self.claim);
-            }
-        });
+        self.scope.release(self.claim, self.class);
+    }
+}
+
+/// Same account transaction and lock order as every existing channel charge; no external calls,
+/// allocation, logging or asynchronous work inside either accounting operation.
+struct ChannelStorage(Scope);
+impl StorageAccount for ChannelStorage {
+    fn try_reserve(&self, bytes: usize) -> Result<(), StorageDenied> {
+        self.0
+            .acquire(
+                Claim {
+                    bytes,
+                    ..Claim::default()
+                },
+                Class::General,
+            )
+            .map_err(|_| StorageDenied)
+    }
+    fn release(&self, bytes: usize) {
+        self.0.release(
+            Claim {
+                bytes,
+                ..Claim::default()
+            },
+            Class::General,
+        );
     }
 }

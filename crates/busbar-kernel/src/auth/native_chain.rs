@@ -285,6 +285,12 @@ pub struct PreparedNativeIdentity {
 }
 
 impl PreparedIdentity for PreparedNativeIdentity {
+    fn claim_classified(
+        &self,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, super::native_admin::NativeReplayClaim>
+    {
+        Box::pin(PreparedNativeIdentity::claim_classified(self))
+    }
     fn provider(&self) -> &str {
         &self.instance.opened.who.name
     }
@@ -328,6 +334,23 @@ impl PreparedIdentity for PreparedNativeIdentity {
 }
 
 impl PreparedNativeIdentity {
+    /// Invoked once by the consumed DATA preparation owner; never retries the claim.
+    pub(crate) async fn claim_classified(&self) -> super::native_admin::NativeReplayClaim {
+        use super::native_admin::NativeReplayClaim;
+        match (self.identity.replay(), self.cutoff) {
+            (Some((key, _)), Some(until)) => {
+                let who = caller(&self.instance, self.cx);
+                match self.chain.owners.replay.claim_until(&who, key, until).await {
+                    Ok(true) => NativeReplayClaim::Claimed,
+                    Ok(false) => NativeReplayClaim::Duplicate,
+                    Err(error) => NativeReplayClaim::Unknown(error),
+                }
+            }
+            (None, None) => NativeReplayClaim::Claimed,
+            _ => NativeReplayClaim::Inconsistent,
+        }
+    }
+
     pub fn snapshot(&self) -> &Arc<ChargedRequestSnapshot> {
         &self.request
     }

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::secure::SecureVec;
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
-use busbar_core_connector::framed_stream::session::{Actions, Inbound, TransportConn};
+use busbar_core_connector::framed_stream::session::{Actions, Inbound, Payload, TransportConn};
 use busbar_core_connector::response_delivery::DeliveryLedger;
 use busbar_kernel::inbound::native::{
     AcceptedConnection, ArrivalRefusal, CompletingPhysicalRequest, PhysicalConnection,
@@ -23,6 +23,19 @@ use busbar_plugin_abi::records::{tag, Records};
 use busbar_ports::transport::{ConnIn, TransportPort};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[path = "listener_native_data.rs"]
+mod data;
+#[path = "listener_native_delivery.rs"]
+mod delivery;
+#[path = "listener_native_dispatch.rs"]
+mod dispatch;
+#[path = "listener_native_response.rs"]
+mod response;
+#[path = "listener_native_serve.rs"]
+mod serving;
+pub(crate) use delivery::{ApprovedUpgradeHead, RegisteredDelivery};
+pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
+
 pub(crate) type SelectNativeSlot = Arc<
     dyn Fn(&busbar_kernel::state::App, &str) -> Option<Arc<super::min3_physical::NativeSlot>>
         + Send
@@ -30,18 +43,25 @@ pub(crate) type SelectNativeSlot = Arc<
 >;
 
 pub(crate) struct NativeLimits {
+    pub(crate) max_connections: usize,
     pub(crate) body_bytes: usize,
     pub(crate) stall_ms: Option<u32>,
     pub(crate) handshake_timeout: Duration,
+    pub(crate) request_timeout: Duration,
+    pub(crate) write_timeout: Duration,
+    pub(crate) drain_grace: Duration,
 }
 
 /// The selected native supplier and physical authority are captured together before accepting IO.
 pub(crate) struct NativeListener {
+    slot: Box<str>,
     port: Arc<dyn TransportPort>,
     physical: PhysicalListener,
     budget: Arc<ProcessAdmission>,
     class: AdmissionClass,
     limits: NativeLimits,
+    select: SelectNativeSlot,
+    admin: Option<axum::Router>,
 }
 
 pub(crate) struct OpenedConnection {
@@ -62,6 +82,7 @@ impl NativeListener {
         class: AdmissionClass,
         select: SelectNativeSlot,
         limits: NativeLimits,
+        admin: Option<axum::Router>,
     ) -> Result<Self, InputError> {
         use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER, FB_WIRE_PROVENANCE};
         if !port
@@ -70,25 +91,30 @@ impl NativeListener {
             .any(|name| name.as_ref() == slot.as_ref())
             || port.facts() & (FB_SERVER | FB_WIRE_PROVENANCE) != (FB_SERVER | FB_WIRE_PROVENANCE)
             || port.facts() & FB_DATAGRAM != 0
+            || limits.max_connections == 0
         {
             return Err(InputError::Invalid);
         }
+        let select_physical = select.clone();
         let physical = PhysicalListener::new(
             handle,
-            slot,
+            slot.clone(),
             port.clone(),
             class,
             Arc::new(move |app, slot| {
-                select(app, slot).map(|selected| selected.prepared().clone())
+                select_physical(app, slot).map(|selected| selected.prepared().clone())
             }),
         )
         .map_err(|error| InputError::Arrival(ArrivalRefusal::Binding(error)))?;
         Ok(Self {
+            slot,
             port,
             physical,
             budget,
             class,
             limits,
+            select,
+            admin,
         })
     }
 
@@ -141,14 +167,8 @@ impl NativeListener {
             .as_ref()
             .and_then(|info| info.server_name())
             .unwrap_or("");
-        let facts = AcceptedConnection::capture(
-            &io.storage,
-            peer,
-            local,
-            alpn.unwrap_or(""),
-            &io.peer_certificate,
-        )
-        .map_err(|_| InputError::Capacity)?;
+        let facts = AcceptedConnection::capture_secured(&io, peer, local)
+            .map_err(|_| InputError::Capacity)?;
         let ingress = NativeIngress::new(
             self.physical.connect(facts),
             self.budget.clone(),
@@ -234,6 +254,9 @@ pub(crate) enum InputError {
     Arrival(ArrivalRefusal),
     Io(std::io::Error),
     Transport(busbar_core_connector::framed_stream::session::Ended),
+    Body(axum::Error),
+    FinalIntent(super::durability::response_intent::FinalIntentError),
+    Delivery(busbar_contract::response_delivery::ResponseStop),
 }
 
 impl std::fmt::Display for InputError {
@@ -245,6 +268,9 @@ impl std::fmt::Display for InputError {
             Self::Arrival(reason) => write!(f, "native physical arrival refused: {reason:?}"),
             Self::Io(error) => write!(f, "native carrier failed: {error}"),
             Self::Transport(reason) => write!(f, "native transport ended: {reason:?}"),
+            Self::Body(error) => write!(f, "native response body failed: {error}"),
+            Self::FinalIntent(error) => write!(f, "native response intent failed: {error}"),
+            Self::Delivery(reason) => write!(f, "native response delivery stopped: {reason:?}"),
         }
     }
 }
@@ -269,15 +295,59 @@ pub(crate) fn delivery_ledger(source: &StorageSource) -> Result<DeliveryLedger, 
 
 struct InputSlot {
     stream: u64,
+    deadline: Option<Instant>,
+    body_started: tokio::time::Instant,
+    body_deadline: Instant,
     pending: Option<PhysicalRequest>,
     body: Option<InputBody>,
+    raw_head: Option<Payload>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
     owner: Arc<StreamOwner>,
+    node: Option<crate::root::plane_node::NativeNodeHandle>,
+    carrier_reported: bool,
+    held: Option<serving::HeldRequest>,
+}
+impl InputSlot {
+    fn next_deadline(&self) -> Option<Instant> {
+        if self.pending.is_some() {
+            Some(
+                self.deadline
+                    .map_or(self.body_deadline, |at| at.min(self.body_deadline)),
+            )
+        } else {
+            self.deadline
+        }
+    }
+    fn body_bounds_exceeded(&self) -> bool {
+        let elapsed = u64::try_from(self.body_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let bytes = self.body.as_ref().map_or(0, |body| body.bytes.len() as u64);
+        crate::root::listener::check_body_bounds(0, elapsed, bytes).is_some()
+    }
 }
 
 pub(crate) struct ReadyInput {
     pub(crate) request: CompletingPhysicalRequest,
     pub(crate) owner: Arc<StreamOwner>,
+    pub(crate) upgrade_head: Option<RetainedNativeHead>,
+}
+
+/// Original native records and charged backing, retained only for a declared upgrade.
+/// No caller can pair arbitrary bytes with a read-only request binding.
+pub(crate) struct RetainedNativeHead {
+    binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
+    owner: Arc<StreamOwner>,
+    bytes: Payload,
+}
+impl RetainedNativeHead {
+    pub(crate) fn binding(&self) -> &Arc<busbar_kernel::inbound::native::RequestBinding> {
+        &self.binding
+    }
+    pub(crate) fn owner(&self) -> &Arc<StreamOwner> {
+        &self.owner
+    }
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
 }
 
 /// The actual native stream event consumer. EOF completes input only; the physical owner stays
@@ -335,6 +405,10 @@ impl NativeIngress {
                 end_stream,
                 head,
             } => {
+                let body_started = tokio::time::Instant::now();
+                let total_deadline = Instant::now()
+                    .checked_add(crate::root::listener::total_body_deadline())
+                    .ok_or(InputError::Capacity)?;
                 // Host stream identities are monotone and never recycled, including refused heads.
                 if stream <= self.last_head {
                     return Err(InputError::Invalid);
@@ -357,11 +431,25 @@ impl NativeIngress {
                 // PhysicalRequest now holds its own full head backing reservation.
                 drop(credit);
                 let body = InputBody::new(&request)?;
+                let raw_head = pending
+                    .binding()
+                    .route()
+                    .line()
+                    .upgrade
+                    .as_ref()
+                    .map(|_| head);
                 self.slots.push(InputSlot {
                     stream,
+                    deadline,
+                    body_started,
+                    body_deadline: total_deadline,
                     pending: Some(pending),
                     body: Some(body),
+                    raw_head,
                     owner: Arc::new(owner),
+                    node: None,
+                    carrier_reported: false,
+                    held: None,
                 });
                 if end_stream {
                     self.end(stream).map(Some)
@@ -395,6 +483,14 @@ impl NativeIngress {
                     bytes.as_slice(),
                     limit,
                 )?;
+                if slot.body_bounds_exceeded() {
+                    self.connection.cancel(&slot.owner);
+                    slot.pending.take();
+                    slot.body.take();
+                    return Err(InputError::Delivery(
+                        busbar_contract::response_delivery::ResponseStop::Deadline,
+                    ));
+                }
                 Ok(None)
             }
             Inbound::End(stream) => self.end(stream).map(Some),
@@ -421,12 +517,26 @@ impl NativeIngress {
             .iter_mut()
             .find(|slot| slot.stream == stream)
             .ok_or(InputError::Invalid)?;
+        if slot.body_bounds_exceeded() {
+            self.connection.cancel(&slot.owner);
+            slot.pending.take();
+            slot.body.take();
+            return Err(InputError::Delivery(
+                busbar_contract::response_delivery::ResponseStop::Deadline,
+            ));
+        }
         let pending = slot.pending.take().ok_or(InputError::Invalid)?;
         let InputBody { bytes, credit } = slot.body.take().ok_or(InputError::Invalid)?;
         let request = pending.finish_input(bytes, credit)?.begin_completion()?;
+        let upgrade_head = slot.raw_head.take().map(|bytes| RetainedNativeHead {
+            binding: request.binding().clone(),
+            owner: slot.owner.clone(),
+            bytes,
+        });
         Ok(ReadyInput {
             request,
             owner: Arc::clone(&slot.owner),
+            upgrade_head,
         })
     }
 

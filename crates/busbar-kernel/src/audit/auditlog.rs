@@ -25,6 +25,10 @@ pub(crate) const KIND_ID_AUDIT: u32 = 3;
 
 const ADMIN_LOG: &str = "admin";
 
+#[path = "native_refusal.rs"]
+mod native_refusal;
+pub use native_refusal::{record_native_refusal, NativeRefusalAudit, NativeRefusalError};
+
 const AUDIT_FRAMING: Framing = Framing::PipeSeparated;
 const AUDIT_DIGESTS_SCOPE: bool = false;
 
@@ -1050,10 +1054,20 @@ impl PendingAuditQueue {
 
     /// Transfer a background original without borrowing an unrelated request's audit context.
     fn try_enqueue_background(&self, p: PendingAudit) -> RecordStoreResult<()> {
+        self.try_enqueue_original(p).map_err(|(_, error)| error)
+    }
+
+    /// A known no-effect refusal returns the exact original; it has not entered the queue
+    /// or crossed storage. Its original owner may retry this transfer without reminting it.
+    fn try_enqueue_original(
+        &self,
+        p: PendingAudit,
+    ) -> Result<(), (PendingAudit, RecordStoreError)> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            return Err(RecordStoreError(
-                "the admin audit recovery queue is full".into(),
+            return Err((
+                p,
+                RecordStoreError("the admin audit recovery queue is full".into()),
             ));
         }
         q.queued.push_back(p);
@@ -2139,6 +2153,9 @@ async fn drain_native(
         if let Some(confirmation) = &pending.confirmation {
             confirmation.store(true, Ordering::Release);
         }
+        // Ring publication precedes queue capacity release and exact confirmation. Wake the
+        // same existing signal afterwards, including background rows without observers.
+        log.appended.notify_waiters();
     }
 }
 

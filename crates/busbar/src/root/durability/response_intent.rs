@@ -190,6 +190,9 @@ impl ResponseConnection {
             || handles.watch.key() != key
         {
             handles.cancel.cancel(ResponseStop::Integrity);
+            // No response reader or producer was exposed. Cancellation still requires the
+            // driver's real protocol/carrier join, but cannot await an input that never existed.
+            handles.input.retired();
             return Err(FinalIntentError::Integrity);
         }
         let scope = Arc::new(ResponseScope {

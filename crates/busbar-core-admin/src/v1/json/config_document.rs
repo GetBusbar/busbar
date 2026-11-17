@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use busbar_kernel::config::document_patch::DocumentPatch;
 use busbar_kernel::config::overlay::OverlayDoc;
@@ -162,7 +162,7 @@ impl DocumentCommit {
 pub(super) async fn put(
     handle: Arc<AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: axum::body::Bytes,
 ) -> Response {
     let expected = match if_match_version(&headers) {

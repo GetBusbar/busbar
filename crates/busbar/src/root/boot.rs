@@ -2140,9 +2140,16 @@ impl BookPreparation {
             now,
         )
         .await?;
-        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
-        // keeps only the public half. The notary starts from the resumed head, read before any
-        // recovery line is appended, once serving begins (`main`).
+        // Preserve the genuinely verified Bootstrap public half before transferring signing
+        // authority. The exact live Notary key selects it; no active-key/cardinality fallback.
+        let notary = busbar_kernel_audit::Notary::new(bound.notary);
+        let trusted_bootstrap_key = bound
+            .verification_keys
+            .get(notary.key_id())
+            .cloned()
+            .ok_or("the live Notary has no verified Bootstrap public key")?;
+        // Signer threads may serve boot recovery; the live notary baseline is bound only
+        // after all recovery appends below and before NodeBook can be published.
         let audit_verification_keys = Arc::new(bound.verification_keys);
         super::durability::response_intent::verify_history(
             self.durability.as_ref().unwrap(),
@@ -2152,7 +2159,7 @@ impl BookPreparation {
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
-                busbar_kernel_audit::Notary::new(bound.notary),
+                notary,
                 busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
                 durability.record.node(),
                 durability.journal.clone(),
@@ -2246,6 +2253,12 @@ impl BookPreparation {
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
         super::measurements::install(app)?;
+        {
+            let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+            audit
+                .bind_original_bootstrap(&recovered, trusted_bootstrap_key)
+                .map_err(|error| format!("original audit binding: {error}"))?;
+        }
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
         let mut book = super::durability::NodeBook {
