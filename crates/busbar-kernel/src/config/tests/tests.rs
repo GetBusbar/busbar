@@ -42,6 +42,7 @@ const CATALOG_PROTOCOL: &str = "proto-a";
 
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
+        authored: Default::default(),
         protocol: protocol.to_string(),
         base_url: base_url.to_string(),
         error_map: HashMap::new(),
@@ -59,6 +60,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
+        authored: Default::default(),
         api_key: crate::config::secret::descriptor_reference(env_var),
         protocol: None,
         base_url: None,

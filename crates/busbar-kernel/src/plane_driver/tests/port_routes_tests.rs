@@ -36,6 +36,30 @@ fn none(_: u32) -> Option<u32> {
 }
 
 #[test]
+fn resource_metadata_cannot_activate_unsupported_or_ambiguous_mounts() {
+    let mut r = route(1, 0, AUTH_PRINCIPAL, "/x");
+    r.resource_kinds = vec!["pool".into()];
+    assert_eq!(
+        plan(&[r.clone()], None, &none).unwrap().data[0].resource_kinds,
+        r.resource_kinds
+    );
+    for kinds in [
+        vec!["Pool".into()],
+        vec!["pool".into(), "pool".into()],
+        vec!["pool".into(); 9],
+    ] {
+        r.resource_kinds = kinds;
+        assert!(plan(&[r.clone()], None, &none).is_err());
+    }
+    r.resource_kinds = vec!["pool".into()];
+    r.auth = AUTH_PUBLIC;
+    assert!(plan(&[r.clone()], None, &none).is_err());
+    r.auth = AUTH_PRINCIPAL;
+    r.flags = ROUTE_UPGRADE;
+    assert!(plan(&[r], None, &none).is_err());
+}
+
+#[test]
 fn routes_are_mounted_where_their_flags_say_and_line_and_recovery_are_never_mounted() {
     let routes = [
         route(1, 0, AUTH_PRINCIPAL, "/v1/chat"),

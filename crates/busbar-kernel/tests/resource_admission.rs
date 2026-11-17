@@ -91,6 +91,16 @@ fn request(n: u64) -> FrozenRequest {
     )
 }
 
+fn echo(
+    bound: &busbar_kernel::resource_admission::BoundForward,
+) -> busbar_kernel::resource_admission::ForwardEcho {
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    bound.write_admission(&mut out).unwrap();
+    bound
+        .resolve_echo(busbar_plugin_abi::resource_admission::decode_echo(out.as_bytes()).unwrap())
+        .unwrap()
+}
+
 fn exchange() -> UpExchange {
     UpExchange {
         carrier: CARRIER_HTTP,
@@ -99,6 +109,93 @@ fn exchange() -> UpExchange {
         path: Some("/generate".into()),
         ..UpExchange::default()
     }
+}
+
+#[test]
+fn wire_echo_cannot_rebind_instance_route_generation_or_invocation() {
+    let inventory = build(&caller(), vec![fact("chat", 1)]).unwrap();
+    let selected = inventory
+        .select(request(1), &[ScopeRef::pool("chat")])
+        .unwrap();
+    let bound = selected.forward(1).unwrap();
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    bound.write_admission(&mut out).unwrap();
+    let good = busbar_plugin_abi::resource_admission::decode_echo(out.as_bytes()).unwrap();
+    assert!(bound.resolve_echo(good).is_ok());
+    for bad in [
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            invocation: 2,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            generation: 8,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho { route: 4, ..good },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            descriptor: 2,
+            ..good
+        },
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            instance: "plane/other",
+            ..good
+        },
+    ] {
+        assert!(matches!(
+            bound.resolve_echo(bad),
+            Err(ResourceError::Binding)
+        ));
+    }
+}
+
+#[test]
+fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
+    use busbar_kernel::plane_driver::port_routes::Mounted;
+    use busbar_plugin_abi::resource_admission::{write_selection, Scope};
+    let inventory = build(&caller(), vec![fact("chat", 1)]).unwrap();
+    let mut out = busbar_plugin_abi::records::Reply::new();
+    write_selection(
+        &mut out,
+        &[Scope {
+            kind: "pool",
+            value: "chat",
+        }],
+    )
+    .unwrap();
+    let mut mounted = Mounted {
+        route: 3,
+        methods: 4,
+        flags: 0,
+        auth: 1,
+        effective: 1,
+        pattern: "/requests".into(),
+        cred_header: None,
+        catalog: false,
+        resource_kinds: vec!["agent".into()],
+    };
+    assert!(inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .is_err());
+    mounted.resource_kinds = vec!["pool".into()];
+    mounted.route = 4;
+    assert!(inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .is_err());
+    mounted.route = 3;
+    let selected = inventory
+        .select_wire(request(1), &mounted, out.as_bytes())
+        .unwrap();
+    selected
+        .request()
+        .with_selection_input(|input, body| {
+            assert_eq!(input.route, 3);
+            assert_eq!(input.request_id, 1);
+            assert_eq!(input.auth, 0);
+            assert!(input.identity.is_empty());
+            assert_eq!(input.path, "/requests");
+            assert_eq!(body, b"request");
+        })
+        .unwrap();
 }
 
 #[test]
@@ -117,7 +214,7 @@ fn valid_chat_reference_cannot_authorize_secret_at_the_same_endpoint() {
     let candidate = secret.candidate();
     assert!(matches!(
         chat.validate(
-            chat.echo(),
+            echo(&chat),
             &candidate,
             secret.dialect(),
             secret.model(),
@@ -140,7 +237,7 @@ fn permitted_descriptor_moves_exact_exchange_into_validated_custody() {
     let candidate = descriptor.candidate();
     let validated = forward
         .validate(
-            forward.echo(),
+            echo(&forward),
             &candidate,
             descriptor.dialect(),
             descriptor.model(),
@@ -166,7 +263,7 @@ fn echo_is_bound_to_invocation_and_inventory_not_just_numeric_descriptor() {
     let descriptor = forward.descriptor();
     assert!(matches!(
         forward.validate(
-            other.forward(1).unwrap().echo(),
+            echo(&other.forward(1).unwrap()),
             &descriptor.candidate(),
             descriptor.dialect(),
             descriptor.model(),
@@ -206,7 +303,7 @@ fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor(
     ] {
         assert!(matches!(
             forward.validate(
-                forward.echo(),
+                echo(&forward),
                 &descriptor.candidate(),
                 descriptor.dialect(),
                 descriptor.model(),
@@ -219,7 +316,7 @@ fn actual_method_path_upstream_or_secondary_exchange_cannot_override_descriptor(
     assert!(
         matches!(
             forward.validate(
-                forward.echo(),
+                echo(&forward),
                 &descriptor.candidate(),
                 descriptor.dialect(),
                 descriptor.model(),
@@ -278,5 +375,45 @@ fn unknown_upstreams_duplicate_descriptors_and_undeclared_kinds_refuse_inventory
     assert!(matches!(
         build(&owner, vec![wrong_kind]),
         Err(ResourceError::Kind)
+    ));
+}
+
+#[test]
+fn exact_pool_member_projection_refuses_unknown_or_model_like_resource_facts() {
+    let owner = caller();
+    let mut wrong_pool = fact("chat", 1);
+    wrong_pool.forwards[0].pool = "unconfigured".into();
+    assert!(matches!(
+        build(&owner, vec![wrong_pool]),
+        Err(ResourceError::Upstream)
+    ));
+    let mut wrong_member = fact("chat", 1);
+    wrong_member.forwards[0].member = "shared".into();
+    assert!(matches!(
+        build(&owner, vec![wrong_member]),
+        Err(ResourceError::Upstream)
+    ));
+    let targets: Targets = Arc::new(|_, _| {
+        let mut target = MemberTarget::bare();
+        target.identity = busbar_kernel::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: "fixture".into(),
+            model: "invented".into(),
+        };
+        Some(target)
+    });
+    let upstreams: Arc<dyn Upstreams> = Arc::new(ConfiguredUpstreams::from_definitions(
+        BTreeMap::from([("shared".into(), upstream())]),
+    ));
+    assert!(matches!(
+        ResourceInventory::build(
+            &owner,
+            7,
+            vec!["pool".into()],
+            vec![fact("chat", 1)],
+            upstreams,
+            targets,
+            1 << 20
+        ),
+        Err(ResourceError::Unsupported)
     ));
 }

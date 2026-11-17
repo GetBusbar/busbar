@@ -309,6 +309,7 @@ struct Seen {
     /// Render grammar: 0 = before RESPOND, 1 = head, 2 = after BODY, 3 = trailers, 4 = after END.
     render: u8,
     demux: bool,
+    resource_echo: bool,
     attempt_end: bool,
     selected: bool,
     prepared: bool,
@@ -456,6 +457,9 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::RESPOND | t::BODY | t::MSG | t::END | t::TRAILERS => flow,
         t::FORWARD | t::EXPECT => call == Call::Request || call == Call::Piece(p::FROM_CORE),
         t::UP_CARRIER => upstream,
+        t::RESOURCE_ECHO => {
+            call == Call::Upstream && !core::mem::replace(&mut s.resource_echo, true)
+        }
         g::H_METHOD | g::H_PATH | t::UP_SCOPE => s.head && (upstream || flow),
         g::PAIR => upstream || flow,
         t::UP_BODY | t::UP_MSG | t::UP_END | t::UP_NEW | t::EX_MSG | t::UP_CUT => upstream || flow,
@@ -513,9 +517,13 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
             s.head = true;
             s.up = true;
         }
-        t::UP_CARRIER | g::H_METHOD | g::H_PATH | t::UP_SCOPE | t::UP_BODY | t::UP_MSG => {
-            s.up = true
-        }
+        t::RESOURCE_ECHO
+        | t::UP_CARRIER
+        | g::H_METHOD
+        | g::H_PATH
+        | t::UP_SCOPE
+        | t::UP_BODY
+        | t::UP_MSG => s.up = true,
         t::UP_END | t::UP_CUT | t::EX_MSG => s.up = true,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => {
             s.intent = true
@@ -560,6 +568,9 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
         }
     };
     Ok(match rec.tag {
+        t::RESOURCE_ECHO => PlaneOut::ResourceEcho(
+            busbar_plugin_abi::resource_admission::echo_record(*rec).map_err(|_| RecErr::Size)?,
+        ),
         t::RESPOND => {
             let r: p::Respond = rec.pod()?;
             let status = u16::try_from(r.status).map_err(|_| RecErr::Size)?;
@@ -1700,6 +1711,52 @@ fn admin_answer(op: u32, recs: Records<'_>) -> Result<(), FaultReason> {
 mod tests {
     use super::*;
     use busbar_plugin_abi::records::{Reply, Writer};
+
+    #[test]
+    fn resource_echo_is_unique_upstream_only_and_checked_before_delivery() {
+        use busbar_plugin_abi::resource_admission::{write_echo, DescriptorEcho};
+        let mut out = Reply::new();
+        let echo = DescriptorEcho {
+            invocation: 1,
+            generation: 7,
+            route: 3,
+            descriptor: 9,
+            instance: "plane/test",
+        };
+        write_echo(&mut out, echo).unwrap();
+        out.put(g::H_METHOD, b"POST").unwrap();
+        out.put(g::H_PATH, b"/generate").unwrap();
+        out.put(t::UP_BODY, b"{}").unwrap();
+        let mut delivered = false;
+        decode_answer(
+            Call::Upstream,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |item| {
+                if let PlaneOut::ResourceEcho(got) = item {
+                    assert_eq!(got, echo);
+                    delivered = true;
+                }
+            },
+        )
+        .unwrap();
+        assert!(delivered);
+        assert!(decode_answer(
+            Call::Request,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+        write_echo(&mut out, echo).unwrap();
+        assert!(decode_answer(
+            Call::Upstream,
+            false,
+            Records::new(out.as_bytes()),
+            &mut |_| panic!("partial delivery")
+        )
+        .is_err());
+    }
 
     fn route(r: &mut Reply, route: u32, methods: u32, flags: u32, auth: u32, pattern: &str) {
         let rec = p::RouteRec {

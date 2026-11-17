@@ -3,14 +3,12 @@
 
 pub use busbar_contract::config::{neg1, ModelCfg};
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use busbar_contract::secret_ref::SecretRef;
-
-use super::provider_grammar::{Form, ValueSeed};
 
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
@@ -164,6 +162,8 @@ pub struct HealthCfg {
 #[derive(Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDef {
+    #[serde(skip)]
+    pub authored: AuthoredProvider,
     pub protocol: String,
     pub base_url: String,
     #[serde(default)]
@@ -222,6 +222,8 @@ pub struct ProviderDef {
 #[derive(Deserialize)]
 #[serde(remote = "ProviderDef", deny_unknown_fields)]
 struct ProviderDefCore {
+    #[serde(skip)]
+    authored: AuthoredProvider,
     protocol: String,
     base_url: String,
     #[serde(default)]
@@ -249,6 +251,7 @@ struct ProviderDefCore {
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
 #[derive(Clone)]
 pub struct ProviderDeploy {
+    pub authored: AuthoredProvider,
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
     /// (`api_key_env: VAR` becomes `api_key: { env: VAR }`).
     pub api_key: SecretRef,
@@ -324,6 +327,8 @@ impl ProviderDeploy {
 #[derive(Deserialize)]
 #[serde(remote = "ProviderDeploy", deny_unknown_fields)]
 struct ProviderDeployCore {
+    #[serde(skip)]
+    authored: AuthoredProvider,
     api_key: SecretRef,
     #[serde(default)]
     protocol: Option<String>,
@@ -351,15 +356,8 @@ struct ProviderDeployCore {
     options: ProviderTable,
 }
 
-/// Per-provider auth-style override: an OPAQUE style word (BUSBAR-1.6.0.md #50: "the auth style
-/// resolves ... as opaque strings"; arch-audit u29 F1). The words a provider may name are the
-/// outbound styles the loaded auth plugins DECLARE ([`crate::preflight::declared_styles`]: linked
-/// and dropped in), read at parse; the kernel names none. A word no loaded plugin declares is a
-/// deserialize error in serde's own unknown-variant words over the declared styles in the host's one
-/// listing order (ranked first: the previous release's four, in its order, as their plugins rank
-/// them), so a configuration the previous release refused for an unknown word is refused with its
-/// text as the prefix. What a style needs (a `token_url`, an endpoint its credential names) is the
-/// flag its plugin declares beside it, never its name.
+/// Opaque provider auth selection: either an admitted outbound style or an explicit auth
+/// instance. The native binding pass resolves its owner against the candidate image set.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 pub struct ProviderAuth(String);
@@ -379,11 +377,18 @@ impl ProviderAuth {
 impl<'de> Deserialize<'de> for ProviderAuth {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let word = String::deserialize(d)?;
-        let declared = crate::preflight::declared_styles();
-        provider_auth_from_declared_word(word, &declared).map_err(serde::de::Error::custom)
+        // May name either an admitted outbound style or an explicit auth instance. The
+        // immutable native binding pass resolves the owner; a process-global list cannot.
+        if word.is_empty() || word.chars().any(char::is_control) {
+            return Err(serde::de::Error::custom(
+                "auth must name a style or instance",
+            ));
+        }
+        Ok(Self(word))
     }
 }
 
+#[cfg(test)]
 fn provider_auth_from_declared_word(
     word: String,
     declared: &[busbar_contract::auth_calls::DeclaredStyle],
@@ -394,6 +399,7 @@ fn provider_auth_from_declared_word(
     Err(unknown_style(&word, declared))
 }
 
+#[cfg(test)]
 fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredStyle]) -> String {
     let quoted: Vec<String> = declared.iter().map(|s| format!("`{}`", s.name)).collect();
     match quoted.as_slice() {
@@ -409,7 +415,46 @@ fn unknown_style(word: &str, declared: &[busbar_contract::auth_calls::DeclaredSt
 
 pub type ProviderTable = serde_json::Map<String, Value>;
 
+/// Source positions retained until merged provider validation; never credential values.
+#[derive(Clone, Debug, Default)]
+pub struct AuthoredProvider {
+    pub keys: BTreeSet<String>,
+    pub unset: BTreeSet<String>,
+}
+
+const NULLABLE_PROVIDER_KEYS: &[&str] = &[
+    "protocol",
+    "base_url",
+    "health",
+    "error_map",
+    "path",
+    "path_base",
+    "token_url",
+    "scope",
+    "subject",
+    "auth",
+    "allow_metadata_hosts",
+];
+
+trait AuthoredEntry {
+    fn note_authored(&mut self, authored: AuthoredProvider);
+}
+impl AuthoredEntry for ProviderCfg {
+    fn note_authored(&mut self, _authored: AuthoredProvider) {}
+}
+impl AuthoredEntry for ProviderDef {
+    fn note_authored(&mut self, authored: AuthoredProvider) {
+        self.authored = authored;
+    }
+}
+impl AuthoredEntry for ProviderDeploy {
+    fn note_authored(&mut self, authored: AuthoredProvider) {
+        self.authored = authored;
+    }
+}
+
 pub const CORE_PROVIDER_KEYS: &[&str] = &[
+    "protocol",
     "api_key",
     "base_url",
     "path",
@@ -459,7 +504,8 @@ macro_rules! plane_fields {
     ($($ty:ty),+ $(,)?) => {$(
         impl PlaneFields for $ty {
             fn plane_table(&self) -> ProviderTable {
-                // These are the only typed fields not owned by core. Credentials never enter
+                // The legacy internal table retains its protocol discriminator; native projection
+                // excludes it using CORE_PROVIDER_KEYS. Credentials never enter
                 // this projection, even transiently while constructing an intermediate object.
                 let Value::Object(mut table) = serde_json::json!({
                     "protocol": self.protocol, "error_map": self.error_map,
@@ -649,19 +695,17 @@ macro_rules! provider_entry {
                         map: A,
                     ) -> Result<$ty, A::Error> {
                         let mut options = ProviderTable::new();
+                        let mut authored = AuthoredProvider::default();
                         let mut entry = $core::deserialize(
                             serde::de::value::MapAccessDeserializer::new(OptionsAside {
                                 inner: map,
                                 keys: $keys,
-                                form: Form::$form,
                                 options: &mut options,
+                                authored: &mut authored,
+                                current: None,
                             }),
                         )?;
-                        if let Some(descriptor) = crate::plane_driver::door::provider_keys(
-                            crate::plane_driver::registry::plane_decls(),
-                        ) {
-                            Form::$form.omit_unset(&mut options, descriptor);
-                        }
+                        entry.note_authored(authored);
                         entry.options = options;
                         Ok(entry)
                     }
@@ -707,8 +751,9 @@ const ENTRY_KEYS: &[&str] = &[
 struct OptionsAside<'a, A> {
     inner: A,
     keys: &'static [&'static str],
-    form: Form,
     options: &'a mut ProviderTable,
+    authored: &'a mut AuthoredProvider,
+    current: Option<String>,
 }
 
 impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAside<'_, A> {
@@ -723,20 +768,14 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
             let Some(key) = self.inner.next_key::<String>()? else {
                 return Ok(None);
             };
+            self.authored.keys.insert(key.clone());
             if self.keys.contains(&key.as_str()) {
+                self.current = Some(key.clone());
                 return seed
                     .deserialize(IntoDeserializer::<A::Error>::into_deserializer(key))
                     .map(Some);
             }
-            let descriptor = crate::plane_driver::door::provider_keys(
-                crate::plane_driver::registry::plane_decls(),
-            );
-            let field =
-                descriptor.and_then(|d| self.form.table(d).keys.iter().find(|k| k.name == key));
-            let value = match field {
-                Some(field) => self.inner.next_value_seed(ValueSeed::field(field))?,
-                None => self.inner.next_value::<Value>()?,
-            };
+            let value = self.inner.next_value::<Value>()?;
             if self.options.insert(key.clone(), value).is_some() {
                 return Err(<A::Error as Error>::custom(format!(
                     "duplicate field `{key}`"
@@ -749,7 +788,156 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for OptionsAsi
         &mut self,
         seed: V,
     ) -> Result<V::Value, A::Error> {
-        self.inner.next_value_seed(seed)
+        // Only nullable non-credential core fields need tombstones. Credential values still
+        // deserialize directly through their guarded typed reader.
+        let key = self.current.take().unwrap_or_default();
+        if NULLABLE_PROVIDER_KEYS.contains(&key.as_str()) {
+            let mut null = false;
+            let value = self.inner.next_value_seed(TrackNull {
+                seed,
+                null: &mut null,
+            })?;
+            if null {
+                self.authored.unset.insert(key);
+            }
+            Ok(value)
+        } else {
+            self.inner.next_value_seed(seed)
+        }
+    }
+}
+
+// Observe the outer optional field without rebuilding its value: YAML's typed errors,
+// duplicate checks and source locations stay with the original deserializer.
+struct TrackNull<'a, S> {
+    seed: S,
+    null: &'a mut bool,
+}
+impl<'de, S: serde::de::DeserializeSeed<'de>> serde::de::DeserializeSeed<'de> for TrackNull<'_, S> {
+    type Value = S::Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, inner: D) -> Result<Self::Value, D::Error> {
+        self.seed.deserialize(NullDeserializer {
+            inner,
+            null: self.null,
+        })
+    }
+}
+struct NullDeserializer<'a, D> {
+    inner: D,
+    null: &'a mut bool,
+}
+macro_rules! forward_value {
+    ($($method:ident),+ $(,)?) => {$(
+        fn $method<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            self.inner.$method(visitor)
+        }
+    )+};
+}
+impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de> for NullDeserializer<'_, D> {
+    type Error = D::Error;
+    forward_value!(
+        deserialize_any,
+        deserialize_bool,
+        deserialize_i8,
+        deserialize_i16,
+        deserialize_i32,
+        deserialize_i64,
+        deserialize_i128,
+        deserialize_u8,
+        deserialize_u16,
+        deserialize_u32,
+        deserialize_u64,
+        deserialize_u128,
+        deserialize_f32,
+        deserialize_f64,
+        deserialize_char,
+        deserialize_str,
+        deserialize_string,
+        deserialize_bytes,
+        deserialize_byte_buf,
+        deserialize_unit,
+        deserialize_seq,
+        deserialize_map,
+        deserialize_identifier,
+        deserialize_ignored_any
+    );
+    fn deserialize_option<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_option(NullVisitor {
+            inner: visitor,
+            null: self.null,
+        })
+    }
+    fn deserialize_unit_struct<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_unit_struct(name, visitor)
+    }
+    fn deserialize_newtype_struct<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_newtype_struct(name, visitor)
+    }
+    fn deserialize_tuple<V: serde::de::Visitor<'de>>(
+        self,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_tuple(len, visitor)
+    }
+    fn deserialize_tuple_struct<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_tuple_struct(name, len, visitor)
+    }
+    fn deserialize_struct<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_struct(name, fields, visitor)
+    }
+    fn deserialize_enum<V: serde::de::Visitor<'de>>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, D::Error> {
+        self.inner.deserialize_enum(name, variants, visitor)
+    }
+    fn is_human_readable(&self) -> bool {
+        self.inner.is_human_readable()
+    }
+}
+struct NullVisitor<'a, V> {
+    inner: V,
+    null: &'a mut bool,
+}
+impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de> for NullVisitor<'_, V> {
+    type Value = V::Value;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.expecting(f)
+    }
+    fn visit_none<E: serde::de::Error>(self) -> Result<V::Value, E> {
+        *self.null = true;
+        self.inner.visit_none()
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<V::Value, E> {
+        *self.null = true;
+        self.inner.visit_unit()
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, de: D) -> Result<V::Value, D::Error> {
+        self.inner.visit_some(de)
     }
 }
 
@@ -759,10 +947,6 @@ pub fn judge_options(name: &str, provider: &ResolvedProvider) -> Result<(), Stri
 
 pub fn judge_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
     judge_table(name, &with_options(def, &def.options), false)
-}
-
-pub(super) fn judge_unused_catalog_entry(name: &str, def: &ProviderDef) -> Result<(), String> {
-    judge_table(name, &with_options(def, &def.options), true)
 }
 
 fn judge_table(name: &str, table: &ProviderTable, defer_unowned: bool) -> Result<(), String> {
@@ -827,29 +1011,60 @@ const ERROR_MAP_KEY: &str = "error_map";
 impl ResolvedProvider {
     #[must_use]
     pub fn merge(def: &ProviderDef, deploy: &ProviderDeploy) -> Self {
+        let optional = |key: &str| !deploy.authored.unset.contains(key);
+        let mut catalog = with_options(def, &def.options);
+        // A serde default is not an authored plane property or a schema default.
+        if !def.authored.keys.contains(ERROR_MAP_KEY) && def.error_map.is_empty() {
+            catalog.remove(ERROR_MAP_KEY);
+        }
+        let mut table = merge_tables(catalog, with_options(deploy, &deploy.options));
+        for key in &deploy.authored.unset {
+            if !CORE_PROVIDER_KEYS.contains(&key.as_str()) || key == dialect_key() {
+                table.insert(key.clone(), Value::Null);
+            }
+        }
         Self {
-            base_url: deploy
-                .base_url
-                .clone()
-                .unwrap_or_else(|| def.base_url.clone()),
+            base_url: if optional("base_url") {
+                deploy
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| def.base_url.clone())
+            } else {
+                String::new()
+            },
             api_key: deploy.api_key.clone(),
 
-            health: deploy.health.clone().or_else(|| def.health.clone()),
-            path: deploy.path.clone().or_else(|| def.path.clone()),
-            path_base: deploy.path_base.clone().or_else(|| def.path_base.clone()),
-            token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
-            scope: deploy.scope.clone().or_else(|| def.scope.clone()),
-            subject: deploy.subject.clone().or_else(|| def.subject.clone()),
-            auth: deploy.auth.clone().or_else(|| def.auth.clone()),
+            health: optional("health")
+                .then(|| deploy.health.clone().or_else(|| def.health.clone()))
+                .flatten(),
+            path: optional("path")
+                .then(|| deploy.path.clone().or_else(|| def.path.clone()))
+                .flatten(),
+            path_base: optional("path_base")
+                .then(|| deploy.path_base.clone().or_else(|| def.path_base.clone()))
+                .flatten(),
+            token_url: optional("token_url")
+                .then(|| deploy.token_url.clone().or_else(|| def.token_url.clone()))
+                .flatten(),
+            scope: optional("scope")
+                .then(|| deploy.scope.clone().or_else(|| def.scope.clone()))
+                .flatten(),
+            subject: optional("subject")
+                .then(|| deploy.subject.clone().or_else(|| def.subject.clone()))
+                .flatten(),
+            auth: optional("auth")
+                .then(|| deploy.auth.clone().or_else(|| def.auth.clone()))
+                .flatten(),
 
-            allow_metadata_hosts: deploy
-                .allow_metadata_hosts
-                .clone()
-                .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-            table: merge_tables(
-                with_options(def, &def.options),
-                with_options(deploy, &deploy.options),
-            ),
+            allow_metadata_hosts: if optional("allow_metadata_hosts") {
+                deploy
+                    .allow_metadata_hosts
+                    .clone()
+                    .unwrap_or_else(|| def.allow_metadata_hosts.clone())
+            } else {
+                Vec::new()
+            },
+            table,
         }
     }
 
@@ -921,6 +1136,7 @@ impl std::fmt::Debug for ProviderCfg {
             auth,
             allow_metadata_hosts,
             options,
+            ..
         } = self;
         f.debug_struct("ProviderCfg")
             .field("protocol", protocol)
@@ -955,6 +1171,7 @@ impl std::fmt::Debug for ProviderDef {
             auth,
             allow_metadata_hosts,
             options,
+            ..
         } = self;
         f.debug_struct("ProviderDef")
             .field("protocol", protocol)
@@ -989,6 +1206,7 @@ impl std::fmt::Debug for ProviderDeploy {
             allow_metadata_hosts,
             health,
             options,
+            ..
         } = self;
         f.debug_struct("ProviderDeploy")
             .field("api_key", api_key)
