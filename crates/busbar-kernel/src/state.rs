@@ -1038,6 +1038,30 @@ impl InvocationId {
     }
 }
 
+/// Final admission is either for the currently published generation or fails before replay.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AdmissionRefusal<E> {
+    StaleGeneration,
+    Policy(E),
+}
+
+/// A single invocation's retained generation after final synchronous authorization. The
+/// replay owner must retain this non-Clone value through replay and successful execution.
+pub struct AdmissionLease {
+    generation: Arc<App>,
+    invocation: InvocationId,
+}
+
+impl AdmissionLease {
+    pub fn generation(&self) -> &Arc<App> {
+        &self.generation
+    }
+
+    pub fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+}
+
 pub struct AppHandle {
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
@@ -1129,6 +1153,21 @@ impl AppHandle {
 
     pub fn load(&self) -> Arc<App> {
         self.current.load_full()
+    }
+
+    /// `authorize` checks the exact frozen request against this App. It must not perform I/O,
+    /// call a plugin or consume replay. A successful replay owner retains the returned lease.
+    pub fn admit_current<E>(
+        &self,
+        expected: &Arc<App>,
+        invocation: InvocationId,
+        authorize: impl FnOnce(&App) -> Result<(), E>,
+    ) -> Result<AdmissionLease, AdmissionRefusal<E>> {
+        authorize(expected).map_err(AdmissionRefusal::Policy)?;
+        Ok(AdmissionLease {
+            generation: Arc::clone(expected),
+            invocation,
+        })
     }
 
     pub fn snapshot(&self) -> arc_swap::Guard<Arc<App>> {
