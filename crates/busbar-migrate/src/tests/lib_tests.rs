@@ -384,7 +384,7 @@ fn a_write_back_that_loses_the_stamp_is_refused() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), STAMPED);
 }
 
-/// #359 SEC-L1: the upgrade writes no plaintext acceptance; the report names each root listener the planned
+/// #359 SEC-L1: the upgrade writes no plaintext acceptance; the plan warns for each root listener the planned
 /// document leaves without TLS, with its one-line remedy. A listener with TLS (a folded overlay `tls`
 /// included) or an operator-written acceptance gets no line.
 #[test]
