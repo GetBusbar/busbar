@@ -63,3 +63,7 @@ impl std::fmt::Debug for PreparedRateAttempt {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "native_attempt_tests.rs"]
+mod tests;
