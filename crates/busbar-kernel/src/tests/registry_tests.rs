@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::overlaps;
+use super::{overlaps, Generation};
 use crate::grammar::Selector;
 
 #[test]
