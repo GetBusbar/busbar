@@ -154,7 +154,10 @@ async fn original_receipt_requires_exact_signed_run_applied_and_retains_credit()
         .unwrap();
     let stored = reopened.read_records(BUDGET).await.unwrap();
     assert_eq!(stored.len(), 2);
-    assert_eq!(stored[1], run.records()[0]);
+    assert_eq!(
+        stored[1],
+        busbar_kernel_wal::JournalRecord::decode(&run.records()[0].body).unwrap()
+    );
     assert_eq!(
         reopened.is_confirmed(&run),
         Err(busbar_kernel::persistence::journal::runtime::RuntimeError::Authority),
