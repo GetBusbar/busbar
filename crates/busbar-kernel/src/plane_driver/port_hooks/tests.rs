@@ -25,8 +25,13 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::with_bound(16)
+    }
+    fn with_bound(bound: usize) -> Self {
         use crate::host_services::{InvocationContext, KernelServices, ServingGeneration};
-        let core = Arc::new(KernelServices::new());
+        let core = Arc::new(KernelServices::new().with_pool(Arc::new(
+            crate::host_services::BlockingPool::new(tokio::runtime::Handle::current(), bound),
+        )));
         let caller = busbar_contract::services::Caller::for_test(
             Arc::from("native-test"),
             busbar_contract::abi::mechanism::KindCode::Plane,
@@ -471,4 +476,31 @@ async fn fallbacks_reapply_their_own_grants_and_report_their_configured_names() 
     let seen = spy.seen.lock().unwrap();
     assert!(seen[0].prompt && seen[0].identity && seen[0].end_user);
     assert!(!seen[0].body);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_retained_generation_pool_refuses_the_hook_without_starting_it() {
+    let fixture = Fixture::with_bound(1);
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    fixture
+        .context
+        .offload_hook(Box::new(move || {
+            let _ = entered.send(());
+            let _ = blocked.recv();
+        }))
+        .unwrap();
+    started.await.unwrap();
+    let spy = Arc::new(Spy {
+        facts: 0,
+        seen: Mutex::default(),
+    });
+    let call = configured(spy.clone(), PromptAccess::No, UserAccess::No);
+    let result = fixture.invoke(&call, &Projection::default()).await;
+    let _ = release.send(());
+    assert!(
+        matches!(result, Err(call::Failed::Port)),
+        "a hook cannot bypass its generation's full offload pool"
+    );
+    assert!(spy.seen.lock().unwrap().is_empty());
 }
