@@ -1556,7 +1556,7 @@ pub async fn build_app_from_config(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn build_app_from_config_with_store(
-    cfg: config::RootCfg,
+    mut cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
     overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     base_hook_names: std::collections::HashSet<String>,
@@ -1567,6 +1567,11 @@ pub async fn build_app_from_config_with_store(
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The live recorder's allocated budget belongs to the retained generation. A config
+    // candidate can request another declaration, but changing that allocation needs restart.
+    if let Some(limits) = prior.and_then(|app| app.limits.as_ref()) {
+        cfg.limits.key_gauge_limit = limits.key_gauge_limit;
+    }
     let limits = cfg.limits.clone();
     in_build_scope(
         limits,

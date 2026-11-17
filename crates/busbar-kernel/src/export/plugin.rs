@@ -7,7 +7,7 @@ use crate::plugin_routes::PluginHttpDispatch;
 use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
 use busbar_contract::export_stream::ExportStream;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 // The export sinks' config admission, boot (open, start), reload refresh and route table run off
 // the request path; the request path below only delivers to and serves from what they opened.
@@ -64,35 +64,9 @@ pub struct Exports {
     pub(crate) status_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
-// The durable audit drain still uses this observer.
-// It receives only the complete application's registry, after AppHandle construction.
-pub(crate) static SINKS: OnceLock<Arc<Exports>> = OnceLock::new();
-
+/// Connect the complete generation's audit observer after AppHandle and routes exist.
 pub fn publish_observers(app: &crate::state::App) -> Result<(), String> {
-    SINKS
-        .set(Arc::clone(&app.exports))
-        .map_err(|_| "export observers already belong to a serving generation".to_string())?;
-    Ok(())
-}
-
-/// Once OPEN completes, reloads cannot resize the live recorder's projection budget.
-/// Outer None means startup admission has not happened yet; inner None means no recorder.
-pub(crate) fn boot_recorder_requirements(
-) -> Option<Option<busbar_contract::export_calls::RecorderRequirements>> {
-    SINKS.get().map(|sinks| {
-        sinks
-            .sinks
-            .iter()
-            .find(|sink| sink.scrape)
-            .and_then(|sink| sink.sink.recorder_requirements())
-    })
-}
-
-/// Hand each sink subscribed to `stream` its own record, rendered to its projection by `f`.
-pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Rendered) {
-    if let Some(exports) = SINKS.get() {
-        deliver_to(exports, stream, op, |projection, _| f(projection));
-    }
+    crate::audit::auditlog::publish_export_observers(app)
 }
 
 pub(super) fn deliver_to(

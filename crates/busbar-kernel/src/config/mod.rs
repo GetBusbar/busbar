@@ -1506,8 +1506,7 @@ impl ExportCfg {
 
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
-        let recorder =
-            crate::export::plugin::boot_recorder_requirements().unwrap_or(export.recorder);
+        let recorder = export.recorder;
         let key_gauge_limit = recorder
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
