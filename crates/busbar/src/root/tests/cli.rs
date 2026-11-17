@@ -1,135 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{help_rows, is_plane_flag, render_help};
-use crate::root::linked::CliHelpRow;
-
-fn blocks(help: &str) -> (&str, &str, &str) {
-    let first = help.lines().next().expect("the help has a first line");
-    let (_, rest) = help
-        .split_once("\nFlags:\n")
-        .expect("the help has its Flags: block");
-    let (flags, endpoints) = rest
-        .split_once("\nENDPOINTS (")
-        .expect("the Flags: block is followed by the ENDPOINTS block");
-    (first, flags, endpoints)
-}
-
-#[test]
-fn every_linked_row_reaches_the_help_in_its_place() {
-    let linked = help_rows();
-    let help = render_help("<VERSION>", &linked);
-    let (first, flags, endpoints) = blocks(&help);
-    let rows = || linked.iter().flat_map(|rows| rows.iter());
-    if let Some((_, tagline)) = rows().find(|(slot, _)| *slot == "tagline") {
-        assert_eq!(first, format!("busbar <VERSION> — {tagline}"));
-    } else {
-        assert_eq!(first, "busbar <VERSION>");
-    }
-    for (slot, block) in [("flag", flags), ("endpoint", endpoints)] {
-        let mut from = 0;
-        for (_, text) in rows().filter(|(s, _)| *s == slot) {
-            let at = block[from..]
-                .find(text)
-                .unwrap_or_else(|| panic!("the `{slot}` row {text:?} is in its block, in order"));
-            from += at + text.len();
-        }
-    }
-    let bare = render_help("<VERSION>", &[]);
-    let mut from = 0;
-    for line in bare.lines().skip(1) {
-        let at = help[from..]
-            .find(line)
-            .unwrap_or_else(|| panic!("the root's own line {line:?} is in the help, in order"));
-        from += at + line.len();
-    }
-}
-
-#[test]
-fn a_plane_compiled_out_takes_its_help_rows_with_it() {
-    let linked = help_rows();
-    let has_flag = |rows: &[CliHelpRow]| rows.iter().any(|(slot, _)| *slot == "flag");
-    let kept: Vec<&[CliHelpRow]> = linked.iter().copied().filter(|r| !has_flag(r)).collect();
-    let help = render_help("<VERSION>", &kept);
-    let bare = render_help("<VERSION>", &[]);
-    assert_eq!(
-        blocks(&help).1,
-        blocks(&bare).1,
-        "the root's own Flags: rows alone"
-    );
-
-    for rows in &linked {
-        for (slot, text) in rows.iter() {
-            if *slot == "tagline" {
-                continue;
-            }
-            assert_eq!(
-                help.contains(text),
-                !has_flag(rows),
-                "a compiled-out plane's {slot} row leaves with it, a kept plane's stays: {text:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_declared_endpoint_row_lands_inside_the_endpoints_block() {
-    let rows: &[&[CliHelpRow]] = &[
-        &[(
-            "endpoint",
-            "    POST /planted-a                        first",
-        )],
-        &[
-            ("flag", "    --planted-flag      a planted row"),
-            (
-                "endpoint",
-                "    POST /planted-b                        second",
-            ),
-        ],
-    ];
-    let help = render_help("<VERSION>", rows);
-    let (_, block) = help
-        .split_once("\nENDPOINTS (once running, listen address from config.yaml `listen`):\n")
-        .expect("the help has its ENDPOINTS block");
-    assert!(
-        block.starts_with(
-            "    POST /planted-a                        first\n    POST /planted-b                        second\n    GET  /stats  /healthz  /metrics\n"
-        ),
-        "{block}"
-    );
-    assert!(!block.contains("--planted-flag"), "{block}");
-    let bare = render_help("<VERSION>", &[]);
-    assert!(
-        bare.contains(
-            "\nENDPOINTS (once running, listen address from config.yaml `listen`):\n    GET  /stats  /healthz  /metrics\n"
-        ),
-        "{bare}"
-    );
-}
-
-#[test]
-fn a_declared_plane_flag_is_accepted_and_nothing_else_is() {
-    let rows: &[&[CliHelpRow]] = &[&[(
-        "flag",
-        "    --planted-flag      a planted row\n                        its second line",
-    )]];
-    assert!(is_plane_flag(rows, "--planted-flag"));
-    assert!(!is_plane_flag(rows, "a"));
-    assert!(!is_plane_flag(rows, "--second"));
-    assert!(!is_plane_flag(&[], "--planted-flag"));
-    let linked = help_rows();
-    for rows in &linked {
-        for (slot, lines) in rows.iter() {
-            if *slot == "flag" {
-                let flag = lines
-                    .split_whitespace()
-                    .next()
-                    .expect("a flag row names its flag");
-                assert!(is_plane_flag(&linked, flag), "{flag}");
-            }
-        }
-    }
-}
+use super::{early_cli_flags_of, render_help, Argv};
 
 #[test]
 fn the_list_plugins_header_heads_the_row_formats_columns() {
@@ -147,58 +19,10 @@ fn the_list_plugins_header_heads_the_row_formats_columns() {
 #[test]
 fn the_default_distributions_help_is_byte_identical() {
     assert_eq!(
-        render_help("<VERSION>", &help_rows()),
+        render_help("<VERSION>"),
         include_str!(
             "../../../../../testing/shadow-oracle/fixtures/law0/help-default-build-1.6.0.txt"
         )
-    );
-}
-
-#[cfg(linked_every_plane_door)]
-#[test]
-fn a_dropped_in_planes_help_rows_are_read_off_its_signed_rendering() {
-    use crate::root::loader::boot::{Candidate, Origin};
-    use crate::root::loader::dispatch::kinds::plane::linked_cli_help;
-    use busbar_contract::abi::plane::cli_help;
-    let (door, help) = crate::LINKED
-        .plane_doors
-        .iter()
-        .find_map(|door| {
-            let help = linked_cli_help(*door).ok()??;
-            cli_help::rows(help)
-                .any(|(slot, _)| slot == cli_help::FLAG)
-                .then_some((*door, help))
-        })
-        .expect("the default build links a plane door stating a `Flags:` row");
-    let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states itself");
-    let dropped = Candidate::from_rendering(
-        stated,
-        None,
-        Origin::Dropped {
-            file: "dropped-plane.tar.gz".into(),
-            bytes: std::sync::Arc::new(b"not a library: a help read never opens it".to_vec()),
-        },
-    )
-    .expect("the rendering states a candidate");
-    let texts = super::dropped_help(&[dropped]);
-    assert_eq!(
-        texts,
-        vec![help.to_string()],
-        "the linked door's rows, read off its rendering"
-    );
-    let text: &'static str = Box::leak(texts[0].clone().into_boxed_str());
-    let rows: Vec<CliHelpRow> = cli_help::rows(text).collect();
-    let flag = rows
-        .iter()
-        .find(|(slot, _)| *slot == cli_help::FLAG)
-        .and_then(|(_, lines)| lines.split_whitespace().next())
-        .expect("a flag row names its flag");
-    assert!(is_plane_flag(&[&rows], flag), "{flag} is a plane flag");
-    let linked = Candidate::linked(door).expect("the linked door is a candidate");
-    assert_eq!(
-        super::dropped_help(&[linked]),
-        Vec::<String>::new(),
-        "a linked door's rows are read once, off the door"
     );
 }
 
@@ -214,4 +38,93 @@ fn list_plugins_refuses_a_config_that_exists_but_cannot_be_parsed() {
     let message = refused.expect_err("a broken config must refuse, not inventory the default dir");
     assert!(message.contains("BUSBAR-3016"), "{message}");
     assert!(absent.is_ok(), "no config file is a bare inventory");
+}
+
+fn parsed(words: &[&str]) -> Argv {
+    Argv::parse(words.iter().copied())
+}
+
+/// WP1-GAP r3 §1.3, B-N9 and B2: `--stdio` with a value, twice, beside an exiting command or beside
+/// a principal transition is a usage refusal (exit 2), decided by the early arms.
+#[test]
+fn stdio_argument_rules_refuse_with_usage() {
+    for words in [
+        &["--stdio=mcp"][..],
+        &["--stdio", "--stdio"],
+        &["--stdio", "--help"],
+        &["--help", "--stdio"],
+        &["--stdio", "-h"],
+        &["--stdio", "--version"],
+        &["--stdio", "--validate"],
+        &["--stdio", "--list-plugins"],
+        &["--stdio", "--generate-signing-key"],
+        &[
+            "--stdio",
+            "--principal-transition",
+            "-",
+            "--transition-action",
+            "inspect",
+        ],
+    ] {
+        assert_eq!(early_cli_flags_of(&parsed(words)), Some(2), "{words:?}");
+    }
+    for words in [
+        &["--stdio"][..],
+        &["--stdio", "-c", "config.yaml"],
+        &["--stdio", "--providers", "providers.yaml"],
+    ] {
+        let argv = parsed(words);
+        assert!(argv.stdio, "{words:?}");
+        assert_eq!(early_cli_flags_of(&argv), None, "{words:?} serves");
+        assert_eq!(
+            super::ordinary_cli_flags_of(&argv),
+            None,
+            "{words:?} serves"
+        );
+    }
+    assert!(!parsed(&[]).stdio);
+}
+
+/// B-N1 and B2: the informational arms answer from the early group, before anything is scanned or
+/// read, so a configuration path that does not exist cannot change their answer.
+#[test]
+fn help_version_and_signing_key_touch_no_file() {
+    let absent = std::env::temp_dir().join(format!(
+        "busbar-early-arms-{}/no/such/config.yaml",
+        std::process::id()
+    ));
+    let absent = absent.to_str().expect("a UTF-8 temp path");
+    for arm in [
+        "--help",
+        "-h",
+        "--version",
+        "-V",
+        "--build-info",
+        "--generate-signing-key",
+    ] {
+        assert_eq!(
+            early_cli_flags_of(&parsed(&["-c", absent, arm])),
+            Some(0),
+            "{arm}"
+        );
+    }
+    assert!(!std::path::Path::new(absent).exists());
+    for late in ["--validate", "--list-plugins", "--print-metadata-blocklist"] {
+        assert_eq!(
+            early_cli_flags_of(&parsed(&[late])),
+            None,
+            "{late} reads the start grammar"
+        );
+    }
+}
+
+/// B-N10: the retired `--mcp-stdio` spelling is an unknown argument like any other; core holds no
+/// plugin flag, and the unknown-argument refusal stays in the late group (B2).
+#[test]
+fn an_unknown_flag_gets_the_generic_refusal() {
+    let argv = parsed(&["--mcp-stdio"]);
+    assert!(!argv.stdio);
+    assert_eq!(early_cli_flags_of(&argv), None);
+    assert_eq!(super::ordinary_cli_flags_of(&argv), Some(2));
+    assert!(!render_help("<VERSION>").contains("mcp-stdio"));
 }

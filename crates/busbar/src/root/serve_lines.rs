@@ -10,7 +10,7 @@ use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-use super::{DoorRequest, Served};
+use super::Served;
 
 pub(crate) use crate::root::off_path::serve_lines::session;
 pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
@@ -24,27 +24,6 @@ fn installed() -> &'static Result<Option<&'static str>, String> {
 #[must_use]
 pub(crate) fn carrier() -> Option<&'static str> {
     installed().as_ref().ok().copied().flatten()
-}
-
-#[must_use]
-pub(crate) fn refusal() -> Option<&'static str> {
-    installed().as_ref().err().map(String::as_str)
-}
-
-#[must_use]
-pub(crate) fn line_claim(served: &Served) -> Option<(usize, u32)> {
-    let carrier = carrier()?;
-    served.planes.iter().enumerate().find_map(|(p, plane)| {
-        plane
-            .snapshot
-            .claims
-            .iter()
-            .position(|c| {
-                c.carrier == carrier && c.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
-            })
-            .and_then(|i| u32::try_from(i).ok())
-            .map(|claim| (p, claim))
-    })
 }
 
 pub(crate) fn refuse(plane: &str, carrier: &str, sentence: &str) {
@@ -205,14 +184,12 @@ impl<R: AsyncRead + Unpin + Send> LineCaller<R> {
 pub(crate) async fn serve_lines(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     admission: Arc<ProcessAdmission>,
     stop: impl std::future::Future<Output = ()>,
 ) -> i32 {
     serve_lines_over(
         served,
         app,
-        pin,
         tokio::io::stdin(),
         tokio::io::stdout(),
         admission,
@@ -224,7 +201,6 @@ pub(crate) async fn serve_lines(
 pub(crate) async fn serve_lines_over<R, W, S>(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     reader: R,
     writer: W,
     admission: Arc<ProcessAdmission>,
@@ -243,111 +219,22 @@ where
     match one_line_plane(&serving) {
         Ok(Some(at)) => {
             let seat = served.ports[at].clone();
-            return serve_port_lines(seat, app, reader, writer, admission, stop).await;
+            serve_port_lines(seat, app, reader, writer, admission, stop).await
         }
-        Ok(None) => {}
+        // Boot judged `--stdio` before any instance opened (WP1-GAP r3 §1.3); a generation that
+        // lost its one line plane since is refused the same way, never served elsewhere.
+        Ok(None) => {
+            eprintln!(
+                "busbar: {}",
+                busbar_plugin_loader::instance::plane_sections::StdioRefusal::None
+            );
+            1
+        }
         Err(refusal) => {
             eprintln!("busbar: {PORT_LINE_CARRIER} serve refused to start: {refusal}");
-            return 1;
+            1
         }
     }
-    let Some(carrier) = carrier() else {
-        eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
-        return 1;
-    };
-    let Some((plane, claim)) = line_claim(&served) else {
-        eprintln!(
-            "busbar: no served plane claims the {carrier} transport: nothing to serve on stdin"
-        );
-        return 1;
-    };
-    let instance = served.planes[plane].instance.as_str();
-    let target = served.planes[plane].snapshot.claims[claim as usize]
-        .target
-        .clone();
-    let audience = served.planes[plane].snapshot.audience.clone();
-    let kernel = Arc::clone(&served.planes[plane].kernel);
-    let driver = Arc::clone(&served.planes[plane].driver);
-    let credential = std::env::var(env_credential(instance, carrier))
-        .ok()
-        .filter(|c| !c.is_empty());
-    let gov = match session(
-        app.load(),
-        instance,
-        carrier,
-        audience.as_deref(),
-        credential.as_deref(),
-    )
-    .await
-    {
-        Ok(gov) => gov,
-        Err(sentence) => {
-            refuse(instance, carrier, &sentence);
-            return 1;
-        }
-    };
-    tracing::info!(
-        governed = gov.is_governed(),
-        "{carrier} serve: session bound; serving on stdin/stdout"
-    );
-    let routes = match super::line_routes(served, pin) {
-        Ok(routes) => routes,
-        Err(e) => {
-            eprintln!("busbar: {carrier} serve refused to start: {e}");
-            return 1;
-        }
-    };
-    // The session's credential, moved into the one shared zeroising buffer each line's request
-    // clones (SP-AU6), never copied per line.
-    let credential = credential.map(|c| {
-        busbar_kernel::auth::CallerCredential::adopted(busbar_contract::Secret::new(c.into_bytes()))
-    });
-    run_io(carrier, reader, writer, admission, stop, move |caller| {
-        let principal = crate::root::off_path::serve_lines::session_principal(&gov);
-        let sink = Arc::clone(&caller);
-        let session = std::num::NonZeroU64::new(
-            driver
-                .open_carrier_session(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)))
-                .expect("served plane holds its core caller binding"),
-        )
-        .expect("kernel carrier sessions are minted above zero");
-        let answer = move |line: OwnedInput| {
-            let headers = axum::http::HeaderMap::new();
-            let req = DoorRequest {
-                method: axum::http::Method::POST,
-                uri: axum::http::Uri::try_from(target.as_str())
-                    .unwrap_or_else(|_| axum::http::Uri::from_static("/")),
-                headers,
-                request: line.request().clone(),
-                body: line.into_bytes(),
-                gov: gov.clone(),
-
-                credential: credential.clone(),
-
-                ticket: None,
-                host_ticket_admission: None,
-                app: app.load(),
-
-                scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
-                consumed_fields: Vec::new(),
-            };
-            let routes = Arc::clone(&routes);
-            let caller = Arc::clone(&caller);
-            async move {
-                let response = routes.answer_on_line(plane, claim, req, session).await;
-                let mut line = caller.spare.take();
-                collect(response, &mut line).await;
-                if line.is_empty() {
-                    caller.spare.give(line);
-                } else {
-                    terminate(&mut line);
-                    let _ = caller.out.send(line).await;
-                }
-            }
-        };
-        (answer, move || kernel.close_carrier_session(session.get()))
-    })
-    .await
 }
 
 /// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
@@ -654,20 +541,6 @@ async fn drain_units(
     units.abort_all();
     while units.join_next().await.is_some() {}
     ended
-}
-
-/// The answer's body, appended to `all`.
-async fn collect(response: axum::response::Response, all: &mut Vec<u8>) {
-    use http_body::Body as _;
-    let mut body = response.into_body();
-    while let Some(frame) =
-        std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
-    {
-        let Ok(frame) = frame else { break };
-        if let Ok(data) = frame.into_data() {
-            all.extend_from_slice(&data);
-        }
-    }
 }
 
 async fn read_line<R: AsyncBufReadExt + Unpin>(
