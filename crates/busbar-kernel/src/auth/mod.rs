@@ -1260,10 +1260,13 @@ async fn run_admin_chain(
                 },
                 |invocation| invocation.cx,
             );
-            let request = invocation.map_or_else(
-                || native_admin::http_request(method, target, headers, &[], now),
-                |invocation| invocation.request.view(chain_run::Request::new),
-            );
+            let Some(invocation) = invocation else {
+                // A diagnostic header-only call owns no original admission to charge. It may
+                // not fabricate a native request or spend the physical request's custody.
+                carried.no_verdict = true;
+                return (ChainVerdict::Denied, None);
+            };
+            let request = std::sync::Arc::clone(&invocation.request);
             let answer = if probe {
                 let mut future = native.prepare(name, cx, request);
                 let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -1782,21 +1785,22 @@ async fn judge_admin_invocation(
     headers: &HeaderMap,
 ) -> Result<(AdminVerdict, Vec<Strip>, Option<AdminWho>), VerifierUnavailable> {
     let app = &invocation.selected;
-    let (method, target) = invocation.request.view(|req| {
-        (
-            req.method.to_owned(),
-            if req.query.is_empty() {
-                req.path.to_owned()
-            } else {
-                format!("{}?{}", req.path, req.query)
-            },
-        )
-    });
+    let method = invocation.request.method();
+    let target = invocation.request.target();
+    if !native_admin::snapshot_matches_http(
+        &invocation.request,
+        method,
+        target,
+        headers,
+        invocation.request.body(),
+    ) {
+        return Ok((AdminDoor::Denied.into(), Vec::new(), None));
+    }
     let mut carried = AdminCarried::default();
     let (verdict, cap) = run_admin_chain(
         app,
-        &method,
-        &target,
+        method,
+        target,
         headers,
         false,
         &mut carried,
@@ -2500,26 +2504,46 @@ pub(crate) async fn auth_middleware(
             .filter(|e| e.native().is_some())
             .cloned();
         let (door, strips, who) = if let Some(execution) = completed {
-            let body = std::mem::replace(req.body_mut(), Body::empty());
-            let bytes = axum::body::to_bytes(body, body_limit).await.map_err(|_| {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "request body exceeds configured limit",
-                )
-                    .into_response()
-            })?;
-            *req.body_mut() = Body::from(bytes.clone());
+            let original = req
+                .extensions()
+                .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            let request_lease = req
+                .extensions()
+                .get::<crate::limits::process_admission::RequestLease>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
             let (lease, prepared) = execution.native().ok_or_else(admin_unauthorized_response)?;
             if !std::sync::Arc::ptr_eq(lease.generation(), &app)
-                || !execution.matches_http(
-                    req.method().as_str(),
-                    target,
-                    inbound_headers.unwrap_or_else(|| req.headers()),
-                    &bytes,
-                )
+                || !std::sync::Arc::ptr_eq(prepared.request(), &original)
+                || !original.request().same_request(&request_lease)
             {
                 return Err(admin_unauthorized_response());
             }
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
+                .await
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body exceeds configured limit",
+                    )
+                        .into_response(),
+                })?;
+            if !execution.matches_http(
+                req.method().as_str(),
+                target,
+                inbound_headers.unwrap_or_else(|| req.headers()),
+                &bytes,
+            ) {
+                return Err(admin_unauthorized_response());
+            }
+            *req.body_mut() = Body::from(original.body_bytes());
             let door = execution
                 .door_for(lease.generation())
                 .ok_or_else(admin_unauthorized_response)?;
@@ -2544,40 +2568,60 @@ pub(crate) async fn auth_middleware(
                 req.extensions_mut().insert(execution);
             }
             (verdict.door, Vec::new(), admission.admin_who())
+        } else if app.native_admin.is_none() {
+            let headers = inbound_headers.unwrap_or_else(|| req.headers());
+            let (verdict, cap, replay, no_verdict, strips, denial) =
+                judge_admin_chain(&app, req.method().as_str(), target, headers, false).await;
+            let verdict = admin_chain_outcome(verdict, no_verdict)
+                .map_err(|_| admin_unavailable_response())?;
+            let who = admin_who_of(&app, verdict.clone(), cap, None);
+            let (door, pending) = admin_door_claim_of(&app, verdict, cap, replay, denial);
+            let door =
+                claimed_admin_door(door, pending.as_ref(), req.method().as_str(), target, true)
+                    .await;
+            (door, strips, who)
         } else {
-            // Snapshot the full bounded body before native verification, then reconstruct the
-            // same body for its handler. No body-signing verifier receives a fabricated empty body.
-            let bytes = if app.native_admin.is_some() {
-                let body = std::mem::replace(req.body_mut(), Body::empty());
-                let bytes = axum::body::to_bytes(body, body_limit).await.map_err(|_| {
-                    (
+            let original = req
+                .extensions()
+                .get::<std::sync::Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            let request_lease = req
+                .extensions()
+                .get::<crate::limits::process_admission::RequestLease>()
+                .cloned()
+                .ok_or_else(admin_unavailable_response)?;
+            if !original.request().same_request(&request_lease) {
+                return Err(admin_unauthorized_response());
+            }
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = crate::limits::input_body::gather(body, &request_lease, body_limit)
+                .await
+                .map_err(|error| match error {
+                    crate::limits::input_body::GatherError::Capacity(_) => {
+                        admin_unavailable_response()
+                    }
+                    crate::limits::input_body::GatherError::Body(_)
+                    | crate::limits::input_body::GatherError::TooLarge => (
                         StatusCode::PAYLOAD_TOO_LARGE,
                         "request body exceeds configured limit",
                     )
-                        .into_response()
+                        .into_response(),
                 })?;
-                *req.body_mut() = Body::from(bytes.clone());
-                bytes
-            } else {
-                Default::default()
-            };
             let headers = inbound_headers
                 .cloned()
                 .unwrap_or_else(|| req.headers().clone());
-            let original =
-                native_admin::http_request(req.method().as_str(), target, &headers, &bytes, now);
-            let peer = req
-                .extensions()
-                .get::<login_limits::ClientAddr>()
-                .map(|addr| addr.0.to_string())
-                .unwrap_or_default();
-            let original = original.view(|view| {
-                chain_run::Request::new(&busbar_ports::auth::AuthIn {
-                    authority: uri.authority().map_or(view.authority, |a| a.as_str()),
-                    peer: &peer,
-                    ..*view
-                })
-            });
+            if !native_admin::snapshot_matches_http(
+                &original,
+                req.method().as_str(),
+                target,
+                &headers,
+                &bytes,
+            ) {
+                return Err(admin_unauthorized_response());
+            }
+            *req.body_mut() = Body::from(original.body_bytes());
+            drop(bytes);
             let request_id = inbound
                 .as_ref()
                 .map_or_else(|| app.next_request_id(), |a| a.unit_key().get());
@@ -2590,7 +2634,7 @@ pub(crate) async fn auth_middleware(
                 selected: std::sync::Arc::clone(&app),
                 id,
                 cx: admin_call_context(id),
-                request: std::sync::Arc::new(original),
+                request: original,
             };
             let Ok((verdict, strips, projected)) =
                 judge_admin_invocation(&invocation, &headers).await

@@ -239,7 +239,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
     ));
-    let request = Request::new(&AuthIn {
+    let request = charged_test_request(&AuthIn {
         method: "POST",
         path: "/resource",
         query: "a=b",
@@ -261,10 +261,13 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         panic!("prepared identity")
     };
     assert_eq!(prepared.identity().subject(), "client");
-    prepared.request().view(|req| {
-        assert_eq!(req.body, b"body");
-        assert_eq!(req.query, "a=b");
-    });
+    prepared
+        .request()
+        .with_auth_input(|req| {
+            assert_eq!(req.body, b"body");
+            assert_eq!(req.query, "a=b");
+        })
+        .unwrap();
     assert!(
         prepared.authorize(2).is_err(),
         "preparation has not granted route authority"
@@ -331,10 +334,7 @@ fn admin_invocation(
     app: &Arc<busbar_kernel::state::App>,
     at: u64,
 ) -> busbar_kernel::auth::native_admin::Invocation {
-    use busbar_kernel::auth::{
-        admin_call_context,
-        native_admin::{http_request, Invocation},
-    };
+    use busbar_kernel::auth::{admin_call_context, native_admin::Invocation};
     let id = busbar_kernel::state::InvocationId::from_request_id(
         std::num::NonZeroU64::new(app.next_request_id()).unwrap(),
     );
@@ -343,13 +343,17 @@ fn admin_invocation(
         selected: app.clone(),
         id,
         cx: admin_call_context(id),
-        request: Arc::new(http_request(
-            "GET",
-            "/api/v1/admin/audit",
-            &axum::http::HeaderMap::new(),
-            b"admin-body",
-            at,
-        )),
+        request: charged_test_request(&busbar_ports::auth::AuthIn {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            authority: "",
+            headers: &[],
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"admin-body",
+            now_s: at,
+        }),
     }
 }
 
@@ -388,8 +392,8 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
     assert_eq!(
         port.calls.load(Ordering::SeqCst),
-        2,
-        "completion did not verify again"
+        1,
+        "header-only probe and completion did not verify"
     );
 }
 
@@ -538,17 +542,10 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
         &tokio::runtime::Handle::current(),
         Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
     );
-    let request = AdminRequest {
-        method: "GET".into(),
-        path: "/api/v1/admin/audit".into(),
-        credential: None,
-        headers: vec![],
-        body: b"admin-body".to_vec(),
-        at: busbar_kernel::store::now(),
-        unit,
-    };
+    let request =
+        AdminRequest::from_snapshot(Arc::clone(execution.native().unwrap().1.request()), unit);
     let resolved =
-        busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path).unwrap();
+        busbar_core_admin::admin_codec::verbs::resolve(request.method(), request.path()).unwrap();
     let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
     let answer = dispatch
         .execute_authorized(verb, &request, None, Some(&execution))
@@ -556,8 +553,22 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
     assert_eq!(answer.status, 200);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    let mut foreign = request.clone();
+    foreign.edit_for_test(|_| {});
+    assert!(foreign
+        .snapshot()
+        .request()
+        .same_request(request.snapshot().request()));
+    assert_eq!(foreign.body(), request.body());
+    assert_eq!(
+        dispatch
+            .execute_authorized(verb, &foreign, None, Some(&execution))
+            .await
+            .status,
+        401
+    );
     let mut changed = request.clone();
-    changed.body = b"different body".to_vec();
+    changed.edit_for_test(|draft| draft.body = b"different body".to_vec());
     assert_eq!(
         dispatch
             .execute_authorized(verb, &changed, None, Some(&execution))
@@ -565,6 +576,78 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
             .status,
         401
     );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_admin_http_requires_original_snapshot_and_same_lease_before_verifying() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use tower::ServiceExt;
+    let (handle, app, owners, port) = admin_fixture().await;
+    let router = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
+    let snapshot = admin_invocation(&handle, &app, busbar_kernel::store::now()).request;
+    for (snapshot_present, foreign_lease, target, body, expected) in [
+        (
+            false,
+            false,
+            "/api/v1/admin/audit",
+            b"admin-body".as_slice(),
+            503,
+        ),
+        (
+            true,
+            true,
+            "/api/v1/admin/audit",
+            b"admin-body".as_slice(),
+            401,
+        ),
+        (
+            true,
+            false,
+            "/api/v1/admin/audit?",
+            b"admin-body".as_slice(),
+            401,
+        ),
+        (
+            true,
+            false,
+            "/api/v1/admin/audit",
+            b"changed-body".as_slice(),
+            401,
+        ),
+    ] {
+        let mut request = axum::http::Request::builder()
+            .method("GET")
+            .uri(target)
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        if snapshot_present {
+            request.extensions_mut().insert(snapshot.clone());
+        }
+        let lease = if foreign_lease {
+            ProcessAdmission::new(2)
+                .try_enter(AdmissionClass::Operator)
+                .unwrap()
+        } else {
+            snapshot.request().clone()
+        };
+        request.extensions_mut().insert(lease);
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    }
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(snapshot.target())
+        .extension(snapshot.request().clone())
+        .extension(snapshot.clone())
+        .body(axum::body::Body::from(snapshot.body_bytes()))
+        .unwrap();
+    assert_eq!(router.oneshot(request).await.unwrap().status(), 200);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
@@ -638,7 +721,7 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
     ));
-    let request = Request::new(&AuthIn {
+    let request = charged_test_request(&AuthIn {
         method: "POST",
         path: "/resource",
         query: "a=b",
@@ -663,6 +746,31 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
     assert!(prepared.claim().await);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+}
+
+fn charged_test_request(
+    view: &busbar_ports::auth::AuthIn<'_>,
+) -> Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot> {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::new(2);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: view.method,
+            path: view.path,
+            query: view.query,
+            query_present: !view.query.is_empty(),
+            authority: view.authority,
+            headers: view.headers.iter().map(|p| (p.name.get(), p.value.get())),
+            peer: view.peer,
+            tls_peer_cert: view.tls_peer_cert,
+            body: view.body,
+            now_s: view.now_s,
+        },
+        &request,
+    )
+    .unwrap()
 }
 
 #[test]

@@ -54,7 +54,7 @@ impl busbar_kernel::auth::native_admin::NativeAdmin for Admin {
         &'a self,
         name: &'a str,
         cx: busbar_ports::CallCx,
-        request: busbar_kernel::auth::chain_run::Request,
+        request: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
         Result<busbar_kernel::auth::native_admin::PreparedAnswer, busbar_ports::PortError>,
