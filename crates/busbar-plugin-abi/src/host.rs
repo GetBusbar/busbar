@@ -16,6 +16,7 @@ use zeroize::Zeroize as _;
 
 use crate::fail::{Fail, refused};
 
+pub use busbar_ffi::raw::{HOST_CTX_AT, HOST_FNS_AT};
 pub use busbar_ffi::{CryptoReq, CryptoRet, Ctx, DeploymentId, Host, HostFns, RawLent};
 
 /// The most bytes one `random` call returns (IF §5).
