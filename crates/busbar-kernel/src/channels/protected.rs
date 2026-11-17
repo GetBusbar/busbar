@@ -7,6 +7,8 @@
 
 use std::io;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use busbar_contract::secure::SecureVec;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -102,6 +104,7 @@ impl ReplyStorage {
             ask: None,
             link: link.clone(),
             framing: Framing::Ndjson,
+            liveness: None,
         })
     }
 }
@@ -126,6 +129,12 @@ pub struct GuardedWrite {
     ask: Option<Charge>,
     link: LinkBudget,
     framing: Framing,
+    liveness: Option<WriteLiveness>,
+}
+
+struct WriteLiveness {
+    generation: Arc<AtomicBool>,
+    attachment: Option<Arc<AtomicBool>>,
 }
 
 impl GuardedWrite {
@@ -148,6 +157,7 @@ impl GuardedWrite {
             ask: None,
             link: link.clone(),
             framing,
+            liveness: None,
         })
     }
 
@@ -211,6 +221,7 @@ impl GuardedWrite {
             ask,
             link: link.clone(),
             framing,
+            liveness: None,
         })
     }
 
@@ -224,6 +235,17 @@ impl GuardedWrite {
 
     pub(super) fn take_ask(&mut self) -> Option<Charge> {
         self.ask.take()
+    }
+
+    pub(super) fn bind_liveness(
+        &mut self,
+        generation: Arc<AtomicBool>,
+        attachment: Option<Arc<AtomicBool>>,
+    ) {
+        self.liveness = Some(WriteLiveness {
+            generation,
+            attachment,
+        });
     }
 
     pub fn len(&self) -> usize {
@@ -247,6 +269,17 @@ impl GuardedWrite {
 
     /// Writes every supported framing directly from the charged backing, without an encoded copy.
     pub async fn write<W: AsyncWrite + Unpin>(self, writer: &mut W) -> io::Result<()> {
+        // Linearize start once. A detached queued message is discarded; an already started
+        // write retains all custody and may finish exactly once after its attachment ends.
+        if self.liveness.as_ref().is_some_and(|live| {
+            !live.generation.load(Ordering::Acquire)
+                || live
+                    .attachment
+                    .as_ref()
+                    .is_some_and(|slot| !slot.load(Ordering::Acquire))
+        }) {
+            return Ok(());
+        }
         match self.framing {
             Framing::None => writer.write_all(self.bytes.as_slice()).await?,
             Framing::Ndjson => {
