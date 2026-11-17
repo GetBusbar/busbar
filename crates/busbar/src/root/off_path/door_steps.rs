@@ -443,7 +443,7 @@ pub(crate) fn door_config(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Arc<dyn std::any::Any + Send + Sync> {
     let sections = kernel_sections(cfg).map(|mut sections| {
-        for (key, value) in raw_sections(cfg) {
+        for (key, value) in cfg.instance_sections() {
             sections.entry(key).or_insert(value);
         }
         sections
@@ -474,21 +474,10 @@ pub(crate) fn listener_needs(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<crate::root::boot::ListenerNeeds, String> {
     let mut sections = kernel_sections(cfg)?;
-    for (key, value) in raw_sections(cfg) {
+    for (key, value) in cfg.instance_sections() {
         sections.entry(key).or_insert(value);
     }
     crate::root::boot::configured_listener_needs(cfg, &sections)
-}
-
-pub(crate) fn raw_sections(
-    cfg: &busbar_kernel::config::RootCfg,
-) -> BTreeMap<&'static str, busbar_contract::yaml::Value> {
-    cfg.endpoint_resources
-        .values()
-        .filter_map(|r| r.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>())
-        .filter(|(_, v)| !v.is_null())
-        .map(|(k, v)| (*k, v.clone()))
-        .collect()
 }
 
 pub(crate) fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
@@ -796,7 +785,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let sections = raw_sections(cfg);
+        let sections = cfg.instance_sections();
         owned_anchors_refusal(&anchors, &sections)?;
         for section in self
             .member_tls_sections

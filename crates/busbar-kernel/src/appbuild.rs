@@ -2490,18 +2490,9 @@ async fn build_app_native(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let protected_resources: Vec<String> = cfg
-                .endpoint_resources
-                .get(crate::config::plane_sections::EndpointSection::OWNER)
-                .and_then(|slot| {
-                    crate::plane_driver::registry::plane_decl_for_config_section(
-                        crate::config::plane_sections::EndpointSection::OWNER,
-                    )
-                    .and_then(|d| (d.admission)(slot.as_ref()))
-                })
-                .map(|adm| adm.audience)
-                .into_iter()
-                .collect();
+            // The protected-resource audience now comes from the plane that owns it (r3 section
+            // 2.3), not from a core-held legacy endpoint block.
+            let protected_resources: Vec<String> = Vec::new();
 
             let store = governance
                 .as_ref()

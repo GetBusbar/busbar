@@ -842,7 +842,7 @@ fn a_failed_decoded_gather_retires_every_partial_payload_credit() {
 
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
-    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
+    let key = "mcp";
     let written: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");

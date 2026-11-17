@@ -3005,28 +3005,6 @@ fn priced_entry() -> config::RateEntryCfg {
     .expect("a fully-written entry must parse")
 }
 
-fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
-    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let written: busbar_contract::yaml::Value =
-        busbar_contract::yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n  pin: { mechanism: unpinned }\n")
-            .expect("yaml");
-    let deploy = config::deploy_from_deserializer(
-        serde_json::json!({
-            "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
-            (key): written,
-        }),
-        &crate::root::boot::axis_test_grammar(),
-    )
-    .expect("a one-registration tools section must parse through the product grammar");
-    let mut cfg = config::resolve(&deploy, &HashMap::new()).expect("the tools deployment resolves");
-    let section = cfg.plane_defs.remove(key).expect("the section is carried");
-    assert!(
-        section.is_present(),
-        "the fixture must be a section the operator wrote content for"
-    );
-    section
-}
-
 fn rate_card_for_actual_plane(
     mut card: std::collections::BTreeMap<String, config::RateEntryCfg>,
 ) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
@@ -3497,9 +3475,10 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
     cfg.rate_card = Some(rate_card_for_actual_plane(
         std::collections::BTreeMap::from([("claude-sonnet".to_string(), priced_entry())]),
     ));
-    cfg.plane_defs.insert(
-        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
-        present_tools_section(),
+    cfg.plane_sections.insert("mcp");
+    cfg.endpoint_resources.insert(
+        "mcp",
+        std::sync::Arc::new(("mcp", busbar_contract::yaml::Value::Null)),
     );
     assert!(
         validate(&cfg).is_ok(),
@@ -3539,9 +3518,10 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
 fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
-    cfg.plane_defs.insert(
-        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
-        present_tools_section(),
+    cfg.plane_sections.insert("mcp");
+    cfg.endpoint_resources.insert(
+        "mcp",
+        std::sync::Arc::new(("mcp", busbar_contract::yaml::Value::Null)),
     );
     assert!(
         validate(&cfg).is_ok(),

@@ -247,10 +247,7 @@ impl ServingFixture {
         let built = &self.owners.built;
         let prefix = Arc::clone(&self.owners.prefix);
         let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
-        let mut instances = plane_instances(
-            std::slice::from_ref(image),
-            &super::super::door_steps::raw_sections(cfg),
-        )?;
+        let mut instances = plane_instances(std::slice::from_ref(image), &cfg.instance_sections())?;
         let declared = declared_planes(&built.registry, &mut instances)?;
         let specs = specifications(&instances, cfg.public_url.as_deref(), false);
         let records = Arc::new(StoreRecords::new(Arc::clone(&store)));
