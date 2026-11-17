@@ -113,10 +113,22 @@ fn hook_needs_is_signed_and_defaults_to_none() {
     let mut tampered = signed.clone();
     tampered.needs = parsed;
     assert!(
-        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            b"lib",
+            &key.verifying_key()
+        )
+        .is_err(),
         "altering the declared intent after signing must fail verification"
     );
-    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert!(signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        b"lib",
+        &key.verifying_key()
+    )
+    .is_ok());
 }
 
 fn abi(_kind: &str) -> Option<u32> {
@@ -1109,7 +1121,7 @@ fn signature_does_not_verify_under_a_weak_key() {
     forged[0] = 1;
     m.signature = hex::encode(forged);
     assert!(
-        signature_ok(&m, artifact, &key).is_err(),
+        signature_ok_guarded(&Verifier::unrestricted(), &m, artifact, &key).is_err(),
         "a weak-key universal forgery must not verify"
     );
 }
@@ -1206,7 +1218,13 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     let mut m = manifest("busbar-store-x", "x", "busbar");
     m.statement = Some(hex::encode(&rendering));
     let signed = sign(&key, m, b"lib");
-    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert!(signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        b"lib",
+        &key.verifying_key()
+    )
+    .is_ok());
     assert_eq!(signed.stated_rendering().unwrap(), Some(rendering.clone()));
     assert_eq!(signed.stated().unwrap().unwrap().name, "busbar-store-x");
     assert!(validate_identity(&signed, HOST_IDENTITY).is_ok());
@@ -1217,7 +1235,13 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     other[last] ^= 1;
     tampered.statement = Some(hex::encode(&other));
     assert!(
-        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            b"lib",
+            &key.verifying_key()
+        )
+        .is_err(),
         "a statement changed after signing fails verification"
     );
 
@@ -1366,7 +1390,13 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
         m.abi_version = crate::dispatch_test_plugin::KIND.abi_version();
         m.statement = Some(hex::encode(&own));
         let signed = sign(&key, m, ARTIFACT);
-        assert!(signature_ok(&signed, ARTIFACT, &key.verifying_key()).is_ok());
+        assert!(signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &signed,
+            ARTIFACT,
+            &key.verifying_key()
+        )
+        .is_ok());
         let control = LinkedRow {
             statement: signed.stated_rendering().unwrap().unwrap(),
             door: actual,
@@ -1396,9 +1426,21 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
             assert_ne!(changed, own);
             let mut tampered = signed.clone();
             tampered.statement = Some(hex::encode(&changed));
-            assert!(signature_ok(&tampered, ARTIFACT, &key.verifying_key()).is_err());
+            assert!(signature_ok_guarded(
+                &Verifier::unrestricted(),
+                &tampered,
+                ARTIFACT,
+                &key.verifying_key()
+            )
+            .is_err());
             let restated = sign(&key, tampered, ARTIFACT);
-            assert!(signature_ok(&restated, ARTIFACT, &key.verifying_key()).is_ok());
+            assert!(signature_ok_guarded(
+                &Verifier::unrestricted(),
+                &restated,
+                ARTIFACT,
+                &key.verifying_key()
+            )
+            .is_ok());
             let row = LinkedRow {
                 statement: restated.stated_rendering().unwrap().unwrap(),
                 door: actual,
@@ -1585,7 +1627,13 @@ fn an_empty_former_name_list_preserves_neutral_signed_manifest_bytes() {
     assert!(parsed.former_names.is_empty());
     let canonical = canonical_manifest_bytes(&parsed);
     assert!(!String::from_utf8_lossy(&canonical).contains("former_names"));
-    signature_ok(&parsed, b"fixture library", &key.verifying_key()).unwrap();
+    signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &parsed,
+        b"fixture library",
+        &key.verifying_key(),
+    )
+    .unwrap();
     assert_eq!(
         serde_json::to_value(&parsed).unwrap(),
         serde_json::to_value(&signed).unwrap()
@@ -1601,7 +1649,13 @@ fn former_names_are_covered_by_the_signature() {
     let signed = sign(&key, m, lib);
     assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
         .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
-    signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
+    signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        lib,
+        &key.verifying_key(),
+    )
+    .expect("the signed list verifies");
     for tamper in [
         vec![],
         vec![
@@ -1613,7 +1667,7 @@ fn former_names_are_covered_by_the_signature() {
         let mut t = signed.clone();
         t.former_names = tamper.clone();
         assert!(
-            signature_ok(&t, lib, &key.verifying_key()).is_err(),
+            signature_ok_guarded(&Verifier::unrestricted(), &t, lib, &key.verifying_key()).is_err(),
             "a tampered former-name list {tamper:?} must not verify"
         );
     }
@@ -1800,8 +1854,20 @@ fn nested_manifest_canonical_bytes_match_original_oidc_signer() {
         );
         let unpacked = crate::tarball::unpack(&archive).unwrap();
         assert_eq!(unpacked.manifest, manifest);
-        signature_ok(&unpacked.manifest, &unpacked.lib_bytes, &public).unwrap();
-        assert!(signature_ok(&tampered, &unpacked.lib_bytes, &public).is_err());
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &unpacked.manifest,
+            &unpacked.lib_bytes,
+            &public,
+        )
+        .unwrap();
+        assert!(signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            &unpacked.lib_bytes,
+            &public
+        )
+        .is_err());
         println!("original_oidc_archive_verified: unchanged signer, archive and library");
     }
 }
@@ -1917,4 +1983,54 @@ fn every_verification_checkpoint_refuses_revocation_even_with_untrusted_opt_in()
             );
         }
     }
+}
+
+#[test]
+fn root_import_preserves_authority_loss_as_unavailable() {
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    struct Revoked;
+    impl Authority for Revoked {
+        fn check(&self, _: Operation, _: Phase) -> Result<(), Unavailable> {
+            Err(Unavailable)
+        }
+    }
+    let root = test_key(52);
+    let spec = format!(
+        "root:ed25519:{}",
+        hex::encode(root.verifying_key().as_bytes())
+    );
+    assert!(matches!(
+        crate::verification::Verifier::new(&Revoked).parse_release_keys(&spec),
+        Err(crate::verification::VerificationError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn expired_seal_probe_cannot_hide_lost_signature_authority() {
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    struct RefuseSignatures;
+    impl Authority for RefuseSignatures {
+        fn check(&self, operation: Operation, _: Phase) -> Result<(), Unavailable> {
+            if operation == Operation::Ed25519Verify {
+                Err(Unavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let root = test_key(53);
+    let bytes = b"expired verification probe";
+    let manifest = seal_test_artifact(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    let mut policy = policy(Some(&root), &[], true);
+    policy.release_enforce_expiry = true;
+    policy.release_clock =
+        Some(crate::release_trust::wire::parse_time("2100-01-01T00:00:00Z").unwrap());
+    assert!(matches!(
+        crate::verification::Verifier::new(&RefuseSignatures).evaluate(bytes, &manifest, &policy),
+        Err(crate::verification::VerificationError::Unavailable(_))
+    ));
 }
