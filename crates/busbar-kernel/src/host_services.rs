@@ -929,7 +929,7 @@ struct GrantedCounterparty {
 /// from request headers or from a principal alone. Absent: the plane may not decide.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustDecisionAuthority {
-    /// The resolved principal, or `anonymous` only under an open admin door.
+    /// The resolved principal.
     pub principal: String,
     /// The grant admits `trust_approve`.
     pub approve: bool,

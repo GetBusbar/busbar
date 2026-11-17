@@ -63,7 +63,7 @@ The thousands digit is the area.
 | [BUSBAR-3009](/docs/1.6/errors/BUSBAR-3009/) | plugins.first_party_floors floor is not valid semver (plugin refused unconditionally) | 1.6.0 |
 | [BUSBAR-3010](/docs/1.6/errors/BUSBAR-3010/) | Heterogeneous pool (cross-protocol failover may not preserve all features) | 1.6.0 |
 | [BUSBAR-3011](/docs/1.6/errors/BUSBAR-3011/) | auth.chain entry grants max_admin_scope: full | 1.6.0 |
-| [BUSBAR-3012](/docs/1.6/errors/BUSBAR-3012/) | auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys) | 1.6.0 |
+| [BUSBAR-3012](/docs/1.6/errors/BUSBAR-3012/) | auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key) | 1.6.0 |
 | [BUSBAR-3013](/docs/1.6/errors/BUSBAR-3013/) | passthrough provider has a non-empty api_key that is never forwarded (inert config) | 1.6.0 |
 | [BUSBAR-3014](/docs/1.6/errors/BUSBAR-3014/) | --print-metadata-blocklist printed the built-in denylist only (config unreadable) | 1.6.0 |
 | [BUSBAR-3015](/docs/1.6/errors/BUSBAR-3015/) | --validate rejected the config (load, resolve, semantic, or secret-resolution failure) | 1.6.0 |
@@ -168,7 +168,7 @@ The thousands digit is the area.
 | [BUSBAR-4023](/docs/1.6/errors/BUSBAR-4023/) | oauth_as expired-record sweep failed (retrying next tick) | 1.6.0 |
 | [BUSBAR-4024](/docs/1.6/errors/BUSBAR-4024/) | Request-signing HMAC-SHA256 init failed — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-4025](/docs/1.6/errors/BUSBAR-4025/) | oauth_as generated an ephemeral ES256 signing key (tokens die on restart) | 1.6.0 |
-| [BUSBAR-4026](/docs/1.6/errors/BUSBAR-4026/) | admin_auth chain is EMPTY (open, anonymous, full-authority dev posture) | 1.6.0 |
+| [BUSBAR-4026](/docs/1.6/errors/BUSBAR-4026/) | admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture) | 1.6.0 |
 | [BUSBAR-4027](/docs/1.6/errors/BUSBAR-4027/) | create_key request body failed to parse (client 400) | 1.6.0 |
 | [BUSBAR-4028](/docs/1.6/errors/BUSBAR-4028/) | create_key allowed_pools names an unconfigured pool (key still created) | 1.6.0 |
 | [BUSBAR-4029](/docs/1.6/errors/BUSBAR-4029/) | update_key request body failed to parse (client 400) | 1.6.0 |

@@ -262,7 +262,7 @@ pub struct App {
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
     /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
-    /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
+    /// the auth middleware for `/admin` paths. Empty identifies no one: there is no open posture.
     pub admin_chain: Vec<String>,
     /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
     /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string

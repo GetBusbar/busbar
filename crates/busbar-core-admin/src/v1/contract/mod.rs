@@ -1171,15 +1171,15 @@ impl SeriesUsage {
 
 /// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
 /// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
-/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
-/// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
+/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain
+/// admits no one (`configured: false`); boot refuses `admin_auth: []`. Never a secret.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AdminAuthView {
-    /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
+    /// Whether an admin credential chain is configured. `false`: the empty chain (admits no one).
     pub configured: bool,
     /// The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in order.
-    /// Empty when the admin plane is open.
+    /// Empty only for the empty chain, which admits no one.
     #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
     /// Whether the chain is the default one (`auth.admin_auth` absent): the operator credential
@@ -1193,7 +1193,7 @@ pub struct AdminAuthView {
 fn modules_description() -> String {
     String::from(
         "The active admin-plane guard module names, the `admin_auth` chain verbatim, reported in \
-         order. Empty when the admin plane is open.",
+         order. Empty only for the empty chain, which admits no one.",
     )
 }
 

@@ -209,7 +209,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -356,7 +356,7 @@ async fn get_group_usage_unknown_group_not_found() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/ghost/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -476,7 +476,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

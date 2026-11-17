@@ -62,11 +62,10 @@ pub fn actor(door: &AdminDoor) -> Option<&str> {
 }
 
 /// Named mutation verbs contribute a Full *required rung*, not full operator authority.
-/// Only a whole-rung grant (including the explicit open development posture) qualifies.
+/// Only a whole-rung grant qualifies.
 pub fn full_operator(door: &AdminDoor) -> bool {
     use busbar_contract::authz::Scope;
     match door {
-        AdminDoor::Open => true,
         AdminDoor::Identified(_, grants) => grants.allows(Scope::Full),
         AdminDoor::Listed(_, _, list) => list.rungs.allows(Scope::Full),
         AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => false,

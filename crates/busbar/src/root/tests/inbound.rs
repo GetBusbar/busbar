@@ -531,7 +531,7 @@ async fn captured_router_crossing(
         request = request.header(name.as_str(), value.as_slice());
     }
     if captured["listener"] == "admin" {
-        request = request.header("x-admin-token", "actual-inbound-operator");
+        request = request.header("authorization", "Bearer actual-inbound-operator");
     } else if captured["auth"] == "ok" {
         request = request.header(
             "authorization",
@@ -794,7 +794,7 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
         use tower::ServiceExt as _;
         let mut request = axum::http::Request::builder().method(method).uri(path);
         if let Some(token) = token {
-            request = request.header("x-admin-token", token);
+            request = request.header("authorization", format!("Bearer {}", token));
         }
         let response = router
             .oneshot(

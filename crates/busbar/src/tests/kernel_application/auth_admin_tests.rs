@@ -953,7 +953,7 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
                     .uri("/api/v1/admin/keys")
                     .header("authorization", format!("Bearer {bearer}"));
                 if let Some(header) = header {
-                    request = request.header("x-admin-token", header);
+                    request = request.header("authorization", format!("Bearer {}", header));
                 }
                 let response = tokio::time::timeout(std::time::Duration::from_secs(10),
                     tower::ServiceExt::oneshot(router.clone(), request.body(axum::body::Body::empty()).unwrap()))

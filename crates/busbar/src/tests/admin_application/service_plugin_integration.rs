@@ -203,7 +203,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
-    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"garbage, not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"garbage, not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
     let error = json::parse_value(&malformed.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "invalid_request");
@@ -212,7 +212,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         .unwrap()
         .starts_with("invalid plugin tarball"));
     let rejected = plugins::seal(manifest, &library);
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&rejected)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"x.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&rejected)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 409);
     let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
@@ -346,7 +346,7 @@ async fn install_catalog_remove_roundtrip() {
     manifest.version = upload.version;
     manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::seal(manifest, &library);
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     let view = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(view["trust"]["verdict"], "unverified");
@@ -354,7 +354,7 @@ async fn install_catalog_remove_roundtrip() {
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -372,7 +372,7 @@ async fn install_catalog_remove_roundtrip() {
     assert_eq!(row["trust"]["verdict"], "unverified");
     let reloaded = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -383,7 +383,7 @@ async fn install_catalog_remove_roundtrip() {
     assert_eq!(rows.len(), 1);
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/junk.tar.gz"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -391,7 +391,7 @@ async fn install_catalog_remove_roundtrip() {
     assert!(!directory.join("junk.tar.gz").exists());
     let missing = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/junk.tar.gz"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -522,7 +522,7 @@ async fn remove_filesystem_failure_is_internal_error() {
     assert!(file.is_file(), "the existing-file guard must pass");
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/plugin.tar.gz"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -641,7 +641,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     for _ in 0..5 {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -685,11 +685,11 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     second.version = upload.version;
     second.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), second, &library);
-    let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let installed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"cache2.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(installed.status().as_u16(), 201);
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -821,7 +821,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
 
     let first = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -842,7 +842,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     for _ in 0..2 {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -975,7 +975,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         requests.push(tokio::spawn(async move {
             let response = client
                 .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .send()
                 .await
                 .unwrap();
@@ -1110,7 +1110,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1124,7 +1124,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     assert_eq!(observed.scans.load(Ordering::SeqCst), 1);
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1260,7 +1260,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let scanner = tokio::spawn(async move {
         let response = scanner_client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -1416,7 +1416,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let first = tokio::spawn(async move {
         first_client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -1432,7 +1432,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let waiting = tokio::spawn(async move {
         waiting_client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -1555,7 +1555,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1687,7 +1687,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     candidate["plugins"]["dir"] = serde_json::json!(evil_dir);
     let response = client
         .post(format!("http://{addr}/api/v1/admin/config/validate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&serde_json::json!({"config":candidate}))
         .send()
         .await
@@ -1813,7 +1813,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     let scanner = tokio::spawn(async move {
         scanner_client
             .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -1830,7 +1830,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     let validator = tokio::spawn(async move {
         validator_client
             .post(format!("http://{addr}/api/v1/admin/config/validate"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&serde_json::json!({"config":candidate}))
             .send()
             .await
@@ -1983,7 +1983,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     for endpoint in ["plugins/inspect", "plugins"] {
         let response = client
             .post(format!("http://{addr}/api/v1/admin/{endpoint}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&request)
             .send()
             .await
@@ -1997,7 +1997,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     }
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"store.tar.gz"}))
         .send()
         .await
@@ -2010,7 +2010,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     );
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -2030,7 +2030,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let other_addr = listener.local_addr().unwrap();
     let other_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let response = client.post(format!("http://{other_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plain.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)})).send().await.unwrap();
+    let response = client.post(format!("http://{other_addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plain.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)})).send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
         400,
@@ -2198,7 +2198,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
 
     let absent = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"nope.tar.gz"}))
         .send()
         .await
@@ -2206,7 +2206,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     assert_eq!(absent.status().as_u16(), 404);
     let untrusted = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"unsigned.tar.gz"}))
         .send()
         .await
@@ -2219,7 +2219,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     std::fs::remove_file(directory.join("unsigned.tar.gz")).unwrap();
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"old.tar.gz"}))
         .send()
         .await
@@ -2375,11 +2375,11 @@ async fn install_filesystem_failures_are_internal_errors() {
     manifest.version = upload.version;
     manifest.statement = Some(hex::encode(upload_statement));
     let tarball = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
-    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
     let error = json::parse_value(&malformed.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "invalid_request");
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 500);
     let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
@@ -2407,7 +2407,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let blocked_addr = listener.local_addr().unwrap();
     let blocked_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let malformed = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
+    let malformed = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(
         malformed.status().as_u16(),
         400,
@@ -2417,7 +2417,7 @@ async fn install_filesystem_failures_are_internal_errors() {
         blocked_dir.is_dir(),
         "a refused real admission does not inject a publication failure"
     );
-    let response = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{blocked_addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(
         response.status().as_u16(),
         500,
@@ -2434,19 +2434,19 @@ async fn install_filesystem_failures_are_internal_errors() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let success_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"ok.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"ok.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     assert_eq!(std::fs::read(directory.join("ok.tar.gz")).unwrap(), tarball);
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/ok.tar.gz"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
     assert!(response.status().is_success());
     let missing = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/ok.tar.gz"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

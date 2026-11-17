@@ -139,7 +139,7 @@ async fn list_groups_projects_the_limit_tree() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -263,7 +263,7 @@ async fn list_groups_is_cursor_paginated() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .send()
         .await
@@ -285,7 +285,7 @@ async fn list_groups_is_cursor_paginated() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .query(&[("cursor", c1)])
         .send()
@@ -301,7 +301,7 @@ async fn list_groups_is_cursor_paginated() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .query(&[("cursor", c2)])
         .send()
@@ -411,7 +411,7 @@ async fn get_group_by_name_and_not_found() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -422,7 +422,7 @@ async fn get_group_by_name_and_not_found() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/ghost"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

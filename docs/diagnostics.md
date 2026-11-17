@@ -418,15 +418,15 @@ An auth chain entry sets `max_admin_scope: full`, so every principal identified 
 **What to do:** Confirm the named module's chain is trusted end to end and that granting full admin to everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's principals) if full admin is broader than needed.
 
 <a id="config-open-admin-mint"></a>
-### BUSBAR-3012 — auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)
+### BUSBAR-3012 — auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-open-admin-mint`
 
-The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.
+The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.
 
-**What to do:** Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
+**What to do:** Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.
 
 <a id="config-passthrough-unused-apikey"></a>
 ### BUSBAR-3013 — passthrough provider has a non-empty api_key that is never forwarded (inert config)
@@ -893,15 +893,15 @@ The oauth_as authorization server has no `signing_key` configured, so busbar gen
 **What to do:** Set `oauth_as.signing_key` to a durable key reference before relying on issued tokens across restarts. Until then, every restart invalidates all outstanding oauth_as tokens.
 
 <a id="admin-auth-chain-empty"></a>
-### BUSBAR-4026 — admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)
+### BUSBAR-4026 — admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `admin-auth-chain-empty`
 
-An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` applies an empty chain as 1.5.5 did, with this warning, and the open posture is then live until the chain is set again.
+An EMPTY admin_auth chain was seen. 1.6.0 has no anonymous admin posture: an empty chain identifies no one, so it admits no admin request and earns no scope. Boot and `busbar --validate` refuse `auth.admin_auth: []`, and the live `PUT /api/v1/admin/admin-auth` refuses an empty chain.
 
-**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.
+**What to do:** Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.
 
 <a id="admin-createkey-malformed-body"></a>
 ### BUSBAR-4027 — create_key request body failed to parse (client 400)
@@ -2403,9 +2403,9 @@ The path names a resource (a key, a group, a hook, an exporter, a plugin) that t
 - **Since:** 1.6.0
 - **Slug:** `admin-unauthorized`
 
-The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).
+The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).
 
-**What to do:** Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.
+**What to do:** Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>`. docs/admin-api.md covers the auth chain.
 
 <a id="admin-method-not-allowed"></a>
 ### BUSBAR-8103 — The admin path does not take this HTTP method

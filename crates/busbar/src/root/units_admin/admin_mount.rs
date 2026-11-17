@@ -240,8 +240,7 @@ pub(crate) const DOOR_STATUS: u16 = 401;
 
 pub(crate) const DOOR_CODE: &str = "unauthorized";
 
-pub(crate) const DOOR_MESSAGE: &str =
-    "missing or invalid admin credential (Bearer or x-admin-token)";
+pub(crate) const DOOR_MESSAGE: &str = "missing or invalid admin credential (Bearer)";
 
 pub(crate) fn door_answer() -> AdminAnswer {
     let mut answer = error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE);
@@ -459,6 +458,9 @@ impl RouterDispatch {
 
 pub(crate) const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
+/// The admin credential a request presents, which the revocation check reads. It reads every
+/// carrier the admin door can identify a credential from: the bearer, and `x-admin-token` while
+/// the linked operator row's Statement still names it as a carrier.
 pub(crate) fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)

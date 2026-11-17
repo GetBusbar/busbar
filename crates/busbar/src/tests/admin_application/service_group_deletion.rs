@@ -142,7 +142,7 @@ async fn build_without_group_removes_leaf() {
     let client = reqwest::Client::new();
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/groups/user:bob"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -276,7 +276,7 @@ async fn build_without_group_conflict_when_still_a_parent() {
     let client = reqwest::Client::new();
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/groups/team"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -407,7 +407,7 @@ async fn build_without_group_not_found() {
     let client = reqwest::Client::new();
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/groups/ghost"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -565,7 +565,7 @@ async fn build_without_group_conflict_when_keys_still_bound() {
     let client = reqwest::Client::new();
     let response = client
         .delete(format!("http://{addr}/api/v1/admin/groups/team"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

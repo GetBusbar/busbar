@@ -38,7 +38,7 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
+        req.header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     };
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))

@@ -23,8 +23,8 @@ pub struct AuditEntry {
     /// changed).
     pub outcome: String,
     /// WHO: the authenticated principal id that attempted the mutation (`admin` for the operator
-    /// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
-    /// explicit open admin posture). Attribution, never a credential.
+    /// token; a virtual-key id or an external module's principal id otherwise). Attribution, never a
+    /// credential.
     pub principal: String,
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).

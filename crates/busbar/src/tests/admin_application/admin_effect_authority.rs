@@ -124,8 +124,8 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         .unwrap(),
     );
     let headers = axum::http::HeaderMap::from_iter([(
-        axum::http::HeaderName::from_static("x-admin-token"),
-        "admintok".parse().unwrap(),
+        axum::http::header::AUTHORIZATION,
+        "Bearer admintok".parse().unwrap(),
     )]);
     let target = "/api/v1/admin/config/settings";
     let door = busbar_kernel::auth::admin_verdict_async(&original, "PUT", target, &headers)
@@ -408,29 +408,9 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         );
     }
 
-    // The explicit open development posture is still a usable startup posture.
-    let mut open = (*original).clone();
-    open.admin_chain.clear();
-    let open_handle = Arc::new(AppHandle::new(Arc::new(open)));
-    let open_context = effect::Context::new("PUT", target, Default::default(), &AdminDoor::Open);
-    let result: Result<(), TxnError> = effect::scope(
-        Some(open_context),
-        config_transaction(&open_handle, |txn| {
-            let mut next = (**txn.app()).clone();
-            next.config_version += 1;
-            Ok(Outcome::commit_async(
-                Arc::new(next),
-                persist(store.clone(), "open-development"),
-                (),
-            ))
-        }),
-    )
-    .await;
-    result.unwrap();
     drop(delegated_handle);
     drop(book);
     drop(handle);
-    drop(open_handle);
     drop(original);
     drop(store);
     let _ = std::fs::remove_dir_all(directory);

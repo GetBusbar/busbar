@@ -132,7 +132,7 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"depthbomb.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(tarball)}))
         .send().await.unwrap();
     assert_eq!(
@@ -243,7 +243,7 @@ async fn install_rejects_bad_filenames() {
         "",
     ] {
         let response = client.post(format!("http://{addr}/api/v1/admin/plugins"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"file":bad, "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"bytes")}))
             .send().await.unwrap();
         assert_eq!(
@@ -349,7 +349,7 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"candidate.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all")}))
         .send().await.unwrap();
     assert_eq!(response.status().as_u16(), 400);
