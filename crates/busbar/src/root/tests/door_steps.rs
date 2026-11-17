@@ -2723,7 +2723,11 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             .expect("the member resolves");
         let route = &routes["m"];
         assert_eq!(route.base_url, "https://api.example.com/v1");
-        let binding = route.auth.as_ref().expect("its credential is bound");
+        let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+            route.auth.as_ref().expect("its credential is bound")
+        else {
+            panic!("configured credential");
+        };
         let Some(Fields::Ready(fields)) = binding
             .auth
             .fields_now(binding.handle, &FieldsRequest::default())
@@ -3552,7 +3556,9 @@ fn presents(
     }
 }
 
-fn refused(bound: Result<Option<busbar_kernel::plane_driver::AuthBinding>, String>) -> String {
+fn refused(
+    bound: Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String>,
+) -> String {
     match bound {
         Err(why) => why,
         Ok(_) => panic!("the load was not refused"),
@@ -4619,14 +4625,16 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         connection_required: false,
         need: busbar_contract::conn::NeedId(1),
         base_url: "https://far.example".to_string(),
-        auth: Some(AuthBinding {
-            auth: std::sync::Arc::new(Bound),
-            handle: 1,
-            style_flags: 0,
-            points: busbar_contract::abi::auth::AuthPoints(0),
-            passthrough: false,
-            per_request: None,
-        }),
+        auth: Some(AuthBinding::Configured(
+            busbar_kernel::plane_driver::ConfiguredAuthBinding {
+                auth: std::sync::Arc::new(Bound),
+                handle: 1,
+                style_flags: 0,
+                points: busbar_contract::abi::auth::AuthPoints(0),
+                passthrough: false,
+                per_request: None,
+            },
+        )),
         provider: "fs".to_string(),
         keep: ResponseKeep::default(),
         rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
@@ -5877,7 +5885,11 @@ fn resolves_in_one_door_step(
 
 fn bearer_of(route: &busbar_kernel::plane_driver::MemberRoute) -> String {
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
-    let binding = route.auth.as_ref().expect("its credential is bound");
+    let busbar_kernel::plane_driver::AuthBinding::Configured(binding) =
+        route.auth.as_ref().expect("its credential is bound")
+    else {
+        panic!("configured credential");
+    };
     let Some(Fields::Ready(fields)) = binding
         .auth
         .fields_now(binding.handle, &FieldsRequest::default())
