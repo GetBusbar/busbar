@@ -137,7 +137,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
-        upstreams: None,
         advanced: AdvancedCfg::default(),
         plugins: Default::default(),
         security: None,
@@ -147,6 +146,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
         records: Default::default(),
+        audit: Default::default(),
     }
 }
 
@@ -1474,6 +1474,8 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         key_ttl: None,
         policy: Default::default(),
         login_limits: Default::default(),
+        verdict_cache: Default::default(),
+        unknown_key_refresh_s: 30,
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -1488,9 +1490,9 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             )),
             browser_login: None,
             settings: serde_json::Map::new().into(),
-            limits: None,
             insecure_transport: None,
             provisioning: None,
+            issued_kinds: None,
         },
     );
     deploy.tls = Some(TlsCfg {
@@ -2719,8 +2721,8 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         assert_eq!(
             message,
             format!(
-                "auth.bogus_key: unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
-                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits` at line {line} \
+                "auth.bogus_key: unknown field `bogus_key`, expected one of `unknown_key_refresh_s`, `require_if_match`, `signing_key`, `chain`, \
+                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache` at line {line} \
                  column 3"
             )
         );

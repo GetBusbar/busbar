@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use super::Outcome;
 
+#[cfg(test)]
+mod vet_policy_tests;
+
 /// Crates a plugin consumes through a GetBusbar fork (IF §15 rule 4 ports and rule 8): core's root
 /// `[patch]` and the plugin's must carry the same source and rev.
 pub(crate) const PORT_CRATES: [&str; 8] = [

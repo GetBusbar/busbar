@@ -1,0 +1,50 @@
+store	package	attestation	disposition	record_sha256
+core	aws-lc-rs	1.19.0	Retained, exact DEP-5 grandfathering	08ce7fd17dc0f0066837f61a7b29f2d69c20d8cc9b3bd846a99c24948ebd2010
+core	aws-lc-sys	0.47.0@git:3469edb189e0cc2fab40e88f551713a828a5d867	Removed from active trust; historical only	dbc7e19757ba16b88727e73c8507e99744bd57e77e32f1e4fe672fe7adb888d0
+core	backon	1.6.0	Removed from active trust; historical only	059bb87d9bdfb861a6a1cda014cfd1d623af525b2c0382c05e51a0ac2481a735
+core	cmake	0.1.58	Removed from active trust; historical only	065857d9333682994a276776833c8c790189fbeae4d4a5426b474dc6b78346bf
+core	constant_time_eq	0.3.1 -> 0.4.2	Removed from active trust; historical only	924c76b16b8f65d8a3460d1e2f8dfb5c17fa3b608d436988a6ca81707896c0f2
+core	dunce	1.0.5@git:bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d	Removed from active trust; historical only	a44f0e7bcc81f180f4b56f585ab6f03cd6bfe8ff2b2fc5277d990181417b93a9
+core	fancy-regex	0.19.0 -> 0.19.2	Removed from active trust; historical only	2816f9ec86dd86cb677d4baf9478169de048d5cf73710e8880e3288a8c43e3f7
+core	fastrand	2.5.0	Retained, exact DEP-5 grandfathering	58645f9ee3adf9cdd7fdf8ca9f9e1f72ea6163e831a8262722af6744fc292a8d
+core	fs_extra	1.3.0@git:70f47864db8ae763979f47cde6785449cd790dad	Removed from active trust; historical only	2e13196959188c50064c84eccb7d7fdce5d6bb36f015a83a37b218693c2f8354
+core	granit-parser	2.1.0 -> 2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62	Removed from active trust; historical only	6a80f2e4149a6130f1d2ed4996a326cc3bcb78bbed759f093b252656412bfa11
+core	granit-parser	2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62 -> 2.1.0@git:d31e9292a0be49de7d3a85ee07555bb9d0afce20	Removed from active trust; historical only	684be91901e084ed5c0b27fd1da3dca913c84ce0a03c22495224ad138536e133
+core	h2	0.4.18 -> 0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588	Removed from active trust; historical only	a3fa2c63c3bdc1750b86681251924f0121e9d74afe7eaf98427e742f31713e85
+core	jobserver	0.1.35@git:fbe3efc1acc11add04854cc093f97876e439e129	Removed from active trust; historical only	a9ba8e42b01b79376d737375abe222724fd9992e33570b218554daf57cebc937
+core	lexopt	0.3.2	Removed from active trust; historical only	a0cd3ae883764e0d61a331a6df4bbf9a1da36369a5bf5306aae653e97de2b4b2
+core	oauth-as	1.0.0 -> 1.0.1	Removed from active trust; historical only	4b5c62274fa336861e24dbe04cf6278cd147a50de8aef2ea76c4f6735f780bd6
+core	olpc-cjson	0.1.4	Removed from active trust; historical only	755d8880c86a24c8aa32bfcee580f8c55d6d32dde3811fe1d81ee5f99080b1f4
+core	pkg-config	0.3.34	Removed from active trust; historical only	dfeb74a6908446f00ff48964b8e31481cbbb2dd456781c3933695e29bddcc2ca
+core	serde-saphyr	2.1.1 -> 2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a	Removed from active trust; historical only	2848c46092b498bcd6a8cc22551aee548b588fbcc8139e7eebb4f24d9c734a55
+core	serde-saphyr	2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8 -> 2.1.1@git:98c72ddb98b8c71303db9c56db24a8e3a4b11624	Removed from active trust; historical only	7dcbc82e00f05582dd415892ec1bf12a05fe125a2c973d266e876a0b9cba7103
+core	serde-saphyr	2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a -> 2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1	Removed from active trust; historical only	b0b258a5423920157d4c3ccbaa46fd9d9cd11baa28e1e49e5c4303c2b0fc916f
+core	serde-saphyr	2.1.1@git:98c72ddb98b8c71303db9c56db24a8e3a4b11624 -> 2.1.1@git:d919ed3dbe56b017e207208516a03e00f089a769	Removed from active trust; historical only	5d09f7d63738732d97eaa84135266b236ff65de08982bb0e903cf842aa771078
+core	serde-saphyr	2.1.1@git:9e1666f3199cf41ab83394936a5093f72c7e22c1 -> 2.1.1@git:49b330217b7d8a2e7873336ce7411a0079776af8	Removed from active trust; historical only	d49a67ee2f6a751180e8829065ede0ad6c5b7584021b243db8242ad692930c75
+core	serde-saphyr	2.1.1@git:d919ed3dbe56b017e207208516a03e00f089a769 -> 2.1.1@git:a94d2da01a448d348b5d14945e29192e511b8452	Removed from active trust; historical only	3062d8cecbeb88bc8086a5253c5801b2837f13bb6b9d4e82af99d34d0f6a3268
+core	sseer	0.3.1	Removed from active trust; historical only	7f0a8d73bc3eb1c236a981a26995533bbf9760971ecda71997171640b47a7858
+core	stringprep	0.1.5@git:da1e3cea3ca61b8b3882a71ee96496cd231601f2	Removed from active trust; historical only	e0f1ffd7f1b03479d2fea36b38128ecf0ca0dffbaee79e0b2dac6728476fe228
+core	tungstenite	0.29.0 -> 0.29.0@git:1c190f7dda55dc7df4781b7ecea9faa671fc76fd	Removed from active trust; historical only	fe4df0354243fc737b2e70a1e61e4db2880e48fb16c6973603613dc626586999
+core	tungstenite	0.29.0@git:1c190f7dda55dc7df4781b7ecea9faa671fc76fd -> 0.29.0@git:893a21f1f98011a2665840231330c473836c9a0a	Removed from active trust; historical only	e6df52b84ae3c39016cbf2eb6c63b8e6fdee67ea44d8edfd6189e96a78d160e9
+core	unicode-properties	0.1.4	Removed from active trust; historical only	40bf9aabf64c477a21fe8848aea6e766d98299561dfb151bb7d747f5b679bf0b
+core	unicode-properties	0.1.5	Removed from active trust; historical only	76815de923813ee8288fb17909966c4d3939b5132b4c38f75af5cb2855b83262
+default	aws-lc-rs	1.19.0	Retained, exact DEP-5 grandfathering	08ce7fd17dc0f0066837f61a7b29f2d69c20d8cc9b3bd846a99c24948ebd2010
+default	aws-lc-sys	0.47.0@git:3469edb189e0cc2fab40e88f551713a828a5d867	Removed from active trust; historical only	dbc7e19757ba16b88727e73c8507e99744bd57e77e32f1e4fe672fe7adb888d0
+default	backon	1.6.0	Removed from active trust; historical only	059bb87d9bdfb861a6a1cda014cfd1d623af525b2c0382c05e51a0ac2481a735
+default	cmake	0.1.58	Removed from active trust; historical only	065857d9333682994a276776833c8c790189fbeae4d4a5426b474dc6b78346bf
+default	constant_time_eq	0.3.1 -> 0.4.2	Removed from active trust; historical only	924c76b16b8f65d8a3460d1e2f8dfb5c17fa3b608d436988a6ca81707896c0f2
+default	dunce	1.0.5@git:bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d	Removed from active trust; historical only	a44f0e7bcc81f180f4b56f585ab6f03cd6bfe8ff2b2fc5277d990181417b93a9
+default	fancy-regex	0.19.0 -> 0.19.2	Removed from active trust; historical only	2816f9ec86dd86cb677d4baf9478169de048d5cf73710e8880e3288a8c43e3f7
+default	fs_extra	1.3.0@git:70f47864db8ae763979f47cde6785449cd790dad	Removed from active trust; historical only	2e13196959188c50064c84eccb7d7fdce5d6bb36f015a83a37b218693c2f8354
+default	h2	0.4.18 -> 0.4.18@git:d6146a5c425e55653cdfebc5660e52d87430c588	Removed from active trust; historical only	a3fa2c63c3bdc1750b86681251924f0121e9d74afe7eaf98427e742f31713e85
+default	jobserver	0.1.35@git:fbe3efc1acc11add04854cc093f97876e439e129	Removed from active trust; historical only	a9ba8e42b01b79376d737375abe222724fd9992e33570b218554daf57cebc937
+default	lexopt	0.3.2	Removed from active trust; historical only	a0cd3ae883764e0d61a331a6df4bbf9a1da36369a5bf5306aae653e97de2b4b2
+default	oauth-as	1.0.0 -> 1.0.1	Removed from active trust; historical only	4b5c62274fa336861e24dbe04cf6278cd147a50de8aef2ea76c4f6735f780bd6
+default	pkg-config	0.3.34	Removed from active trust; historical only	dfeb74a6908446f00ff48964b8e31481cbbb2dd456781c3933695e29bddcc2ca
+default	stringprep	0.1.5@git:da1e3cea3ca61b8b3882a71ee96496cd231601f2	Removed from active trust; historical only	e0f1ffd7f1b03479d2fea36b38128ecf0ca0dffbaee79e0b2dac6728476fe228
+default	tungstenite	0.29.0 -> 0.29.0@git:1c190f7dda55dc7df4781b7ecea9faa671fc76fd	Removed from active trust; historical only	fe4df0354243fc737b2e70a1e61e4db2880e48fb16c6973603613dc626586999
+default	tungstenite	0.29.0@git:1c190f7dda55dc7df4781b7ecea9faa671fc76fd -> 0.29.0@git:893a21f1f98011a2665840231330c473836c9a0a	Removed from active trust; historical only	e6df52b84ae3c39016cbf2eb6c63b8e6fdee67ea44d8edfd6189e96a78d160e9
+default	unicode-properties	0.1.4	Removed from active trust; historical only	40bf9aabf64c477a21fe8848aea6e766d98299561dfb151bb7d747f5b679bf0b
+default	unicode-properties	0.1.5	Removed from active trust; historical only	76815de923813ee8288fb17909966c4d3939b5132b4c38f75af5cb2855b83262
+default	granit-parser	2.1.0 -> 2.1.0@git:e62d0c9a92189d705642ebebe48545e2a556fa62	Removed from active trust; historical only	6a80f2e4149a6130f1d2ed4996a326cc3bcb78bbed759f093b252656412bfa11
+default	serde-saphyr	2.1.1 -> 2.1.1@git:8ec56f9acc93e8f2f2c30f4e52497acc76cce86a	Removed from active trust; historical only	2848c46092b498bcd6a8cc22551aee548b588fbcc8139e7eebb4f24d9c734a55

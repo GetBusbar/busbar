@@ -41,7 +41,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
-        upstreams: None,
         advanced: AdvancedCfg::default(),
         plugins: Default::default(),
         security: None,

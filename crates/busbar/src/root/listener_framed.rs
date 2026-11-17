@@ -487,7 +487,7 @@ pub(super) async fn serve<I>(
     let (tx, ops) = mpsc::unbounded_channel();
     let (admission_tx, admissions) = mpsc::unbounded_channel();
     let mut conn = Conn {
-        io: super::Lingering(Some(io)),
+        io: super::Lingering(Some(io), None),
         framing: Some(framing),
         framer,
         router,

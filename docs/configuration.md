@@ -2074,3 +2074,29 @@ the admin HTTP listener: at least **1 KiB/s** averaged over the read after a
 translation-body byte cap divided by 1 KiB/s. The inter-piece timeout still
 applies. Periodic small pieces cannot reset the total deadline or bypass the
 throughput floor; a violation refuses the request as deadline exceeded.
+
+The Hyper HTTP listener requires the first complete request headers within
+**30 seconds** of plaintext IO becoming available, after any TLS handshake.
+Silent sockets, partial protocol prefaces, HTTP/2 control frames and incomplete
+headers do not extend that deadline. The first HTTP/1 request shares this one
+window with protocol detection; subsequent HTTP/1 header-read behavior is unchanged.
+
+After its first request, an HTTP/2 connection closes after **30 seconds with no
+active requests**. A request remains active while its handler runs or either its
+request or response body remains unfinished. Complete request admission before
+expiry starts fresh activity; control frames do not. Healthy long streaming
+responses remain supported. Hyper also sends keepalive PINGs after **30 seconds**
+of receive inactivity with a **10-second** acknowledgement timeout.
+
+First-header and HTTP/2 idle expiry close the transport immediately, without a
+drain task. Ordinary connection close allows shutdown and read-drain to share a
+**30-second total** budget, with a **5-second** read-idle bound inside it. The
+connection admission slot remains held until the actual transport is released,
+including normal draining. These fixed policies add no configuration keys and do
+not govern plugin-framed upgrades or datagrams.
+
+**Active-stall limitation:** Hyper's keepalive timeout starts protocol shutdown;
+it is not a hard socket-close deadline. An active peer that stops reading can
+block the GOAWAY write and retain its connection slot. There is currently no hard
+active-stall bound or per-stream incomplete-header deadline. The first-header and
+zero-active deadlines above still force closure even when transport writes block.

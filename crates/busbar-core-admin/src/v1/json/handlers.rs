@@ -5122,7 +5122,9 @@ pub(crate) fn openapi_for_configured_planes(
     committed: &str,
     configured: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
+    use busbar_contract::json::{
+        self, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _,
+    };
     let mut doc = json::parse_value(committed.as_bytes()).ok()?;
     let reachable_before = openapi_reachable_schemas(&doc);
     let mut dropped = false;
@@ -5166,7 +5168,7 @@ pub(crate) fn openapi_for_configured_planes(
 fn openapi_reachable_schemas(
     doc: &busbar_contract::json::Value,
 ) -> std::collections::BTreeSet<String> {
-    use busbar_contract::json::{self, JsonValueTrait as _};
+    use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
     fn refs(v: &json::Value, out: &mut Vec<String>) {
         if let Some(map) = v.as_object() {
             if let Some(r) = map.get(&"$ref").and_then(|r| r.as_str()) {

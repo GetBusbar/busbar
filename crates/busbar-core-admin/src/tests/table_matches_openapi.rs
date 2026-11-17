@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::verb::{VerbRow, VerbScope, LEGACY_VERBS};
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use std::collections::BTreeSet;
 
 const FIXTURE: &str = include_str!("../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");

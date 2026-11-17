@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use busbar_core_admin::GovernanceError;

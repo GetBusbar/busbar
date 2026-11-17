@@ -1,133 +1,90 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observe explicit initialized owners before release, without scanning spare or freed memory.
+//! Protocol producers keep custody of the bytes they own (Q24, UNSAFE-MIN §4.4): an SSE buffer's
+//! growth, clones, cancellation, unwinding and error return, and every JSON-RPC producer's output in
+//! its `SecureVec` owner. Each case plants a fresh canary, ends its owners, then scans this process's
+//! memory: the canary must be gone, and wherever an owner is still alive part-way it must still be
+//! found. The producers' allocation counts are `jsonrpc_producer_allocations.rs`. Linux only (A23).
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-use busbar_contract::json;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::{jsonrpc, protocol::SseFrames};
 
-thread_local! {
-    // Keep only an address for matching. Reads always use the allocator's current live pointer.
-    static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
-    static COUNTING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    static REALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
+#[allow(dead_code)]
+#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
+mod canary_scan;
 
-struct InspectBeforeFree;
+use canary_scan::{WipeProof, PAYLOAD_LEN};
 
-fn count(counter: &'static std::thread::LocalKey<Cell<usize>>) {
-    let _ = COUNTING.try_with(|active| {
-        if active.get() {
-            let _ = counter.try_with(|count| count.set(count.get() + 1));
-        }
-    });
-}
-
-unsafe fn inspect(pointer: *mut u8, layout: Layout) {
-    let _ = WATCH.try_with(|watch| {
-        if let Some((_, len)) = watch
-            .get()
-            .filter(|(address, _)| *address == pointer.addr())
-        {
-            watch.set(None);
-            let wiped = len <= layout.size()
-                && (0..len).all(|index| {
-                    // SAFETY: this exact live allocation's initialized prefix was registered.
-                    // The allocator has not released it; no other allocation or spare byte is read.
-                    unsafe { pointer.add(index).read_volatile() == 0 }
-                });
-            let _ = WIPED.try_with(|result| result.set(Some(wiped)));
-        }
-    });
-}
-
-// SAFETY: all operations delegate unchanged to System. The only payload observation is the
-// registered initialized prefix through the allocator's current pointer, before release/realloc.
-unsafe impl GlobalAlloc for InspectBeforeFree {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count(&ALLOCATIONS);
-        // SAFETY: the allocator caller supplies a valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: the caller supplies its live allocation; inspect only reads a registered prefix.
-        unsafe { inspect(pointer, layout) };
-        // SAFETY: pointer and layout describe the allocator caller's live allocation.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count(&REALLOCATIONS);
-        // SAFETY: the old allocation remains live until System.realloc below.
-        unsafe { inspect(pointer, layout) };
-        // SAFETY: the allocator caller supplies the live old layout and valid new size.
-        unsafe { System.realloc(pointer, layout, new_size) }
-    }
-}
-
+/// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]
-static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-fn watch(bytes: &[u8]) {
-    assert!(!bytes.is_empty());
-    WATCH.with(|watched| {
-        assert!(watched.get().is_none());
-        watched.set(Some((bytes.as_ptr().addr(), bytes.len())));
-    });
-    WIPED.with(|result| result.set(None));
+/// The SSE field prefix a pending frame starts with.
+const DATA: &[u8] = b"data: ";
+
+/// A buffer holding a pending (unterminated) frame `data: <secret>`, the secret's only copy.
+fn pending_frame(secret: &[u8]) -> SseFrames {
+    let mut frames = SseFrames::new();
+    frames.push(DATA);
+    frames.push(secret);
+    frames
 }
 
 #[test]
-fn the_registered_payload_witness_distinguishes_plain_and_wiping_owners() {
-    let plain = b"plain-initialized-control".to_vec();
-    watch(&plain);
+fn the_scan_distinguishes_plain_and_wiping_owners() {
+    let proof = WipeProof::new();
+    let plain = proof.payload().to_vec();
     drop(plain);
-    assert_eq!(WIPED.with(Cell::get), Some(false));
+    assert!(
+        proof.canary_copies("a plain buffer") >= 1,
+        "a plain buffer's freed bytes must be found"
+    );
 
-    let wiped = SecureVec::from(b"wiped-initialized-control".to_vec());
-    watch(&wiped);
+    let proof = WipeProof::new();
+    let wiped = SecureVec::from(proof.payload().to_vec());
     drop(wiped);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("a SecureVec");
 }
 
+/// Growth wipes the old allocation (else its freed copy is found at the end) and keeps the pending
+/// bytes.
 #[test]
 fn sse_growth_wipes_the_registered_old_allocation_and_preserves_pending_bytes() {
-    const SEED: &[u8] = b"data: private-pending-frame";
     const LARGE_CHUNK: &[u8] = &[b'x'; 65536];
-    let mut frames = SseFrames::new();
-    frames.push(SEED);
+    let mut proof = WipeProof::text();
+    let staging = proof.text_payload();
+    let mut frames = pending_frame(staging.as_bytes());
     assert!(frames.next_frame().is_none());
-    watch(frames.buffer());
+    let seed = frames.buffer().len();
+    assert_eq!(seed, DATA.len() + PAYLOAD_LEN);
     frames.push(LARGE_CHUNK);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
-    assert_eq!(&frames.buffer()[..SEED.len()], SEED);
-    assert_eq!(&frames.buffer()[SEED.len()..], LARGE_CHUNK);
-    assert_eq!(frames.pending(), SEED.len() + LARGE_CHUNK.len());
-    watch(frames.buffer());
+    assert_eq!(&frames.buffer()[..DATA.len()], DATA);
+    assert_eq!(&frames.buffer()[DATA.len()..seed], staging.as_bytes());
+    assert_eq!(&frames.buffer()[seed..], LARGE_CHUNK);
+    assert_eq!(frames.pending(), seed + LARGE_CHUNK.len());
+    drop(staging);
+    proof.assert_held("the grown buffer holds the pending frame");
     drop(frames);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("the old allocation at growth, then the grown one at drop");
 }
 
 #[test]
 fn sse_clones_pending_cancellation_and_unwind_wipe_their_final_owners() {
-    const PENDING: &[u8] = b"data: private-partial-frame";
-    let mut frames = SseFrames::new();
-    frames.push(PENDING);
+    let mut proof = WipeProof::text();
+    let staging = proof.text_payload();
+    let frames = pending_frame(staging.as_bytes());
     let clone = frames.clone();
-    watch(frames.buffer());
     drop(frames);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
-    assert_eq!(clone.buffer(), PENDING);
-    watch(clone.buffer());
+    assert_eq!(&clone.buffer()[..DATA.len()], DATA);
+    assert_eq!(&clone.buffer()[DATA.len()..], staging.as_bytes());
+    drop(staging);
     let mut pending = Box::pin(async move {
         let frames = clone;
         std::future::pending::<()>().await;
@@ -139,84 +96,71 @@ fn sse_clones_pending_cancellation_and_unwind_wipe_their_final_owners() {
             .poll(&mut Context::from_waker(Waker::noop())),
         Poll::Pending
     );
-    assert_eq!(WIPED.with(Cell::get), None);
+    proof.assert_held("the pending future still owns the clone");
     drop(pending);
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    proof.assert_absent("the original at drop, then the clone at cancellation");
 
-    let mut frames = SseFrames::new();
-    frames.push(PENDING);
-    watch(frames.buffer());
+    let proof = WipeProof::text();
+    let staging = proof.text_payload();
+    let frames = pending_frame(staging.as_bytes());
+    drop(staging);
     let unwound = std::panic::catch_unwind(move || {
         let _owner = frames;
         panic!("SSE owner unwind fixture");
     });
     assert!(unwound.is_err());
-    assert_eq!(WIPED.with(Cell::get), Some(true));
-}
-
-fn measured_output(write: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
-    ALLOCATIONS.with(|count| count.set(0));
-    REALLOCATIONS.with(|count| count.set(0));
-    COUNTING.with(|active| active.set(true));
-    let out = write();
-    COUNTING.with(|active| active.set(false));
-    assert_eq!(
-        ALLOCATIONS.with(Cell::get),
-        1,
-        "only the final output is allocated"
-    );
-    assert_eq!(
-        REALLOCATIONS.with(Cell::get),
-        0,
-        "no payload allocation grows"
-    );
-    out
+    proof.assert_absent("an owner dropped by unwinding");
 }
 
 #[test]
-fn every_jsonrpc_producer_allocates_only_its_final_output_even_with_heavy_escaping() {
+fn every_jsonrpc_producer_output_is_wiped_by_its_secure_owner() {
     const ID: &[u8] = br#""private-id""#;
-    const BODY: &[u8] = br#"{"credential":"private-body"}"#;
+    const OPEN: &[u8] = br#"{"credential":""#;
+    const CLOSE: &[u8] = br#""}"#;
     let text = "private\u{0}\n\r\t\"\\雪".repeat(4096);
-    let result = measured_output(|| jsonrpc::result_bytes(ID, BODY));
-    let request = measured_output(|| jsonrpc::request_bytes(ID, &text, Some(BODY)));
-    let notification = measured_output(|| jsonrpc::notification_bytes(&text, Some(BODY)));
-    let error = measured_output(|| jsonrpc::error_bytes(ID, i64::MIN, &text, Some(BODY)));
-    let id: json::Value = json::parse_value(ID).unwrap();
-    let body: json::Value = json::parse_value(BODY).unwrap();
-    for (out, expected) in [
-        (
-            result,
-            json::json!({"id": id, "jsonrpc": "2.0", "result": body}),
-        ),
-        (
-            request,
-            json::json!({"id": id, "jsonrpc": "2.0", "method": text, "params": body}),
-        ),
-        (
-            notification,
-            json::json!({"jsonrpc": "2.0", "method": text, "params": body}),
-        ),
-        (
-            error,
-            json::json!({"error": {"code": i64::MIN, "data": body, "message": text}, "id": id, "jsonrpc": "2.0"}),
-        ),
-    ] {
-        assert_eq!(out, json::to_vec(&expected).unwrap());
-
-        let owner = SecureVec::from(out);
-        watch(&owner);
+    let producers: [(&str, &dyn Fn(&[u8]) -> Vec<u8>); 4] = [
+        ("result", &|body: &[u8]| jsonrpc::result_bytes(ID, body)),
+        ("request", &|body: &[u8]| {
+            jsonrpc::request_bytes(ID, &text, Some(body))
+        }),
+        ("notification", &|body: &[u8]| {
+            jsonrpc::notification_bytes(&text, Some(body))
+        }),
+        ("error", &|body: &[u8]| {
+            jsonrpc::error_bytes(ID, i64::MIN, &text, Some(body))
+        }),
+    ];
+    for (name, produce) in producers {
+        let proof = WipeProof::text();
+        let staging = proof.text_payload();
+        // `{"credential":"<secret>"}`, built at its final size in a wiping staging buffer.
+        let mut body = SecureVec::with_capacity(OPEN.len() + PAYLOAD_LEN + CLOSE.len())
+            .expect("bounded fixture");
+        body.extend_from_slice(OPEN);
+        body.extend_from_slice(staging.as_bytes());
+        body.extend_from_slice(CLOSE);
+        drop(staging);
+        let owner = SecureVec::from(produce(body.as_slice()));
+        drop(body);
         drop(owner);
-        assert_eq!(WIPED.with(Cell::get), Some(true));
+        proof.assert_absent(name);
     }
 }
 
 #[test]
 fn an_sse_owner_resumes_with_the_same_frame_then_wipes_on_error_return() {
-    const HEAD: &[u8] = b"data: private-resumed-frame\n";
+    let proof = WipeProof::text();
+    let staging = proof.text_payload();
+    // The frame the resumed owner must yield, in a wiping buffer of its final size.
+    let mut expected =
+        SecureVec::with_capacity(DATA.len() + PAYLOAD_LEN + 2).expect("bounded fixture");
+    expected.extend_from_slice(DATA);
+    expected.extend_from_slice(staging.as_bytes());
+    expected.extend_from_slice(b"\n\n");
     let ready = Cell::new(false);
-    let mut frames = SseFrames::new();
-    frames.push(HEAD);
+    let mut frames = pending_frame(staging.as_bytes());
+    frames.push(b"\n");
+    drop(staging);
     assert!(frames.next_frame().is_none());
     let mut resumed = Box::pin(async {
         let mut frames = frames;
@@ -229,11 +173,7 @@ fn an_sse_owner_resumes_with_the_same_frame_then_wipes_on_error_return() {
         })
         .await;
         frames.push(b"\n");
-        assert_eq!(
-            frames.next_frame(),
-            Some(&b"data: private-resumed-frame\n\n"[..])
-        );
-        watch(frames.buffer());
+        assert_eq!(frames.next_frame(), Some(&expected[..]));
         Err::<(), ()>(())
     });
     assert_eq!(
@@ -249,5 +189,7 @@ fn an_sse_owner_resumes_with_the_same_frame_then_wipes_on_error_return() {
             .poll(&mut Context::from_waker(Waker::noop())),
         Poll::Ready(Err(()))
     );
-    assert_eq!(WIPED.with(Cell::get), Some(true));
+    drop(resumed);
+    drop(expected);
+    proof.assert_absent("a resumed owner returning an error");
 }

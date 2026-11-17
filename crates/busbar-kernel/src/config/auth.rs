@@ -77,6 +77,15 @@ pub struct IdentityProviderCfg {
     /// Core-owned provisioning policy (IF §12.29), never passed as plugin settings.
     #[serde(default, deserialize_with = "provisioning_policy")]
     pub provisioning: Option<busbar_contract::yaml::Value>,
+    /// Explicit core-issued credential kinds this instance may read; declarations never grant access.
+    #[serde(default, deserialize_with = "issued_kind_grants")]
+    pub issued_kinds: Option<Vec<Box<str>>>,
+}
+
+fn issued_kind_grants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Box<str>>>, D::Error> {
+    Vec::<Box<str>>::deserialize(deserializer).map(Some)
 }
 
 // Preserve explicit null so policy parsing refuses it instead of silently disabling the mount.
@@ -103,6 +112,8 @@ impl IdentityProviderCfg {
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
             #[serde(skip_serializing_if = "Option::is_none")]
             provisioning: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            issued_kinds: Option<&'a Vec<Box<str>>>,
         }
         View {
             module: &self.module,
@@ -115,6 +126,7 @@ impl IdentityProviderCfg {
             settings: self.settings.authoring(seal),
             insecure_transport: self.insecure_transport.as_ref(),
             provisioning: self.provisioning.as_ref(),
+            issued_kinds: self.issued_kinds.as_ref(),
         }
     }
 }
@@ -500,6 +512,8 @@ pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthDeployCfg {
+    /// Unknown-key refresh interval; the host enforces the adopted five-second minimum.
+    pub unknown_key_refresh_s: u64,
     /// ADMIN-API-1.6 6.2: when true, a guarded config mutation without `If-Match` is refused
     /// with 428 (`invalid_request` / `if_match_required`). Absent or false accepts its absence.
     pub require_if_match: Option<bool>,
@@ -528,6 +542,43 @@ pub struct AuthDeployCfg {
     /// [`LoginLimitsCfg`]). Absent ⇒ the owner-signed defaults; the limiter is always on.
     #[serde(default)]
     pub login_limits: LoginLimitsCfg,
+    /// Core-owned native verifier cache policy (IF §12.28), never plugin settings.
+    #[serde(default)]
+    pub verdict_cache: VerdictCacheCfg,
+}
+
+/// `auth.verdict_cache` uses the kernel cache's adopted defaults and bounds.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct VerdictCacheCfg {
+    pub default_ttl_s: u32,
+    pub max_ttl_s: u32,
+    pub max_entries: u32,
+    pub max_identity_bytes: u32,
+}
+
+impl Default for VerdictCacheCfg {
+    fn default() -> Self {
+        let policy = crate::auth::verdicts::VerdictPolicy::DEFAULT;
+        Self {
+            default_ttl_s: policy.default_ttl_s,
+            max_ttl_s: policy.max_ttl_s,
+            max_entries: policy.max_entries,
+            max_identity_bytes: policy.max_identity_bytes,
+        }
+    }
+}
+
+impl VerdictCacheCfg {
+    pub fn resolve(self) -> Result<crate::auth::verdicts::VerdictPolicy, &'static str> {
+        crate::auth::verdicts::VerdictPolicy {
+            default_ttl_s: self.default_ttl_s,
+            max_ttl_s: self.max_ttl_s,
+            max_entries: self.max_entries,
+            max_identity_bytes: self.max_identity_bytes,
+        }
+        .checked()
+    }
 }
 
 /// `auth.login_limits:` as written. Every key is optional; absent keys take the defaults in
@@ -590,6 +641,7 @@ pub struct GlobalLimitCfg {
 impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
+            unknown_key_refresh_s: 30,
             require_if_match: None,
             signing_key: None,
             chain: Vec::new(),
@@ -598,6 +650,7 @@ impl Default for AuthDeployCfg {
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
             login_limits: LoginLimitsCfg::default(),
+            verdict_cache: VerdictCacheCfg::default(),
         }
     }
 }
@@ -607,6 +660,9 @@ impl Default for AuthDeployCfg {
 /// constructed by `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub struct AuthCfg {
+    pub unknown_key_refresh_s: u64,
+    /// The authored native verifier cache policy, retained for config round trips.
+    pub verdict_cache: VerdictCacheCfg,
     /// Whether guarded admin mutations require `If-Match`; copied from the direct `auth` key.
     pub require_if_match: Option<bool>,
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
@@ -646,6 +702,8 @@ impl AuthCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            unknown_key_refresh_s: u64,
+            verdict_cache: &'a VerdictCacheCfg,
             require_if_match: &'a Option<bool>,
             signing_key: F0,
             chain: F1,
@@ -656,6 +714,8 @@ impl AuthCfg {
             policy: &'a AuthPolicyCfg,
         }
         View {
+            unknown_key_refresh_s: self.unknown_key_refresh_s,
+            verdict_cache: &self.verdict_cache,
             require_if_match: &self.require_if_match,
             signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
             chain: self
@@ -683,6 +743,8 @@ impl AuthCfg {
 impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
+            unknown_key_refresh_s: 30,
+            verdict_cache: VerdictCacheCfg::default(),
             require_if_match: None,
             signing_key: None,
             chain: vec![],

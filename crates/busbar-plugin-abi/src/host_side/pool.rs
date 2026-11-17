@@ -276,6 +276,13 @@ impl Writer for PooledOut {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        crate::records::put_u32s_in(self, tag, fill)
+    }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self, tag, &[v.as_bytes()])
     }
@@ -591,6 +598,35 @@ mod tests {
 
     fn all_zero(bytes: &[u8]) -> bool {
         bytes.iter().all(|&b| b == 0)
+    }
+
+    #[test]
+    fn flat_words_rollback_in_the_real_pooled_sink() {
+        let mut out = PooledOut {
+            buf: Some(OutBuf::zeroed(20, 20)),
+            pool: Some(pool(1)),
+        };
+        out.put(tag::TEXT, b"").unwrap();
+        let prefix = out.bytes().to_vec();
+        assert!(
+            out.put_u32s(0x101, |words| {
+                words.push(7)?;
+                assert!(words.push(8).is_err());
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = out.put_u32s(0x101, |words| {
+                words.push(9)?;
+                std::panic::panic_any(())
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
     }
 
     #[test]

@@ -69,7 +69,13 @@ fn finish(mut w: Reply) -> Reply {
 }
 
 fn fault(w: Reply) -> Option<CommitErr> {
-    decode_commit(Records::new(w.as_bytes())).err()
+    let legacy = decode_commit(Records::new(w.as_bytes())).err();
+    assert_eq!(
+        try_decode_commit(Records::new(w.as_bytes())).err(),
+        legacy.map(PrepareErr::Commit),
+        "fallible and legacy decoding must reject the same wire records"
+    );
+    legacy
 }
 
 #[test]
@@ -368,4 +374,210 @@ fn the_slot_pins_equal_the_documented_bytes() {
     assert_eq!(&wire::GENERATION_NS, b"busbar.scan.v1\0\0");
     assert_eq!(RECEIPT_ERA_VERSION, 1);
     assert!(RECEIPT_ERA_REFUSAL.starts_with("pre-release receipt-era"));
+}
+
+#[test]
+fn fallible_decode_preserves_wire_views_and_rejects_each_metadata_allocation() {
+    let mut bytes = base(0, 1);
+    cond(
+        &mut bytes,
+        wire::tag::FENCE,
+        ns(4),
+        wire::PREDICATE_EXACT,
+        b"f",
+        b"guard",
+    );
+    cond(
+        &mut bytes,
+        wire::tag::PREDICATE,
+        ns(5),
+        wire::PREDICATE_ABSENT,
+        b"p",
+        b"",
+    );
+    mutation(&mut bytes, ns(5), wire::MUTATION_PUT, b"k", b"payload", 0);
+    let bytes = finish(bytes);
+    let parsed = try_decode_commit(Records::new(bytes.as_bytes())).unwrap();
+    assert_eq!(parsed.head.fences[0].expected, b"guard");
+    assert_eq!(parsed.predicates[0].key, b"p");
+    assert_eq!(parsed.mutations[0].value, b"payload");
+    assert_eq!(parsed.result, b"result");
+    for allocation in 0..3 {
+        with_allocation_failure(AllocationSite::Metadata, allocation, || {
+            assert_eq!(
+                try_decode_commit(Records::new(bytes.as_bytes())).err(),
+                Some(PrepareErr::Allocation)
+            );
+        });
+    }
+    assert!(try_decode_commit(Records::new(bytes.as_bytes())).is_ok());
+}
+
+#[test]
+fn fallible_decode_parses_the_current_record_before_reserving_it() {
+    let mut bytes = base(0, 1);
+    cond(&mut bytes, wire::tag::PREDICATE, ns(5), 99, b"p", b"");
+    let bytes = finish(bytes);
+    with_allocation_failure(AllocationSite::Metadata, 0, || {
+        assert_eq!(
+            try_decode_commit(Records::new(bytes.as_bytes())).err(),
+            Some(PrepareErr::Commit(CommitErr::Fault(RecErr::Size)))
+        );
+    });
+    for (slot, seq) in [(0, 0), (wire::MAX_SLOTS, 1), (wire::SLOT_SELF_FENCED, 1)] {
+        let bytes = finish(base(slot, seq));
+        assert_eq!(
+            try_decode_commit(Records::new(bytes.as_bytes())).err(),
+            Some(PrepareErr::Commit(CommitErr::Refused))
+        );
+    }
+}
+
+#[test]
+fn fallible_namespace_plan_keeps_lock_order_and_mutation_only_generations() {
+    let (a, b) = (ns(3), ns(1));
+    let items = [
+        (&a, b"k".as_slice(), Use::Condition),
+        (&b, b"k".as_slice(), Use::Mutation),
+        (&wire::GENERATION_NS, a.as_slice(), Use::Condition),
+        (&b, b"j".as_slice(), Use::Mutation),
+        (&wire::SLOT_NS, W.as_slice(), Use::Mutation),
+    ];
+    let plan = try_prelude_order(items).unwrap();
+    assert_eq!(plan, prelude_order(items));
+    let mut expected = vec![b, wire::SLOT_NS];
+    expected.sort_unstable();
+    assert_eq!(
+        plan.iter()
+            .filter_map(|(ns, exclusive)| exclusive.then_some(*ns))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    with_allocation_failure(AllocationSite::Metadata, 0, || {
+        assert!(try_prelude_order(items).is_err())
+    });
+}
+
+#[test]
+fn row_encoder_discards_dirty_scratch_and_reuses_only_empty_custody() {
+    let mut scratch = crate::secure::SecureVec::from(b"prior secret".as_slice());
+    let mut out = Reply::new();
+    for (key, value) in [
+        (b"key".as_slice(), b"value".as_slice()),
+        (b"".as_slice(), b"".as_slice()),
+    ] {
+        write_row(&mut out, &mut scratch, key, value).unwrap();
+        assert!(scratch.is_empty());
+    }
+    let mut records = Records::new(out.as_bytes());
+    let first = records.next_rec().unwrap().unwrap();
+    assert_eq!(first.tag, wire::tag::ROW);
+    let (head, tail) = first.pod_tail::<wire::RowRec>().unwrap();
+    assert_eq!(head.key_len, 3);
+    assert_eq!(head._r, 0);
+    assert_eq!(tail, b"keyvalue");
+    let empty = records.next_rec().unwrap().unwrap();
+    assert_eq!(empty.pod_tail::<wire::RowRec>().unwrap().1, b"");
+    assert!(records.next_rec().is_none());
+}
+
+#[test]
+fn row_allocation_failure_clears_dirty_input_and_emits_nothing() {
+    let mut scratch = crate::secure::SecureVec::from(b"dirty".as_slice());
+    let mut out = Reply::new();
+    with_allocation_failure(AllocationSite::Row, 0, || {
+        assert!(matches!(
+            write_row(&mut out, &mut scratch, b"key", &[7; 4096]),
+            Err(RowErr::Allocation)
+        ));
+    });
+    assert!(scratch.is_empty());
+    assert!(out.as_bytes().is_empty());
+    write_row(&mut out, &mut scratch, b"key", b"value").unwrap();
+}
+
+struct FailingRowWriter(bool);
+impl Writer for FailingRowWriter {
+    fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_u32s(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pod_tail<T: crate::records::Pod>(
+        &mut self,
+        _: u16,
+        _: &T,
+        tail: &[u8],
+    ) -> Result<(), crate::records::Full> {
+        assert_eq!(tail, b"keyvalue");
+        assert!(!self.0, "writer panic after observing the assembled row");
+        Err(crate::records::Full)
+    }
+    fn put_text(&mut self, _: u16, _: &str) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_pair(&mut self, _: u16, _: &str, _: &[u8]) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_fact(&mut self, _: u32, _: u64) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_fact_text(&mut self, _: u32, _: &str) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_metric(
+        &mut self,
+        _: u32,
+        _: u32,
+        _: f64,
+        _: &[&str],
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+    fn put_nested(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut crate::records::Nested<'_>) -> Result<(), crate::records::Full>,
+    ) -> Result<(), crate::records::Full> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn row_full_and_writer_panic_leave_reusable_empty_scratch() {
+    let mut scratch = crate::secure::SecureVec::from(b"old".as_slice());
+    assert!(matches!(
+        write_row(&mut FailingRowWriter(false), &mut scratch, b"key", b"value"),
+        Err(RowErr::Full(_))
+    ));
+    assert!(scratch.is_empty());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = write_row(&mut FailingRowWriter(true), &mut scratch, b"key", b"value");
+    }));
+    assert!(panic.is_err());
+    assert!(scratch.is_empty());
+    write_row(&mut Reply::new(), &mut scratch, b"next", b"row").unwrap();
+    assert!(scratch.is_empty());
+}
+
+#[test]
+fn row_size_checks_do_not_require_constructing_oversized_slices() {
+    assert_eq!(row_shape(0, 0).unwrap(), (0, 0));
+    assert_eq!(row_shape(3, 5).unwrap(), (3, 8));
+    assert!(matches!(row_shape(1, usize::MAX), Err(RowErr::Size)));
+    if let Some(too_long) = (u32::MAX as usize).checked_add(1) {
+        assert!(matches!(row_shape(too_long, 0), Err(RowErr::Size)));
+    }
 }

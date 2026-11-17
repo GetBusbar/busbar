@@ -243,6 +243,9 @@ mod sdk_registration_tests;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
+#[cfg(feature = "pack")]
+#[deny(unsafe_code)]
+pub mod pack_native;
 #[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;

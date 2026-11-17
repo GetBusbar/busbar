@@ -1161,7 +1161,9 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         HOST_IDENTITY,
     ) {
         let speaks = supported_abi(&unpacked.manifest.kind);
-        if speaks.is_some_and(|v| v != unpacked.manifest.abi_version) {
+        if matches!(crate::sign::native_stamp(&unpacked.lib_bytes), Ok(None))
+            && speaks.is_some_and(|v| v != unpacked.manifest.abi_version)
+        {
             return FileOutcome::Outdated {
                 file,
                 reason,
@@ -1291,6 +1293,7 @@ fn superseder<'a>(
     outcomes.iter().find_map(|o| match o {
         FileOutcome::Loadable(q)
             if q.file != file
+                && matches!(crate::sign::native_stamp(&q.lib_bytes), Ok(None))
                 && q.manifest.kind == old.kind
                 && (!stated || q.manifest.statement.is_some())
                 && (q.manifest.name == old.name || q.manifest.former_names.contains(&old.name))
@@ -1308,7 +1311,10 @@ fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
         .map(|o| {
             let (file, old, stated) = match o {
                 FileOutcome::Outdated { file, manifest, .. } => (file, manifest, false),
-                FileOutcome::Loadable(p) if p.manifest.statement.is_none() => {
+                FileOutcome::Loadable(p)
+                    if p.manifest.statement.is_none()
+                        && matches!(crate::sign::native_stamp(&p.lib_bytes), Ok(None)) =>
+                {
                     (&p.file, &p.manifest, true)
                 }
                 _ => return None,

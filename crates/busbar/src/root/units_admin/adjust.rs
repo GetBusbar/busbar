@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{future::Future, pin::Pin};
 
 use super::AdminAnswer;
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 use busbar_core_admin::GovernanceError;
 use busbar_kernel::governance::AdjustRefused;
 

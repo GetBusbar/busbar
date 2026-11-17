@@ -638,6 +638,8 @@ pub fn resolve_auth(
         .collect();
 
     AuthCfg {
+        verdict_cache: auth.verdict_cache,
+        unknown_key_refresh_s: auth.unknown_key_refresh_s,
         require_if_match: auth.require_if_match,
         signing_key: auth.signing_key.clone(),
         chain,

@@ -11,6 +11,7 @@ fn pack_refuses_unknown_and_duplicate_scalar_flags() {
         vec!["--name", "first", "--name", "second"],
         vec!["--schema-derived", "--schema-derived"],
         vec!["--allow-unsigned", "--allow-unsigned"],
+        vec!["--native", "--native"],
     ] {
         let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
         assert!(parse_flags(&args).is_err(), "{args:?}");
@@ -26,6 +27,7 @@ fn pack_refuses_unknown_and_duplicate_scalar_flags() {
     let flags = parse_flags(&args.map(str::to_owned)).unwrap();
     assert_eq!(flags.map["needs-prompt"], "rw");
     assert_eq!(flags.former_names, ["old-a", "old-b"]);
+    assert!(parse_flags(&["--native".into()]).unwrap().native);
 }
 
 #[test]

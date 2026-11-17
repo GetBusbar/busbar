@@ -406,6 +406,13 @@ mod tests {
             self.0.push((tag, body.to_vec()));
             Ok(())
         }
+        fn put_u32s(
+            &mut self,
+            _: u16,
+            _: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
+        }
         fn put_pod<T: crate::records::Pod>(&mut self, _: u16, _: &T) -> Result<(), Full> {
             unreachable!()
         }

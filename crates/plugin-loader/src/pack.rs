@@ -71,7 +71,7 @@ USAGE:
                             [--needs-prompt <no|ro|rw>] [--needs-user <no|ro>]
                             [--settings-schema-file <path.json>] [--schema-derived]
                             [--declares-file <path.json>] [--former-name <name>]...
-                            [--allow-unsigned]
+                            [--native] [--allow-unsigned]
     busbar-plugin-pack keygen
     busbar-plugin-pack canonical <tarball> [--out <file>]
     busbar-plugin-pack release-manifest --version <n> --expires <time> --out <file> <tarball>=<target>...
@@ -83,6 +83,12 @@ USAGE:
 
     pack     builds manifest.json over the cdylib (sha256 binding), signs it with the ed25519 seed
              in $BUSBAR_SIGN_KEY (64 hex chars), and writes the {cdylib + manifest.json} .tar.gz.
+             Native images supply identity/version/ABI from their stamp and the complete ordered
+             former_names from their header. CLI identity values are equality assertions; an explicit
+             --former-name list asserts the historical names excluding --alias. Native describe data
+             is authenticated by the image digest; legacy declares/schema/needs flags are refused.
+             --native asserts that the artifact is native (no legacy fallback). It does not select
+             the format: only the validated image bytes do. Inspection runs on a compatible native host.
              --allow-unsigned permits packaging WITHOUT a signature (dev only; busbar loads such a
              tarball only under plugins.trust.allow_untrusted: true).
              --needs-prompt / --needs-user declare a kind:hook plugin's ADVISORY intent (what caller
@@ -622,6 +628,7 @@ struct Flags {
     allow_unsigned: bool,
     schema_derived: bool,
     former_names: Vec<String>,
+    native: bool,
 }
 
 const FORMER_NAME: &str = "former-name";
@@ -631,8 +638,16 @@ fn parse_flags(args: &[String]) -> Result<Flags, String> {
     let mut allow_unsigned = false;
     let mut schema_derived = false;
     let mut former_names = Vec::new();
+    let mut native = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
+        if a == "--native" {
+            if native {
+                return Err("--native was supplied more than once".into());
+            }
+            native = true;
+            continue;
+        }
         if a == "--allow-unsigned" {
             if allow_unsigned {
                 return Err("--allow-unsigned was supplied more than once".into());
@@ -690,6 +705,7 @@ fn parse_flags(args: &[String]) -> Result<Flags, String> {
         allow_unsigned,
         schema_derived,
         former_names,
+        native,
     })
 }
 
@@ -763,6 +779,7 @@ fn pack(args: &[String]) -> ExitCode {
         allow_unsigned,
         schema_derived,
         former_names,
+        native: require_native,
     } = match parse_flags(args) {
         Ok(f) => f,
         Err(e) => {
@@ -780,6 +797,31 @@ fn pack(args: &[String]) -> ExitCode {
         let lib_path = required("lib")?;
         let out = required("out")?;
         let kind = required("kind")?;
+        let lib_bytes =
+            busbar_plugin_loader::pack_native::read_image(std::path::Path::new(&lib_path))?;
+        let native = busbar_plugin_loader::pack_native::is_native(&lib_bytes)?;
+        if require_native && !native {
+            return Err(
+                "--native requires a native stamp; this artifact is legacy or unstamped".into(),
+            );
+        }
+        if native
+            && (schema_derived
+                || [
+                    "declares-file",
+                    "settings-schema-file",
+                    "needs-prompt",
+                    "needs-user",
+                ]
+                .iter()
+                .any(|flag| flags.contains_key(*flag)))
+        {
+            return Err("native metadata comes from the signed image; legacy declares/schema/needs flags are not accepted".into());
+        }
+        let abi_assertion = flags
+            .get("abi-version")
+            .map(|v| v.parse::<u32>().map_err(|e| format!("--abi-version: {e}")))
+            .transpose()?;
 
         let default_abi = busbar_plugin_loader::supported_abi(&kind).unwrap_or(1);
         let manifest = Manifest {
@@ -789,11 +831,7 @@ fn pack(args: &[String]) -> ExitCode {
 
             version: flags.get("version").cloned().unwrap_or_default(),
             publisher: required("publisher")?,
-            abi_version: flags
-                .get("abi-version")
-                .map(|v| v.parse::<u32>().map_err(|e| format!("--abi-version: {e}")))
-                .transpose()?
-                .unwrap_or(default_abi),
+            abi_version: abi_assertion.unwrap_or(default_abi),
             sha256: String::new(),
             signature: String::new(),
             description: flags.get("description").cloned().unwrap_or_default(),
@@ -830,47 +868,50 @@ fn pack(args: &[String]) -> ExitCode {
 
             former_names,
         };
-        let lib_bytes =
-            std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;
-
-        let statement = match busbar_plugin_loader::dispatch::rendering_of_library(
-            std::path::Path::new(&lib_path),
-        ) {
-            Ok(r) => r.map(hex::encode),
-            Err(busbar_plugin_loader::dispatch::LoadError::Open(e)) => {
-                eprintln!(
+        let manifest = if native {
+            busbar_plugin_loader::pack_native::complete(&lib_bytes, manifest, abi_assertion)?
+        } else {
+            let statement = match busbar_plugin_loader::dispatch::rendering_of_library(
+                std::path::Path::new(&lib_path),
+            ) {
+                Ok(r) => r.map(hex::encode),
+                Err(busbar_plugin_loader::dispatch::LoadError::Open(e)) => {
+                    eprintln!(
                     "warning: --lib '{lib_path}' does not load on this host ({e}); the manifest \
                      states no Statement, and busbar refuses such a 1.6.0 plugin at admit: pack \
                      it on a host of its target"
                 );
-                None
-            }
-            Err(e) => return Err(format!("--lib '{lib_path}': {e}")),
-        };
-        let version = match statement.as_deref() {
-            Some(stated) => {
-                let bytes = hex::decode(stated).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
-                let own = stated_version(&bytes).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
-                if manifest.version.is_empty() {
-                    own
-                } else {
-                    statement_version_is(&bytes, &manifest.version)
-                        .map_err(|e| format!("--lib '{lib_path}': {e}"))?;
-                    manifest.version.clone()
+                    None
                 }
-            }
-            None if manifest.version.is_empty() => {
-                return Err(format!(
+                Err(e) => return Err(format!("--lib '{lib_path}': {e}")),
+            };
+            let version = match statement.as_deref() {
+                Some(stated) => {
+                    let bytes =
+                        hex::decode(stated).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                    let own =
+                        stated_version(&bytes).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                    if manifest.version.is_empty() {
+                        own
+                    } else {
+                        statement_version_is(&bytes, &manifest.version)
+                            .map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                        manifest.version.clone()
+                    }
+                }
+                None if manifest.version.is_empty() => {
+                    return Err(format!(
                     "missing required --version: --lib '{lib_path}' states no Statement to read \
                      the plugin's version from"
                 ));
+                }
+                None => manifest.version.clone(),
+            };
+            Manifest {
+                statement,
+                version,
+                ..manifest
             }
-            None => manifest.version.clone(),
-        };
-        let manifest = Manifest {
-            statement,
-            version,
-            ..manifest
         };
 
         let manifest = match std::env::var(SIGN_KEY_ENV) {

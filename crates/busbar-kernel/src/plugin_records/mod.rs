@@ -83,6 +83,15 @@ pub trait PluginRecords: Send + Sync + 'static {
         ttl_s: u64,
     ) -> impl Future<Output = Result<(), RecordsDenied>> + Send;
     /// Put-if-absent. Ok(true) = this caller won.
+    fn claim_until(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send;
+    /// Relative-TTL put-if-absent. Deferred admissions use `claim_until` instead.
     fn claim(
         &self,
         who: &Caller<'_>,
@@ -168,6 +177,16 @@ pub use store::StoreRecords;
 /// handler (`HostNeeds<_, R, _>` owns its `R`) and the kernel's plane driver serve the same namespace, so both
 /// hold an `Arc` of the one `StoreRecords` and the in-doubt writes it parks are collected in one place.
 impl<R: PluginRecords> PluginRecords for std::sync::Arc<R> {
+    fn claim_until(
+        &self,
+        who: &Caller<'_>,
+        scope: Scope,
+        key: &[u8],
+        value: &[u8],
+        expires_at_s: u64,
+    ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+        (**self).claim_until(who, scope, key, value, expires_at_s)
+    }
     fn get(
         &self,
         who: &Caller<'_>,

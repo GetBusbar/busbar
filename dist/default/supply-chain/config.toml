@@ -24,26 +24,26 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 
 [policy.aws-lc-sys]
 audit-as-crates-io = true
-notes = "Exact-revision standalone published-package source fork; local nonimportable full Git audit only, no exemption or claim covering the unfixed registry archive."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.dunce]
 audit-as-crates-io = true
-notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.fs_extra]
 audit-as-crates-io = true
-notes = "Local full audit binds the exact reviewed fixed Git snapshot; the published registry base is not certified."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.granit-parser]
 audit-as-crates-io = true
-notes = "Published 2.1.0 plus busbar's opt-in bom_inside_document_as_content patch; the local delta audit covers exactly that diff."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.h2]
 audit-as-crates-io = true
 
 [policy.jobserver]
 audit-as-crates-io = true
-notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.olpc-cjson]
 audit-as-crates-io = true
@@ -51,11 +51,11 @@ notes = "Exact-revision Git fork of the published 0.1.4; see its exemption."
 
 [policy.stringprep]
 audit-as-crates-io = true
-notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.serde-saphyr]
 audit-as-crates-io = true
-notes = "Published 2.1.1 plus busbar's opt-in serde_yaml-compatibility patch; the local delta audit covers exactly that diff."
+notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.sonic-number]
 audit-as-crates-io = true

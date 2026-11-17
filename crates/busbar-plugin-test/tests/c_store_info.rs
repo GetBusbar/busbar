@@ -158,14 +158,14 @@ fn public_store_host_opens_and_reads_without_a_caller_seal() {
         .expect("test authority is installed by the facade");
     let info = store.backend.info();
     let answer = host
-        .block_on(store.backend.read(Read {
+        .block_on(store.backend.read(std::sync::Arc::new(Read {
             dataset: info.dataset,
             addresses: vec![Address {
                 namespace: [7; 16],
                 key: b"absent".to_vec(),
             }],
             time: None,
-        }))
+        })))
         .expect("typed store read");
     match answer {
         ReadResult::Values {

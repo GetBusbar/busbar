@@ -19,7 +19,6 @@ use busbar_kernel::plane_driver::{
     refusal_status, CallerEnd, Egress, HeadFields, PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
-use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;

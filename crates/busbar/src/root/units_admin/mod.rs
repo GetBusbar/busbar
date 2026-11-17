@@ -830,7 +830,7 @@ async fn amend_rate_history_effect(
     attribution: &AmendAttribution,
 ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
     use busbar_contract::abi::sdk::digest::sha256;
-    use busbar_contract::json::{self, JsonValueTrait};
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
     use busbar_core_admin::GovernanceError;
 
     let doc: json::Value = json::parse_value(body).map_err(|_| GovernanceError::Validation)?;
