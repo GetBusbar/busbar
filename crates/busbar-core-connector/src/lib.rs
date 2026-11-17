@@ -36,3 +36,7 @@ mod off_path;
 // The Need handlers (IF 13): `HostNeeds` over the guard, the transport-security gate, the pool and
 // the conn table. Core-side only; no plugin text crosses it.
 pub mod need;
+
+#[cfg(test)]
+#[path = "tests/native_need_authority_tests.rs"]
+mod native_need_authority_tests;
