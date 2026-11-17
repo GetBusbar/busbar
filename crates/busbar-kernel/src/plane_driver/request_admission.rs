@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! One checked native allocation, retained walk and monetary admission.
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -103,6 +104,49 @@ impl RequestRoutes {
             catalog,
             registration,
         })
+    }
+
+    // These resolved producers describe ordinary pool/direct scope. A descriptor requiring
+    // member-granted semantics needs its typed producer before root can assemble this path.
+    fn member_grants(&self, key: &VirtualKey) -> BTreeMap<String, Vec<String>> {
+        let allowed = |name: &str| {
+            self.scope_kind
+                .as_ref()
+                .is_none_or(|kind| key.scope_allowed(kind, name))
+        };
+        let mut grants = BTreeMap::new();
+        if let Some(catalog) = &self.catalog {
+            for (walk, pool) in catalog.pools() {
+                let name = match &pool.kind {
+                    RouteKind::NamedPool(name) | RouteKind::DirectModel(name) => name,
+                };
+                if !allowed(name) {
+                    continue;
+                }
+                let members: Vec<_> = pool
+                    .config
+                    .members
+                    .iter()
+                    .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.name()))
+                    .collect();
+                if !members.is_empty() {
+                    grants.insert(walk.clone(), members);
+                }
+            }
+        }
+        if let Some(registration) = &self.registration {
+            if allowed(&registration.pool) {
+                let members: Vec<_> = registration
+                    .members
+                    .iter()
+                    .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.upstream))
+                    .collect();
+                if !members.is_empty() {
+                    grants.insert(registration.pool.clone(), members);
+                }
+            }
+        }
+        grants
     }
     fn resolve(&self, selector: Option<&str>) -> Result<(RequestDomain, String), AdmissionError> {
         if let Some(name) = selector {
@@ -221,18 +265,15 @@ impl RequestAllocation {
             | RequestDomain::Registration(n) => n.as_str(),
             RequestDomain::Local => "",
         };
-        if !matches!(domain, RequestDomain::Local) {
-            if let Some(kind) = &routes.scope_kind {
-                if !self
-                    .context
-                    .principal()
-                    .ok_or(AdmissionError::Principal)?
-                    .scope_allowed(kind, name)
-                {
-                    return Err(AdmissionError::Scope);
-                }
+        let grants = if let Some((_, walk_key)) = &walk {
+            let grants = routes.member_grants(&self.key);
+            if !grants.contains_key(walk_key) {
+                return Err(AdmissionError::Scope);
             }
-        }
+            grants
+        } else {
+            BTreeMap::new()
+        };
         let pool = format!("{}{PLANE_LANE_SEP}{name}", routes.instance);
         self.context.admission_phase().change(RESOLVING, READY)?;
         self.armed = false;
@@ -240,6 +281,7 @@ impl RequestAllocation {
             context: self.context.clone(),
             key: self.key.clone(),
             routes: routes.identity.clone(),
+            grants: Arc::new(grants),
             cost: self.cost.clone(),
             arrived: self.arrived,
             pool,
@@ -262,6 +304,7 @@ pub struct RequestPoolReceipt {
     context: InvocationContext,
     key: Arc<VirtualKey>,
     routes: Arc<()>,
+    grants: Arc<BTreeMap<String, Vec<String>>>,
     cost: Arc<CostModel>,
     arrived: u64,
     pool: String,
@@ -275,6 +318,9 @@ impl RequestPoolReceipt {
     }
     pub fn domain(&self) -> &RequestDomain {
         &self.domain
+    }
+    pub fn member_grants(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.grants
     }
     pub fn walk_key(&self) -> Option<&str> {
         self.walk.as_ref().map(|(_, key)| key.as_str())
@@ -387,6 +433,7 @@ impl CommittingRequest {
         Ok(AdmittedRequest {
             context: self.context().clone(),
             routes: self.route.routes.clone(),
+            grants: self.route.grants.clone(),
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
             money,
@@ -410,6 +457,7 @@ impl Drop for CommittingRequest {
 pub struct AdmittedRequest {
     context: InvocationContext,
     routes: Arc<()>,
+    grants: Arc<BTreeMap<String, Vec<String>>>,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     money: Arc<UnitMoney>,
@@ -439,6 +487,9 @@ impl AdmittedRequest {
     }
     pub fn domain(&self) -> &RequestDomain {
         &self.domain
+    }
+    pub fn member_grants(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.grants
     }
     pub fn charge(&self) -> &crate::governance::FeeCharge {
         &self.money.charge
