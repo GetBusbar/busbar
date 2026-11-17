@@ -38,6 +38,9 @@ pub use busbar_contract::abi::sdk::test_support::mutant::Mutant;
 pub use busbar_contract::abi::sdk::test_support::watch::{Block, Freed, Watch};
 pub use busbar_contract::abi::sdk::test_support::zeroed;
 pub use busbar_contract::abi_scan;
+/// The completed growth and drop wipe counts on this thread (`(growth, drop)`), so a plugin test can
+/// prove an owner wiped without naming `busbar_secure` (DES-store-zeroizing-residual §5.0).
+pub use busbar_contract::secure::wipe_counts;
 pub use busbar_contract::services::{Caller, Later, Ran, Reading, Stored, UNSERVED};
 /// The kinds an [`Image`] loads as.
 pub use busbar_plugin_loader::dispatch::kinds::{

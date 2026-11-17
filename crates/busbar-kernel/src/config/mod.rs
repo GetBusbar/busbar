@@ -1892,12 +1892,25 @@ pub fn resolve_with_provider_planes(
                         ).into());
                 return None;
             };
-            match (seam.check)(&block) {
-                Ok(secret_refs) => {
-                    Some(crate::oauth_as::seam::CheckedAsBlock { block, secret_refs })
+            let checked = (seam.check)(&block);
+            // #140: the operator approval pages live on the admin listener, and the authorization
+            // server publishes that listener's address, which busbar knows only when it is loopback.
+            let admin_origin = crate::oauth_as::seam::admin_origin(
+                &deploy.admin_listen,
+                deploy.admin_tls.is_some(),
+            );
+            match (checked, admin_origin) {
+                (Ok(secret_refs), Ok(admin_origin)) => {
+                    Some(crate::oauth_as::seam::CheckedAsBlock {
+                        block,
+                        secret_refs,
+                        admin_origin,
+                    })
                 }
-                Err(e) => {
-                    errors.push(coded::config_section_invalid(e).into());
+                (checked, admin_origin) => {
+                    for e in [checked.err(), admin_origin.err()].into_iter().flatten() {
+                        errors.push(coded::config_section_invalid(e).into());
+                    }
                     None
                 }
             }

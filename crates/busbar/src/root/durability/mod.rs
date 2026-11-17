@@ -25,6 +25,7 @@ mod native_audit_group_atomic;
 #[path = "../tests/audit_group_lane.rs"]
 mod native_audit_group_lane;
 
+pub(crate) mod boot_jobs;
 mod unit_checkpoint;
 mod unit_checkpoint_audit;
 mod usage_recovery;
@@ -105,7 +106,6 @@ pub struct Durability {
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
-    boot_records: Vec<JournalRecord>,
 
     pub voided_claims: Vec<String>,
 
@@ -123,8 +123,9 @@ pub struct Durability {
     /// book's lock, so the notary reads the head without taking it.
     pub(crate) head: Arc<HeadFeed>,
 
-    /// The WAL `node_seq` of the newest audit line read back at reopen (0 for none).
-    resumed_head_node_seq: u64,
+    /// THE RECORDS READ AT REOPEN, kept only until the own-node restart seal walks them
+    /// ([`restart_seal::prepare_own_node`], SEALING-FIX §3.6.1: "no extra store read"), then taken.
+    boot_records: Vec<JournalRecord>,
 }
 
 impl Durability {
@@ -156,15 +157,23 @@ pub(crate) struct ChainAt {
 }
 impl ChainAt {
     pub async fn read(self) -> ChainRead {
+        // `read_node_walk` already verifies the retained originals from their replay base.
+        // Rechecking them as genesis would reject every legitimate Ephemeral cut.
+        Ok(Ok(self.read_walk().await?.rows))
+    }
+
+    pub(crate) async fn read_walk(
+        self,
+    ) -> std::io::Result<busbar_kernel::persistence::journal::NodeRecords> {
         let mut records = self
             .journal
-            .read_records(self.budget)
+            .read_node_walk(self.journal.node(), self.budget)
             .await
             .map_err(|error| {
                 std::io::Error::other(format!("native journal read failed: {error:?}"))
             })?;
-        records.retain(|record| record.node_seq < self.through);
-        Ok(busbar_kernel_wal::verify_journal(&records).map(|()| records))
+        records.rows.retain(|record| record.node_seq < self.through);
+        Ok(records)
     }
     fn store(&self) -> Option<&str> {
         None
@@ -536,14 +545,13 @@ pub(crate) async fn build_on_store(
         audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
-        boot_records: Vec::new(),
         voided_claims: Vec::new(),
         amendments_through: None,
         history_budget,
         resumed: true,
         audit_hints: None,
         head: Arc::new(HeadFeed::default()),
-        resumed_head_node_seq: 0,
+        boot_records: Vec::new(),
     };
     let mut findings = Vec::new();
     if let Some(cards) = cards {
@@ -552,8 +560,9 @@ pub(crate) async fn build_on_store(
             .await
             .map_err(|error| native_open_error(error.to_string()))?;
     }
-    durability.resume_audit(&records);
-    durability.publish_resumed_head();
+    durability
+        .resume_audit(&records)
+        .map_err(native_open_error)?;
     findings.extend(
         durability
             .audit_findings
