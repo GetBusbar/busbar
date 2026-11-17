@@ -252,14 +252,4 @@ pub fn stage(
     *staged() = Some((guests, refusals));
 }
 
-pub(crate) struct Published {
-    pub(crate) generation: u64,
-    pub(crate) listener: kin::Listener,
-}
-
-pub(crate) fn published() -> &'static arc_swap::ArcSwapOption<Published> {
-    static ONE: OnceLock<arc_swap::ArcSwapOption<Published>> = OnceLock::new();
-    ONE.get_or_init(arc_swap::ArcSwapOption::empty)
-}
-
 pub use crate::root::off_path::inbound::publish;

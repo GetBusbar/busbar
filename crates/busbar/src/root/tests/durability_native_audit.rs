@@ -218,23 +218,19 @@ fn build_from(source: &TerminalSource) -> Result<AuditInputs, std::convert::Infa
 
 /// DOES: (native DATA audit r2, frozen input boundary) a terminal whose canonical line no journal
 /// body can carry (a V9 `records.user` past its bound) is refused at preparation, before any entry
-/// owns it, and the caller gets its original source bundle back (same allocation, unchanged).
+/// owns it.
 /// Nothing is staged, the chain does not move and the journal holds nothing. Freezing it instead
 /// would leave an entry whose every stage retry refuses for the rest of the process.
 #[tokio::test]
-async fn native_prepare_refuses_an_unencodable_line_and_returns_the_original_source() {
+async fn native_prepare_refuses_an_unencodable_line_before_any_entry() {
     let fixture = NativeFixture::new(7).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
     let source = terminal_source("u".repeat(4097));
-    let original = source.user.as_ptr();
-    let expected = terminal_source("u".repeat(4097));
     let before = book.lock().unwrap().record.next_seq();
     let Err(refused) = FrozenNativeAudit::prepare(source, &book, &audit_pass(), build_from) else {
         panic!("a line no journal body can carry was frozen into the native entry");
     };
     assert!(!matches!(refused.why, NativeFreezeRefusal::Build(_)));
-    assert_eq!(refused.source.user.as_ptr(), original);
-    assert_eq!(refused.source, expected);
     assert_eq!(book.lock().unwrap().record.next_seq(), before);
     assert_eq!(fixture.journal.pending_records(), 0);
     assert!(fixture
@@ -245,14 +241,12 @@ async fn native_prepare_refuses_an_unencodable_line_and_returns_the_original_sou
         .is_empty());
 }
 
-/// DOES: a refusal by the caller's own input building returns the same source bundle and freezes
-/// nothing.
+/// DOES: a refusal by the caller's own input building freezes nothing.
 #[tokio::test]
-async fn native_prepare_build_refusal_returns_the_original_source() {
+async fn native_prepare_build_refusal_freezes_nothing() {
     let fixture = NativeFixture::new(7).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
     let source = terminal_source("user".into());
-    let original = source.user.as_ptr();
     let Err(refused) =
         FrozenNativeAudit::prepare(source, &book, &audit_pass(), |_: &TerminalSource| {
             Err::<AuditInputs, _>("selected terminal differs from its original audit identity")
@@ -264,8 +258,6 @@ async fn native_prepare_build_refusal_returns_the_original_source() {
         refused.why,
         NativeFreezeRefusal::Build("selected terminal differs from its original audit identity")
     );
-    assert_eq!(refused.source.user.as_ptr(), original);
-    assert_eq!(refused.source, terminal_source("user".into()));
     assert_eq!(fixture.journal.pending_records(), 0);
 }
 

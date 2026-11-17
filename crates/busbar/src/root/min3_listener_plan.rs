@@ -134,7 +134,6 @@ impl NativeListenerPlan {
                     &core,
                     &[],
                     &[],
-                    None,
                 )?;
                 let guests = mounts.data.guests.clone();
                 // The projection must not omit a declared route merely because its verbs

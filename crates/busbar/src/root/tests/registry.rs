@@ -13,10 +13,9 @@ fn linked_claims() -> Vec<PlaneClaim> {
 
 /// Every scheme the linked transport rows serve, each row's own claim first.
 fn linked_schemes() -> Vec<&'static str> {
-    crate::LINKED
-        .transports
+    crate::LINKED_TRANSPORT_DOORS
         .iter()
-        .flat_map(|t| (t.claims)())
+        .flat_map(|(_, door)| crate::root::doors::claims_of(*door))
         .collect()
 }
 
@@ -478,9 +477,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
         .expect("the door serves");
         vec![DroppedDoor {
             key,
-            claims: vec![key],
-            composes_over: Vec::new(),
-            offered: facts.offered,
             upgrades: facts.upgrades,
             door,
         }]
@@ -489,39 +485,24 @@ fn dropped_doors() -> &'static [DroppedDoor] {
 
 #[test]
 fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_do() {
-    use busbar_contract::abi::auth::AuthPoints;
     let fixture = &dropped_doors()[0];
-    let door = |claim: &'static str, under: Vec<&'static str>, offered, upgrades| DroppedDoor {
+    let door = |claim: &'static str, upgrades| DroppedDoor {
         key: claim,
-        claims: vec![claim],
-        composes_over: under,
-        offered,
         upgrades,
         door: fixture.door.clone(),
     };
     let dropped = [
-        door("framed", Vec::new(), AuthPoints::PEER, Vec::new()),
-        door(
-            "upgraded",
-            vec!["framed"],
-            crate::root::doors::offers_unstated(),
-            vec!["upgraded"],
-        ),
+        door("framed", Vec::new()),
+        door("upgraded", vec!["upgraded"]),
     ];
     let linked = [
         LinkedTransport {
-            composes_over: || &[],
-            claims: || vec!["framed"],
             upgrades: Vec::new,
             lines: Vec::new,
-            offered: || AuthPoints::PEER,
         },
         LinkedTransport {
-            composes_over: || &["framed"],
-            claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
             lines: Vec::new,
-            offered: crate::root::doors::offers_unstated,
         },
     ];
     let carriers = crate::root::serve::upgrade_carriers(&[], &dropped);

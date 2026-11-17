@@ -24,10 +24,9 @@ pub(crate) enum NativeFreezeRefusal<E> {
     Unencodable(busbar_kernel_audit::FieldTooLong),
 }
 
-/// A refused native preparation: the caller's original, unchanged source bundle and why.
+/// A refused native preparation and why. The source bundle is dropped unchanged.
 #[derive(Debug)]
-pub(crate) struct NativeFreezeRefused<S, E> {
-    pub(crate) source: S,
+pub(crate) struct NativeFreezeRefused<E> {
     pub(crate) why: NativeFreezeRefusal<E>,
 }
 
@@ -35,20 +34,19 @@ impl FrozenNativeAudit {
     /// The checked native preparation (native DATA audit r2, frozen input boundary): build
     /// canonical inputs from the borrowed source bundle, bind this book's identity and journal,
     /// and prove the line encodes as a journal body before any entry owns it. It has no journal
-    /// effect. A refusal returns the original bundle unchanged; success returns it too, so the
-    /// caller drops it only after the frozen inputs are installed in the entry. The pass is
+    /// effect. Success returns the original bundle, so the caller drops it only after the
+    /// frozen inputs are installed in the entry. The pass is
     /// borrowed, never consumed.
     pub(crate) fn prepare<S, E>(
         source: S,
         book: &Arc<std::sync::Mutex<Durability>>,
         pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         build: impl FnOnce(&S) -> Result<AuditInputs, E>,
-    ) -> Result<(Self, S), NativeFreezeRefused<S, E>> {
+    ) -> Result<(Self, S), NativeFreezeRefused<E>> {
         let inputs = match build(&source) {
             Ok(inputs) => inputs,
             Err(why) => {
                 return Err(NativeFreezeRefused {
-                    source,
                     why: NativeFreezeRefusal::Build(why),
                 })
             }
@@ -56,7 +54,6 @@ impl FrozenNativeAudit {
         let frozen = Self::new(inputs, book);
         if let Err(why) = frozen.encodable(pass) {
             return Err(NativeFreezeRefused {
-                source,
                 why: NativeFreezeRefusal::Unencodable(why),
             });
         }

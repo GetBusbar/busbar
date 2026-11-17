@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
-use busbar_contract::caps::{OpClassId, ReasonCode};
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
@@ -38,7 +38,7 @@ use busbar_kernel::observability::arrival::EntrySpans;
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
-use busbar_kernel::plane_routes::{PlaneRefusalSpec, PlaneReqCtx};
+use busbar_kernel::plane_routes::PlaneReqCtx;
 
 // The test modules below name these through `use super::*`.
 #[cfg(test)]
@@ -1721,10 +1721,6 @@ pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::
 
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
 
-#[cfg(test)]
-#[path = "tests/listener_plan.rs"]
-mod listener_plan_tests;
-
 pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
     busbar_contract::abi::transport::route::method_bit(method.as_str())
         | if method == RouteMethod::Get {
@@ -1733,34 +1729,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
             0
         }
 }
-
-/// The process's physical listeners and its boot-mounted plane routes. Application candidates
-/// supply their own plugin routes, auth instances and limits when each list is sealed.
-#[derive(Debug)]
-pub(crate) struct ListenerPlan {
-    pub(crate) root_claim: Result<String, String>,
-    pub(crate) initial: crate::root::boot::ListenerNeeds,
-    pub(crate) served: Option<Served>,
-    pub(crate) upgrades: Option<Vec<String>>,
-    pub(crate) claim_doors: Arc<serve_datagram::ClaimDoors>,
-    pub(crate) planes: Option<Vec<ListenerPlaneLine>>,
-    pub(crate) plane_sections: Option<foldhash::HashMap<String, (&'static str, bool)>>,
-    pub(crate) offers: Vec<TransportOffer>,
-    pub(crate) framers: foldhash::HashMap<String, (u64, bool)>,
-    pub(crate) nests: NestRoutes,
-    pub(crate) plugin_mounts: Option<Vec<(String, RouteMethod, bool)>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ListenerPlaneLine {
-    pub(crate) line: busbar_kernel::guest::Line,
-    pub(crate) transport: String,
-    pub(crate) root_only: bool,
-}
-
-#[cfg(test)]
-#[path = "tests/open_relay_composition.rs"]
-mod open_relay_composition_tests;
 
 const SESSION_QUEUE: usize = 64;
 
@@ -2788,10 +2756,8 @@ pub(crate) fn report_of(
             attribution,
             usage,
         } => (lane.clone(), attribution.clone(), usage.clone()),
-        busbar_kernel::plane_driver::UsageView::Partitioned(snapshot) => {
-            return Some(crate::root::linked::node::Reported::Partitioned(
-                snapshot.clone(),
-            ))
+        busbar_kernel::plane_driver::UsageView::Partitioned(_) => {
+            return Some(crate::root::linked::node::Reported::Partitioned)
         }
     };
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();

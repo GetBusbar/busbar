@@ -1835,17 +1835,11 @@ pub(crate) fn open_dropped_transports(
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         #[cfg(test)]
                         let key = facts.claims.first().copied().unwrap_or_default();
-                        let claims = facts.claims;
-                        let composes_over = facts.composes_over;
-                        let offered = facts.offered;
                         let upgrades = facts.upgrades;
                         let door = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             #[cfg(test)]
                             key,
-                            claims,
-                            composes_over,
-                            offered,
                             upgrades,
                             door,
                         })

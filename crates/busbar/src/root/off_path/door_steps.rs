@@ -541,7 +541,6 @@ pub(crate) fn owned_anchors_refusal<P: AsRef<str>>(
 pub(crate) struct Rules {
     reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
-    pub(crate) listeners: Option<Arc<crate::root::serve::ListenerPlan>>,
     native_listeners: Option<Arc<crate::root::min3_listener_plan::NativeListenerPlan>>,
     native_candidate: Option<Arc<crate::root::min3_candidate::Factory>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
@@ -587,7 +586,6 @@ impl Rules {
         Self {
             reader,
             member_tls_sections: Mutex::new(Vec::new()),
-            listeners: None,
             native_listeners: None,
             native_candidate: None,
             owned_anchors: Mutex::new(Vec::new()),
@@ -602,7 +600,6 @@ impl Rules {
         listeners: Arc<crate::root::min3_listener_plan::NativeListenerPlan>,
     ) -> Self {
         let mut next = self.copy_rules();
-        next.listeners = None;
         next.native_listeners = Some(listeners);
         next
     }
@@ -625,7 +622,6 @@ impl Rules {
                     .unwrap_or_else(|p| p.into_inner())
                     .clone(),
             ),
-            listeners: self.listeners.clone(),
             native_listeners: self.native_listeners.clone(),
             native_candidate: self.native_candidate.clone(),
             owned_anchors: Mutex::new(
@@ -885,15 +881,9 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             }
             return Ok(());
         }
-        match self.listeners.as_ref() {
-            Some(listeners) => listeners.prepare(app),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
-    fn mounted_plugin_paths(&self, app: &App) -> Option<std::collections::HashSet<String>> {
-        self.listeners.as_ref()?.mounted_plugin_paths(app)
-    }
     fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
         unloaded_plane_refusal(
             &self

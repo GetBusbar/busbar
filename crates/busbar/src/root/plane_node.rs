@@ -1424,7 +1424,7 @@ impl LateAccrual {
         let completed = outcome.is_some_and(Outcome::is_completed);
         // A report that bills nothing is not sealed as usage, but its attribution still is.
         let reported = late();
-        if matches!(reported, Some(Reported::Partitioned(_))) {
+        if matches!(reported, Some(Reported::Partitioned)) {
             return preview_confirmation(custody, outcome, seal);
         }
         let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {

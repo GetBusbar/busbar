@@ -14,13 +14,10 @@ fn owned_input() -> OwnedInput {
     request().adopt_input(Vec::new()).unwrap()
 }
 
-fn row(claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
+fn row(_claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
     LinkedTransport {
-        composes_over: || &[],
-        claims,
         upgrades: Vec::new,
         lines,
-        offered: crate::root::doors::offers_unstated,
     }
 }
 
