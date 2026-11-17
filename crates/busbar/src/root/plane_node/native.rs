@@ -480,9 +480,6 @@ impl Node {
     /// One bounded native pulse driven by the retained process upkeep. It examines at most the
     /// adopted 64 candidates, resuming from `cursor` across pulses; no retry queue or timer.
     pub(crate) async fn drive_native(&self, cursor: &mut Option<u64>) -> usize {
-        let Some(durability) = self.book.get().cloned() else {
-            return 0;
-        };
         let mut candidates = [None; NATIVE_PULSE_CANDIDATES];
         {
             let guard = self
@@ -506,6 +503,12 @@ impl Node {
                 }
             }
         }
+        if candidates.iter().all(Option::is_none) {
+            return 0;
+        }
+        let Some(durability) = self.book.get().cloned() else {
+            return 0;
+        };
         let mut retired = 0;
         for (class, key, call) in candidates.into_iter().flatten() {
             if self.advance_native(&durability, class, key, call).await {
