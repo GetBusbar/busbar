@@ -333,7 +333,17 @@ async fn native_refusal_confirmation_tracks_original_unknown_operation() {
         .try_enqueue_background(event(74, "request.refused"))
         .is_err());
     assert!(!confirmed.load(Ordering::Acquire));
+    let waiting = super::native_refusal::wait_confirmation(&log, &confirmed);
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1), &mut waiting)
+            .await
+            .is_err()
+    );
     drain_native(&queue, &log, native).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+        .await
+        .unwrap();
     assert!(confirmed.load(Ordering::Acquire));
     let sent = backend.state.lock().unwrap().sent.clone();
     assert_eq!(sent.len(), 2);

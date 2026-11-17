@@ -2142,6 +2142,9 @@ async fn drain_native(
         }
         if let Some(confirmation) = &pending.confirmation {
             confirmation.store(true, Ordering::Release);
+            // Ring publication wakes before this exact observer becomes confirmed. Wake the
+            // same existing signal again after confirmation so waiters cannot miss the join.
+            log.appended.notify_waiters();
         }
     }
 }
