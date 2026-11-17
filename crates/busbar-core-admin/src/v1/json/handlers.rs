@@ -2360,11 +2360,11 @@ pub(crate) async fn restart(
         // Keep the task-local UnitDrain identity: moving this into store_write loses it.
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
         crate::restart::begin_drain();
-        Ok(Outcome::Value(Ok(supervised)))
+        Ok(Outcome::Value(Ok(())))
     })
     .await;
-    let supervised = match out {
-        Ok(Ok(supervised)) => supervised,
+    match out {
+        Ok(Ok(())) => {}
         Ok(Err(condition)) => {
             audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
             let message = match condition {
@@ -2374,13 +2374,12 @@ pub(crate) async fn restart(
             return err_json_cond(&AdminError::Conflict(message.into()), condition);
         }
         Err(error) => return reject("admin.restart", "process", &actor, &error),
-    };
+    }
 
     ok_json(
         StatusCode::ACCEPTED,
         &json!({
             "restarting": true,
-            "supervisor_detected": supervised,
             "note": "draining now; in-flight requests finish first. The process exits when the \
                      drain completes and the supervisor restarts it."
         }),
@@ -3573,7 +3572,7 @@ pub(crate) async fn hook_status(
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",
-        "Version, compiled-in plugin proof, uptime, topology",
+        "Node identity: version, deployment, node, incarnation, warnings",
     ),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
@@ -3995,7 +3994,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
                 RESPONSES_KEY: {
-                    "202": {"description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first"},
+                    "202": {"description": "`{restarting, note}`: draining; in-flight requests finish first"},
                 }
             }
         }),
@@ -4179,18 +4178,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 RESPONSES_KEY: {
                     "200": {"description": "`{revoked}`: the id, now denylisted"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/signing-key/rotate"),
-        json!({
-            "post": {
-                "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-                "security": [{"adminToken": []}],
-                RESPONSES_KEY: {
-                    "200": {"description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning"},
                 }
             }
         }),
@@ -4679,12 +4666,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
     typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
-    typed!(
-        "/signing-key/rotate",
-        "post",
-        "200",
-        sview::SigningKeyRotateView
-    );
 
     for (path, method, op) in super::kernel_verbs::operations(&mut gen, &mut req_gen) {
         let item = paths.entry(path).or_insert_with(|| json!({}));

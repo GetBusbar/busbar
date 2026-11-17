@@ -920,8 +920,8 @@ fn doc_for(
                 `core`, core's own subsystems. `category` is the engine kind; `kind` is the id \
                 a client routes on. `instance_count` counts the running instances; `views` and \
                 `record_attributes` are on the row when every instance declares the same \
-                descriptors (`descriptors_uniform`). The ETag is `/info.kinds_revision`. Pages \
-                with `cursor` and `limit`."
+                descriptors (`descriptors_uniform`). The ETag moves whenever a kind or an instance \
+                is added, removed or reconfigured. Pages with `cursor` and `limit`."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<super::kinds::doc::KindsPage>()),
@@ -1549,7 +1549,7 @@ fn records_doc(schema: Value) -> VerbDoc {
              `next_cursor` is always a string; `complete: true` means caught up. With no cursor \
              the feed starts at the oldest retained record. A request scans at most \
              {RECORDS_SCAN_BOUND} sealed records, so a filtered page may be short or empty with a \
-             cursor that continues. Records are per node: `/info.nodes` lists every node. Spend \
+             cursor that continues. Records are per node: the `core/process` view `nodes` lists every node. Spend \
              is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is \
              never posture-gated."
         ),

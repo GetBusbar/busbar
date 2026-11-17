@@ -353,6 +353,7 @@ build. Update clients before accepting the upgrade.
 | `/export`, `/export/{name}` | `/kinds/export/instances[/{name}]` |
 | `/identity-providers`, `/identity-providers/{name}` | `/kinds/auth/instances[/{name}]` |
 | Plane-specific `/tools…` and `/agents…` admin paths | The selected plane kind instance's advertised operations under `/kinds/{kind}/instances/{id}/ops/…` |
+| `POST /signing-key/rotate` (it reported the key id and changed nothing) | None. Rotating the signing key is an operator action: replace `auth.signing_key`, restart every node in lockstep, and re-mint every key |
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.
@@ -372,8 +373,23 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+`POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
+
 Instance names must be unique across configuration sections and must not collide with core
 instance IDs. Resolve a reported collision and update clients that select by instance name.
+
+`GET /info` is this node's identity only. Its removed members and their replacements:
+
+| Removed `/info` member | Replacement |
+|---|---|
+| `nodes[]` | The `core/process` view `nodes` (`/kinds/core/instances/process/views/nodes`), times in `*_ms` |
+| `build` (`auth_modules`, `hook_plugins`, `weighted_floor`) | `/plugins` and `/kinds` show what is installed and running |
+| `topology` | `/kinds` (`instance_count`) and the `core/routing` instance |
+| `process_boot_nonce` | `incarnation` (same value) |
+| `started_at`, `uptime_seconds` | `started_at_ms` |
+| `config_version` | `config_generation` |
+| `kinds_revision` | The `/kinds` ETag |
+| `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
 ## Usage and rate cards
 

@@ -527,6 +527,16 @@ pub struct Full;
 
 pub trait Writer {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full>;
+    /// One atomic record from borrowed body segments, without collecting or copying them first.
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full>;
+    /// A POD prefix followed by nested records. Full wipes and rolls back the whole outer record.
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full>;
+
     /// One flat body of little-endian u32 words. Any failed push, caller error or unwind
     /// rolls back this record, including when `fill` ignores a failed push.
     fn put_u32s(
@@ -657,8 +667,16 @@ pub(crate) fn put_parts<W: RawWrite + ?Sized>(
     tag: u16,
     parts: &[&[u8]],
 ) -> Result<(), Full> {
+    put_parts_iter(w, tag, parts.iter().copied())
+}
+
+pub(crate) fn put_parts_iter<'a, W: RawWrite + ?Sized>(
+    w: &mut W,
+    tag: u16,
+    parts: impl Iterator<Item = &'a [u8]> + Clone,
+) -> Result<(), Full> {
     let len = parts
-        .iter()
+        .clone()
         .try_fold(0usize, |len, part| len.checked_add(part.len()))
         .ok_or(Full)?;
     let head = RecHead {
@@ -707,7 +725,16 @@ pub(crate) fn put_nested_in(
     tag: u16,
     f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
 ) -> Result<(), Full> {
-    let start = open_record(w, tag, &[])?;
+    put_prefixed_nested_in(w, tag, &[], f)
+}
+
+pub(crate) fn put_prefixed_nested_in(
+    w: &mut dyn RawWrite,
+    tag: u16,
+    prefix: &[u8],
+    f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+) -> Result<(), Full> {
+    let start = open_record(w, tag, prefix)?;
     let filled = f(&mut Nested { w: &mut *w });
     let done = filled.and_then(|()| close_record(w, start));
     if done.is_err() {
@@ -773,6 +800,17 @@ pub struct Nested<'w> {
     w: &'w mut dyn RawWrite,
 }
 impl Writer for Nested<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self.w, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self.w, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self.w, tag, &[body])
     }
@@ -851,6 +889,17 @@ impl RawWrite for Out<'_> {
     }
 }
 impl Writer for Out<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }
@@ -1003,6 +1052,17 @@ impl RawWrite for Reply {
     }
 }
 impl Writer for Reply {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }

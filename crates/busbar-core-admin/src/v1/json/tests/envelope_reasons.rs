@@ -71,7 +71,6 @@ const COND_REASONS: &[&str] = &[
     "invalid_filename",
     "not_loadable",
     "overlong",
-    "nothing_to_rotate",
     "no_supervisor",
     "not_restartable",
     "unknown_section",

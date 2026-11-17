@@ -84,7 +84,8 @@ pub(crate) fn audit_suffix_safe(
 }
 
 /// Everything an audit row says besides its position in the chain (ADMIN-API-1.6 section 7.2).
-/// The five legacy fields come first; the rest are the scheme 3 fields.
+/// The five legacy fields come first; then the scheme 3 fields, then what scheme 4 adds
+/// (ADMIN-API-1.6-ONE-MODEL section 7.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuditRowInput {
     pub action: String,
@@ -101,10 +102,15 @@ pub struct AuditRowInput {
     pub severity: String,
     pub message: String,
     pub data: AuditData,
+    /// The request was admitted on `If-Match: *`: a deliberately unconditional mutation.
+    pub unconditional: bool,
 }
 
 /// The first byte of a scheme 3 suffix. Scheme 1 starts with `|` and scheme 2 with 0x00.
 const ROW_SUFFIX_MARKER: u8 = 0x03;
+
+/// The first byte of a scheme 4 suffix.
+const ROW4_SUFFIX_MARKER: u8 = 0x04;
 
 fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
     match value {
@@ -118,37 +124,67 @@ fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`).
+/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`). Rows already sealed
+/// under it keep verifying; new rows seal under [`row4_suffix`].
 pub(crate) fn row_suffix(ts: u64, row: &AuditRowInput) -> Vec<u8> {
     let mut out = vec![ROW_SUFFIX_MARKER];
-    push_lp(&mut out, &ts.to_be_bytes());
-    push_lp(&mut out, row.action.as_bytes());
-    push_lp(&mut out, row.resource.as_bytes());
-    push_lp(&mut out, row.outcome.as_bytes());
-    push_lp(&mut out, row.principal.as_bytes());
-    push_opt(&mut out, row.config_generation.as_deref());
-    push_opt(&mut out, row.request_id.as_deref());
-    push_opt(&mut out, row.idempotency_key.as_deref());
-    push_opt(&mut out, row.kind.as_deref());
-    push_opt(&mut out, row.instance.as_deref());
+    push_row_fields(&mut out, ts, row);
+    out
+}
+
+/// The bytes scheme 4 seals for one row (ADMIN-API-1.6-ONE-MODEL section 7.1; the recipe is on
+/// `AuditEntry::hash`): scheme 3's fields after a 0x04 marker, `ts` being `at_ms / 1000`, then `at_ms`
+/// (8 bytes, big-endian), `client_request_id`, `trace_id`, `operation_id` and `on_behalf_of`
+/// (each framed like `request_id`), `unconditional` (one byte, 0x00 or 0x01), then `before_digest`
+/// and `after_digest` (framed like `request_id`). No request feature fills `client_request_id`,
+/// `trace_id`, `operation_id`, `on_behalf_of` or the digests yet, so every row seals them absent.
+pub(crate) fn row4_suffix(at_ms: u64, row: &AuditRowInput) -> Vec<u8> {
+    let mut out = vec![ROW4_SUFFIX_MARKER];
+    push_row_fields(&mut out, at_ms / 1000, row);
+    out.extend_from_slice(&at_ms.to_be_bytes());
+    // client_request_id, trace_id, operation_id, on_behalf_of
+    push_opt(&mut out, None);
+    push_opt(&mut out, None);
+    push_opt(&mut out, None);
+    push_opt(&mut out, None);
+    out.push(u8::from(row.unconditional));
+    // before_digest, after_digest
+    push_opt(&mut out, None);
+    push_opt(&mut out, None);
+    out
+}
+
+/// Scheme 3's fields after the marker, shared by schemes 3 and 4.
+fn push_row_fields(out: &mut Vec<u8>, ts: u64, row: &AuditRowInput) {
+    push_lp(out, &ts.to_be_bytes());
+    push_lp(out, row.action.as_bytes());
+    push_lp(out, row.resource.as_bytes());
+    push_lp(out, row.outcome.as_bytes());
+    push_lp(out, row.principal.as_bytes());
+    push_opt(out, row.config_generation.as_deref());
+    push_opt(out, row.request_id.as_deref());
+    push_opt(out, row.idempotency_key.as_deref());
+    push_opt(out, row.kind.as_deref());
+    push_opt(out, row.instance.as_deref());
     out.extend_from_slice(&(row.sections_changed.len() as u64).to_be_bytes());
     for section in &row.sections_changed {
-        push_lp(&mut out, section.as_bytes());
+        push_lp(out, section.as_bytes());
     }
     let severity = if row.severity.is_empty() {
         crate::audit_ring::SEVERITIES[0]
     } else {
         row.severity.as_str()
     };
-    push_lp(&mut out, severity.as_bytes());
-    push_lp(&mut out, row.message.as_bytes());
-    push_lp(&mut out, row.data.as_str().as_bytes());
-    out
+    push_lp(out, severity.as_bytes());
+    push_lp(out, row.message.as_bytes());
+    push_lp(out, row.data.as_str().as_bytes());
 }
 
-/// A sealed suffix read back: its `ts`, the scheme it was sealed under and the row.
+/// A sealed suffix read back: its `ts`, the scheme it was sealed under and the row, and on a scheme 4
+/// row its `at_ms`.
 pub(crate) struct ParsedSuffix {
     pub(crate) ts: u64,
+    pub(crate) at_ms: Option<u64>,
     pub(crate) scheme: u8,
     pub(crate) row: AuditRowInput,
 }
@@ -175,20 +211,25 @@ fn ts_of(bytes: &[u8]) -> u64 {
 /// Read a sealed suffix of any scheme. A scheme 1 or 2 suffix reads with the row defaults
 /// (severity `info`, no `data`); a damaged scheme 3 suffix reads as far as it goes and never panics.
 pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
-    let Some(mut rest) = content.strip_prefix(&[ROW_SUFFIX_MARKER]) else {
-        let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(content);
-        return ParsedSuffix {
-            ts,
-            scheme,
-            row: AuditRowInput {
-                action,
-                resource,
-                outcome,
-                principal,
-                severity: crate::audit_ring::SEVERITIES[0].to_string(),
-                ..Default::default()
-            },
-        };
+    let (scheme, mut rest) = match content.split_first() {
+        Some((&ROW_SUFFIX_MARKER, rest)) => (crate::audit_ring::AUDIT_SCHEME_ROW, rest),
+        Some((&ROW4_SUFFIX_MARKER, rest)) => (crate::audit_ring::AUDIT_SCHEME_ROW4, rest),
+        _ => {
+            let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(content);
+            return ParsedSuffix {
+                ts,
+                at_ms: None,
+                scheme,
+                row: AuditRowInput {
+                    action,
+                    resource,
+                    outcome,
+                    principal,
+                    severity: crate::audit_ring::SEVERITIES[0].to_string(),
+                    ..Default::default()
+                },
+            };
+        }
     };
     let ts = ts_of(&take_lp(&mut rest));
     let action = lossy(take_lp(&mut rest));
@@ -220,9 +261,30 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
     let severity = lossy(take_lp(&mut rest));
     let message = lossy(take_lp(&mut rest));
     let data = AuditData::from_json(&lossy(take_lp(&mut rest))).unwrap_or_default();
+    let (at_ms, unconditional) = if scheme == crate::audit_ring::AUDIT_SCHEME_ROW4 {
+        let at_ms = match rest.split_first_chunk::<8>() {
+            Some((at_ms, after)) => {
+                rest = after;
+                Some(u64::from_be_bytes(*at_ms))
+            }
+            None => {
+                rest = &[];
+                None
+            }
+        };
+        // client_request_id, trace_id, operation_id, on_behalf_of: sealed absent by every writer so far.
+        for _ in 0..4 {
+            let _ = take_opt(&mut rest);
+        }
+        let unconditional = rest.first() == Some(&1);
+        (at_ms, unconditional)
+    } else {
+        (None, false)
+    };
     ParsedSuffix {
         ts,
-        scheme: crate::audit_ring::AUDIT_SCHEME_ROW,
+        at_ms,
+        scheme,
         row: AuditRowInput {
             action,
             resource,
@@ -237,6 +299,7 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
             severity,
             message,
             data,
+            unconditional,
         },
     }
 }
@@ -249,10 +312,19 @@ fn entry_of(
     parsed: ParsedSuffix,
     recorded_here: bool,
 ) -> AuditEntry {
-    let ParsedSuffix { ts, scheme, row } = parsed;
+    let ParsedSuffix {
+        ts,
+        at_ms,
+        scheme,
+        row,
+    } = parsed;
+    let unconditional =
+        (scheme == crate::audit_ring::AUDIT_SCHEME_ROW4).then_some(row.unconditional);
     AuditEntry {
         seq,
         ts,
+        at_ms,
+        unconditional,
         action: row.action,
         resource: row.resource,
         outcome: row.outcome,
@@ -834,6 +906,8 @@ pub fn scope_request_sync<T>(request: Option<Arc<AuditRequest>>, work: impl FnOn
 #[derive(Default)]
 struct RequestAudit {
     idempotency_key: Option<String>,
+    /// The request was admitted on `If-Match: *`.
+    unconditional: bool,
     /// Reads the config generation the request's change published; called when an applied row is
     /// written, after the change committed.
     generation: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
@@ -851,6 +925,12 @@ pub fn note_idempotency_key(key: &str) {
     with_context(|ctx| ctx.idempotency_key = Some(key.to_string()));
 }
 
+/// The request in flight was admitted on `If-Match: *`: its rows are sealed as unconditional
+/// (ADMIN-API-1.6-ONE-MODEL section 6.2).
+pub fn note_unconditional() {
+    with_context(|ctx| ctx.unconditional = true);
+}
+
 /// Where the request in flight reads the config generation its change published. Set only for a
 /// config-changing request: its applied rows then carry `config_generation`.
 pub fn note_generation_source(source: Arc<dyn Fn() -> u64 + Send + Sync>) {
@@ -862,8 +942,8 @@ pub fn note_sections_changed(sections: Vec<String>) {
     with_context(|ctx| ctx.sections = sections);
 }
 
-/// Fill what `row` leaves unset from the request in flight: its id, its `Idempotency-Key`, and, on an
-/// applied row only (a rejected one changed nothing), the generation and sections it changed.
+/// Fill what `row` leaves unset from the request in flight: its id, its `Idempotency-Key`, whether it was
+/// admitted on `If-Match: *`, and, on an applied row only (a rejected one changed nothing), the generation and sections it changed.
 pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     if row.request_id.is_none() {
         row.request_id = crate::admin::gate::request_id_in_scope();
@@ -871,14 +951,16 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     let Some(request) = current_request() else {
         return;
     };
-    let (key, generation, sections) = {
+    let (key, unconditional, generation, sections) = {
         let ctx = request.context.lock().unwrap_or_else(|e| e.into_inner());
         (
             ctx.idempotency_key.clone(),
+            ctx.unconditional,
             ctx.generation.clone(),
             ctx.sections.clone(),
         )
     };
+    row.unconditional |= unconditional;
     if row.idempotency_key.is_none() {
         row.idempotency_key = key;
     }
@@ -892,10 +974,10 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     }
 }
 
-/// Write one row under hash scheme 3, stamped with the request in flight.
+/// Write one row under hash scheme 4, stamped with the request in flight.
 pub fn emit_row_now(mut row: AuditRowInput) {
     stamp_request_context(&mut row);
-    let suffix = row_suffix(busbar_kernel::store::now(), &row);
+    let suffix = row4_suffix(busbar_kernel::store::now_ms(), &row);
     drain_pending_audit();
     enqueue_pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation);
     drain_pending_audit();
@@ -1178,7 +1260,8 @@ fn enqueue_export_failure(
         severity: "error".into(),
         ..AuditRowInput::default()
     };
-    let suffix = row_suffix(facts.observed_at, &row);
+    // The loss is observed in whole seconds; its scheme 4 instant is that second.
+    let suffix = row4_suffix(facts.observed_at.saturating_mul(1000), &row);
     let mut operation = [0; 16];
     busbar_contract::crypto::fill(&mut operation)
         .map_err(|error| RecordStoreError(format!("export audit operation entropy: {error}")))?;

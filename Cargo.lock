@@ -665,6 +665,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-openapi-diff"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+]
+
+[[package]]
 name = "busbar-plugin-abi"
 version = "1.6.0"
 dependencies = [

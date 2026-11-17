@@ -152,23 +152,6 @@ impl From<MintError> for RecordStoreError {
     }
 }
 
-/// The current signing key id, read in place from the shared signing material (no copy).
-pub struct SigningKid(Arc<SigningMaterial>);
-
-impl std::ops::Deref for SigningKid {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        self.0.signer.kid()
-    }
-}
-
-impl serde::Serialize for SigningKid {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.0.signer.kid())
-    }
-}
-
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
@@ -419,10 +402,6 @@ impl GovState {
             },
         };
         *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
-    }
-
-    pub fn signing_kid(&self) -> Option<SigningKid> {
-        self.signing_material().map(SigningKid)
     }
 
     pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {

@@ -16,8 +16,8 @@
 //! under ([`Kind::root`]) and off the plane registry, never off a plugin name: the plugin an
 //! instance runs appears only as data, in its `plugin` member.
 //!
-//! Every `config` passes through the secret rule (§14.2). `/info.kinds_revision` is the `/kinds`
-//! ETag: a digest over every (category, kind, instance, image, config digest), kept once per
+//! Every `config` passes through the secret rule (§14.2). The `/kinds` ETag is the discovery
+//! revision: a digest over every (category, kind, instance, image, config digest), kept once per
 //! generation.
 
 use std::collections::HashMap;
@@ -278,7 +278,7 @@ fn revision(app: &App, instance: &Instance) -> String {
     .as_bytes())
 }
 
-/// The digest over every instance of `app`: `/info.kinds_revision` and the `/kinds` ETag.
+/// The digest over every instance of `app`: the `/kinds` ETag.
 fn compute_revision(app: &App) -> String {
     let instances = inventory(app);
     let mut text = String::new();
@@ -339,6 +339,7 @@ fn kinds_of(instances: &[Instance]) -> Vec<(String, &'static str)> {
 /// arrive with the core instances (MR15) and plugin views with MIN-3 (MR16).
 fn views_of(instance: &Instance) -> Vec<Descriptor> {
     let declared = match (instance.category, instance.id.as_str()) {
+        ("core", "process") => vec![nodes_descriptor()],
         ("core", "routing") => vec![pools_descriptor()],
         ("core", "trust") => super::trust_inventory::descriptors(),
         _ => return Vec::new(),
@@ -354,6 +355,28 @@ fn views_of(instance: &Instance) -> Vec<Descriptor> {
             .join("; ")
     );
     kept
+}
+
+/// The `core/process` view `nodes` (ADMIN-API-1.6-ONE-MODEL §10.1): every node the Store holds a lease
+/// row for, so a client can prove it reads the whole deployment. Node ids, roles and lease times are
+/// topology, so they are read here with `kinds:read`, not on `/info`.
+fn nodes_descriptor() -> Value {
+    busbar_contract::json::json!({
+        "view": "nodes",
+        "title": "Nodes",
+        "shape": "table",
+        "fields": [
+            {"name": "node_id", "label": "Node", "type": "string", "unit": null, "format": null, "role": "id"},
+            {"name": "role", "label": "Role", "type": "string", "unit": null, "format": null, "role": "dimension"},
+            {"name": "state", "label": "Lease", "type": "string", "unit": null, "format": null, "role": "status"},
+            {"name": "started_at_ms", "label": "Started", "type": "time", "unit": null, "format": null, "role": "time"},
+            {"name": "last_seen_at_ms", "label": "Last seen", "type": "time", "unit": null, "format": null, "role": "time"}
+        ],
+        "default_sort": "node_id",
+        "filters": ["node_id", "role"],
+        "time": null,
+        "step_options": []
+    })
 }
 
 fn pools_descriptor() -> Value {
@@ -406,6 +429,26 @@ async fn view_items(
             Some(Ok(rows)) => Ok(rows),
             Some(Err(why)) => Err(ViewRefused::Unavailable(why.0)),
         };
+    }
+    if instance.category == "core" && instance.id == "process" && view == "nodes" {
+        let Some(live) = busbar_kernel::persistence::boot_identity::live() else {
+            return Err(ViewRefused::Unavailable(
+                "this process has not booted its Store yet".into(),
+            ));
+        };
+        let nodes = live.nodes().await.map_err(|_| ViewRefused::Failed)?;
+        return Ok(nodes
+            .into_iter()
+            .map(|node| {
+                busbar_contract::json::json!({
+                    "node_id": node.node_id,
+                    "role": node.role,
+                    "state": node.state,
+                    "started_at_ms": node.started_at.saturating_mul(1000),
+                    "last_seen_at_ms": node.last_seen_at.saturating_mul(1000),
+                })
+            })
+            .collect());
     }
     if instance.category == "core" && instance.id == "routing" && view == "pools" {
         let pools = crate::v1::service::AdminService::new(app)
