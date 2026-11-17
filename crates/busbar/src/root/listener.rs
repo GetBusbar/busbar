@@ -81,7 +81,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
+use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
 use busbar_core_connector::listen::{Admits, Admitted};
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
@@ -926,21 +926,21 @@ impl Served {
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }
+        let stream = busbar_core_connector::raw_progress::tcp(stream);
+        let progress = stream.progress();
         let stream = AdmittedIo {
             inner: stream,
             _hold: hold,
             _guard: guard,
         };
-        if self.security.is_none() {
-            return self
-                .io(stream, peer, bytes::Bytes::new(), watcher, drain)
-                .await;
-        }
-        let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
+        let raw = ConnectionIo {
+            io: Box::new(TokioAsyncReadCompatExt::compat(stream)),
+            progress,
+        };
         self.raw(raw, peer, watcher, drain).await;
     }
 
-    async fn raw(self, raw: Box<dyn RawIo>, peer: SocketAddr, watcher: Watcher, drain: Drain) {
+    async fn raw(self, raw: ConnectionIo, peer: SocketAddr, watcher: Watcher, drain: Drain) {
         let wrapped = match &self.security {
             None => busbar_contract::transport::wire::SecuredIo::anonymous(raw),
             Some(security) => {
@@ -958,26 +958,14 @@ impl Served {
                 }
             }
         };
-        self.io(
-            FuturesAsyncReadCompatExt::compat(wrapped.io),
-            peer,
-            bytes::Bytes::from(wrapped.peer_certificate.into_vec()),
-            watcher,
-            drain,
-        )
-        .await;
+        self.io(wrapped, peer, watcher, drain).await;
     }
 
-    async fn io<I>(
-        self,
-        io: I,
-        peer: SocketAddr,
-        tls_peer_cert: bytes::Bytes,
-        watcher: Watcher,
-        drain: Drain,
-    ) where
-        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    {
+    async fn io(self, mut io: SecuredIo, peer: SocketAddr, watcher: Watcher, drain: Drain) {
+        let tls_peer_cert = bytes::Bytes::from(std::mem::take(&mut io.peer_certificate).into_vec());
+        // Keep the genuine logical reader with its stream through the entire serving lifetime,
+        // including the plaintext path. The verified certificate is separately handed to admission.
+        let io = FuturesAsyncReadCompatExt::compat(io);
         if let Some(framer) = self.framer {
             let secured = self.security.is_some();
             framed::serve(

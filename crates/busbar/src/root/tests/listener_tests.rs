@@ -46,13 +46,13 @@ async fn accepted_socket_hands_security_its_actual_raw_write_observer() {
 impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     fn wrap<'a>(
         &'a self,
-        mut io: Box<dyn busbar_contract::transport::wire::RawIo>,
+        mut io: busbar_contract::transport::wire::ConnectionIo,
     ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
         Box::pin(async move {
             use futures::io::AsyncReadExt as _;
             let mut line = Vec::new();
             let mut byte = [0_u8; 1];
-            while io.read(&mut byte).await? == 1 && byte[0] != b'\n' {
+            while io.io.read(&mut byte).await? == 1 && byte[0] != b'\n' {
                 line.push(byte[0]);
             }
             if line == b"LET-ME-IN" {
