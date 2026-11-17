@@ -65,7 +65,7 @@ fn native_input_window_is_not_a_total_body_limit_and_replacement_overlaps() {
     assert_eq!(small.used(), (6, 6));
 }
 
-async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageSource) {
+pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageSource) {
     use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener};
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
@@ -98,7 +98,7 @@ async fn ingress_fixture() -> (NativeIngress, busbar_contract::storage::StorageS
     )
 }
 
-fn public_head(
+pub(super) fn public_head(
     source: &busbar_contract::storage::StorageSource,
     stream: u64,
     end_stream: bool,
@@ -291,10 +291,15 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         AdmissionClass::Operator,
         Arc::new(move |_, name| (name == slot.slot()).then(|| slot.clone())),
         NativeLimits {
+            max_connections: 2,
             body_bytes: 1024,
             stall_ms: None,
             handshake_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            drain_grace: Duration::from_secs(5),
         },
+        None,
     )
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
