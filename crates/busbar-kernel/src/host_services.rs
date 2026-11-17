@@ -4034,6 +4034,10 @@ mod trust_verify_tests;
 mod trust_rule_tests;
 
 #[cfg(test)]
+#[path = "tests/trust_admin_custody_tests.rs"]
+mod trust_admin_custody_tests;
+
+#[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
 
