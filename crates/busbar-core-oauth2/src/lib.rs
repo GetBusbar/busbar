@@ -14,6 +14,7 @@ mod hosted_login;
 mod mount;
 // The operator approval pages (admin listener): off the data listener's request path.
 mod operator;
+mod page;
 mod sweep;
 // The plane's build, generation hand-over and sweep; its request path is the marked `plane::serve`.
 pub mod plane;

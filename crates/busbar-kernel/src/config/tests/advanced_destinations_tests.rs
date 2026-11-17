@@ -8,12 +8,9 @@ use super::*;
 
 #[test]
 fn the_destination_keys_parse_under_advanced() {
-    let a: AdvancedCfg = busbar_contract::yaml::from_str(
-        "block_private_addresses: false\nallow_destinations: [\x310.0.0.0/8, '*.corp.example']\n",
-    )
-    .expect("the destination keys are advanced keys");
+    let a: AdvancedCfg = busbar_contract::yaml::from_str("block_private_addresses: false\n")
+        .expect("the destination keys are advanced keys");
     assert!(!a.block_private_addresses);
-    assert_eq!(a.allow_destinations, ["\x310.0.0.0/8", "*.corp.example"]);
 }
 
 #[test]
@@ -25,7 +22,7 @@ fn private_addresses_are_blocked_by_default() {
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     let d = cfg.destinations();
     assert!(d.block_private_addresses);
-    assert!(d.allow.is_empty() && d.blocked.is_empty());
+    assert!(d.blocked.is_empty());
 }
 
 /// The one 1.5.5 security key that still feeds the guard is `blocked_metadata_hosts`; the retired
@@ -33,7 +30,6 @@ fn private_addresses_are_blocked_by_default() {
 #[test]
 fn the_1_5_5_security_keys_feed_the_one_guard() {
     let mut deploy = base_deploy();
-    deploy.advanced.allow_destinations = vec!["127.0.0.1".into()];
     deploy.security = Some(SecurityCfg {
         blocked_metadata_hosts: vec!["imds.corp.example".into()],
         allow_metadata_hosts: Vec::new(),
@@ -44,8 +40,31 @@ fn the_1_5_5_security_keys_feed_the_one_guard() {
         cfg.destinations(),
         Destinations {
             block_private_addresses: true,
-            allow: vec!["127.0.0.1".into()],
             blocked: vec!["imds.corp.example".into()],
         }
     );
+}
+
+/// UPSTREAMS-DECLARED r3 section 2.4 removes the global destination grant.
+#[test]
+fn allow_destinations_is_refused_as_an_unknown_key() {
+    for yaml in [
+        "allow_destinations: [127.0.0.1]\n",
+        "allow_destinations: []\n",
+    ] {
+        let err = busbar_contract::yaml::from_str::<AdvancedCfg>(yaml)
+            .expect_err("the deleted advanced key is refused")
+            .to_string();
+        assert!(err.contains("unknown field"), "{yaml}: {err}");
+    }
+}
+
+#[test]
+fn allow_destinations_is_refused_by_the_settings_patch() {
+    let err = busbar_contract::yaml::from_str::<crate::config::patch::AdvancedPatch>(
+        "allow_destinations: [127.0.0.1]\n",
+    )
+    .expect_err("the settings door refuses the deleted advanced key")
+    .to_string();
+    assert!(err.contains("unknown field"), "{err}");
 }

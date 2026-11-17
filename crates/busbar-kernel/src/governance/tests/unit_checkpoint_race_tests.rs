@@ -14,6 +14,7 @@ use super::unit_checkpoint_store::{
 use super::RecordStoreResult;
 use crate::persistence::facade::{CoreStore, Limits, WriterAuthority};
 use crate::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::{
     control, Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Durability,
     ExpectedValue, Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -30,6 +31,9 @@ const NODE: u64 = 7;
 const UNITCP: &[u8] = b"busbar.unitcp.v1";
 const JOURNAL: &[u8] = b"busbar.journal4\0";
 const INJECTED: &[u8] = b"a27c concurrent request-path append";
+
+#[path = "unit_checkpoint_selected_tests.rs"]
+mod selected_partitions;
 
 /// What the interposer does with a running-unit checkpoint candidate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,7 +285,7 @@ impl PersistenceBackend for Mem {
             dataset: DatasetId([1; 16]),
             atomic_domain: [2; 16],
             clock_authority: [3; 16],
-            physical_version: busbar_contract::abi::sdk::store::v4::slot::PHYSICAL_VERSION,
+            physical_version: busbar_contract::persistence::PHYSICAL_VERSION,
             durability: Durability::Local,
         }
     }
@@ -453,8 +457,11 @@ impl UnitCheckpointAudit for Signer {
         keys.insert(AuditVerifyingKey::from_hex(&self.0.public_key_hex()).unwrap());
         keys
     }
-    fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>> {
-        Ok(self.0.sign_checkpoint_body(body))
+    async fn sign_checkpoints(&self, bodies: &[&[u8]]) -> RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(bodies
+            .iter()
+            .map(|body| self.0.sign_checkpoint_body(body))
+            .collect())
     }
     async fn confirm(
         &self,
@@ -566,6 +573,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         audit: Some(b"{}".to_vec()),
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 fn selected_revision(backend: &Mem) -> Option<u64> {
@@ -574,7 +582,7 @@ fn selected_revision(backend: &Mem) -> Option<u64> {
         .rows
         .iter()
         .find(|(at, _)| at.key.starts_with(UNITCP))?;
-    let head: serde_json::Value = serde_json::from_slice(raw.expose(&crate::seal::lend())).unwrap();
+    let head: json::Value = json::parse_value(raw.expose(&crate::seal::lend())).unwrap();
     head["revision"].as_u64()
 }
 fn selected_raw(backend: &Mem) -> Option<Secret<Vec<u8>>> {
@@ -710,10 +718,15 @@ async fn cancel_parked_persist(fixture: &Fixture, snapshot: &UnitCheckpoint) {
 /// WHO: the usage flusher re-driving a checkpoint selection whose crossing was
 /// cancelled (timeout, abort) while another service appended.
 /// DOES: the proof is retained before any native claim, so the re-drive
-/// presents the exact same attempt (same operation id, same head predicate);
-/// with the head moved the attempt stays retained for reconciliation.
-/// WHY: re-proving against the moved head would change the claim digest for
-/// the same operation id and wedge it as corruption.
+/// presents the exact same attempt (same operation id, same head predicate).
+/// (SHUTDOWN-HANG F2.2, 8.4(c), owner ruling 2026-11-16 "Re-select, after
+/// authority check") With the head moved, that re-drive's condition conflict is
+/// a definitive no-effect: our authority is intact, so the same staged original
+/// is re-selected once under a new operation id against the current head, and
+/// nothing is staged twice.
+/// WHY: re-proving against the moved head on the re-drive would change the claim
+/// digest for the same operation id and wedge it as corruption; never
+/// re-selecting held the single slot, and every later checkpoint, for ever.
 #[tokio::test]
 async fn cancelled_selection_resumes_exact_attempt() {
     bounded(async {
@@ -728,29 +741,27 @@ async fn cancelled_selection_resumes_exact_attempt() {
         })
         .await
         .expect("a cancelled selection releases the journal's publication driver");
-        let refused = fixture.sink.persist(&unit(1)).await.unwrap_err().0;
+        let staged = fixture.journal.next_seq();
+        let resolved = fixture.sink.persist(&unit(1)).await;
+        assert!(resolved.is_ok(), "{:?}", resolved.err().map(|e| e.0));
         let seen = fixture.backend.seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 3, "the re-drive, then one re-select");
         assert_eq!(seen[1], seen[0], "the re-drive presents the exact attempt");
-        assert!(
-            refused.contains("running money native custody remains unresolved"),
-            "{refused}"
-        );
-        assert!(
-            !refused.contains("Corrupt") && !refused.contains("OperationConflict"),
-            "{refused}"
-        );
-        let again = fixture.sink.persist(&unit(1)).await.unwrap_err().0;
-        assert!(
-            again.contains("running money native custody remains unresolved"),
-            "{again}"
+        assert_ne!(seen[2].operation, seen[0].operation, "a new operation id");
+        assert_ne!(
+            seen[2].head, seen[0].head,
+            "the re-select pins the current head"
         );
         assert_eq!(
-            fixture.backend.seen.lock().unwrap().len(),
-            2,
-            "a reconciling attempt is not resubmitted"
+            fixture.backend.decisions.lock().unwrap().clone(),
+            vec!["ConditionConflict", "Applied"]
         );
-        assert_eq!(selected_revision(&fixture.backend), None);
+        assert_eq!(
+            fixture.journal.next_seq(),
+            staged,
+            "the same staged original is re-selected"
+        );
+        assert_eq!(selected_revision(&fixture.backend), Some(1));
     })
     .await;
 }
@@ -822,9 +833,10 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
     };
-    let mut chain = AuditChain::new()
-        .signing_with(AuditSigningKey::from_seed(&[0x5a; 32]))
-        .sealing_as(NODE);
+    // A production chain holds no key: its V8 link line is unsigned, and the journal body is that
+    // line exactly (a stamp vouches for it, SF-4). A test-only per-line signature has no journal
+    // field, so a fixture sealed with one could never round-trip through recovery.
+    let mut chain = AuditChain::new().sealing_as(NODE);
     let inputs = AuditInputs {
         subject: Subject::PrincipalId("race-principal".into()),
         what: What {
@@ -863,6 +875,59 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         inputs,
         &busbar_contract::caps::Pass::<AuditStep>::mint(&crate::seal::acquire()),
     )
+}
+
+/// #370: recovery carries the original WAL position, distinct from the audit chain sequence.
+#[tokio::test]
+async fn recovered_audit_lookup_and_reappend_keep_the_original_wal_position() {
+    bounded(async {
+        let fixture = fixture().await;
+        fixture.sink.persist(&unit(1)).await.unwrap();
+        let audit = audit_line();
+        let position = fixture.evidence.append_audit(audit.clone()).await.unwrap();
+        assert_ne!(position, 0);
+        assert_ne!(
+            position, audit.seq,
+            "the checkpoint occupies its own WAL record"
+        );
+
+        let recovered = RuntimeJournal::open(
+            fixture.journal.store().clone(),
+            NODE,
+            BufferBudget {
+                records: 1024,
+                bytes: 4 * 1024 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let evidence =
+            UnitCheckpointEvidence::new(recovered, crate::teller::Kernel::new().durability_token());
+        assert_eq!(evidence.pending_audit(17, 7), None);
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit.clone()))
+        );
+        let applied = fixture.backend.appends_applied.load(Ordering::SeqCst);
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            fixture.backend.appends_applied.load(Ordering::SeqCst),
+            applied,
+            "reappending the recovered line writes no new original"
+        );
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit))
+        );
+    })
+    .await;
 }
 
 /// One request-path append on the shared journal, confirmed.

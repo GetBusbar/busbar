@@ -6,6 +6,14 @@
 //!
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
+//!
+//! Moved to the owner's crate (the loader's ENDPOINT decode is private to it and is not widened for a test,
+//! SDK-SAFE-TEST-HOST):
+//!
+//! - TEST-VALUE `bad_endpoint_records_are_invalid`:
+//!   `busbar_plugin_loader::instance::endpoint_decode_tests::bad_endpoint_records_are_invalid` (more than 16, a
+//!   dest over 2,048 bytes or not UTF-8, an op other than OPEN/FETCH, egress 5..=15, bit 0x200 or any stray bit
+//!   is INVALID and refuses CONFIG naming the instance; 16 and 2,048 bytes decode, in answer order).
 
 use busbar_plugin_abi::host::{decode_need, DirNeed, Need, NeedErr, RecordNeed, TlsMode};
 use busbar_plugin_abi::need::{dir, need_flag as nf, op};
@@ -516,13 +524,7 @@ fn every_decode_table_row_both_ways() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "owner: W1-C1A; blocked (re-checked on dev 2026-11-16): HostNeeds never learns which destinations the operator configured (busbar-core-connector need.rs: `configured` is always None, no setter), so `judged_class(OPEN_WEB, configured)` is never lifted and a counting-guard arm would be red; the arm then moves into busbar-core-connector beside HostNeeds (not a dependency of this crate). The unix half runs as busbar_core_connector::need::unix::tests::only_operator_infrastructure_may_dial_a_unix_socket"]
 fn hostneeds_judges_the_stated_class() {
     todo!("owner: W1-C1A (C-NEED-DECODE)")
-}
-
-#[test]
-#[ignore = "owner: W1-L2"]
-fn bad_endpoint_records_are_invalid() {
-    todo!("owner: W1-L2 (C-NEED-DECODE)")
 }

@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 
 #[test]
 fn exchange_ok_body_includes_base_url_equal_to_public_url() {
@@ -12,7 +14,7 @@ fn exchange_ok_body_includes_base_url_equal_to_public_url() {
         exp: 1234567890,
     };
     let public_url = "https://busbar.example.com";
-    let body = serde_json::to_value(exchange_ok_body(&issued, public_url)).unwrap();
+    let body = json::to_value(&exchange_ok_body(&issued, public_url)).unwrap();
     assert_eq!(body["base_url"], public_url);
     assert_eq!(body["api_key"], "sk-busbar-abc");
     assert_eq!(body["key_id"], "kid-1");
@@ -46,6 +48,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
         module: "mode-replay-idp".to_string(),
         principal,
         resolved: None,
+        signed_authority: None,
     };
     let bindings = std::collections::BTreeMap::from([(
         "mode-replay-idp".to_string(),
@@ -110,12 +113,12 @@ async fn dpop_refusal_names_the_sender_constraint() {
     let bytes = axum::body::to_bytes(response.into_body(), 1024)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(
         (status, body),
         (
             401,
-            serde_json::json!({
+            json::json!({
                 "error": "sender_constrained",
                 "error_description": "This deployment does not verify DPoP proofs, so a \
                     DPoP-bound or DPoP-scheme presentation cannot be accepted (RFC 9449). \
@@ -153,12 +156,12 @@ async fn exchange_answers_a_held_subject_403_with_a_coded_body() {
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let body: json::Value = json::parse_value(&bytes).unwrap();
         assert_eq!(
             (status, body),
             (
                 403,
-                serde_json::json!({
+                json::json!({
                     "error": format!(
                         "BUSBAR-4043: your self-serve key is on hold: {detail}. See \
                          https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"

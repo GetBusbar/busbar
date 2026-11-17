@@ -35,11 +35,17 @@ impl Drop for Completion {
 
 #[derive(Clone)]
 pub struct Context {
-    pub(crate) method: String,
-    pub(crate) target: String,
-    pub(crate) headers: HeaderMap,
-    pub(crate) actor: Option<String>,
-    pub(crate) roles: std::collections::BTreeSet<String>,
+    pub(crate) native: Option<Arc<super::native_admin::ExecutionAdmission>>,
+    pub(crate) physical: Option<Arc<crate::inbound::native::PhysicalAdminExecution>>,
+    legacy: Option<Arc<LegacyContext>>,
+}
+
+struct LegacyContext {
+    method: String,
+    target: String,
+    headers: HeaderMap,
+    actor: Option<String>,
+    roles: std::collections::BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Context {
@@ -79,16 +85,148 @@ impl Context {
         crate::off_path::auth::keys::effect::context(method, target, headers, admitted)
     }
 
+    pub(crate) fn legacy(
+        method: &str,
+        target: &str,
+        headers: HeaderMap,
+        admitted: &AdminDoor,
+    ) -> Self {
+        Self {
+            native: None,
+            physical: None,
+            legacy: Some(Arc::new(LegacyContext {
+                method: method.into(),
+                target: target.into(),
+                headers,
+                actor: actor(admitted).map(str::to_owned),
+                roles: crate::off_path::auth::keys::effect::roles(admitted),
+            })),
+        }
+    }
+
+    /// Retain the already-admitted request; native effects never reconstruct its HTTP metadata.
+    pub fn from_physical(
+        physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+    ) -> Result<Self, TxnError> {
+        physical
+            .check_executing()
+            .map_err(|_| TxnError::Forbidden)?;
+        let execution = physical.admission();
+        let (lease, prepared) = execution.native().ok_or(TxnError::Forbidden)?;
+        let door = execution
+            .door_for(lease.generation())
+            .ok_or(TxnError::Forbidden)?;
+        if !super::admin_door_admits(
+            &door,
+            prepared.request().method(),
+            prepared.request().target(),
+        ) {
+            return Err(TxnError::Forbidden);
+        }
+        Ok(Self {
+            native: Some(execution.clone()),
+            physical: Some(physical),
+            legacy: None,
+        })
+    }
+
+    pub fn request_snapshot(
+        &self,
+    ) -> Option<&Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>> {
+        Some(self.native.as_ref()?.native()?.1.request())
+    }
+
+    pub fn attach_physical(
+        &mut self,
+        physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+    ) -> Result<(), TxnError> {
+        physical
+            .check_executing()
+            .map_err(|_| TxnError::Forbidden)?;
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|native| !Arc::ptr_eq(native, physical.admission()))
+        {
+            return Err(TxnError::Forbidden);
+        }
+        self.attach_execution(physical.admission().clone())?;
+        self.physical = Some(physical);
+        Ok(())
+    }
+
+    /// Bind successful native custody to this same method, target and projected principal. A
+    /// context cannot borrow another invocation's authority merely because it knows its subject.
+    pub fn attach_execution(
+        &mut self,
+        execution: Arc<super::native_admin::ExecutionAdmission>,
+    ) -> Result<(), TxnError> {
+        let Some((lease, prepared)) = execution.native() else {
+            return Ok(());
+        };
+        if let Some(prior) = &self.native {
+            return if Arc::ptr_eq(prior, &execution) {
+                Ok(())
+            } else {
+                Err(TxnError::Forbidden)
+            };
+        }
+        let legacy = self.legacy.as_ref().ok_or(TxnError::Forbidden)?;
+        if prepared.request().method() != legacy.method
+            || prepared.request().target() != legacy.target
+        {
+            return Err(TxnError::Forbidden);
+        }
+        let door = execution
+            .door_for(lease.generation())
+            .ok_or(TxnError::Forbidden)?;
+        if actor(&door) != legacy.actor.as_deref()
+            || crate::off_path::auth::keys::effect::roles(&door) != legacy.roles
+            || !super::admin_door_admits(&door, &legacy.method, &legacy.target)
+        {
+            return Err(TxnError::Forbidden);
+        }
+        self.native = Some(execution);
+        self.legacy = None;
+        Ok(())
+    }
+
+    fn retained_generation(&self) -> Option<&Arc<App>> {
+        self.native
+            .as_ref()?
+            .native()
+            .map(|(lease, _)| lease.generation())
+    }
+
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
-        let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
-        let (door, _) =
-            super::judge_admin_door(app, &self.method, &self.target, &self.headers, false, false)
-                .await
+        if let Some(physical) = &self.physical {
+            physical
+                .check_executing()
                 .map_err(|_| TxnError::Forbidden)?;
+        }
+        if let Some(execution) = &self.native {
+            let generation = self.retained_generation().ok_or(TxnError::Forbidden)?;
+            let door = execution.door_for(generation).ok_or(TxnError::Forbidden)?;
+            return Ok(Authority {
+                full_operator: full_operator(&door),
+            });
+        }
+        let legacy = self.legacy.as_ref().ok_or(TxnError::Forbidden)?;
+        let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
+        let (door, _) = super::judge_admin_door(
+            app,
+            &legacy.method,
+            &legacy.target,
+            &legacy.headers,
+            false,
+            false,
+        )
+        .await
+        .map_err(|_| TxnError::Forbidden)?;
         if COMPLETED_EFFECTS.load(Ordering::SeqCst) != completed
-            || actor(&door) != self.actor.as_deref()
-            || crate::off_path::auth::keys::effect::roles(&door) != self.roles
-            || !super::admin_door_admits(&door, &self.method, &self.target)
+            || actor(&door) != legacy.actor.as_deref()
+            || crate::off_path::auth::keys::effect::roles(&door) != legacy.roles
+            || !super::admin_door_admits(&door, &legacy.method, &legacy.target)
         {
             return Err(TxnError::Forbidden);
         }
@@ -98,8 +236,33 @@ impl Context {
     }
 
     pub(crate) fn survives(&self, app: &App) -> bool {
-        let door = super::probe_admin_door(app, &self.method, &self.target, &self.headers, false);
-        actor(&door) == self.actor.as_deref() && full_operator(&door)
+        if self
+            .physical
+            .as_ref()
+            .is_some_and(|physical| physical.check_executing().is_err())
+        {
+            return false;
+        }
+        if let Some(execution) = &self.native {
+            let Some(prior) = self.retained_generation() else {
+                return false;
+            };
+            // Lockout checking is about the candidate's future authority, not the admitted
+            // operation. Changed verifier configuration cannot reuse an old verified identity.
+            let Some((_, prepared)) = execution.native() else {
+                return false;
+            };
+            return prior.identity_providers == app.identity_providers
+                && execution.door_for(app).is_some_and(|door| {
+                    actor(&door) == Some(prepared.identity().subject()) && full_operator(&door)
+                });
+        }
+        let Some(legacy) = &self.legacy else {
+            return false;
+        };
+        let door =
+            super::probe_admin_door(app, &legacy.method, &legacy.target, &legacy.headers, false);
+        actor(&door) == legacy.actor.as_deref() && full_operator(&door)
     }
 }
 
@@ -124,7 +287,11 @@ impl PinnedEffect {
         context: Option<Context>,
     ) -> Result<Self, TxnError> {
         let effect = Self {
-            app: handle.load(),
+            app: context
+                .as_ref()
+                .and_then(Context::retained_generation)
+                .cloned()
+                .unwrap_or_else(|| handle.load()),
             context,
         };
         effect.revalidate(handle).await?;
@@ -141,6 +308,10 @@ impl PinnedEffect {
     }
 
     pub async fn revalidate(&self, handle: &Arc<AppHandle>) -> Result<(), TxnError> {
+        if let Some(context) = self.context.as_ref().filter(|ctx| ctx.native.is_some()) {
+            context.revalidate(&self.app).await?;
+            return Ok(());
+        }
         let completed = COMPLETED_EFFECTS.load(Ordering::SeqCst);
         if !Arc::ptr_eq(&self.app, &handle.load()) {
             return Err(TxnError::Forbidden);

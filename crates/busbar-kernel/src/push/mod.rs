@@ -21,10 +21,13 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_contract::Secret;
 
 use crate::persistence::facade::CoreStore;
-use crate::persistence::scoped::ScopedStore;
+use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
 use crate::plugin_records::store::{denied, expiry, label, live, operation, InDoubt};
 use crate::plugin_records::RecordsDenied;
 use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
+
+mod fetch;
+pub use fetch::ConnectorPushSink;
 
 /// Plane PUSH intents. Durable (CoreStore, rows keyed by (who.plugin, who.name), never the runtime id),
 /// at-least-once, deliveries through the connector's fetch with the live instance of that name as Caller
@@ -104,10 +107,10 @@ impl StorePushQueue {
         clock: fn() -> u64,
     ) -> Self {
         Self {
+            in_doubt: InDoubt::new(Arc::clone(&store)),
             store,
             clock,
             policy,
-            in_doubt: InDoubt::default(),
         }
     }
 
@@ -191,6 +194,7 @@ fn decode(key: Vec<u8>, raw: Secret<Vec<u8>>) -> Option<Row> {
 impl StorePushQueue {
     fn scoped(&self, who: &Caller<'_>) -> Result<ScopedStore, RecordsDenied> {
         ScopedStore::host_private(Arc::clone(&self.store), &label(who), [PUSHES.to_string()])
+            .and_then(|records| self.in_doubt.bind(records))
             .map_err(denied)
     }
 
@@ -207,7 +211,7 @@ impl StorePushQueue {
             return Err(RecordsDenied::TooLarge);
         }
         let records = self.scoped(who)?;
-        self.in_doubt.settle_one(&self.store).await;
+        self.in_doubt.settle_one().await;
         let now = (self.clock)();
         let ttl = if ttl_s == 0 { MAX_PUSH_TTL_S } else { ttl_s };
         let key = operation(&self.store)?;
@@ -258,7 +262,7 @@ impl StorePushQueue {
         sink: &dyn PushSink,
     ) -> Result<Round, RecordsDenied> {
         let records = self.scoped(who)?;
-        self.in_doubt.settle_one(&self.store).await;
+        self.in_doubt.settle_one().await;
         let now = (self.clock)();
         let mut round = Round::default();
         let mut handled = 0;
@@ -299,9 +303,25 @@ impl StorePushQueue {
                                 attempt,
                                 &row.recs,
                             );
-                            let first = records.put(PUSHES, &row.key, value).await;
-                            self.in_doubt.decided(&records, first).await?;
-                            round.retried += 1;
+                            // A removal or another worker may have settled this row while the
+                            // connector was in flight. Retry only the version we delivered.
+                            let request = Request {
+                                op_id: operation(&self.store)?,
+                                predicates: vec![Predicate {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    expected: Expected::Exact(row.raw.clone()),
+                                }],
+                                mutations: vec![Mutation::Put {
+                                    schema: PUSHES.into(),
+                                    key: row.key.clone(),
+                                    value,
+                                }],
+                            };
+                            let first = records.conditional_native(&request).await;
+                            if self.in_doubt.decided(&records, first).await? {
+                                round.retried += 1;
+                            }
                         }
                     }
                 }
@@ -325,3 +345,6 @@ impl StorePushQueue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fetch_tests;

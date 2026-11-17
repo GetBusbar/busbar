@@ -51,11 +51,16 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
 /// May cross construction stages, but must be initialized before any serving starts.
 pub(crate) struct FreshApplicationStore {
     opened: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
     evidence_sha256: String,
     store_sha256: String,
 }
 
 impl FreshApplicationStore {
+    pub(crate) fn rules(&self) -> std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> {
+        self.rules.clone()
+    }
+
     pub fn opened(&self) -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore> {
         self.opened.clone()
     }
@@ -97,7 +102,7 @@ impl FreshApplicationStore {
         self,
         cfg: &busbar_kernel::config::RootCfg,
         plugins: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
+    ) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
         use busbar_kernel::governance::principal_transition as transition;
         let seal = busbar_kernel::seal::acquire();
         let store_sha256 =
@@ -142,7 +147,10 @@ impl FreshApplicationStore {
         };
         transition::initialize_fresh(&receipt, self.opened.clone(), &store_sha256, &requirements)
             .await?;
-        Ok(self.opened)
+        Ok(crate::root::min3_boot::fixture::Admitted {
+            core: self.opened,
+            rules: self.rules,
+        })
     }
 }
 
@@ -200,12 +208,13 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(
-        cfg,
-        plugins,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await?;
+    let crate::root::min3_boot::fixture::Fixture { backend, rules, .. } =
+        crate::root::min3_boot::fixture::open(
+            cfg,
+            plugins,
+            std::sync::Arc::new(crate::root::door_steps::Rules::default()),
+        )
+        .await?;
     let opened = core_over(decorate(backend)).await;
     let seal = busbar_kernel::seal::acquire();
     let store_sha256 = busbar_kernel::governance::principal_transition::store_fingerprint(
@@ -213,6 +222,7 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
     )?;
     Ok(FreshApplicationStore {
         opened,
+        rules,
         evidence_sha256,
         store_sha256,
     })
@@ -220,11 +230,11 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
 
 /// Provision and initialize a genuinely new SQLite fixture before normal app startup.
 /// Call only for the first open in a new scratch directory; retained fixtures reopen normally.
-pub async fn bootstrap_fresh_application_store(
+pub(crate) async fn bootstrap_fresh_application_store(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
-) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
+) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
     provision_fresh_application_store(cfg, plugins, directory)
         .await?
         .initialize_principal_format(cfg, plugins)
@@ -239,7 +249,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .iter()
         .map(|p| {
             serde_json::json!({
-                "name": p.name, "public_key": p.public_key
+                "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()
             })
         })
         .collect();
@@ -258,8 +268,7 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .collect();
     serde_json::json!({
         "enabled": config.enabled, "dir": config.dir, "min_versions": config.min_versions,
-        "trust": {"publishers": publishers, "allow_unsigned": config.trust.allow_unsigned,
-            "allow_third_party": config.trust.allow_third_party}, "fetch": fetch
+        "trust": {"publishers": publishers, "allow_untrusted": config.trust.allow_untrusted}, "fetch": fetch
     })
 }
 
@@ -311,9 +320,61 @@ pub(crate) fn trusted_config_with_key(
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: FIXTURE_PUBLISHER.into(),
-            public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+            plugins: archives
+                .iter()
+                .map(|path| {
+                    crate::root::loader::unpack(
+                        &std::fs::read(path).expect("fixture archive reads"),
+                    )
+                    .expect("fixture archive unpacks")
+                    .manifest
+                    .name
+                })
+                .collect(),
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(signing_key.verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     config
+}
+
+/// A native MIN-3 image's stamped identity and its header's ordered `former_names`.
+pub struct NativeImage {
+    pub name: String,
+    pub version: String,
+    pub former: Vec<String>,
+}
+
+/// The identity of the native image at `path` (the application Store is a MIN-3 image: its stamp,
+/// not a door Statement, names it).
+pub fn native_image(path: &Path) -> NativeImage {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let (name, version, former) = busbar_plugin_loader::pack_native::identity(&bytes)
+        .expect("the image is a native MIN-3 image");
+    NativeImage {
+        name,
+        version,
+        former,
+    }
+}
+
+/// A `kind` manifest for the native image at `path`, completed from its stamp and header as
+/// `busbar pack` completes it: its alias is the header's first former name.
+pub fn native_manifest(kind: &str, path: &Path, publisher: &str) -> Manifest {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let image = native_image(path);
+    let mut m = manifest(kind, &image.name, publisher);
+    m.version = image.version;
+    m.alias = image
+        .former
+        .first()
+        .cloned()
+        .expect("a native image states its alias among its former_names");
+    busbar_plugin_loader::pack_native::complete(&bytes, m, None)
+        .expect("the native manifest completes from its stamp and header")
 }
 
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
@@ -537,6 +598,14 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         Some((std::fs::read(&p).ok()?, key))
     })
+}
+
+/// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
+pub fn native_schema_bomb_path() -> Option<PathBuf> {
+    let file = plugin_library_filename("native_schema_bomb");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
 }
 
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {

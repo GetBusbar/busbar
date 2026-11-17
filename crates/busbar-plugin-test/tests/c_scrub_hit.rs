@@ -344,8 +344,8 @@ pub(crate) mod fixture {
     use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
     use busbar_plugin_abi::host_side::scrub::Scrub;
     use busbar_plugin_abi::types::KindCode;
-    use busbar_plugin_loader::ports::secret::{SecretAnswer, SecretPort};
-    use busbar_plugin_loader::ports::{CallCx, PortError};
+    use busbar_ports::secret::{SecretAnswer, SecretPort};
+    use busbar_ports::{CallCx, PortError};
     use tokio::sync::Notify;
 
     type Audits = Vec<(u64, u32, CustodyEvent)>;

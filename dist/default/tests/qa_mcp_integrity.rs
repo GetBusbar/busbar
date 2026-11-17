@@ -44,7 +44,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use busbar_contract::json::{self, json, JsonValueTrait, Value};
 
 const PROTOCOL: &str = "2026-07-28";
 
@@ -52,21 +52,19 @@ const TOOL: &str = "ping";
 const TOOL_DESCRIPTION: &str = "Returns the label it was given.";
 
 fn canonical(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            let body: Vec<String> = keys
-                .into_iter()
-                .map(|k| format!("{}:{}", Value::String(k.clone()), canonical(&map[k])))
-                .collect();
-            format!("{{{}}}", body.join(","))
-        }
-        Value::Array(items) => {
-            let body: Vec<String> = items.iter().map(canonical).collect();
-            format!("[{}]", body.join(","))
-        }
-        scalar => scalar.to_string(),
+    if let Some(map) = value.as_object() {
+        let mut members: Vec<(&str, &Value)> = map.iter().collect();
+        members.sort_by(|a, b| a.0.cmp(b.0));
+        let body: Vec<String> = members
+            .into_iter()
+            .map(|(k, v)| format!("{}:{}", Value::from(k), canonical(v)))
+            .collect();
+        format!("{{{}}}", body.join(","))
+    } else if let Some(items) = value.as_array() {
+        let body: Vec<String> = items.iter().map(canonical).collect();
+        format!("[{}]", body.join(","))
+    } else {
+        value.to_string()
     }
 }
 
@@ -231,8 +229,8 @@ fn serve_one(
     if !head.starts_with("POST ") {
         return respond(&mut conn, 404, &json!({ "error": "only POST is served" }));
     }
-    let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    let req: Value = json::parse_value(&body).unwrap_or_default();
+    let id = req.get("id").cloned().unwrap_or_default();
     let answer = {
         let mut s = state.lock().unwrap();
         match req.get("method").and_then(Value::as_str) {
@@ -246,8 +244,7 @@ fn serve_one(
             }
             Some("tools/call") => {
                 s.tools_call += 1;
-                let label = req
-                    .pointer("/params/arguments/label")
+                let label = json::pointer(&req, "/params/arguments/label")
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 json!({ "jsonrpc": "2.0", "id": id, "result": {
@@ -345,7 +342,6 @@ async fn boot(tag: &str, upstream: &Upstream, approved_digest: &str) -> Node {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced: {{ allow_destinations: ["127.0.0.1"] }}
 store: {{module: memory}}
 providers: {{}}
 models: {{}}
@@ -377,7 +373,7 @@ auth:
                 .replace("{admin_port}", &admin_port.to_string()),
             upstream = upstream.url(),
             pin = upstream.pin,
-            ca_pem = serde_json::to_string(&upstream.ca_pem).expect("a YAML-compatible PEM string"),
+            ca_pem = json::to_string(&upstream.ca_pem).expect("a YAML-compatible PEM string"),
         ),
     )
     .unwrap();
@@ -427,15 +423,18 @@ auth:
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    let view: Value = client()
-        .post(node.admin("/api/v1/admin/tools/probe/connect"))
-        .bearer_auth(&node.admin_token)
-        .send()
-        .await
-        .expect("POST connect")
-        .json()
-        .await
-        .expect("connect answers JSON");
+    let view: Value = json::parse_value(
+        &client()
+            .post(node.admin("/api/v1/admin/tools/probe/connect"))
+            .bearer_auth(&node.admin_token)
+            .send()
+            .await
+            .expect("POST connect")
+            .bytes()
+            .await
+            .expect("connect answers JSON"),
+    )
+    .expect("connect answers JSON");
     assert_eq!(
         view["state"],
         "approved",
@@ -453,16 +452,19 @@ fn client() -> reqwest::Client {
 }
 
 async fn mint_bound_key(node: &Node) -> String {
-    let resp: Value = client()
-        .post(node.admin("/api/v1/admin/keys"))
-        .bearer_auth(&node.admin_token)
-        .json(&json!({ "name": "qa-tool-integrity" }))
-        .send()
-        .await
-        .expect("POST /keys")
-        .json()
-        .await
-        .expect("/keys answers JSON");
+    let resp: Value = json::parse_value(
+        &client()
+            .post(node.admin("/api/v1/admin/keys"))
+            .bearer_auth(&node.admin_token)
+            .json(&json!({ "name": "qa-tool-integrity" }))
+            .send()
+            .await
+            .expect("POST /keys")
+            .bytes()
+            .await
+            .expect("/keys answers JSON"),
+    )
+    .expect("/keys answers JSON");
     let plain = resp["token"]
         .as_str()
         .unwrap_or_else(|| panic!("/keys minted no token: {resp}"))
@@ -505,7 +507,7 @@ async fn call(node: &Node, bearer: &str, label: &str) -> (u16, Value) {
     let text = resp.text().await.unwrap_or_default();
     (
         status,
-        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        json::parse_value(text.as_bytes()).unwrap_or_else(|_| Value::from(text.as_str())),
     )
 }
 

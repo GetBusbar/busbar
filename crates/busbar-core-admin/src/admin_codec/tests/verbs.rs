@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Tests for `verbs.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 /// The root's view of a row and this module's own view of it are the same row. If they ever
 #[test]
@@ -36,6 +40,71 @@ fn resolve_refuses_a_pair_the_table_does_not_declare() {
 }
 
 #[test]
+fn metrics_names_resolve_only_for_admin_authorization() {
+    use busbar_contract::authz::Scope;
+    use std::collections::BTreeSet;
+
+    let executable: BTreeSet<_> = admin_rows().map(|row| row.name).collect();
+    let grantable: BTreeSet<_> = crate::verb::TABLE
+        .iter()
+        .filter(|row| named_rung(row.name).is_some())
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(
+        grantable,
+        crate::verb::admin_grant_rows()
+            .map(|row| row.name)
+            .collect::<BTreeSet<_>>(),
+        "the authorization projection is the grant resolver's exact vocabulary"
+    );
+    assert!(executable.is_subset(&grantable));
+    assert_eq!(
+        grantable
+            .difference(&executable)
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["get_metrics", "get_metrics_hooks"]),
+        "authorization adds exactly the two administrative Named surfaces"
+    );
+    for (path, name) in [
+        ("/metrics", "get_metrics"),
+        ("/metrics/hooks", "get_metrics_hooks"),
+    ] {
+        assert_eq!(named_rung(name), Some(Scope::ReadOnly));
+        assert_eq!(name_at("GET", path), Some(name));
+        assert_eq!(name_at("GET", &format!("{path}?format=json")), Some(name));
+        assert_eq!(name_at("POST", path), None);
+        assert_eq!(
+            name_at("HEAD", path),
+            None,
+            "named HEAD authority is unchanged"
+        );
+        assert_eq!(name_at("GET", &format!("{path}/")), None);
+        assert_eq!(name_at("GET", &format!("{path}/other")), None);
+        assert!(
+            resolve("GET", path).is_none(),
+            "the handler is outside codec execution"
+        );
+        assert!(table().iter().all(|row| row.verb != name));
+    }
+    for row in crate::verb::TABLE.iter().filter(|row| {
+        row.class == crate::verb::Class::Named
+            && !matches!(
+                row.verb,
+                crate::verb::KernelVerb::GetMetrics | crate::verb::KernelVerb::GetMetricsHooks
+            )
+    }) {
+        assert_eq!(
+            named_rung(row.name),
+            None,
+            "{} must remain ungrantable",
+            row.name
+        );
+        assert_eq!(name_at(row.method, row.path), None);
+    }
+}
+
+#[test]
 fn matches_a_templated_path_and_captures_the_param() {
     let params = match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys/abc123").unwrap();
     assert_eq!(params, vec![("id", "abc123")]);
@@ -67,12 +136,12 @@ fn find_verb_resolves_a_concrete_request() {
 }
 
 /// The pinned fixture, parsed once per test that reads it.
-fn fixture() -> serde_json::Value {
+fn fixture() -> busbar_contract::json::Value {
     let text = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
     ));
-    serde_json::from_str(text).expect("fixture is valid JSON")
+    busbar_contract::json::parse_value(text.as_bytes()).expect("fixture is valid JSON")
 }
 
 /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own

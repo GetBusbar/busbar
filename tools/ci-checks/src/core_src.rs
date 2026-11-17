@@ -301,6 +301,12 @@ pub(crate) fn no_licence(root: &Path) -> Outcome {
             files.push(path);
         }
     }
+    for name in ["scan", "refusal"] {
+        let path = root.join(format!("crates/busbar-artifact-verifier/src/{name}.rs"));
+        if path.is_file() {
+            files.push(path);
+        }
+    }
     let ci = root.join("ci");
     if ci.is_dir() {
         rust_files(&ci, &mut files)?;
@@ -320,7 +326,7 @@ pub(crate) fn no_licence(root: &Path) -> Outcome {
             Err(error) => findings.push(format!("{}: {error}", rel(root, &file))),
         }
     }
-    let header = root.join("crates/busbar-plugin-abi/include/busbar_plugin.h");
+    let header = root.join("crates/busbar-contract/include/busbar_plugin.h");
     if header.is_file() {
         let text = std::fs::read_to_string(&header).map_err(|e| format!("busbar_plugin.h: {e}"))?;
         for (line, _) in licence_header(&text) {

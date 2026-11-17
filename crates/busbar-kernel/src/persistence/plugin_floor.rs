@@ -11,6 +11,7 @@ use super::{
     facade::CoreStore,
     scoped::{Expected, Mutation, Predicate},
 };
+use busbar_contract::semver::version_at_least;
 use busbar_contract::{plugin::valid_semver, Secret};
 
 pub const PLUGIN_FLOOR_SCHEMA: &str = "busbar.plugin_floor.v1";
@@ -37,6 +38,47 @@ fn floor_key(host: &str, name: &str) -> Result<Vec<u8>, String> {
     }
     Ok(key)
 }
+/// The `(scope, name)` parts of a [`floor_key`]; anything else is a corrupt row.
+fn split_floor_key(key: &[u8]) -> Result<(&[u8], &[u8]), String> {
+    let malformed = || "a stored plugin floor key is malformed".to_string();
+    let mut rest = key;
+    let mut parts: [&[u8]; 2] = [&[], &[]];
+    for part in &mut parts {
+        let (length, tail) = rest.split_first_chunk::<4>().ok_or_else(malformed)?;
+        let length = usize::try_from(u32::from_be_bytes(*length)).map_err(|_| malformed())?;
+        let (head, tail) = tail.split_at_checked(length).ok_or_else(malformed)?;
+        *part = head;
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return Err(malformed());
+    }
+    Ok((parts[0], parts[1]))
+}
+/// The higher of two stored floors of one schema. An unreadable plugin floor already refuses its
+/// plugin until an audited rollback, so it is kept over a readable one: carrying never lowers a
+/// floor.
+fn higher_floor(schema: &str, held: Option<&[u8]>, carried: &[u8]) -> Result<Vec<u8>, String> {
+    let Some(held) = held else {
+        return Ok(carried.to_vec());
+    };
+    if schema == RELEASE_KEYS_FLOOR_SCHEMA {
+        let highest = decode_keys(Some(held))?.max(decode_keys(Some(carried))?);
+        return Ok(highest.to_be_bytes().to_vec());
+    }
+    let read = |bytes: &[u8]| {
+        std::str::from_utf8(bytes)
+            .ok()
+            .filter(|version| valid_semver(version))
+            .map(str::to_owned)
+    };
+    Ok(match (read(held), read(carried)) {
+        (Some(have), Some(other)) if !version_at_least(&have, &other) => carried,
+        (Some(_), None) => carried,
+        _ => held,
+    }
+    .to_vec())
+}
 fn decode_keys(bytes: Option<&[u8]>) -> Result<u64, String> {
     bytes.map_or(Ok(0), |bytes| {
         bytes
@@ -45,24 +87,15 @@ fn decode_keys(bytes: Option<&[u8]>) -> Result<u64, String> {
             .map_err(|_| "the release keys-document floor is malformed".into())
     })
 }
-fn version_at_least(have: &str, floor: &str) -> bool {
-    if !valid_semver(have) || !valid_semver(floor) {
-        return false;
-    }
-    fn core(value: &str) -> &str {
-        value.split(['-', '+']).next().unwrap_or("")
-    }
-    // Compare decimal strings without narrowing arbitrary semver components to u64.
-    for (have, floor) in core(have).split('.').zip(core(floor).split('.')) {
-        let have = have.trim_start_matches('0');
-        let floor = floor.trim_start_matches('0');
-        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Equal => {}
-        }
-    }
-    true
+/// A first-party candidate whose version does not read: refused with its remedy, never exempt from its
+/// floor (DES-359 r3 L11, B-R5).
+fn unreadable_version(candidate: &Candidate<'_>) -> String {
+    format!(
+        "the first-party plugin `{}` declares version `{}`, which is not a MAJOR.MINOR.PATCH version, \
+         so its anti-downgrade floor cannot be checked and it does not load; install a release whose \
+         manifest version reads as MAJOR.MINOR.PATCH (for example 1.6.0 or 1.6.0-rc.1)",
+        candidate.name, candidate.version
+    )
 }
 impl PluginFloor {
     pub fn new(core: Arc<CoreStore>) -> Result<Self, String> {
@@ -134,15 +167,17 @@ impl PluginFloor {
                 Ok(generation)
             })
         };
-        let plugin_floor =
-            if candidate.first_party && !candidate.linked && valid_semver(candidate.version) {
-                values[0]
-                    .as_ref()
-                    .map(|v| String::from_utf8(v.expose(&seal).clone()).map_err(error))
-                    .transpose()?
-            } else {
-                None
-            };
+        if candidate.first_party && !candidate.linked && !valid_semver(candidate.version) {
+            return Err(unreadable_version(&candidate));
+        }
+        let plugin_floor = if candidate.first_party && !candidate.linked {
+            values[0]
+                .as_ref()
+                .map(|v| String::from_utf8(v.expose(&seal).clone()).map_err(error))
+                .transpose()?
+        } else {
+            None
+        };
         let release_floor = decode_keys(values[1].as_ref().map(|v| v.expose(&seal).as_slice()))?;
         let proof = AdmissionProof {
             host: host.into(),
@@ -166,6 +201,96 @@ impl PluginFloor {
         Ok(proof)
     }
 
+    /// UPG-7 (#332) migrate-on-boot: carry every floor row keyed by another scope (a host name,
+    /// as 1.6 builds before the deployment key wrote them) into `deployment`'s slot, and delete
+    /// it, one exact-predicated commit per row. Several hosts sharing this Store fold into the
+    /// highest floor, so no host's floor is lowered. Idempotent: a rerun, or a peer racing it,
+    /// finds the rows gone. Returns how many rows were carried.
+    pub async fn adopt_host_floors(&self, deployment: &str) -> Result<usize, String> {
+        let _gate = self.records.gate.lock().await;
+        self.records.resume().await?;
+        let mut carried = 0;
+        for schema in [PLUGIN_FLOOR_SCHEMA, RELEASE_KEYS_FLOOR_SCHEMA] {
+            let mut foreign = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = self
+                    .records
+                    .records
+                    .page(schema, b"", cursor.as_ref())
+                    .await
+                    .map_err(error)?;
+                for (key, _) in page.rows {
+                    let (scope, name) = split_floor_key(&key)?;
+                    if scope != deployment.as_bytes() {
+                        let name = std::str::from_utf8(name)
+                            .map_err(|_| "a stored plugin floor names no plugin".to_string())?;
+                        let target = floor_key(deployment, name)?;
+                        foreign.push((key, target));
+                    }
+                }
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            for (key, target) in foreign {
+                loop {
+                    let Some(old) = self
+                        .records
+                        .records
+                        .get(schema, &key)
+                        .await
+                        .map_err(error)?
+                    else {
+                        break;
+                    };
+                    let held = self
+                        .records
+                        .records
+                        .get(schema, &target)
+                        .await
+                        .map_err(error)?;
+                    let seal = crate::seal::lend();
+                    let merged = higher_floor(
+                        schema,
+                        held.as_ref().map(|v| v.expose(&seal).as_slice()),
+                        old.expose(&seal),
+                    )?;
+                    let mut mutations = Vec::new();
+                    if held.as_ref().map(|v| v.expose(&seal).as_slice()) != Some(merged.as_slice())
+                    {
+                        mutations.push(Mutation::Put {
+                            schema: schema.into(),
+                            key: target.clone(),
+                            value: Secret::new(merged),
+                        });
+                    }
+                    mutations.push(Mutation::Delete {
+                        schema: schema.into(),
+                        key: key.clone(),
+                    });
+                    let predicates = vec![
+                        Predicate {
+                            schema: schema.into(),
+                            key: key.clone(),
+                            expected: Expected::Exact(old),
+                        },
+                        Predicate {
+                            schema: schema.into(),
+                            key: target.clone(),
+                            expected: held.map_or(Expected::Absent, Expected::Exact),
+                        },
+                    ];
+                    if self.records.decide(predicates, mutations).await? {
+                        carried += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(carried)
+    }
     pub async fn release_keys_floor(&self, host: &str) -> Result<u64, String> {
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
@@ -182,7 +307,7 @@ impl PluginFloor {
         )
     }
     /// Checks the loaded set against the host's release keys floor and, when `raise`,
-    /// lifts the floor to the set's LOWEST keys version (LICENSING.md 2.12 rule F1).
+    /// lifts the floor to the set's LOWEST keys version.
     /// Raising to the highest member would make a host that loads a mixed set (for
     /// example an enterprise file still sealed at k5 beside public files at k7)
     /// refuse its own unchanged set on the next boot. A uniform set raises the
@@ -252,8 +377,11 @@ impl PluginFloor {
         candidate: Candidate<'_>,
         raise: bool,
     ) -> Result<(), String> {
-        if !candidate.first_party || candidate.linked || !valid_semver(candidate.version) {
+        if !candidate.first_party || candidate.linked {
             return Ok(());
+        }
+        if !valid_semver(candidate.version) {
+            return Err(unreadable_version(&candidate));
         }
         let _gate = self.records.gate.lock().await;
         self.records.resume().await?;
@@ -272,7 +400,7 @@ impl PluginFloor {
                         .ok()
                         .filter(|v| valid_semver(v))
                         .ok_or_else(|| {
-                            format!("the first-party floor of `{}` is malformed", candidate.name)
+                            format!("the stored first-party floor of `{}` does not read as a version; its anti-downgrade check cannot run, so the plugin does not load. Roll it back on purpose with the audited `POST /api/v1/admin/plugins/rollback`, which pins a readable floor in the overlay's `plugin_versions`", candidate.name)
                         })
                 })
                 .transpose()?;
@@ -370,7 +498,7 @@ impl AdmissionProof {
         }
         if let Some(floor) = &self.plugin_floor {
             if !valid_semver(floor) {
-                return Err("malformed observed plugin floor".into());
+                return Err(format!("the observed floor of `{}` does not read as a version; re-run admission (restart) so the floor is observed again, or roll the plugin back with the audited `POST /api/v1/admin/plugins/rollback`", candidate.name));
             }
             if !candidate.rollback_pinned && !version_at_least(candidate.version, floor) {
                 return Err(format!(

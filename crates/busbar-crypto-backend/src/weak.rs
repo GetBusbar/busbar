@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! AWS-LC has no small-order check, so the FIPS backend carries the 8 small-order Ed25519
 //! point encodings (no arithmetic; a table compare). Includes the sign-bit and non-canonical (y >= p) variants.
 

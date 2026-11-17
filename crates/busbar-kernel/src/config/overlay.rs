@@ -63,8 +63,6 @@ pub struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plugin_rate_cards: Option<super::PluginRateCards>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_request_fee: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreCfg>,
@@ -120,8 +118,6 @@ impl RootSettings {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             rate_card: &'a Option<BTreeMap<String, RateEntryCfg>>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
-            plugin_rate_cards: &'a Option<super::PluginRateCards>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
             per_request_fee: &'a Option<i64>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             store: Option<F2>,
@@ -143,7 +139,6 @@ impl RootSettings {
             admin_tls: self.admin_tls.as_ref().map(|value| value.authoring(seal)),
             admin_require_mtls: &self.admin_require_mtls,
             rate_card: &self.rate_card,
-            plugin_rate_cards: &self.plugin_rate_cards,
             per_request_fee: &self.per_request_fee,
             store: self.store.as_ref().map(|value| value.authoring(seal)),
             security: &self.security,
@@ -164,7 +159,6 @@ impl RootSettings {
             admin_tls,
             admin_require_mtls,
             rate_card,
-            plugin_rate_cards,
             per_request_fee,
             store,
             security,
@@ -179,7 +173,6 @@ impl RootSettings {
             && admin_tls.is_none()
             && admin_require_mtls.is_none()
             && rate_card.is_none()
-            && plugin_rate_cards.is_none()
             && per_request_fee.is_none()
             && store.is_none()
             && security.is_none()
@@ -197,7 +190,6 @@ impl RootSettings {
             admin_tls,
             admin_require_mtls,
             rate_card,
-            plugin_rate_cards,
             per_request_fee,
             store,
             security,
@@ -224,9 +216,6 @@ impl RootSettings {
         }
         if rate_card.is_some() {
             deploy.rate_card.clone_from(rate_card);
-        }
-        if let Some(cards) = plugin_rate_cards {
-            deploy.plugin_rate_cards = cards.clone();
         }
         if let Some(v) = per_request_fee {
             deploy.per_request_fee = *v;
@@ -637,7 +626,6 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) -> R
         deploy.hooks.insert(
             name.clone(),
             super::HookDefCfg {
-                child_dispatch: hook.child_dispatch.clone(),
                 module: hook.plugin.clone(),
                 settings: hook.settings.clone(),
                 groups: hook.groups.clone(),
@@ -656,7 +644,6 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) -> R
                 signals: hook.signals.clone(),
                 user: Some(hook.user),
                 priority: Some(hook.priority),
-                limits: None,
                 insecure_transport: None,
             },
         );
@@ -717,8 +704,22 @@ pub async fn persist_async(
             if let Some(name) = deleted_remove {
                 doc.deleted.retain(|n| n != name);
             }
-            doc.hooks.clone_from(hooks);
-            doc.global_hooks = global_hooks.to_vec();
+            // The installed registry includes base definitions. Preserve old durable overlaps
+            // from this transaction's document, but never promote new base entries into it.
+            doc.hooks
+                .retain(|name, _| base_hook_names.contains(name) && hooks.contains_key(name));
+            doc.hooks.extend(
+                hooks
+                    .iter()
+                    .filter(|(name, _)| !base_hook_names.contains(*name))
+                    .map(|(name, hook)| (name.clone(), hook.clone())),
+            );
+            doc.global_hooks = persisted_global_hooks(
+                &doc.global_hooks,
+                global_hooks,
+                &doc.hooks,
+                base_hook_names,
+            );
             doc.deleted
                 .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
         })
@@ -742,11 +743,53 @@ pub async fn persist_groups_async(
             if let Some(name) = deleted_remove {
                 doc.deleted_groups.retain(|n| n != name);
             }
-            doc.groups = groups.clone();
+            doc.groups
+                .retain(|name, _| base_group_names.contains(name) && groups.contains_key(name));
+            doc.groups.extend(
+                groups
+                    .iter()
+                    .filter(|(name, _)| !base_group_names.contains(*name))
+                    .map(|(name, group)| (name.clone(), group.clone())),
+            );
             doc.deleted_groups
                 .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
         })
         .await
+}
+
+/// Keep durable base membership in its old slots, fill surviving API slots in current API order,
+/// then append additional API entries. Current file wiring never supplies membership or order.
+fn persisted_global_hooks(
+    old: &[String],
+    current: &[String],
+    hooks: &HashMap<String, HookCfg>,
+    base: &HashSet<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let api: Vec<_> = current
+        .iter()
+        .filter(|name| {
+            !base.contains(*name) && hooks.contains_key(*name) && seen.insert(name.as_str())
+        })
+        .collect();
+    let members: HashSet<_> = api.iter().map(|name| name.as_str()).collect();
+    let mut next_api = api.iter();
+    let mut old_seen = HashSet::new();
+    let mut result = Vec::new();
+    for name in old {
+        if !old_seen.insert(name.as_str()) {
+            continue;
+        }
+        if base.contains(name) && hooks.contains_key(name) {
+            result.push(name.clone());
+        } else if members.contains(name.as_str()) {
+            if let Some(next) = next_api.next() {
+                result.push((*next).clone());
+            }
+        }
+    }
+    result.extend(next_api.map(|name| (*name).clone()));
+    result
 }
 
 pub async fn persist_root_async(

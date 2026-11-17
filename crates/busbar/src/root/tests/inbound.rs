@@ -9,7 +9,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_kernel::guest::{GuestList, Matched};
 use busbar_kernel::inbound::{self as kin, Inbound};
-use serde_json::Value;
+use json::Value;
 
 use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 
@@ -18,6 +18,9 @@ const GEN: u64 = 1;
 
 #[path = "inbound_admin_sender_constraint.rs"]
 mod admin_sender_constraint;
+
+#[path = "inbound_publication_admission.rs"]
+mod publication_admission;
 
 fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> {
     let plane = busbar_kernel::plane_driver::registry::plane_decl_for(
@@ -28,8 +31,7 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
         input_utok: 1.0,
         ..Default::default()
     };
-    let free =
-        serde_json::from_value(serde_json::json!(0)).expect("an exact explicit free unit price");
+    let free = json::from_value(&json::json!(0)).expect("an exact explicit free unit price");
     for class in plane.billable_classes {
         if !busbar_contract::records::RESERVED_UNITS.contains(&class.class)
             && !plane.fee_units.contains(&class.class)
@@ -40,7 +42,7 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
     std::collections::BTreeMap::from([("priced-context".into(), entry)])
 }
 
-async fn app(
+pub(super) async fn app(
     with_llm: bool,
 ) -> (
     Arc<busbar_kernel::state::App>,
@@ -72,18 +74,12 @@ async fn app_generation(
 ) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "inbound-app-{}",
@@ -108,16 +104,16 @@ async fn app_generation(
     std::fs::write(&operator_token, "actual-inbound-operator")
         .expect("write the real operator credential");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "public_url": "https://gw.example",
         "providers": {},
         "models": {},
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": {"file": operator_token},
     });
     if reader {
@@ -135,20 +131,20 @@ async fn app_generation(
             "body-cap-reader",
             true,
         );
-        document["identity-providers"]["body-cap-reader"] = serde_json::json!({
+        document["identity-providers"]["body-cap-reader"] = json::json!({
             "module": module,
             "settings": crate::test_common::credentials::settings("api://inbound-body-cap"),
             "max_admin_scope": "read-only",
         });
-        document["auth"]["admin_auth"] = serde_json::json!(["body-cap-reader", operator]);
-        document["auth"]["role_bindings"] = serde_json::json!({
+        document["auth"]["admin_auth"] = json::json!(["body-cap-reader", operator]);
+        document["auth"]["role_bindings"] = json::json!({
             "body-cap-reader": {"readers": {"admin_scope": "read-only"}},
         });
     }
     let mut providers = Default::default();
     if with_llm {
         let dialects: Value =
-            serde_json::from_str(include_str!("fixtures/plane_node_dialects.json"))
+            json::parse_value(include_str!("fixtures/plane_node_dialects.json").as_bytes())
                 .expect("the actual linked model dialect fixture reads");
         let dialect = dialects["body_model"]
             .as_object()
@@ -162,16 +158,16 @@ async fn app_generation(
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the actual context provider has its catalogue declaration");
-        document["providers"] = serde_json::json!({"wire": {
+        document["providers"] = json::json!({"wire": {
             "protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": {"file": credential}
         }});
-        document["models"] = serde_json::json!({"priced-context": {"provider": "wire"}});
-        document["pools"] = serde_json::json!({});
+        document["models"] = json::json!({"priced-context": {"provider": "wire"}});
+        document["pools"] = json::json!({});
         document["rate_card"] =
-            serde_json::to_value(captured_rates()).expect("the actual complete card serializes");
+            json::to_value(&captured_rates()).expect("the actual complete card serializes");
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -195,41 +191,35 @@ async fn app_generation(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let boot_store = if let Some(prior) = &prior {
-        Some(
+    let (core, rules) = if let Some(prior) = &prior {
+        (
             prior
                 .governance
                 .as_ref()
                 .expect("prior governance")
                 .core_store_handle()
                 .expect("prior admitted CoreStore"),
+            crate::root::min3_boot::fixture::carry(prior.root_rules.clone(), rules),
         )
     } else if reader {
-        Some(
-            crate::root::test_plugins::bootstrap_fresh_application_store(
-                &config,
-                &plugin_config,
-                &directory,
-            )
-            .await
-            .expect("provision the actual new marked-auth fixture Store"),
-        )
-    } else {
-        None
-    };
-    let core = if let Some(core) = boot_store {
-        core
-    } else {
-        crate::root::real_store::core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(
-                &config,
-                &plugin_config,
-                &busbar_kernel::preflight::Unopened,
-            )
-            .await
-            .expect("actual native backend"),
+        let opened = crate::root::test_plugins::bootstrap_fresh_application_store(
+            &config,
+            &plugin_config,
+            &directory,
         )
         .await
+        .expect("provision the actual new marked-auth fixture Store");
+        (
+            opened.core,
+            crate::root::min3_boot::fixture::carry(opened.rules, rules),
+        )
+    } else {
+        let opened = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules)
+            .await
+            .expect("actual native backend")
+            .admit()
+            .await;
+        (opened.core, opened.rules)
     };
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
@@ -361,7 +351,7 @@ fn golden(name: &str) -> Value {
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    serde_json::from_str(&text).expect("a golden cell is JSON")
+    json::parse_value(text.as_bytes()).expect("a golden cell is JSON")
 }
 
 fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
@@ -395,7 +385,7 @@ fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
             }
         }
     }
-    match serde_json::from_slice::<Value>(&r.body) {
+    match json::parse_value(&r.body) {
         Ok(mut body) => {
             if body.get("request_id").is_some() {
                 body["request_id"] = Value::from("<ID>");
@@ -423,7 +413,7 @@ fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
         env!("CARGO_MANIFEST_DIR")
     );
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let cells: Value = serde_json::from_str(&text).expect("the cell catalogue is JSON");
+    let cells: Value = json::parse_value(text.as_bytes()).expect("the cell catalogue is JSON");
     let prefix = format!("http.crosscut|{family}|");
     cells["cells"]
         .as_array()
@@ -464,7 +454,7 @@ fn captured_request(name: &str) -> Value {
         env!("CARGO_MANIFEST_DIR")
     );
     let catalogue: Value =
-        serde_json::from_slice(&std::fs::read(path).expect("the actual request catalogue reads"))
+        json::parse_value(&std::fs::read(path).expect("the actual request catalogue reads"))
             .expect("the request catalogue is JSON");
     catalogue["cells"]
         .as_array()
@@ -572,7 +562,7 @@ fn assert_current_admin_body_cap(response: &kin::Refusal) {
     assert_eq!(field(response, "content-type"), Some("application/json"));
     assert_eq!(field(response, "cache-control"), Some("no-store"));
     let body: Value =
-        serde_json::from_slice(&response.body).expect("the current admin cap response is JSON");
+        json::parse_value(&response.body).expect("the current admin cap response is JSON");
     assert_eq!(body["error"]["code"], "request_too_large");
 }
 

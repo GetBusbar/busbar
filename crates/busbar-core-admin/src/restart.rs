@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_kernel::governance::drain::{ShutdownIntent, ShutdownRequest};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
-use tokio::sync::broadcast;
 
-static SHUTDOWN: OnceLock<broadcast::Sender<()>> = OnceLock::new();
+static SHUTDOWN: OnceLock<ShutdownRequest> = OnceLock::new();
 
 static DRAIN_AT_EXIT: AtomicBool = AtomicBool::new(false);
 
@@ -57,8 +57,8 @@ fn asking_unit() -> u64 {
     ASKING_UNIT.try_with(|unit| *unit).unwrap_or(UNKEYED_UNIT)
 }
 
-pub fn publish_shutdown(tx: broadcast::Sender<()>) {
-    let _ = SHUTDOWN.set(tx);
+pub fn publish_shutdown(request: ShutdownRequest) {
+    let _ = SHUTDOWN.set(request);
 }
 
 pub fn drain_released_at_exit() {
@@ -77,8 +77,8 @@ fn release_asked_drain(unit: u64) -> bool {
 }
 
 fn send_shutdown() {
-    if let Some(tx) = SHUTDOWN.get() {
-        let _ = tx.send(());
+    if let Some(shutdown) = SHUTDOWN.get() {
+        shutdown.request(ShutdownIntent::Operator);
     }
 }
 

@@ -171,6 +171,10 @@ pub const RAW_OUT_PTR_AT: usize = core::mem::offset_of!(RawOut, ptr);
 pub const RAW_OUT_LEN_AT: usize = core::mem::offset_of!(RawOut, len);
 /// Byte offset of `RawOut::cap`.
 pub const RAW_OUT_CAP_AT: usize = core::mem::offset_of!(RawOut, cap);
+/// Byte offset of `Host::ctx` (a private field), for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
+pub const HOST_CTX_AT: usize = core::mem::offset_of!(Host, ctx);
+/// Byte offset of `Host::fns` (a private field); each `bb_host` entry sits at this plus its `HostFns` offset.
+pub const HOST_FNS_AT: usize = core::mem::offset_of!(Host, fns);
 
 /// Types allowed inside an input view: `Copy`, C layout, only pointer, length and `View` fields.
 /// Sealed: busbar-ffi implements it for the view types it defines (here and in `vt`).
@@ -438,6 +442,7 @@ impl<'call> Out<'call> {
         }
         if let Some(cut) = self.view().get_mut(len..old) {
             cut.fill(0);
+            core::hint::black_box(&*cut);
         }
         self.raw.len = len;
     }

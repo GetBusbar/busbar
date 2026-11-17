@@ -802,25 +802,6 @@
    "restart": false,
    "scope": "read-only"
   },
-  "GetLedgerOpenapiJson": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "GET",
-   "mutating": false,
-   "not_found": null,
-   "notes": "200: the one administrative OpenAPI document, the same bytes GET /openapi.json serves (normalise info.version). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
-   "ok": {
-    "body": null,
-    "expect": [
-     200
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/ledger/openapi.json",
-   "restart": false,
-   "scope": "read-only"
-  },
   "GetLedgerReconciliation": {
    "bad_body": null,
    "idempotent": false,

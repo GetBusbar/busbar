@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -43,13 +44,12 @@ async fn test_signed_mint_verify_then_delete_denies() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -84,16 +84,19 @@ async fn test_signed_mint_verify_then_delete_denies() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "verifiable"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let created = json::parse_value(
+        &client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "verifiable"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let token = created["token"].as_str().unwrap().to_string();
 
@@ -148,7 +151,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -164,13 +167,12 @@ async fn test_signed_revoke_denylists_without_deleting() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -205,16 +207,19 @@ async fn test_signed_revoke_denylists_without_deleting() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "revokable"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let created = json::parse_value(
+        &client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "revokable"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let token = created["token"].as_str().unwrap().to_string();
     let now = busbar_kernel::store::now();
@@ -230,7 +235,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "revoke is a 200");
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["revoked"], id.as_str());
 
     let read = client
@@ -240,7 +245,10 @@ async fn test_signed_revoke_denylists_without_deleting() {
         .await
         .unwrap();
     assert_eq!(read.status().as_u16(), 200, "the binding is still readable");
-    assert_eq!(read.json::<serde_json::Value>().await.unwrap()["id"], id);
+    assert_eq!(
+        json::parse_value(&read.bytes().await.unwrap()).unwrap()["id"],
+        id
+    );
 
     assert!(gov.is_revoked(&id), "the subject is denylisted");
     assert!(
@@ -284,7 +292,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -299,16 +307,19 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         let client = client.clone();
         let url = url.clone();
         async move {
-            let created: serde_json::Value = client
-                .post(&url)
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name}))
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
+            let created = json::parse_value(
+                &client
+                    .post(&url)
+                    .header("x-admin-token", "admintok")
+                    .json(&json::json!({"name": name}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
             assert_eq!(
                 created["state"], "active",
                 "a freshly minted key's own response is state:active"
@@ -320,31 +331,37 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     let revoked_id = mint("revoked").await;
     let tombstoned_id = mint("tombstoned").await;
 
-    let patched: serde_json::Value = client
-        .patch(format!("{url}/{disabled_id}"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let patched = json::parse_value(
+        &client
+            .patch(format!("{url}/{disabled_id}"))
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"enabled": false}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(patched["enabled"], false);
     assert_eq!(
         patched["state"], "disabled",
         "PATCH's own response already carries the distinguishing state"
     );
 
-    let revoked: serde_json::Value = client
-        .post(format!("{url}/{revoked_id}/revoke"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let revoked = json::parse_value(
+        &client
+            .post(format!("{url}/{revoked_id}/revoke"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(revoked["revoked"], revoked_id.as_str());
 
     let del = client
@@ -359,15 +376,18 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
         let client = client.clone();
         let url = url.clone();
         async move {
-            let body: serde_json::Value = client
-                .get(format!("{url}/{id}"))
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
+            let body = json::parse_value(
+                &client
+                    .get(format!("{url}/{id}"))
+                    .header("x-admin-token", "admintok")
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
             assert_eq!(
                 body["enabled"], false,
                 "id={id}: all three cases still collapse `enabled` to false — that's the bug \
@@ -414,7 +434,7 @@ async fn test_list_keys_include_tombstoned() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -425,16 +445,19 @@ async fn test_list_keys_include_tombstoned() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "will-be-tombstoned"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let created = json::parse_value(
+        &client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "will-be-tombstoned"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
 
     let del = client
@@ -445,15 +468,18 @@ async fn test_list_keys_include_tombstoned() {
         .unwrap();
     assert_eq!(del.status().as_u16(), 204);
 
-    let plain: serde_json::Value = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let plain = json::parse_value(
+        &client
+            .get(&url)
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let plain_ids: Vec<&str> = plain["items"]
         .as_array()
         .unwrap()
@@ -465,15 +491,18 @@ async fn test_list_keys_include_tombstoned() {
         "a plain GET /keys must still omit tombstoned rows by default"
     );
 
-    let included: serde_json::Value = client
-        .get(format!("{url}?include=tombstoned"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let included = json::parse_value(
+        &client
+            .get(format!("{url}?include=tombstoned"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let row = included["items"]
         .as_array()
         .unwrap()
@@ -518,7 +547,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -534,13 +563,12 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -575,16 +603,19 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    let no_group: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "groupless"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let no_group = json::parse_value(
+        &client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "groupless"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         no_group["group"].is_null(),
         "an omitted group is null: {no_group}"
@@ -598,19 +629,22 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     );
     assert!(binding.group.is_none(), "no group bound");
 
-    let none_pools: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "nopools", "allowed_pools": []}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let none_pools = json::parse_value(
+        &client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "nopools", "allowed_pools": []}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         none_pools["allowed_pools"],
-        serde_json::json!([]),
+        json::json!([]),
         "an explicit [] echoes as an empty pool list: {none_pools}"
     );
 
@@ -641,7 +675,7 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -656,7 +690,7 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
             .header("x-admin-token", "admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "memory-271")
-            .body(serde_json::json!({"name": "k"}).to_string())
+            .body(json::json!({"name": "k"}).to_string())
             .send()
     };
 
@@ -692,16 +726,13 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let operator_token = directory.join("operator-token");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
-    let at_rest_key = directory.join("at-rest-key");
-    std::fs::write(&at_rest_key, hex::encode([3u8; 32])).expect("write the at-rest key input");
     let operator = busbar_kernel::config::operator_provider();
     let mut document = serde_json::json!({
-        "credentials": { "at_rest": { "key": { "file": at_rest_key } } },
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -714,12 +745,12 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "acme-key", "issue_aws_credential": true}))
+        .json(&json::json!({"name": "acme-key", "issue_aws_credential": true}))
         .send()
         .await
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
-    let body: serde_json::Value = created.json().await.unwrap();
+    let body = json::parse_value(&created.bytes().await.unwrap()).unwrap();
     let akid = body["aws_access_key_id"].as_str().unwrap().to_string();
     let aws_secret = body["aws_secret_access_key"].as_str().unwrap().to_string();
     assert!(akid.starts_with("AKIA"), "akid shape: {akid}");
@@ -731,30 +762,36 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
         "the signed token is returned once too"
     );
 
-    let plain: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "plain"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let plain = json::parse_value(
+        &client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .json(&json::json!({"name": "plain"}))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
         plain["aws_secret_access_key"].is_null() && plain["aws_access_key_id"].is_null(),
         "a bearer-only key must not carry AWS fields: {plain}"
     );
 
-    let listed: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let listed = json::parse_value(
+        &client
+            .get(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let listed_str = listed.to_string();
     assert!(
         !listed_str.contains(&aws_secret),

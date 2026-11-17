@@ -27,12 +27,13 @@ use busbar_plugin_abi::transport::{
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 
-use crate::encode::transport::{decode_offer, encode_keying, encode_path, Offer};
-use crate::instance::{ErrorBook, PluginCode};
-use crate::ports::transport::{
+use crate::instance::ErrorBook;
+use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
+use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
-use crate::ports::PortError;
+use busbar_ports::PluginCode;
+use busbar_ports::PortError;
 
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;
@@ -49,6 +50,7 @@ pub struct TransportAdapter {
     facts: u64,
     /// The image's D_PROTOCOL names (the UPGRADE targets it serves), from describe.
     protocols: Box<[Box<str>]>,
+    listener_slots: Box<[Box<str>]>,
     offers: Offers,
 }
 
@@ -60,6 +62,7 @@ impl TransportAdapter {
         proxy: Proxy,
         errors: &'static ErrorBook,
         protocols: Box<[Box<str>]>,
+        listener_slots: Box<[Box<str>]>,
     ) -> Result<Self, PortError> {
         let (facts, max_out) = {
             let inst = proxy.instance();
@@ -72,6 +75,7 @@ impl TransportAdapter {
             max_out,
             facts,
             protocols,
+            listener_slots,
             offers: Offers::default(),
         };
         for role in declared_roles(facts) {
@@ -160,6 +164,10 @@ impl TransportPort for TransportAdapter {
         &self.protocols
     }
 
+    fn listener_slots(&self) -> &[Box<str>] {
+        &self.listener_slots
+    }
+
     fn facts(&self) -> u64 {
         self.facts
     }
@@ -234,7 +242,8 @@ impl TransportPort for TransportAdapter {
 
     /// The argument is one record (R6b): EVENT_PATH and EVENT_KEYING through the §8.8 encoders, EV_RENDEZVOUS
     /// one generic TEXT. It is written into a `Reply`, which zeroes its bytes on growth and drop (I11: the
-    /// keying material), until W1-H1's `impl Writer for PooledOut` lets it use the thread's `args` buffer.
+    /// keying material). `impl Writer for PooledOut` is on dev; moving this onto the thread's `args` buffer is a later
+    /// optimisation, not a correctness gap.
     fn event(
         &self,
         s: &mut TransportSession,
@@ -360,7 +369,7 @@ fn conn_info<'a>(c: &ConnIn<'a>) -> ConnInfo<'a> {
 
 /// A REFUSED or FAILED answer's parts as the port's error: the plugin text scrubbed, then cut (§12.16
 /// `fail_text`), the FAILED-only facts, and the resolved ERROR code.
-fn shown(
+pub fn shown(
     status: Status,
     fail: Option<(u32, &str)>,
     retry_after_s: Option<u64>,
@@ -480,6 +489,53 @@ fn walk(
         }
         let out = match rec.tag {
             tag::WRITE => TransportOut::Write(rec.body),
+            tag::WIRE_PART => {
+                let (part, bytes) = rec.pod_tail::<t::WirePart>()?;
+                reserved(part._r)?;
+                let class = busbar_ports::codec::transport::wire_class(part.class)?;
+                if bytes.is_empty()
+                    || (part.stream == 0
+                        && class == busbar_contract::response_delivery::WireClass::Payload)
+                {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::WirePart {
+                    stream: part.stream,
+                    class,
+                    bytes,
+                }
+            }
+            tag::WIRE_END => {
+                let end = rec.pod::<t::WireEnd>()?;
+                reserved(end._r)?;
+                if end.stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::WireEnd {
+                    stream: end.stream,
+                    requirement: busbar_ports::codec::transport::completion_requirement(
+                        end.requirement,
+                    )?,
+                }
+            }
+            tag::RESPONSE_ABORT => {
+                let abort = rec.pod::<t::ResponseAbort>()?;
+                reserved(abort._r)?;
+                if abort.stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::ResponseAbort {
+                    stream: abort.stream,
+                    code: abort.code,
+                }
+            }
+            tag::RESPONSE_QUIESCENT => {
+                let stream = stream(&rec)?;
+                if stream == 0 {
+                    return Err(GRAMMAR);
+                }
+                TransportOut::ResponseQuiescent(stream)
+            }
             tag::CLOSE => {
                 let c = rec.pod::<t::CloseRec>()?;
                 reserved(c._r)?;
@@ -724,6 +780,17 @@ mod tests {
     fn label(o: &TransportOut<'_>) -> String {
         match o {
             TransportOut::Write(b) => format!("write {}", String::from_utf8_lossy(b)),
+            TransportOut::WirePart {
+                stream,
+                class,
+                bytes,
+            } => format!("wire {stream} {class:?} {}", String::from_utf8_lossy(bytes)),
+            TransportOut::WireEnd {
+                stream,
+                requirement,
+            } => format!("wire-end {stream} {requirement:?}"),
+            TransportOut::ResponseAbort { stream, code } => format!("abort {stream} {code}"),
+            TransportOut::ResponseQuiescent(stream) => format!("quiescent {stream}"),
             TransportOut::Close { abort } => format!("close abort={abort}"),
             TransportOut::WakeAt(ns) => format!("wake {ns}"),
             TransportOut::Upgrade { protocol } => format!("upgrade {protocol}"),
@@ -790,6 +857,64 @@ mod tests {
             &mut |o: TransportOut<'_>| seen.push(label(&o)),
         )?;
         Ok(seen)
+    }
+
+    fn provenance_record(stream: u64, value: u32, reserved: u32, tail: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::from(stream.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes.extend_from_slice(&reserved.to_le_bytes());
+        bytes.extend_from_slice(tail);
+        bytes
+    }
+
+    #[test]
+    fn attributed_output_reaches_sink_in_protocol_order() {
+        let out = answer(|w| {
+            w.put(0x0119, &provenance_record(0, 1, 0, b"control"))?;
+            w.put(0x0119, &provenance_record(7, 2, 0, b"payload"))?;
+            w.put(0x011a, &provenance_record(7, 2, 0, b""))?;
+            w.put(0x011b, &provenance_record(9, 8, 0, b""))?;
+            w.put(0x011c, &7u64.to_le_bytes())
+        });
+        assert_eq!(
+            run(&out, Call::Ingest).expect("valid protocol attribution"),
+            [
+                "wire 0 Control control",
+                "wire 7 Payload payload",
+                "wire-end 7 Shutdown",
+                "abort 9 8",
+                "quiescent 7"
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_provenance_rejects_the_whole_answer_before_any_callback() {
+        for (tag, bad) in [
+            (0x0119, provenance_record(0, 2, 0, b"body")),
+            (0x0119, provenance_record(1, 3, 0, b"body")),
+            (0x0119, provenance_record(1, 2, 0, b"")),
+            (0x0119, provenance_record(1, 2, 1, b"body")),
+            (0x011a, provenance_record(0, 1, 0, b"")),
+            (0x011a, provenance_record(1, 3, 0, b"")),
+            (0x011a, provenance_record(1, 1, 1, b"")),
+            (0x011a, provenance_record(1, 1, 0, b"tail")),
+            (0x011b, provenance_record(0, 1, 0, b"")),
+            (0x011b, provenance_record(1, 1, 1, b"")),
+            (0x011c, Vec::from(0u64.to_le_bytes())),
+        ] {
+            let out = answer(|w| {
+                w.put(tag::WRITE, b"must not escape")?;
+                w.put(tag, &bad)
+            });
+            let mut calls = 0;
+            let error = decode(Records::new(out.as_bytes()), Call::Ingest, &mut |_| {
+                calls += 1
+            })
+            .expect_err("invalid attribution");
+            assert!(matches!(error, Bad::Rec(_)), "record grammar: {error:?}");
+            assert_eq!(calls, 0, "no valid prefix may escape");
+        }
     }
 
     fn head_with_status(status: u32) -> Reply {

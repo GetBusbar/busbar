@@ -29,11 +29,11 @@ ROOT keys (compiled into busbar: BUSBAR_RELEASE_PUBKEY)
                                                                  which pin its library by sha256
 ```
 
-- **Root.** Busbar ships ROOT public keys only. A root signs keys documents, nothing else.
-  `ROOT_THRESHOLD` is 1: any one root vouches. 1.6.0's intended root roles are `busbar-plugins-root` (ECDSA
-  P-256, Cloud KMS, HSM protection level, non-exportable) and `busbar-plugins-2026a` (ECDSA P-256,
-  PIV slot 9C of the owner's YubiKey 5Ci, PIN and touch on every signature). The YubiKey's firmware
-  (5.4.3) has no PIV Ed25519, so roots are P-256.
+- **Root.** Busbar embeds public roots only. A root signs keys documents, never plugin artifacts.
+  `ROOT_THRESHOLD` is 1: any one active embedded root vouches. The agreed owner authority is
+  `busbar-root-2026`, a non-exportable OpenBao transit P-256 key with owner/YubiKey authorization.
+  Provisioning, public fingerprint approval and any move to offline custody are separate owner
+  actions; source code does not establish that those actions happened.
 - **Keys document** (TUF's root metadata, with its delegation to a targets role). It names the
   signer keys of each product role, with a threshold. First-party plugins are the role
   `busbar-plugins`. It carries an `expires` and a `version`. It also carries signed revocations of
@@ -54,13 +54,12 @@ format is unchanged.
 
 | Key | Algorithm | Held | Signs |
 |---|---|---|---|
-| `busbar-plugins-root` | ECDSA P-256 | Cloud KMS, HSM, non-exportable; no IAM grants beyond the owner | keys documents |
-| `busbar-plugins-2026a` | ECDSA P-256 | YubiKey PIV 9C (generated later; not needed to ship) | keys documents (and it may also be named as a release signer) |
-| interim release signer | ECDSA P-256 | ModernCI's secret store; generated fresh for this purpose (never the old `BUSBAR_SIGN_KEY`) | release manifests, in CI, only after every check is green |
-| ModernCI release signer (later) | per ModernCI v1 | ModernCI's feature | release manifests; it replaces the interim signer through a new keys document |
+| `busbar-root-2026` | ECDSA P-256 | Owner-controlled, non-exportable; custody changes require the owner | keys documents only |
+| Pipeline release signer | ECDSA P-256 | Separate non-exportable signer per authorized protected-tag pipeline | release manifests |
 
-The interim signer's keys document expires **90 days** after it is signed, so the signer must be
-vouched for again or replaced.
+All Busbar builds use the same approved root authority. OSS and enterprise plugin releases use
+the same `busbar-plugins` role. A new signer or signer revocation is a new monotonically versioned,
+expiring root-signed keys document; it does not require a new engine.
 
 ## 2. What the loader checks, in order
 
@@ -70,25 +69,24 @@ what to do.
 
 | # | Check | Refusal code | Opt-in may admit? |
 |---|---|---|---|
-| 1 | The seal and both documents parse as one well-formed document of their kind | `release-seal-malformed` | `allow_unsigned` only |
-| 2 | At least `ROOT_THRESHOLD` distinct compiled-in roots signed the keys document | `keys-signature` | `allow_unsigned` only |
-| 3 | The keys document has not expired (`expires` > now). **At install, fetch and update only** (see "When expiry is judged") | `keys-expired` | `allow_unsigned` only |
+| 1 | The seal and both documents parse as one well-formed document of their kind | `release-seal-malformed` | **never** |
+| 2 | At least `ROOT_THRESHOLD` distinct compiled-in roots signed the keys document | `keys-signature` | **never** |
+| 3 | The keys document has not expired (`expires` > now). **At install, fetch and update only** (see "When expiry is judged") | `keys-expired` | **never** |
 | 4 | Its version is not below the highest one this deployment has accepted | `keys-rollback` | **never** (AntiDowngrade) |
-| 5 | It names a `busbar-plugins` role with at least one key id and a threshold of 1 or more | `keys-no-role` | `allow_unsigned` only |
-| 6 | The release manifest names that role, and at least `threshold` distinct, non-revoked keys of the role signed it | `release-signature`, or `signer-revoked` when only revoked signers signed | `release-signature`: `allow_unsigned` only. `signer-revoked`: **never** (Revoked) |
-| 7 | The release manifest has not expired. **At install, fetch and update only** | `release-expired` | `allow_unsigned` only |
+| 5 | It names a `busbar-plugins` role with at least one key id and a threshold of 1 or more | `keys-no-role` | **never** |
+| 6 | The release manifest names that role, and at least `threshold` distinct, non-revoked keys of the role signed it | `release-signature`, or `signer-revoked` when only revoked signers signed | **never** |
+| 7 | The release manifest has not expired. **At install, fetch and update only** | `release-expired` | **never** |
 | 8 | Neither the artefact digest nor the library digest is revoked by the keys document | `digest-revoked` | **never** (Revoked) |
-| 9 | The release manifest lists the plugin's name and version | `not-in-release` | `allow_unsigned` only |
-| 10 | It lists them for this binary's target (`PLUGIN_TARGET`, its Rust target triple) | `wrong-target` | `allow_unsigned` only |
-| 11 | The listed sha256 equals the sha256 of the plugin's canonical manifest bytes | `hash-mismatch` | `allow_unsigned` only |
+| 9 | The release manifest lists the plugin's name and version | `not-in-release` | **never** |
+| 10 | It lists them for this binary's target (`PLUGIN_TARGET`, its Rust target triple) | `wrong-target` | **never** |
+| 11 | The listed sha256 equals the sha256 of the plugin's canonical manifest bytes | `hash-mismatch` | **never** |
 
 Before any of these checks, the library's sha256 must equal the manifest's `sha256`, as for every
 plugin. Nothing here defaults open. An empty role, a zero threshold, an unknown field, an unknown
-`spec_version` or an unknown algorithm is a refusal. `allow_unsigned` is the operator's existing
-explicit opt-in for plugins that cannot prove trust. A seal that fails a check is handled exactly
-like any other failed first-party signature, and loading under the opt-in still emits
-`PLUGIN_LOADED_UNVERIFIED`. Revocation and rollback are hard rejects that no opt-in relaxes, just
-like the compiled-in revocation list and the anti-downgrade floors.
+`spec_version` or an unknown algorithm is a refusal. Busbar is a known authority: a missing or
+invalid Busbar release proof is a hard refusal even with `allow_untrusted`. The sole opt-in is for
+unsigned or unknown-publisher code, which remains unverified. Integrity, revocation and rollback
+are never relaxed. Installed-boot expiry has only the explicit exception below.
 
 **When expiry is judged (TUF's semantics; coordinator ruling 2026-10-28).** TUF judges metadata
 expiry when a client fetches or updates, not every time it uses what it already installed.
@@ -271,15 +269,26 @@ separate qualification results, not implied by this source integration.
 
 A keys document is made with `busbar-plugin-pack keys-doc --spec spec.json --out keys.signed`. The
 spec has these fields: `version`, `expires`, `signers` (as `["p256:<hex>"]`), `threshold`,
-`revoked_keyids` and `revoked_digests`. A root signs `keys.signed` (the Cloud KMS signer
+`revoked_keyids` and `revoked_digests`. A root signs `keys.signed` (an owner-authorized external signer
 command, `CMD keys.signed keys.sig`), and `busbar-plugin-pack envelope --key <root> ...` wraps the signature.
 
-## 5. Open questions
+## 5. Root rotation
 
-1. **Expiry.** Resolved: expiry is judged at install, fetch and update, and only for new bytes.
-   It is not judged at boot (see "When expiry is judged").
-2. **Root count.** `the_default_release_key_input_is_the_real_release_key_list` requires at least
-   two committed keys. With only the KMS root committed, it stays red until the PIV root exists.
-3. **ModernCI requirement 1** ("ModernCI never holds a private key that can sign a release on its
-   own") does not hold for the interim signer, which the owner ruled is held in ModernCI's secret
-   store until the feature ships.
+`BUSBAR_RELEASE_PUBKEY` accepts multiple named public roots at build time. It is not a runtime
+environment override. A keys document delegates release signers; it cannot add engine roots.
+A 1.x engine update can add a new root without a plugin ABI change. Planned rotation uses
+an old-root engine, an overlapping old+new-root engine, then a new-root-only engine. During
+overlap, identical canonical keys-document bytes may carry both root signatures. The existing
+wire reader accepts this; the `envelope` CLI currently produces one signature per invocation.
+
+Keep one monotonically increasing keys-document sequence throughout rotation. Prepare a complete
+resealed boot cohort before accepting a higher version: older installed seals may then fail the
+host's rollback floor. Offline bundles need the matching engine and full artifact cohort.
+A keys-document revocation removes a delegated signer, not an embedded root. Removing a root
+requires an authenticated engine update, and enforcing the minimum safe engine version belongs
+to deployment policy. One-of-N overlap is not multi-party compromise protection.
+
+Do not overlap with a known-compromised root as a recovery guarantee. Authenticate a replacement
+engine through the independent trusted distribution channel. A compromised root can poison
+version floors; recovery must not silently lower them. Custody, production fingerprints, overlap
+cutoffs, retirement and incident recovery require owner-controlled decisions and ceremony.

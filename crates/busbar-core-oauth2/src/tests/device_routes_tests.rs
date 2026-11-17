@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::json;
 use oauth_as::client::{Client, ClientAuth, ClientId, SecretHash};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
@@ -61,7 +62,7 @@ async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
 
 #[tokio::test]
 async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device_grants() {
-    let mut cfg: crate::config::OauthAsCfg = serde_json::from_value(serde_json::json!({
+    let mut cfg: crate::config::OauthAsCfg = json::from_value(&json::json!({
         "issuer": "https://as.example/tenant",
         "clients": [{
             "client_id": "configured-device",

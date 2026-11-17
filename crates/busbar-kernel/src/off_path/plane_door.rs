@@ -163,14 +163,13 @@ impl DoorSection {
             .iter()
             .filter_map(|p| p.strip_prefix("settings.").map(str::to_string))
             .collect();
-        let undeclared = serde_json::to_value(&value).ok().and_then(|tree| {
-            busbar_contract::secret_fields::undeclared_reference(&tree, &declared).map(|at| {
-                busbar_contract::secret_fields::undeclared_refusal(
-                    &format!("{section}.{at}"),
-                    declaring.map_or(section, |d| d.reg.key),
-                )
-            })
-        });
+        let undeclared = undeclared_in(
+            &value,
+            section,
+            declaring.map_or(section, |d| d.reg.key),
+            &declared,
+            &crate::config::secret::admitted_sugars(),
+        );
         Self {
             door,
             section,
@@ -349,6 +348,25 @@ impl PlaneCfg for DoorSection {
     fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
         std::sync::Arc::new(self.clone())
     }
+}
+
+/// The refusal for a secret reference a door section holds outside the paths its plane declared,
+/// judged against `sugars` (the shorthand admission published), the same rule every other kind's
+/// settings meet (`Settings::undeclared_reference`).
+pub(crate) fn undeclared_in(
+    value: &busbar_contract::yaml::Value,
+    section: &str,
+    owner: &str,
+    declared: &[String],
+    sugars: &busbar_contract::secret_ref::Sugars,
+) -> Option<String> {
+    let mut tree = serde_json::to_value(value).ok()?;
+    if let Err(why) = busbar_contract::plugin_settings::canonicalize(&mut tree, sugars) {
+        return Some(format!("{section}: {why}"));
+    }
+    busbar_contract::secret_fields::undeclared_reference(&tree, declared).map(|at| {
+        busbar_contract::secret_fields::undeclared_refusal(&format!("{section}.{at}"), owner)
+    })
 }
 
 pub(crate) fn collect_refs(
@@ -927,6 +945,7 @@ pub(crate) async fn admin_reply(
         headers: &ctx.headers,
         consumed: ctx.consumed.as_ref(),
         principal: ctx.principal.as_ref(),
+        trust_authority: ctx.trust_authority.as_ref(),
     };
     let served = match ctx.serve.served_at(req, ctx.body).await {
         None => return AdminReply::Refused(PlaneVerbError::NotFound),

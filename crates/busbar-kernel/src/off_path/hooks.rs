@@ -66,7 +66,7 @@ pub struct HookEnv {
     /// Declared paths read once outside cache admission. Reading a linked row's Statement may
     /// invoke its door, so the cache key must consult this snapshot instead of the registry.
     pub(crate) resolution_paths: Arc<resolution::Paths>,
-    /// The secret resolver turns typed hook references, such as a `licenseKey`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
+    /// The secret resolver turns typed hook references, such as a `accessToken`, into their raw values before settings cross the ABI at open/configure. It is the same fail-closed resolver shared with store and auth opens, held through the neutral [`busbar_contract::secret::SecretResolve`] trait rather than the concrete engine resolver. Wiring supplies the identical resolver instance; only the static type at the hook boundary is narrowed.
     ///
     ///
     ///
@@ -135,7 +135,6 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
         signals: &[Signal],
-        child: Option<&crate::hook_child::Grant>,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
             same_resolved_inputs(
@@ -151,7 +150,6 @@ impl HookEnv {
                 opened.calls.clone(),
                 name,
                 signals,
-                child,
             ));
         }
         let axis = self
@@ -160,7 +158,7 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let calls = axis.open(module, name, settings, policy_timeout(timeout_ms))?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
-            calls, name, signals, child,
+            calls, name, signals,
         ))
     }
 
@@ -275,7 +273,6 @@ impl HookEnv {
                     name,
                     hook.timeout_ms,
                     &hook.signals,
-                    hook.child_dispatch.as_ref(),
                 )
                 .map(|_| ())
             },
@@ -442,13 +439,14 @@ pub fn resolve_pool_rewrites(
             policy,
             timeout,
             on_error,
+            on_error_chain,
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
             ranked.push((
                 hook.priority,
                 timeout,
-                with_rewrite_on_error(policy, on_error),
+                with_rewrite_on_error(policy, on_error, on_error_chain),
             ));
         }
     }
@@ -459,10 +457,12 @@ pub fn resolve_pool_rewrites(
 pub(crate) fn with_rewrite_on_error(
     policy: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
+    on_error_chain: Vec<FallbackHook>,
 ) -> Arc<dyn RoutingPolicy> {
     Arc::new(RewriteOnError {
         inner: policy,
         on_error,
+        on_error_chain,
     })
 }
 
@@ -697,7 +697,6 @@ pub(crate) fn gate_transport_named(
                 opened.calls.clone(),
                 name,
                 &hook.signals,
-                hook.child_dispatch.as_ref(),
             ),
             opened.resolved.clone(),
         ));
@@ -726,16 +725,7 @@ pub(crate) fn gate_transport_uncached(
         name,
         hook,
         env.resolve_hook_settings(&hook.plugin, &hook.settings),
-        |resolved| {
-            env.open(
-                &hook.plugin,
-                resolved,
-                name,
-                hook.timeout_ms,
-                &hook.signals,
-                hook.child_dispatch.as_ref(),
-            )
-        },
+        |resolved| env.open(&hook.plugin, resolved, name, hook.timeout_ms, &hook.signals),
     )
 }
 
@@ -888,22 +878,7 @@ pub(crate) mod resolution {
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
         hook.signals.hash(&mut h);
-        serde_json::to_writer(HashWriter(&mut h), &hook.child_dispatch).ok()?;
         Some(h.finish())
-    }
-
-    /// Feeds serialized bytes straight into a hasher, so a key never materializes the encoding.
-    struct HashWriter<'a, H>(&'a mut H);
-
-    impl<H: std::hash::Hasher> std::io::Write for HashWriter<'_, H> {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.write(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     pub(crate) enum Admission {
@@ -1235,13 +1210,14 @@ pub fn resolve_rewrite_hooks(
             policy,
             timeout,
             on_error,
+            on_error_chain,
             ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
             ranked.push((
                 hook.priority,
                 timeout,
-                with_rewrite_on_error(policy, on_error),
+                with_rewrite_on_error(policy, on_error, on_error_chain),
             ));
         }
     }

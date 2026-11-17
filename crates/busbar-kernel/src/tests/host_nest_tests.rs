@@ -40,7 +40,7 @@ struct Seam {
 }
 
 impl NestRoute for Seam {
-    fn nest(&self, nest: Nest, done: NestDone) {
+    fn nest(&self, _context: InvocationContext, nest: Nest, done: NestDone) {
         let body = nest.ask.body.clone();
         self.seen.lock().unwrap().push(nest);
         if self.drop_reply {
@@ -62,11 +62,48 @@ fn caller() -> Caller {
     Caller::for_test(Arc::from("inst"), KindCode::Plane)
 }
 
-fn services(seam: Arc<Seam>) -> KernelServices {
-    let s = KernelServices::new();
-    s.admit_ready("inst", InstanceFacts::default()).unwrap();
-    assert!(s.attach_nest(seam));
-    s
+struct Fixture {
+    core: Arc<KernelServices>,
+    generation: Arc<ServingGeneration>,
+    caller: Caller,
+}
+impl std::ops::Deref for Fixture {
+    type Target = KernelServices;
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+impl Fixture {
+    fn admit_unit(&self, unit: u64, record: UnitRecord) {
+        self.core.units().admitted_for(unit, &self.caller, record);
+    }
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        let context = unit
+            .ok_or(NEST_NO_UNIT)
+            .and_then(|unit| InvocationContext::new(self.generation.clone(), caller.clone(), unit));
+        let context = match context {
+            Ok(context) => context,
+            Err(why) => return Ran::Now(Stored::refused(why)),
+        };
+        match context.nest(
+            caller,
+            ask,
+            Box::new(move |reply| later(nested_answer(reply))),
+        ) {
+            Ok(()) => Ran::Later,
+            Err(why) => Ran::Now(Stored::refused(why)),
+        }
+    }
+}
+fn services(seam: Arc<Seam>) -> Fixture {
+    let core = Arc::new(KernelServices::new());
+    core.admit_ready("inst", InstanceFacts::default()).unwrap();
+    let generation = Arc::new(ServingGeneration::new(core.clone(), seam));
+    Fixture {
+        core,
+        generation,
+        caller: caller(),
+    }
 }
 
 fn ask(body: &[u8]) -> NestAsk {
@@ -97,14 +134,14 @@ fn alice() -> Arc<VirtualKey> {
 fn a_nested_unit_runs_under_its_parents_principal_one_level_deeper() {
     let seam = Arc::new(Seam::default());
     let s = services(Arc::clone(&seam));
-    s.units().admitted(
+    s.admit_unit(
         7,
         UnitRecord {
             principal: Some(alice()),
             depth: 1,
         },
     );
-    let got = run(|l| s.unit_nest(&caller(), Some(7), ask(b"hello"), l)).expect("answered");
+    let got = run(|l| s.unit_nest(&s.caller, Some(7), ask(b"hello"), l)).expect("answered");
     let seen = seam.seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!((seen[0].parent, seen[0].depth), (7, 2));
@@ -140,14 +177,14 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
         assert_eq!((r.outcome, r.error), (Outcome::Refused, why));
     };
     refused(
-        run(|l| s.unit_nest(&caller(), None, ask(b""), l)),
+        run(|l| s.unit_nest(&s.caller, None, ask(b""), l)),
         NEST_NO_UNIT,
     );
     refused(
-        run(|l| s.unit_nest(&caller(), Some(9), ask(b""), l)),
+        run(|l| s.unit_nest(&s.caller, Some(9), ask(b""), l)),
         NEST_NO_UNIT,
     );
-    s.units().admitted(
+    s.admit_unit(
         9,
         UnitRecord {
             principal: None,
@@ -155,7 +192,7 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
         },
     );
     refused(
-        run(|l| s.unit_nest(&caller(), Some(9), ask(b""), l)),
+        run(|l| s.unit_nest(&s.caller, Some(9), ask(b""), l)),
         NEST_TOO_DEEP,
     );
 
@@ -166,25 +203,25 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
     );
     assert!(seam.seen.lock().unwrap().is_empty());
 
-    s.units().admitted(
+    s.admit_unit(
         10,
         UnitRecord {
             principal: None,
             depth: NEST_DEPTH_MAX - 1,
         },
     );
-    let ok = run(|l| s.unit_nest(&caller(), Some(10), ask(b""), l)).expect("answered");
+    let ok = run(|l| s.unit_nest(&s.caller, Some(10), ask(b""), l)).expect("answered");
     assert_eq!(ok.outcome, Outcome::Ready);
     assert_eq!(seam.seen.lock().unwrap()[0].depth, NEST_DEPTH_MAX);
 }
 
 #[test]
-fn services_with_no_seam_refuse_a_nest() {
+fn services_with_no_invocation_refuse_a_nest() {
     let s = KernelServices::new();
     s.admit_ready("inst", InstanceFacts::default()).unwrap();
     s.units().admitted(1, UnitRecord::default());
     let r = run(|l| s.unit_nest(&caller(), Some(1), ask(b""), l)).expect("answered");
-    assert_eq!((r.outcome, r.error), (Outcome::Refused, NO_NEST_ROUTE));
+    assert_eq!((r.outcome, r.error), (Outcome::Refused, NEST_NO_UNIT));
 }
 
 #[test]
@@ -194,11 +231,11 @@ fn a_nest_pends_until_the_child_answers_and_holds_its_permit_meanwhile() {
         ..Seam::default()
     });
     let s = services(Arc::clone(&seam));
-    s.units().admitted(1, UnitRecord::default());
+    s.admit_unit(1, UnitRecord::default());
     let slot: Arc<Mutex<Option<Stored>>> = Arc::default();
     let mine = Arc::clone(&slot);
     let ran = s.unit_nest(
-        &caller(),
+        &s.caller,
         Some(1),
         ask(b"x"),
         Box::new(move |st| *mine.lock().unwrap() = Some(st)),
@@ -223,8 +260,8 @@ fn a_reply_the_root_drops_answers_failed_and_gives_its_permit_back() {
         ..Seam::default()
     });
     let s = services(seam);
-    s.units().admitted(1, UnitRecord::default());
-    let got = run(|l| s.unit_nest(&caller(), Some(1), ask(b""), l)).expect("answered");
+    s.admit_unit(1, UnitRecord::default());
+    let got = run(|l| s.unit_nest(&s.caller, Some(1), ask(b""), l)).expect("answered");
     assert_eq!((got.outcome, got.error), (Outcome::Failed, NEST_DROPPED));
     assert_eq!(s.nested().available(), NEST_CONCURRENCY);
 }
@@ -237,7 +274,7 @@ fn an_unread_reply_after_the_child_ran_answers_failed_and_releases_its_permit() 
         ..Seam::default()
     });
     let s = services(Arc::clone(&seam));
-    s.units().admitted(1, UnitRecord::default());
+    s.admit_unit(1, UnitRecord::default());
     for (reply, outcome, reason) in [
         (
             NestReply::Failed(CHILD_REPLY_UNREAD),
@@ -253,7 +290,7 @@ fn an_unread_reply_after_the_child_ran_answers_failed_and_releases_its_permit() 
         let slot: Arc<Mutex<Option<Stored>>> = Arc::default();
         let mine = Arc::clone(&slot);
         let ran = s.unit_nest(
-            &caller(),
+            &s.caller,
             Some(1),
             ask(b"child-body"),
             Box::new(move |answer| *mine.lock().unwrap() = Some(answer)),

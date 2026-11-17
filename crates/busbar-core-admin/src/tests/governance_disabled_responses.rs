@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 #[tokio::test]
 async fn test_keys_surface_governance_disabled_semantics() {
     let r = disabled_empty_list();
     assert_eq!(r.status().as_u16(), 200, "collection GET is 200-empty");
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
+    let body =
+        json::parse_value(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(body["items"].as_array().unwrap().len(), 0);
     assert!(body["next_cursor"].is_null());
 
@@ -25,8 +26,8 @@ async fn test_keys_surface_governance_disabled_semantics() {
         409,
         "writes conflict with server state"
     );
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
+    let body =
+        json::parse_value(&axum::body::to_bytes(r.into_body(), 4096).await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]

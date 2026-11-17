@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use busbar_kernel::port_call::PortGate;
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{CallStack, InstanceLimits};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::Notify;
 
 fn cx(within: Duration) -> CallCx {
@@ -28,89 +28,6 @@ fn limits(timeout_ms: u32, max_inflight: u32) -> InstanceLimits {
         timeout_ms,
         max_inflight,
         ..InstanceLimits::default()
-    }
-}
-
-/// The config arms (§12.22, W1-K7): `limits` beside `module` is parsed for an instance of every kind, bounded at
-/// load (≤ 600,000 ms, ≤ 65,535 in flight, `stream_stall_ms` 0 or 1,000..=600,000, no `plaintext` row), and never
-/// reaches the plugin: the bag it is bound from is `settings` alone.
-#[test]
-fn limits_config_arms() {
-    use busbar_kernel::config::min3::{parse_min3, InstanceLimitsCfg};
-    use busbar_kernel::config::{deploy_from_yaml_str, Grammar};
-    let parse = |yaml: &str| {
-        deploy_from_yaml_str(yaml, &Grammar::empty())
-            .unwrap_or_else(|e| panic!("`limits` beside `module` is config grammar: {e}"))
-    };
-    let deploy = parse(
-        r#"
-providers: {}
-models: {}
-store:
-  module: valkey
-  settings: { url: "rediss://cache.internal:6380" }
-  limits: { connect_timeout_ms: 1500 }
-secrets:
-  vault:
-    limits: { timeout_ms: 2000 }
-identity-providers:
-  corp-ldap:
-    module: ldap
-    limits: { timeout_ms: 10000, connect_timeout_ms: 3000, max_inflight: 64 }
-hooks:
-  webrequest:
-    module: webrequest
-    limits: { timeout_ms: 750 }
-export:
-  siem:
-    module: request-log-webhook
-    limits: { max_inflight: 8, timeout_ms: 5000 }
-"#,
-    );
-    let min3 = parse_min3(&deploy).expect("every value is in bounds");
-    let at = |section: &str, name: &str| {
-        let key: (Box<str>, Box<str>) = (section.into(), name.into());
-        min3.limits.get(&key).copied()
-    };
-    assert_eq!(
-        at("store", "store").map(|l| l.connect_timeout_ms),
-        Some(1_500)
-    );
-    assert_eq!(at("secrets", "vault").map(|l| l.timeout_ms), Some(2_000));
-    assert_eq!(
-        at("identity-providers", "corp-ldap"),
-        Some(InstanceLimitsCfg {
-            timeout_ms: 10_000,
-            connect_timeout_ms: 3_000,
-            max_inflight: 64,
-            stream_stall_ms: 0,
-        })
-    );
-    assert_eq!(at("hooks", "webrequest").map(|l| l.timeout_ms), Some(750));
-    assert_eq!(at("export", "siem").map(|l| l.max_inflight), Some(8));
-    assert_eq!(
-        deploy.store.as_ref().expect("store").settings.key_names(),
-        ["url"],
-        "limits is stripped before binding"
-    );
-
-    for (limits, key) in [
-        ("{ timeout_ms: 600001 }", "timeout_ms"),
-        ("{ connect_timeout_ms: 900000 }", "connect_timeout_ms"),
-        ("{ max_inflight: 65536 }", "max_inflight"),
-        ("{ stream_stall_ms: 10 }", "stream_stall_ms"),
-        ("{ plaintext: deny }", "plaintext"),
-    ] {
-        let deploy = parse(&format!(
-            "providers: {{}}\nmodels: {{}}\nstore:\n  module: valkey\n  limits: {limits}\n"
-        ));
-        let refused = parse_min3(&deploy).err().expect(limits);
-        assert!(
-            refused
-                .iter()
-                .any(|r| r.contains("store.limits") && r.contains(key)),
-            "{limits}: {refused:?}"
-        );
     }
 }
 
@@ -174,7 +91,7 @@ async fn timeout_ms_and_max_inflight_at_port_call_sites() {
 }
 
 #[test]
-#[ignore = "owner: W1-C1A"]
+#[ignore = "re-checked 2026-11-16: the connect cap is implemented (crates/busbar-core-connector/src/need.rs:600 and :678 budget(), min of the class default, limits.connect_timeout_ms and the call deadline, passed as Dial.timeout; config parse is the live limits_config_arms arm and kernel appbuild.rs:1434 carries the value into Caller.limits), but nothing tests it: the dial seam (NeedIo, Dial) is connector-internal and busbar-plugin-test has no busbar-core-connector dependency, and the case names store-valkey's black-holed dial (plugin repo image). Needs a connector unit test over a scripted NeedIo (OUTSTANDING row 2 harness for HostNeeds, none exists) or the valkey image (W2-SW-STORE)"]
 fn connect_timeout_ms_at_the_dial() {
     todo!("owner: W1-C1A (C-LIMITS)")
 }

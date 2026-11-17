@@ -5,6 +5,7 @@ use super::*;
 use crate::governance::recovery::{
     tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
 };
+use busbar_contract::json;
 
 const MODEL: &str = "m";
 const INITIAL_INPUT: u64 = 100;
@@ -54,6 +55,7 @@ async fn metered_entry(store: &CoreStore, key: &VirtualKey, era: RawRateEra, now
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),
@@ -958,9 +960,9 @@ async fn restarted_unlanded_correction_revalidates_foreign_usage_before_repostin
                 && event.revision == 0
         })
         .unwrap();
-    let payload: serde_json::Value = serde_json::from_slice(&successor.payload).unwrap();
+    let payload: json::Value = json::parse_value(&successor.payload).unwrap();
     let request = busbar_contract::records::correction::Request::decode(
-        &serde_json::to_vec(&payload["request"]).unwrap(),
+        &json::to_vec(&payload["request"]).unwrap(),
     )
     .unwrap();
     let row = request
@@ -1251,9 +1253,8 @@ async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_b
         "the common child cannot send before its exact parent checkpoint is confirmed"
     );
     let checkpoint = journal.selected.lock().unwrap().last().unwrap().clone();
-    let payload: serde_json::Value = serde_json::from_slice(&checkpoint.payload).unwrap();
-    let child_id: [u8; 16] =
-        serde_json::from_value(payload["handoffs"][0]["operation_id"].clone()).unwrap();
+    let payload: json::Value = json::parse_value(&checkpoint.payload).unwrap();
+    let child_id: [u8; 16] = json::from_value(&payload["handoffs"][0]["operation_id"]).unwrap();
     assert_eq!(payload["targets"][0]["accepted"]["billable_requests"], 0);
     assert_eq!(
         payload["targets"][0]["accepted"]["flushed_billable_requests"], 1,
@@ -1344,6 +1345,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key.id.clone(),
             bucket: super::super::metering_bucket(now),

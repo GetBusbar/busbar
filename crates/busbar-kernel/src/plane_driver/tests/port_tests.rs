@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::records::{tag as g, Records, U64Rec};
-use busbar_plugin_loader::ports::plane::PlaneOut;
+use busbar_ports::plane::PlaneOut;
 
 use busbar_plugin_abi::fail::refused::R_AUTH_REQUIRED;
 use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 
 use super::{
     admit_line, carrier_end_arg, line_of, refusal_of, LineCaller, LineEffects, LineRefused,
@@ -26,6 +26,41 @@ fn owner(name: &str) -> Incarnation {
     Caller::for_test(Arc::from(name), KindCode::Plane)
         .incarnation()
         .clone()
+}
+
+#[test]
+fn selected_current_refusals_keep_auth_expiry_and_group_policy_distinct() {
+    use crate::governance::current_credential::CurrentCredentialRefusal as Credential;
+    use crate::governance::selected_policy::SelectedPolicyRefusal as Policy;
+    use crate::plane_driver::port_egress::SelectedFailure;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_plugin_abi::fail::{failed::F_INTERNAL, refused::*};
+
+    let refusals = CoreRefusals::default();
+    for (reason, code) in [
+        (Policy::CurrentAuthority(Credential::Expired), R_EXPIRED),
+        (Policy::CurrentAuthority(Credential::KeyExpired), R_EXPIRED),
+        (
+            Policy::CurrentAuthority(Credential::Revoked),
+            R_BAD_CREDENTIAL,
+        ),
+        (
+            Policy::CurrentAuthority(Credential::SigningUnavailable),
+            R_BAD_CREDENTIAL,
+        ),
+        (Policy::CurrentGroup(ReasonCode::GroupFrozen), R_POLICY),
+        (Policy::CurrentGroup(ReasonCode::ScopeDenied), R_POLICY),
+        (Policy::InvalidBinding, F_INTERNAL),
+        (
+            Policy::CurrentAuthority(Credential::ForeignAuthority),
+            F_INTERNAL,
+        ),
+    ] {
+        assert_eq!(
+            super::selected_refusal(7, &SelectedFailure::Policy(reason), &refusals).code,
+            code
+        );
+    }
 }
 
 fn recording() -> (CarrierSink, Arc<Mutex<Vec<Vec<u8>>>>) {

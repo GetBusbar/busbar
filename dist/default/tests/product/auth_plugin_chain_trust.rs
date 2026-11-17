@@ -65,7 +65,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         "names the auth module: {err}"
     );
     assert!(
-        err.contains("allow_unsigned"),
+        err.contains("allow_untrusted"),
         "carries the trust reason: {err}"
     );
 

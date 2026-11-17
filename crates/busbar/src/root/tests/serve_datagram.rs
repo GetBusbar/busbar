@@ -8,8 +8,15 @@ use busbar_core_connector::datagram::Pairing;
 use busbar_core_connector::framer::Got;
 use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{bind, ReadyPort};
+use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
 
 use super::{lock, CallerLeg, ClaimDoor, CALLER_QUEUE};
+
+fn request() -> RequestLease {
+    ProcessAdmission::new(0)
+        .try_enter(AdmissionClass::Data)
+        .unwrap()
+}
 
 pub(super) fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
     Got {
@@ -35,7 +42,7 @@ fn leg(capacity: usize) -> (Arc<ClaimDoor>, Arc<CallerLeg>, Arc<Pairing>, Arc<Me
     let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
     let rx = Messages::new(capacity);
     let tx = Arc::clone(&rx);
-    let leg = CallerLeg::new(&door, tx);
+    let leg = CallerLeg::new(&door, tx, request());
     let pairing = Pairing::new(
         Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
         door.local(),
@@ -45,6 +52,44 @@ fn leg(capacity: usize) -> (Arc<ClaimDoor>, Arc<CallerLeg>, Arc<Pairing>, Arc<Me
 }
 
 const SESSION_CHANNEL: u64 = 1;
+
+#[tokio::test]
+async fn association_capacity_is_per_claim_and_released_on_close() {
+    let (door, first, _, _) = leg(1);
+    let mut held = Vec::new();
+    for _ in 0..super::DATAGRAM_ASSOCIATIONS_PER_CLAIM {
+        let member = CallerLeg::new(&door, Messages::new(1), request());
+        assert!(door.reserve(&member).is_ok());
+        held.push(member);
+    }
+    assert!(door.reserve(&first).is_err());
+    use busbar_core_connector::datagram::LegSink;
+    held.pop().unwrap().close();
+    assert!(door.reserve(&first).is_ok());
+    first.close();
+    for member in held {
+        member.close();
+    }
+    assert_eq!(
+        door.capacity.available_permits(),
+        super::DATAGRAM_ASSOCIATIONS_PER_CLAIM
+    );
+}
+
+#[tokio::test]
+async fn expired_association_closes_even_without_a_plugin_deadline() {
+    let (door, leg, pairing, _) = leg(1);
+    door.reserve(&leg).unwrap();
+    lock(&door.legs).insert(1, Arc::clone(&leg));
+    leg.bind(1);
+    door.expire(Instant::now() + super::DATAGRAM_ASSOCIATION_LIFETIME);
+    assert!(pairing.closed());
+    assert!(lock(&door.legs).is_empty());
+    assert_eq!(
+        door.capacity.available_permits(),
+        super::DATAGRAM_ASSOCIATIONS_PER_CLAIM
+    );
+}
 
 #[tokio::test]
 async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
@@ -131,10 +176,17 @@ async fn the_caller_side_opens_with_one_empty_piece() {
         custody: Custody::default().reader(),
     })
     .unwrap();
-    assert_eq!(caller.read().await, Some(Vec::new()), "the open");
-    assert_eq!(caller.read().await, Some(b"{\"type\":\"x\"}".to_vec()));
+    assert_eq!(
+        caller.read_owned().await.unwrap().bytes,
+        Vec::<u8>::new(),
+        "the open"
+    );
+    assert_eq!(
+        caller.read_owned().await.unwrap().bytes,
+        b"{\"type\":\"x\"}".to_vec()
+    );
     to.close();
-    assert_eq!(caller.read().await, None);
+    assert!(caller.read_owned().await.is_none());
 }
 
 #[tokio::test]
@@ -423,7 +475,7 @@ async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_pre
     let dispatch = tracing::Dispatch::new(ExhaustionDiagnostic(Arc::clone(&diagnostics)));
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let leg = CallerLeg::new(&door, Messages::new(8));
+    let leg = CallerLeg::new(&door, Messages::new(8), request());
     let pairing = Pairing::with_memory_limit(
         Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
         door.local(),
@@ -447,6 +499,126 @@ async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_pre
     );
     assert_eq!(pairing.publication_outcome().original_bytes, 0);
     assert!(pairing.closed());
+}
+
+#[tokio::test]
+async fn queued_datagram_payload_retains_the_opening_request_until_last_owned_read() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use busbar_kernel::plane_driver::SessionCaller;
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let from = Messages::new(2);
+    let leg = CallerLeg::new(&door, Arc::clone(&from), request.clone());
+    let pairing = Pairing::new(
+        Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        door.local(),
+    );
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    leg.take(vec![got(1, b"data", false)], Instant::now());
+    let remaining = request.try_reserve(224 * 1024 * 1024 - 4).unwrap();
+    assert!(
+        request.try_reserve(1).is_err(),
+        "the queue is charged before any receiver reads"
+    );
+    let (head, _) = tokio::sync::oneshot::channel();
+    let caller = super::DatagramCaller {
+        leg,
+        from,
+        head: std::sync::Mutex::new(Some(head)),
+        stated: std::sync::atomic::AtomicU32::new(0),
+        opened: std::sync::atomic::AtomicBool::new(true),
+    };
+    assert!(
+        caller.read().await.is_none(),
+        "bare reads cannot strip custody or dequeue"
+    );
+    let input = caller.read_owned().await.unwrap();
+    assert_eq!(input.bytes, b"data");
+    pairing.close();
+    drop(caller);
+    drop(pairing);
+    drop(request);
+    drop(remaining);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "transport teardown does not retire retained input"
+    );
+    assert!(
+        budget.try_enter(AdmissionClass::Operator).is_ok(),
+        "Data never takes the recovery floor"
+    );
+    drop(input);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[tokio::test]
+async fn a_kept_description_and_its_bytes_aliases_retain_the_opening_admission() {
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let leg = CallerLeg::new(&door, Messages::new(1), request.clone());
+    let description = leg
+        .take_batch_keeping(
+            busbar_core_connector::datagram::SessionBatch {
+                pieces: vec![got(0, b"description", false)],
+                custody: Custody::default(),
+                owners: Vec::new(),
+                producer: busbar_core_connector::publication::ProducerCustody::default(),
+            },
+            Instant::now(),
+            Some(0),
+        )
+        .unwrap()
+        .unwrap();
+    let remaining = request
+        .try_reserve(224 * 1024 * 1024 - b"description".len())
+        .unwrap();
+    assert!(
+        request.try_reserve(1).is_err(),
+        "description bytes are charged before handoff"
+    );
+    let bytes = description.into_bytes();
+    let alias = bytes.slice(1..);
+    assert_eq!(bytes.as_ref(), b"description");
+    drop(bytes);
+    drop(leg);
+    drop(remaining);
+    drop(request);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "the retained response description still owns its opening request"
+    );
+    drop(alias);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[tokio::test]
+async fn process_byte_exhaustion_refuses_datagram_retention_before_queueing() {
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let full = request.try_reserve(224 * 1024 * 1024).unwrap();
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let from = Messages::new(1);
+    let leg = CallerLeg::new(&door, Arc::clone(&from), request.clone());
+    let pairing = Pairing::new(
+        Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        door.local(),
+    );
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    leg.take(vec![got(1, b"refused", false)], Instant::now());
+    assert!(pairing.closed());
+    assert!(
+        from.recv().await.is_none(),
+        "the uncharged payload never enters the receiver queue"
+    );
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    assert!(operator.try_reserve(32 * 1024 * 1024).is_ok());
+    drop(full);
+    assert!(
+        request.try_reserve(224 * 1024 * 1024).is_ok(),
+        "the refused payload leaked no credit"
+    );
 }
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));

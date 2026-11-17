@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -42,7 +43,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         .expect("the actual distribution declares its linked OpenAI provider dialect");
     let definitions = std::collections::HashMap::from([(
         "test-provider".to_string(),
-        serde_json::from_value::<busbar_kernel::config::ProviderDef>(serde_json::json!({
+        json::from_value::<busbar_kernel::config::ProviderDef>(&json::json!({
             "protocol": protocol,
             "base_url": "http://127.0.0.1:1",
         }))
@@ -63,13 +64,12 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -148,11 +148,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let client = reqwest::Client::new();
     let root = format!("http://{address}/api/v1/admin");
 
-    async fn checked(response: reqwest::Response, status: u16) -> serde_json::Value {
+    async fn checked(response: reqwest::Response, status: u16) -> json::Value {
         assert_eq!(response.status().as_u16(), status);
         assert_eq!(response.headers()["cache-control"], "no-store");
         assert_eq!(response.headers()["content-type"], "application/json");
-        response.json().await.unwrap()
+        json::parse_value(&response.bytes().await.unwrap()).unwrap()
     }
 
     let mint = || {
@@ -160,7 +160,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
             .post(format!("{root}/keys"))
             .bearer_auth("admintok")
             .header("idempotency-key", "private-mint")
-            .json(&serde_json::json!({"name": "private-key"}))
+            .json(&json::json!({"name": "private-key"}))
     };
     let minted = checked(mint().send().await.unwrap(), 201).await;
     assert!(minted["token"]
@@ -174,7 +174,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
             .post(format!("{root}/keys/{id}/rotate"))
             .bearer_auth("admintok")
             .header("idempotency-key", "private-rotate")
-            .json(&serde_json::json!({}))
+            .json(&json::json!({}))
     };
     let rotated = checked(rotate().send().await.unwrap(), 200).await;
     assert!(rotated["token"]
@@ -200,7 +200,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         client
             .post(format!("{root}/groups"))
             .bearer_auth("admintok")
-            .json(&serde_json::json!({"name": "g", "config": "PRIVATE_REQUEST_SENTINEL"}))
+            .json(&json::json!({"name": "g", "config": "PRIVATE_REQUEST_SENTINEL"}))
             .send()
             .await
             .unwrap(),
@@ -269,7 +269,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let response = client
         .post(format!("{root}/groups"))
         .bearer_auth("admintok")
-        .json(&serde_json::json!({"name": "snapshot-group", "config": {"enabled": true}}))
+        .json(&json::json!({"name": "snapshot-group", "config": {"enabled": true}}))
         .send()
         .await
         .unwrap();

@@ -12,6 +12,7 @@ name = "busbar_core_connector"
 path = "src/lib.rs"
 
 [dependencies]
+busbar-ports = { path = "../busbar-ports" }
 hex = { workspace = true }
 busbar-contract = { path = "../busbar-contract", features = ["tls"] }
 arc-swap = { workspace = true }
@@ -61,9 +62,11 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 [dev-dependencies]
 busbar-contract = { path = "../busbar-contract", features = ["tls", "test-support", "stage-probe", "test-seal"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
-busbar-kernel = { path = "../busbar-kernel", default-features = false }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 # The webpki refusal values the dialled-refusal words are pinned against (tests only).
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+# The binding tests drive loaded plugin slots directly (`call`), which the loader exposes only to tests.
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
 # The tls_subject example dates its run-time certificate from the wall clock.
 time = { workspace = true, features = ["std"] }
 

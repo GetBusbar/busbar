@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use axum::http::StatusCode;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::{
     Address, AttemptId, BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure,
     Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
@@ -16,7 +17,7 @@ const CANDIDATE_BODY_CAP: usize = 5_000_123;
 use crate::root::test_plugins as plugins;
 async fn put(addr: std::net::SocketAddr, fee: i64) -> reqwest::Response {
     reqwest::Client::new().put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .json(&serde_json::json!({"per_request_fee": fee, "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}}))
+        .json(&json::json!({"per_request_fee": fee, "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}}))
         .send().await.unwrap()
 }
 async fn reload(addr: std::net::SocketAddr) -> reqwest::Response {
@@ -41,18 +42,12 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -69,7 +64,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -241,18 +236,12 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -269,7 +258,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -530,7 +519,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert_eq!(reload(addr).await.status(), StatusCode::OK);
         let nonprice = reqwest::Client::new()
             .put(format!("http://{addr}/api/v1/admin/config/settings"))
-            .json(&serde_json::json!({"limits": {"request_body_max_bytes": NONPRICE_BODY_CAP}}))
+            .json(&json::json!({"limits": {"request_body_max_bytes": NONPRICE_BODY_CAP}}))
             .send()
             .await
             .unwrap();
@@ -613,18 +602,12 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -641,7 +624,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -802,18 +785,12 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     );
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -830,7 +807,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -921,7 +898,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
             .uri("/api/v1/admin/config/settings")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                serde_json::json!({"per_request_fee": PENDING_ACTIVATION_FEE,
+                json::json!({"per_request_fee": PENDING_ACTIVATION_FEE,
                 "limits": {"request_body_max_bytes": CANDIDATE_BODY_CAP}})
                 .to_string(),
             ))
@@ -1113,18 +1090,12 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     );
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1141,7 +1112,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -1307,7 +1278,7 @@ struct LivePrice {
     epoch: u64,
 }
 fn status_phase(bytes: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(bytes).expect("native price status JSON")["phase"]
+    json::parse_value(bytes).expect("native price status JSON")["phase"]
         .as_str()
         .expect("native price status phase")
         .to_owned()

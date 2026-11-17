@@ -39,9 +39,11 @@ impl GovState {
         *self.identity_wait_observer.lock().unwrap() = Some(observer.clone());
         observer
     }
+    /// `_admin_token` is unused since ADMIN-TOKEN-MIGRATE: the operator credential lives in the admitted
+    /// operator row, never in governance. The parameter is removed after 1.6.0 with the six pinned repos.
     pub async fn new_with_core(
         core: Arc<CoreStore>,
-        admin_token: Option<String>,
+        _admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
     ) -> RecordStoreResult<Self> {
         core.register_claim_scope(crate::auth::AUTH_REPLAY_OWNER, crate::auth::AUTH_REPLAY)
@@ -65,7 +67,7 @@ impl GovState {
             caches.clone(),
             order.clone(),
         );
-        Self::from_identity_cache(core, admin_token, signer, caches, order, denylist)
+        Self::from_identity_cache(core, signer, caches, order, denylist)
     }
     pub async fn refresh_async(&self) -> RecordStoreResult<()> {
         reload_native(
@@ -341,6 +343,9 @@ impl GovState {
             .await?;
         let key = committed_key(&commit, id)?;
         self.publish_identity(commit);
+        // Rotation replaces the secret, not the principal's hard expiry. Keep the
+        // signed claim and returned expiry within both the key and mint-policy limits.
+        let exp = key.expires_at.map_or(exp, |deadline| exp.min(deadline));
         Ok(Some(RotatedCredential {
             token: material.signer.mint(id, exp, Some(&generation)).into(),
             key,

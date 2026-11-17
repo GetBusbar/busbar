@@ -16,6 +16,9 @@
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(dead_code, unused_imports, unused_macros))]
+// The root's listener futures prove `Send`/`Sync` across the serving App graph, which is deeper
+// than the default 128 auto-trait steps (as in busbar-kernel); the graph is acyclic.
+#![recursion_limit = "256"]
 
 #[cfg(all(not(target_env = "msvc"), not(test)))]
 #[global_allocator]
@@ -30,14 +33,12 @@ static GLOBAL: stats_alloc::StatsAlloc<tikv_jemallocator::Jemalloc> =
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
-
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 use busbar_kernel::{LoadedConfig, ENV_CONFIG};
 
+use busbar_core_connector::listen::AcceptLimits;
 #[cfg(unix)]
-use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
-use busbar_core_connector::listen::{AcceptLimits, Listening};
+use busbar_core_connector::listen::Listening;
 
 #[cfg(not(target_env = "msvc"))]
 pub(crate) fn build_info_line() -> String {
@@ -92,9 +93,7 @@ fn ignore_overlay_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == OPTION_IGNORE_OVERLAY)
 }
 
-/// The boot refusal for a `prepare_config_store` error. Under a principal transition only the
-/// context is printed; on an ordinary boot the inner error, which already names its own subject
-/// (`plugins.fetch failed: ...`, `store '<m>' settings: ...`), is printed.
+/// A store refusal preserves ordinary boot detail and redacts principal transitions.
 fn store_boot_refusal(transition: bool, error: String) -> String {
     if transition {
         "principal transition base Store opening refused".to_owned()
@@ -103,10 +102,10 @@ fn store_boot_refusal(transition: bool, error: String) -> String {
     }
 }
 
-fn line_serve_requested(planes: &[&[root::linked::CliHelpRow]], argv: &root::cli::Argv) -> bool {
-    argv.words
-        .iter()
-        .any(|a| root::cli::is_plane_flag(planes, a))
+/// Whether this process serves its one plane line route on stdin/stdout instead of binding
+/// listeners: core's own `--stdio`, never a plugin-stated flag (WP1-GAP r3 §1.3, #428).
+fn line_serve_requested(argv: &root::cli::Argv) -> bool {
+    argv.stdio
 }
 
 const MAX_WORKER_THREADS: usize = 128;
@@ -341,8 +340,13 @@ fn main() {
     if let Err(e) = busbar_kernel::observability::init_log_bridge() {
         eprintln!("busbar: the `log` bridge is not installed: {e}");
     }
+    // The exiting arms that need no plugin state run before anything is scanned, read or
+    // registered (WP1-GAP r3 §1.2, B2): only the crypto self-test above precedes them.
+    if let Some(code) = root::cli::early_cli_flags() {
+        root::exit::exit(code);
+    }
 
-    let late_services = root::serve::LateServices::new();
+    let bootstrap_services = root::serve::Services::bootstrap();
     root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
 
     if let Err(e) = root::loader::dispatch::handle::arm() {
@@ -351,7 +355,7 @@ fn main() {
     }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
-    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
+    let dispatcher = root::dispatch::boot(WORKERS.0, &bootstrap_services);
     root::doors::install_dispatcher(dispatcher);
 
     register_protocols();
@@ -371,23 +375,21 @@ fn main() {
     // wait line, a takeover, an exit-time hand-over) reach stderr (FIRST-START-TAKEOVER §2.8).
     // A RUST_LOG the console filter cannot read stops boot here: it is never silently replaced
     // by the default level.
-    match busbar_kernel::observability::init_logging() {
-        Ok(()) => {}
+    let trace_publisher = match busbar_kernel::observability::init_logging() {
+        Ok(publisher) => Some(publisher),
         Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
             eprintln!("busbar: {e}");
+            None
         }
-    }
+    };
 
     let (_, warnings) = &*WORKERS;
     for w in warnings {
         eprintln!("{w}");
     }
-    // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
-    // 1.5.5 printed its deprecation line, before the config load that can refuse.
-    for w in root::config_migrate::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
-    }
+    // Refuse retired launch inputs before migration or any configuration is read.
+    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
@@ -408,7 +410,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(late_services, catalogue, control_work));
+            .block_on(run(catalogue, control_work, trace_publisher));
     }
     #[cfg(not(unix))]
     {
@@ -419,7 +421,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(late_services, catalogue, control_work));
+            .block_on(run(catalogue, control_work, trace_publisher));
     }
     // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
     // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
@@ -571,10 +573,16 @@ mod bootstrap_destination_tests {
 }
 
 async fn run(
-    late_services: std::sync::Arc<root::serve::LateServices>,
     catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
+    trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
 ) {
+    let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
+    let plugin_process = std::sync::Arc::new(
+        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
+    );
+    root::admission::install_process(&plugin_process);
+    let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
@@ -612,55 +620,68 @@ async fn run(
             detail
         }
     };
-    let documents = Arc::new(root::startup_upgrade::documents::Documents::default());
-    let bootstrap_rules = root::startup_upgrade::documents::BootstrapRules(documents.clone());
+    // Every configuration read of this boot runs under the boot's reader rules: an unstamped boot
+    // reads the document the migrate seam planned at step 1 (held in memory until step 5 writes it),
+    // every other boot reads the file. The gateway reads only current bytes.
+    let config_rules = root::boot_app::ConfigRules {
+        process: std::sync::Arc::clone(&plugin_process),
+    };
     if let Some(refusal) = root::boot::start_refusal() {
         die(boot_error(
             "plugins directory refused at process start",
             refusal,
         ));
     }
-    let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+    // A start whose `plugins:` block on disk is in a pre-1.6 shape judges the operator credential
+    // from the planned config's block, before the load (OPERATOR-FROM-ADMITTED-AUTH §3.4.1).
+    root::auth_bindings::bind_from_planned(&config_path).unwrap_or_else(|error| {
+        die(boot_error(
+            "principal transition operator credential refused",
+            error,
+        ))
+    });
+    let raw = busbar_kernel::appbuild::read_config_documents(
         &config_path,
         providers_override.as_deref(),
         ignore_overlay,
         config::EnvSubst::Strict,
-        &bootstrap_rules,
+        &config_rules,
+        busbar_kernel::appbuild::DocumentPatchLoad {
+            patch: None,
+            providers_patch: None,
+            admission: None,
+        },
     )
+    // The read's own grammar already appended its report (one line per file not admitted).
     .unwrap_or_else(|e| {
-        let detail = match documents.take_debt() {
-            Some(todos) => root::startup_upgrade::documents::explain_debt(
-                &todos,
-                root::cli::validate_judged(
-                    &config_path,
-                    providers_override.as_deref(),
-                    ignore_overlay,
-                )
-                .err()
-                .as_ref(),
-                &config_path,
-            ),
-            // The read's own grammar already appended its report (one line per file not admitted).
-            None => e,
-        };
         die(boot_error(
             "principal transition configuration load refused",
-            detail,
+            e,
         ))
     });
+    let file_plugins = raw.plugins_block().unwrap_or_else(|error| die(error));
+    let file_images = root::boot::images::prepare(
+        &plugin_process,
+        &config::grammar::PhaseOneIn::of(&file_plugins),
+    )
+    .unwrap_or_else(|error| die(error.0));
+    let loaded = raw
+        .typed(&file_images.grammar)
+        .unwrap_or_else(|error| die(error));
     let LoadedConfig {
         deploy,
-        defs: _,
-        providers_path: _,
+        defs,
+        resource_ownership: _,
+        providers_path,
         overlay_path: _,
         config_locked,
         config_read_only: _,
         overlay_doc: _,
         unset_env_vars: _,
-        operator_reference: _,
+        operator_reference,
     } = loaded;
 
-    let base_cfg = root::startup_upgrade::bootstrap::bootstrap(&deploy).unwrap_or_else(|errors| {
+    let base_cfg = root::boot_app::store_bootstrap(&deploy).unwrap_or_else(|errors| {
         die(boot_error(
             "Store bootstrap configuration refused",
             format!(
@@ -670,8 +691,6 @@ async fn run(
         ))
     });
     let authoring_seal = busbar_kernel::seal::acquire();
-    root::measurements::configure(&base_cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
     let base_store_settings = serde_json::to_value(
         base_cfg
             .store
@@ -684,12 +703,23 @@ async fn run(
             format!("base Store settings: {error}"),
         ))
     });
+    let file_grammar = base_cfg
+        .grammar()
+        .unwrap_or_else(|error| die(error.0))
+        .clone();
+    let mut effective_images = file_images.clone();
+    let boot_instances = Arc::new(root::boot::inputs::BootInstances::capture(&base_cfg));
+    let config_rules = root::boot_app::ProtectedRules {
+        reader: config_rules,
+        images: file_images
+            .protect(&base_cfg)
+            .unwrap_or_else(|error| die(error)),
+        instances: Arc::clone(&boot_instances),
+    };
     let guard_judge = root::connector::dest_judge(&base_cfg);
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
-    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
-    root::serve::compose(dest.clone(), &late_services, credentials);
     root::boot::note_provider_urls(
         base_cfg
             .providers
@@ -707,6 +737,7 @@ async fn run(
     // native Store/Transport call inherit it before the durable measurement runtime exists.
     let bootstrap = Box::pin(root::measurements::maintenance(async {
         let _connector = root::connector::boot(
+            process_io.handle(),
             LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
@@ -715,167 +746,43 @@ async fn run(
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
-        root::min3_boot::run(
-            &base_cfg,
-            &deploy.plugins,
-            boot_guard,
-            late_services.kernel(),
-        )
-        .await
-        .unwrap_or_else(|error| die(boot_error("MIN-3 plugin boot refused", error)));
-        let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
-            .await
-            .unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)));
-        let binding_inventory = root::startup_upgrade::bindings::inventory()
-            .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
-        let binding_resolver = Arc::new(
-            root::startup_upgrade::bindings::Resolver::new(
-                documents.clone(),
-                config_path.clone(),
-                providers_override.clone(),
-                ignore_overlay,
-                base_cfg.limits.migration_index_bytes,
-                base_cfg.limits.migration_value_bytes,
-                &binding_inventory,
-            )
-            .unwrap_or_else(|_| die("startup plane binding inventory refused")),
-        );
-        let mut upgrade = busbar_migrations::StartupUpgrade::new(
-            prepared_store,
-            busbar_contract::persistence::lifecycle::Bounds {
-                items: 4096,
-                bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
-                    die("limits.migration_value_bytes exceeds native frame capacity")
-                }),
-            },
-        )
-        .with_source_spool(
-            Arc::new(root::startup_upgrade::spool::Factory),
-            busbar_contract::persistence::archive::Limits {
-                frame_bytes: base_cfg.limits.migration_value_bytes,
-                total_bytes: u64::MAX,
-                rows: u64::MAX,
-                tables: u32::MAX,
-                columns: u32::MAX,
-                index_bytes: base_cfg.limits.migration_index_bytes,
-            },
-            base_cfg.limits.migration_index_bytes,
-            base_cfg.limits.migration_value_bytes,
-        )
-        .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
-        .with_binding_inventory(binding_inventory.clone(), binding_resolver)
-        .unwrap_or_else(|_| die("startup frozen binding resolver admission refused"));
-        let released_source = loop {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during native Store inspection");
-            }
-            match upgrade.inspect_released().await {
-                Ok(source) => break source,
-                Err(busbar_migrations::Error::IntentPending) => {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                Err(error) => die(format!("automatic Store inspection refused: {error:?}")),
-            }
-        };
-        if let Some(source) = released_source.as_ref() {
-            documents
-                .enter_released_source(source)
+        let conversion_images = file_images.clone();
+        let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
+            process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(), root::cli::argv().stdio,
+        ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
+            .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
+        if bootstrap_ready.converting() {
+            let conversion = root::min3_boot::prepare_serving(
+                bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
+                &Default::default(), boot_guard,
+            ).await.unwrap_or_else(|error| die(error));
+            let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
-            let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
-                &config_path,
-                providers_override.as_deref(),
-                ignore_overlay,
-                config::EnvSubst::Strict,
-                &bootstrap_rules,
+            let _ = root::min3_boot::finish(
+                conversion, store_admission, None,
+                busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
+                None,
+                &observation_reservation,
             )
-            .unwrap_or_else(|error| die(error));
-            let normalized_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&normalized.deploy)
-                .unwrap_or_else(|errors| die(errors.join("; ")));
-            let same_store = documents
-                .bootstrap_equivalent(&base_cfg.store, &normalized_bootstrap.store, &config_path)
-                .unwrap_or_else(|error| die(error));
-            if !same_store
-                || normalized.deploy.plugins != deploy.plugins
-                || normalized.config_locked != config_locked
-            {
-                die("configuration conversion changed its prepared Store bootstrap binding");
-            }
+                .await.unwrap_or_else(|error| die(error));
+            die("unstamped conversion returned without its required restart");
         }
-        let prepared = loop {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during native Store preparation");
-            }
-            match upgrade
-                .prepare()
-                .await
-                .unwrap_or_else(|error| die(format!("automatic Store upgrade refused: {error:?}")))
-            {
-                busbar_migrations::Preparation::Recovery(prepared) => break prepared,
-                busbar_migrations::Preparation::Pending => {
-                    tokio::time::sleep(Duration::from_millis(250)).await
-                }
-            }
-        };
-        let store_admission = root::boot::admit_prepared_store(&prepared)
-            .await
-            .unwrap_or_else(|error| die(error));
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
-        let root::startup_upgrade::publication::Preparation {
-            mut publication,
-            mut progress,
-        } = root::startup_upgrade::publication::Publication::prepare(
-            &mut upgrade,
-            root::startup_upgrade::publication::Inputs {
-                backend: prepared.backend.clone(),
-                core: anchor_store.clone(),
-                documents: documents.clone(),
-                native_upgrade_id: prepared.upgrade_id,
-                host: root::durability::host_identity(),
-                checkpoint_budget: base_cfg.limits.migration_value_bytes,
-                fs: Arc::new(root::admission::RootDurable),
-            },
-        )
-        .await
-        .unwrap_or_else(|error| die(error));
-        while progress == root::startup_upgrade::publication::PrepareProgress::Pending {
-            if *control_work.shutdown_rx.borrow() {
-                die("shutdown requested during configuration preparation");
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            progress = publication
-                .prepare_more(&mut upgrade)
-                .await
-                .unwrap_or_else(|error| die(error));
-        }
-        // A recovered inventory may contain a mixture of original and published files.
-        // Reload through its retained transformations before constructing the one App.
-        let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
-            &config_path,
-            providers_override.as_deref(),
-            ignore_overlay,
-            config::EnvSubst::Strict,
-            &bootstrap_rules,
-        )
-        .unwrap_or_else(|error| die(error));
-        let resumed_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&resumed.deploy)
-            .unwrap_or_else(|errors| die(errors.join("; ")));
-        let same_store = documents
-            .bootstrap_equivalent(&base_cfg.store, &resumed_bootstrap.store, &config_path)
+        // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
+        // left under IMPORT become native records under this admission, sealed and verified, before
+        // anything reads them. An empty IMPORT costs one one-row scan.
+        let keys = root::migrate_records::Keys::from_core(&bootstrap_ready.core)
             .unwrap_or_else(|error| die(error));
-        if !same_store
-            || resumed.deploy.plugins != deploy.plugins
-            || resumed.config_locked != config_locked
-        {
-            die("restored configuration changed its prepared Store bootstrap binding");
-        }
-        // config.yaml's operator definitions as read from disk, before any stored document patch:
-        // the operator file-policy reference this process starts with (OPERATOR-FROM-ADMITTED-AUTH
-        // §000.1).
-        let operator_reference = Arc::new(resumed.operator_reference);
-        let mut deploy = resumed.deploy;
-        let mut defs = resumed.defs;
-        let mut providers_path = resumed.providers_path;
+        root::migrate::records_with_keys(anchor_store.clone(), keys)
+            .await
+            .unwrap_or_else(|error| die(error));
+        // config.yaml's operator definitions as read, before any stored document patch: the operator
+        // file-policy reference this process starts with (OPERATOR-FROM-ADMITTED-AUTH §000.1).
+        let operator_reference = Arc::new(operator_reference);
+        let mut deploy = deploy;
+        let mut defs = defs;
+        let mut providers_path = providers_path;
         // Even --ignore-overlay must observe a pending transition in the anchor namespace before
         // overlay recovery or application construction can open another effective Store.
         if principal_transition.is_none() {
@@ -916,11 +823,9 @@ async fn run(
                 || doc.providers_patch.is_some()
                 || !doc.plugin_versions.is_empty()
         }) {
-            let patched = busbar_kernel::appbuild::load_config_under_store(
+            let (patched, images) = config_rules.read_under_store(
                 &config_path,
                 providers_override.as_deref(),
-                config::EnvSubst::Strict,
-                &bootstrap_rules,
                 doc,
             )
             .unwrap_or_else(|error| {
@@ -929,11 +834,10 @@ async fn run(
                     format!("Store document overlay refused: {error}"),
                 ))
             });
-            let start = root::boot::start_grammar()
-                .unwrap_or_else(|refusal| die(boot_error("plugins directory refused", refusal)));
+            effective_images = images;
             let pinned = match (patched.deploy.grammar.get(), patched.deploy.grammar.used()) {
                 (Ok(generation), Ok(used)) => {
-                    config::grammar::pin(start, generation, used, config::grammar::Pin::Store)
+                    config::grammar::pin(&file_grammar, generation, used, config::grammar::Pin::Store)
                 }
                 (Err(refusal), _) | (_, Err(refusal)) => Err(refusal.0),
             };
@@ -962,10 +866,13 @@ async fn run(
             eprintln!("[info] {notice}");
         }
 
-        let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            deploy.groups.keys().cloned().collect();
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
+        let base_hook_names = resource_ownership.hook_names().clone();
+        let base_group_names = resource_ownership.group_names().clone();
         if let Some(doc) = overlay_doc.as_ref() {
+            resource_ownership.validate_named_maps(doc).unwrap_or_else(|error| {
+                die(boot_error("Store overlay refused", error))
+            });
             config::overlay::apply_root_to_deploy(&mut deploy, doc).unwrap_or_else(|error| {
                 die(boot_error(
                     "Store overlay refused",
@@ -988,11 +895,15 @@ async fn run(
             .unwrap_or_else(|error| die(error));
             // This branch precedes governors, usage recovery, correction tasks and listeners.
             // Reconstruct the same effective config that normal application boot consumes.
-            let mut effective = config::resolve(&deploy, &defs)
-                .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+            let provider_planes = root::min3_provider_plan::descriptors(&effective_images)
+                .unwrap_or_else(|error| die(error));
+            let mut effective = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+                .unwrap_or_else(|_| die("principal transition effective configuration refused"))
+                .config;
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
+            boot_instances.check(&effective).unwrap_or_else(|error| die(error));
             // The one semantic judgement of this boot's effective configuration, made exactly as
             // construction makes it. A serving transition hands it to construction below.
             let judged = config_validate::judge_effective(&effective, &deploy.plugins)
@@ -1034,11 +945,8 @@ async fn run(
         }
 
         Some((
-            upgrade,
-            prepared,
             store_admission,
             anchor_store,
-            publication,
             deploy,
             defs,
             providers_path,
@@ -1049,15 +957,14 @@ async fn run(
             fresh_record_bootstrap,
             judged_effective,
             operator_reference,
+            effective_images,
+            bootstrap_ready,
         ))
     }))
     .await;
     let Some((
-        mut upgrade,
-        prepared,
         store_admission,
         anchor_store,
-        mut publication,
         deploy,
         defs,
         providers_path,
@@ -1068,6 +975,8 @@ async fn run(
         fresh_record_bootstrap,
         judged_effective,
         operator_reference,
+        effective_images,
+        bootstrap_ready,
     )) = bootstrap
     else {
         return;
@@ -1088,7 +997,10 @@ async fn run(
         selected
     };
 
+    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
     let response_headers_cfg = deploy.advanced.response_headers.clone();
+    // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
+    let audit_seal_every = deploy.audit.seal_every;
 
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
@@ -1101,6 +1013,9 @@ async fn run(
             .as_ref()
             .map(|p| Duration::from_secs(p.retention_seconds)),
     );
+    // ADMIN-API-1.6 §3.5: what unit records keep of the end user and request headers, for the
+    // life of the process.
+    root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
     root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
@@ -1115,8 +1030,6 @@ async fn run(
     }
 
     // The subscriber is `main`'s, installed once before any work; nothing here installs another.
-    // Startup conversion notices raised while the configuration loaded.
-    documents.replay_notices();
 
     if ignore_overlay {
         tracing::warn!(
@@ -1147,10 +1060,15 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg =
-        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
-    root::measurements::configure(&cfg.plugin_rate_cards)
-        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
+    let provider_planes =
+        root::min3_provider_plan::descriptors(&effective_images).unwrap_or_else(|error| die(error));
+    let resolved = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+        .unwrap_or_else(|errs| die_list("config errors", errs));
+    let mut cfg = resolved.config;
+    let provider_catalogs = resolved.catalogs;
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
 
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
         .unwrap_or_else(|error| die_list("config errors", [error]));
@@ -1169,7 +1087,7 @@ async fn run(
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 
     // Semantic validation of the effective configuration runs once per boot. Ordinarily that is
-    // inside the application build the startup continuation drives (`appbuild` ->
+    // inside the boot's one application build (`root::boot_app::BootApp`: `appbuild` ->
     // `config_validate::check_with`), after the export sinks open and before any Store
     // publication or listener. A fresh-instance transition already judged its effective
     // configuration (the same deploy, definitions and overlay) before writing its Store baseline:
@@ -1184,6 +1102,9 @@ async fn run(
             (cfg, None)
         }
     };
+    boot_instances
+        .check(&cfg)
+        .unwrap_or_else(|error| die(error));
     // Boot is a disk read: the built App holds config.yaml's operator definitions as the reference.
     cfg.operator_file_defs = Some(operator_reference);
 
@@ -1193,19 +1114,17 @@ async fn run(
         "metadata protection: {blocked} hosts blocked (--print-metadata-blocklist to view)"
     );
 
-    let listen = cfg.listen.clone();
-    let tls_cfg = cfg.tls.clone();
-
-    let admin_listen = cfg.admin_listen.clone();
-    let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints`;
-    // validation already refused a value out of range, so this never clamps.
-    let drain_settings = cfg
-        .limits
-        .drain_settings()
-        .unwrap_or_else(|refusals| die_list("shutdown drain settings refused:", refusals));
+    let request_admission =
+        busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    // STORAGE-JOIN-r2: the Node's terminal book is funded from this boot admission before any
+    // plane, book, listener or recovery exists. No fallback account: refusal fails the boot.
+    if let Err(why) = root::plane_node::node().bind_terminal_storage(&request_admission) {
+        tracing::error!(error = why, "terminal custody storage binding failed");
+        die(format!("terminal custody storage binding failed: {why}"));
+    }
+    use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
 
@@ -1220,7 +1139,7 @@ async fn run(
             .copied(),
     );
 
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die_list("config errors", [e]));
+    let export_config = cfg.export.clone();
 
     let door_providers = root::door_steps::provider_routes(
         &cfg.providers,
@@ -1231,20 +1150,18 @@ async fn run(
 
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
-    let root_rules = Arc::new(root::door_steps::Rules::hearing_with_documents(
-        commit_guard,
-        documents.clone(),
+    let root_rules = Arc::new(root::door_steps::Rules::with_reader(
+        Some(commit_guard),
+        Arc::new(config_rules),
     ));
 
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
-    let listener_plan = Arc::new(root::serve::ListenerPlan::new(
-        root::door_steps::listener_needs(&cfg).unwrap_or_else(|e| die(e)),
-        root::serve::transport_offers(LINKED.transports, &dropped_doors),
-        &|scheme| root::connector::the().framer_for(scheme),
-    ));
-    root_rules
-        .hold_listeners(Arc::clone(&listener_plan))
-        .unwrap_or_else(|e| die(e));
+    let listener_needs = root::door_steps::listener_needs(&cfg).unwrap_or_else(|error| die(error));
+    let native_request_timeout = Duration::from_secs(cfg.limits.request_body_read_timeout_secs);
+    let native_handshake_timeout = Duration::from_secs(cfg.limits.tls_handshake_timeout_secs);
+    // Root policy: the configured upstream response budget also bounds active native
+    // output; the runtime keeps that deadline absolute through partial writes.
+    let native_write_timeout = Duration::from_secs(cfg.limits.upstream_request_timeout_secs);
 
     let record_bootstrap_store = serde_json::to_value(
         cfg.store
@@ -1274,79 +1191,57 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
-    let continuation = root::startup_upgrade::continuation::StartupContinuation::for_upgrade(
-        root::startup_upgrade::continuation::Preparation {
-            startup: store_admission,
-            config: cfg,
-            judged,
-            plugins: plugins_cfg,
-            overlay: overlay_path,
-            deploy,
-            definitions: defs,
-            base_hook_names,
-            base_group_names,
-            config_path: config_path.clone(),
-            providers_path: providers_path.clone(),
-            providers_override: providers_override.clone(),
-            rules: root_rules.clone(),
-            shutdown_rx: control_work.shutdown_rx.clone(),
-            shutdown_tx: control_work.shutdown_tx.clone(),
-            configuration_fingerprint: documents.fingerprint().unwrap_or_else(|error| die(error)),
-        },
-        root::startup_upgrade::continuation::UpgradeBinding {
-            upgrade_id: prepared.upgrade_id,
-            target: prepared.target,
-        },
-    );
-    let readiness = loop {
+    let native_bootstrap_sources = bootstrap_ready.sources();
+    let serving_ready = root::min3_boot::prepare_serving(
+        bootstrap_ready,
+        &plugin_process,
+        effective_images,
+        &cfg,
+        &provider_catalogs,
+        root::connector::dest_judge(&cfg).guard().clone(),
+    )
+    .await
+    .unwrap_or_else(|error| die(error));
+    let preparation = root::boot_app::Preparation {
+        secret_resolver: serving_ready.resolver(),
+        startup: store_admission,
+        config: cfg,
+        judged,
+        plugins: plugins_cfg,
+        overlay: overlay_path,
+        deploy,
+        definitions: defs,
+        base_hook_names,
+        base_group_names,
+        config_path: config_path.clone(),
+        providers_path: providers_path.clone(),
+        providers_override: providers_override.clone(),
+        rules: root_rules.clone(),
+        shutdown_rx: control_work.shutdown_rx.clone(),
+        shutdown_tx: control_work.shutdown_tx.clone(),
+    };
+    // The boot's one App, built over the store admission it holds: the MIN-3 walk's, or the old ABI's
+    // current dataset (until #274).
+    let boot_app = root::boot_app::BootApp::new(preparation);
+    loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested during startup validation");
         }
-        if let Some(readiness) = continuation
+        if boot_app
             .readiness()
             .await
             .unwrap_or_else(|error| die(error))
+            .is_some()
         {
-            break readiness;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
-    };
-    loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during configuration publication");
-        }
-        match publication
-            .publish_complete(readiness)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
-            root::startup_upgrade::publication::PublishProgress::Complete => break,
-            root::startup_upgrade::publication::PublishProgress::Pending => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        }
     }
-    let completion = loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during Store completion");
-        }
-        match upgrade.finalize(readiness).await {
-            Ok(completion) => break completion,
-            Err(busbar_migrations::Error::IntentPending) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            Err(error) => die(format!("automatic Store completion refused: {error:?}")),
-        }
-    };
     let ready = loop {
         if *control_work.shutdown_rx.borrow() {
             die("shutdown requested before startup publication");
         }
-        if let Some(candidate) = continuation
-            .take_ready(&completion)
-            .await
-            .unwrap_or_else(|error| die(error))
-        {
+        if let Some(candidate) = boot_app.take().await.unwrap_or_else(|error| die(error)) {
             break candidate;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1354,23 +1249,14 @@ async fn run(
     // Migrate-on-boot step 5 (MIGRATE-ON-BOOT r42 §3): every instance has opened, and nothing
     // serves or produces yet. An upgraded config.yaml is written in place now. The boot then closes
     // every instance it owns (the App and each instance it opened, the core store and its
-    // admission, the node book and its lease task, the startup upgrade's holders), so no instance's
-    // descriptor reaches the new image, and re-executes onto the stamped file. A stamped boot
-    // passes straight through, with every owner kept as before.
-    if let Some(written) = root::migrate::finish()
+    // admission, the node book and its lease task, an old ABI store's prepared session), so no
+    // instance's descriptor reaches the new image, and re-executes onto the stamped file. A stamped
+    // boot passes straight through, with every owner kept as before.
+    if let Some(written) = root::migrate::finish(Some(ready.core.clone()))
         .await
         .unwrap_or_else(|error| die(error))
     {
-        let owners = (
-            ready,
-            continuation,
-            upgrade,
-            publication,
-            completion,
-            // The prepared Store's own holders (its target identity moved into the continuation).
-            (prepared.backend, prepared.recovery),
-            _boot_store_binding,
-        );
+        let owners = (ready, boot_app, _boot_store_binding);
         die(root::migrate::restart(
             written,
             owners,
@@ -1380,7 +1266,7 @@ async fn run(
             root::migrate::reexec,
         ));
     }
-    let root::startup_upgrade::continuation::ReadyCandidate {
+    let root::boot_app::ReadyCandidate {
         startup: store_admission,
         app,
         book,
@@ -1389,6 +1275,23 @@ async fn run(
         deploy,
         ..
     } = ready;
+    root::plane_node::node().bind_book(Arc::clone(&book.durability));
+    // Native DATA audit r2: Node receives original signed pages before any native admission;
+    // without the original notary binding the process refuses readiness before effects.
+    root::plane_node::node()
+        .bind_native_notary()
+        .unwrap_or_else(|error| die(format!("native DATA audit custody: {error}")));
+    root::plane_node::node()
+        .bind_response_intents(
+            store_admission
+                .store()
+                .unwrap_or_else(|| die("response intent has no admitted Store")),
+            book.response_intents
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| die("response intent service was not constructed")),
+        )
+        .unwrap_or_else(|error| die(error));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
@@ -1397,17 +1300,15 @@ async fn run(
         .iter()
         .map(|d| &d.declaration)
         .collect();
-    let signer = app
-        .governance
-        .clone()
-        .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
-    root::serve::attach(
-        &late_services,
-        app.governance.as_deref(),
-        signer,
-        &app.demotion_record,
+    let services = root::serve::compose(
+        dest.clone(),
+        &app,
+        store_admission
+            .store()
+            .unwrap_or_else(|| die("S7 has no admitted Store")),
         &planes,
     );
+    let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
@@ -1417,13 +1318,12 @@ async fn run(
         }
         let fingerprint =
             busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
-        let kernel = late_services
+        let kernel = services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("fresh record bootstrap refused: {error}")));
@@ -1434,7 +1334,7 @@ async fn run(
     if let Some(path) = std::env::var_os(busbar_kernel::host_record_bootstrap::RECEIPT_ENV) {
         let fingerprint =
             busbar_kernel::host_record_bootstrap::store_fingerprint(&record_bootstrap_store);
-        let kernel = late_services
+        let kernel = services
             .kernel()
             .unwrap_or_else(|| die("record bootstrap has no installed kernel"));
         let receipt = tokio::task::spawn_blocking(
@@ -1457,14 +1357,57 @@ async fn run(
         .unwrap_or_else(|error| die(format!("cold record bootstrap failed: {error}")));
         let receipt =
             receipt.unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
-        let instance = receipt.instance.clone();
         kernel
             .arm_record_bootstrap(receipt, &fingerprint, |schema, key, value| {
-                root::boot::bootstrap_witness(&instance, schema, key, value)
+                root::boot::bootstrap_witness(schema, key, value)
             })
             .await
             .unwrap_or_else(|error| die(format!("cold record bootstrap refused: {error}")));
     }
+
+    let observation_reservation = export_observers
+        .reserve(serving_ready.export_names())
+        .unwrap_or_else(|error| die(error));
+    let (store_admission, mut generation_workers, exports, native, selected_policy) =
+        root::min3_boot::finish(
+            serving_ready,
+            store_admission,
+            services.kernel(),
+            busbar_kernel::plane_driver::port_work::governed_binder(
+                app.governance.clone(),
+                app.role_bindings.clone(),
+            ),
+            Some(root::min3_boot::ServingEnvironment::new(&app)),
+            &observation_reservation,
+        )
+        .await
+        .unwrap_or_else(|error| die(error));
+
+    let listener_plan = Arc::new(
+        root::min3_listener_plan::NativeListenerPlan::new(listener_needs, &native.framers)
+            .unwrap_or_else(|error| die(error)),
+    );
+
+    let export_registry = export::plugin::open_prepared(
+        &export_config,
+        &exports.calls(),
+        Arc::clone(&app.amendments),
+    )
+    .unwrap_or_else(|error| die_list("config errors", [error]));
+    let mut app = Arc::unwrap_or_clone(app);
+    selected_policy
+        .install_initial(&mut app)
+        .unwrap_or_else(|error| die(error));
+    app.secret_resolver = Arc::clone(&native.resolver);
+    let auth_epoch = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    root::min3_admin_auth::install(&mut app, Arc::clone(&native.auth), auth_epoch)
+        .unwrap_or_else(|error| die(error));
+    let app = Arc::new(
+        export::plugin::assemble_routes(app, &export_config, native.seats.clone(), export_registry)
+            .unwrap_or_else(|error| die_list("config errors", [error])),
+    );
 
     let door_live_handle = Arc::default();
     let door_models = model_serving(door_model_pools, &app, &door_live_handle);
@@ -1476,11 +1419,12 @@ async fn run(
         app.limits.as_ref(),
         root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
     );
-    let mut served = root::serve::compose_served_checked(
+    let served = root::serve::compose_served_checked(
+        Some(Arc::clone(&native)),
         app.governance.clone(),
         root::boot::door_planes(),
-        &root::dispatch::dispatcher(),
-        &late_services,
+        &serving_dispatcher,
+        &services,
         &root::serve::with_pools(
             {
                 let mut sections = deploy.door_sections();
@@ -1510,21 +1454,42 @@ async fn run(
             })
         }),
         &app.serve_tables,
-        &|served| {
-            listener_plan.mount_planes(
-                served,
-                &app,
-                &root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-            )?;
-            Ok(listener_plan.binds().to_vec())
-        },
+        &|_| Ok(listener_plan.binds().to_vec()),
     )
     .await
-    .unwrap_or_else(|e| die(e));
-    listener_plan
-        .share_claim_doors(&mut served)
-        .unwrap_or_else(|e| die(e));
-    root::measurements::validate_bindings().unwrap_or_else(|e| die(e));
+    .unwrap_or_else(|error| die(error));
+    let native_candidates = root::min3_candidate::Factory::new(
+        Arc::clone(&plugin_process),
+        native_bootstrap_sources,
+        store_admission
+            .store()
+            .unwrap_or_else(|| die("native candidate factory has no admitted Store")),
+        &native,
+        Arc::clone(&listener_plan),
+        root::plane_node::node(),
+        Arc::clone(&export_observers),
+    );
+    let root_rules = Arc::new(
+        root_rules
+            .with_native_listeners(Arc::clone(&listener_plan))
+            .with_native_candidate(native_candidates),
+    );
+    let mut app = Arc::unwrap_or_clone(app);
+    app.root_rules = root_rules.clone();
+    let owners = root::min3_physical::SlotOwners {
+        auth: Arc::clone(&native.auth),
+        epoch: auth_epoch,
+        inventories: Arc::clone(&native.inventories),
+        keys: root::plane_node::node().kernel_and_keys().1,
+        core: root::min3_listener_plan::core_lines(&app, &served).into(),
+    };
+    let slots = listener_plan
+        .assemble(&app, &served, &owners)
+        .unwrap_or_else(|error| die(error));
+    root::serve::install_native_slots(&mut app, slots).unwrap_or_else(|error| die(error));
+    root::min3_candidate::install_initial(&mut app, Arc::clone(&native), Arc::clone(&services))
+        .unwrap_or_else(|error| die(error));
+    let app = Arc::new(app);
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 
@@ -1536,22 +1501,11 @@ async fn run(
                 .chain(root::boot::unbound_sections()),
         );
     }
-    served.spawn_ticks();
 
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
          re-learned from live traffic"
     );
-
-    export::plugin::start().unwrap_or_else(|e| die_list("config errors", [e]));
-
-    let on_host = LINKED.on_host;
-    let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app));
-    if let Some(host) = &boot_host {
-        for spawn in on_host {
-            spawn(host);
-        }
-    }
 
     let tls_secret_resolver = app.secret_resolver.clone();
 
@@ -1559,78 +1513,61 @@ async fn run(
     let door_post = served.post.clone();
     let recovery_served = served.clone();
 
-    if let Some(refusal) = root::serve::lines::refusal() {
-        die(refusal);
-    }
-
     let mut served = served;
-    let line_served = line_serve_requested(&root::cli::help_rows(), root::cli::argv())
-        .then(|| std::mem::take(&mut served));
+    let line_served = line_serve_requested(root::cli::argv()).then(|| std::mem::take(&mut served));
 
     drop(served);
-    let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let (admin_trust_decide, admin_trust_read) = root::serve::admin_trust(&services);
+    let app_handle =
+        Arc::new(busbar_kernel::state::AppHandle::new(app).with_trust(admin_trust_read));
+    // Publication owns every reserved observer through producer shutdown. Failed construction
+    // above drops the uncommitted reservation and returns its unused capacity.
+    let _export_generation = observation_reservation.commit();
+    // Reload carries this exact owner, including captures accepted by a retiring App.
+    let export_captures = Arc::clone(&app_handle.load().exports);
+    services.prepare_workers(&mut generation_workers);
+    let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
+        book.as_ref().map(|book| book.runtime_journal.clone()),
+    ));
     let admin_router = busbar_kernel::router::build_admin_router_on_with_dispatch_layer(
         &app_handle,
         req_body_max,
         response_headers_cfg.server_timing,
         root::listener::deferred_dispatch_layer,
-    );
-    let data_router = listener_plan.router(
-        &app_handle,
-        "listen".into(),
-        req_body_max,
-        0, // The framed actor applies one physical cap to data and operator requests.
-        response_headers_cfg.server_timing,
-    );
-    let mut physical_routers = std::collections::HashMap::new();
-    for bind in listener_plan.stream_binds() {
-        let router = listener_plan.router(
-            &app_handle,
-            bind.at.clone(),
-            req_body_max,
-            0, // The framed actor owns this listener's shared admission cap.
-            response_headers_cfg.server_timing,
-        );
-        physical_routers.insert(bind.at.clone(), router);
-    }
-    credential_handle.set(std::sync::Arc::clone(&app_handle));
+    )
+    .layer(axum::Extension(probes.clone()));
     let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
 
-    if let Some(kernel) = late_services.kernel() {
-        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
-            std::sync::Arc::downgrade(&app_handle),
-        )));
-    }
-
     let _ = root::inbound::install(root::doors::dispatcher());
-    if listener_plan.has_root_listener() {
-        let app = app_handle.load();
-        let guests = listener_plan.data_guests(&app).unwrap_or_else(|e| die(e));
-        let refusals = listener_plan
-            .prepared(&app, "listen")
-            .expect("boot prepared the actual root data router")
-            .refusals
-            .clone();
-        root::inbound::stage(guests, refusals);
-    }
+    stage_native_inbound(&app_handle.load());
     let _ = root::inbound::publish(&app_handle.load());
-    app_handle.on_apply(Box::new({
-        let plan = Arc::clone(&listener_plan);
-        move |app| {
-            if !plan.has_root_listener() {
-                return;
-            }
-            let guests = plan.data_guests(app).expect(
-                "RootRules checked this candidate's physical listener lists before publication",
-            );
-            let refusals = plan
-                .prepared(app, "listen")
-                .expect("RootRules prepared this candidate's actual physical router")
-                .refusals
-                .clone();
-            root::inbound::stage(guests, refusals);
-            let _ = root::inbound::publish(app);
+    export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
+    if let Some(publisher) = trace_publisher {
+        publisher
+            .publish(Arc::clone(&app_handle.load().exports))
+            .unwrap_or_else(|e| die(e));
+    }
+    // Start serving maintenance only after the physical routes and application owner exist.
+    recovery_served.spawn_ticks();
+    export::plugin::start(&app_handle.load().exports)
+        .unwrap_or_else(|e| die_list("config errors", [e]));
+    let export_observer_retry = root::shutdown::ExportRetry::start(Arc::clone(&export_observers));
+    exports.start().unwrap_or_else(|error| die(error));
+    let on_host = LINKED.on_host;
+    let boot_host =
+        (!on_host.is_empty()).then(|| busbar_kernel::plane_driver::engine_host(&app_handle.load()));
+    if let Some(host) = &boot_host {
+        for spawn in on_host {
+            spawn(host);
         }
+    }
+    let generation_workers =
+        root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
+            .unwrap_or_else(|error| die(error));
+    generation_workers.bind(&app_handle);
+    app_handle.on_apply(Box::new(|app| {
+        stage_native_inbound(app);
+        let _ = root::inbound::publish(app);
     }));
     app_handle.on_apply_async(Box::new({
         let door_appliers = door_appliers.clone();
@@ -1678,10 +1615,6 @@ async fn run(
         }));
     }
 
-    app_handle.on_apply(Box::new(|app| {
-        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
-    }));
-
     app_handle.on_apply(Box::new(|_| {
         let refused = root::doors::refresh_live(&root::policy::client_settings(
             &busbar_kernel::config::limits::installed().unwrap_or_default(),
@@ -1690,14 +1623,6 @@ async fn run(
             tracing::warn!(error = %why, "a transport kept its settings across a config apply");
         }
     }));
-
-    if let Some(kernel) = late_services.kernel() {
-        let _attached = kernel.attach_standing(busbar_kernel::plane_driver::live_standing(
-            app_handle.clone(),
-        ));
-    }
-    // Durable plane WORK binds a principal's recovery standing through governance from here on.
-    root::min3_boot::attach_governance(app_handle.clone());
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {
@@ -1725,7 +1650,7 @@ async fn run(
                 .unwrap_or_else(|error| die(error)),
             book,
             None,
-            &late_services,
+            admin_trust_decide,
             root::adapters::BreakerPolicy::new(),
         )
         .unwrap_or_else(|error| die(format!("admin persistence admission refused: {error:?}"))),
@@ -1740,60 +1665,43 @@ async fn run(
         app_handle.attach_on_swap(spawn);
     }
 
-    // SHUTDOWN-HANG F4: one drain owner holds the budget from the first broadcast to exit. The
-    // budget and the terminal-backlog cap are `drain_settings`, read beside the other limits.
-    let drain_clock =
-        busbar_kernel::governance::drain::DrainClock::new(drain_settings.drain_timeout);
+    // The fixed drain starts after operator deregistration; Safety and Force bypass it.
+    let drain_clock = busbar_kernel::governance::drain::DrainClock::new(
+        busbar_kernel::governance::drain::DRAIN_TIMEOUT,
+    );
     let drain = root::shutdown::ShutdownDrain::new(Arc::clone(&drain_clock));
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
-    // Persistence failure can request shutdown before a listener exists. A watch
-    // receiver carries that level into the listener's broadcast shutdown path.
-    {
-        let mut stop = control_work.shutdown_rx.clone();
-        let shutdown = shutdown_tx.clone();
-        tokio::spawn(async move {
-            if !*stop.borrow_and_update() {
-                let _ = stop.wait_for(|stopping| *stopping).await;
-            }
-            let _ = shutdown.send(());
-        });
-    }
-    let worker_shutdown_rx = control_work.shutdown_rx.clone();
-    // The first broadcast, from any sender, arms the drain clock.
-    {
-        let rx = shutdown_tx.subscribe();
-        let shutdown_level = control_work.shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
-        tokio::spawn(async move {
-            recv_shutdown(rx).await;
-            clock.arm(tokio::time::Instant::now() + clock.budget());
-            let _ = shutdown_level.send(true);
-        });
-    }
-
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
+    // Keep persistence's safety input distinct from the delayed listener/data-worker stop level.
+    let shutdown_request = drain.start_deregister(
+        deregister_delay,
+        probes.clone(),
+        root::shutdown::ShutdownSignals {
+            safety: control_work.shutdown_rx.clone(),
+            support: control_work.shutdown_tx.clone(),
+            workers: worker_shutdown_tx,
+            listeners: shutdown_tx.clone(),
+        },
+    );
+    busbar_kernel::detached::set_worker_shutdown(worker_shutdown_rx.clone());
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
-
-    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
-    // The first signal starts the drain; a second one ends it at once (the deadline branch).
+    busbar_core_admin::restart::publish_shutdown(shutdown_request.clone());
     {
-        let shutdown_tx = shutdown_tx.clone();
-        let clock = Arc::clone(&drain_clock);
         tokio::spawn(async move {
+            use busbar_kernel::governance::drain::ShutdownIntent;
             shutdown_signal().await;
-            let _ = shutdown_tx.send(());
+            shutdown_request.request(ShutdownIntent::Operator);
             shutdown_signal().await;
             tracing::warn!("second shutdown signal: the drain deadline is now");
-            clock.expire_now();
+            shutdown_request.request(ShutdownIntent::Force);
         });
     }
     // The listener's handler drains on a signal from here on.
     let _ = signal_handoff.send(());
 
+    // Governed admission keeps its fixed terminal-backlog cap
+    // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
-    if let Some(gov) = &governance {
-        gov.admissions()
-            .set_cap(drain_settings.max_pending_checkpoints);
-    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(
@@ -1804,12 +1712,23 @@ async fn run(
             ),
         ))
     });
-    let work_recovery =
-        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
+    let work_recovery = recovery_served.spawn_work_recovery(
+        app_handle.clone(),
+        Arc::clone(&request_admission),
+        shutdown_tx.subscribe(),
+    );
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
-    let predecessor = spawn_predecessor_task(governance.as_ref(), control_work.shutdown_rx.clone());
+    let predecessor = spawn_predecessor_task(
+        governance.as_ref(),
+        book.as_ref(),
+        control_work.shutdown_rx.clone(),
+    );
+    // SEALING-FIX §3.3: the audit notary, after `Ready`, on this control runtime.
+    if let Some(audit) = book.as_ref().and_then(|book| book.audit.as_ref()) {
+        audit.start_notary(audit_seal_every, Arc::clone(&drain_clock));
+    }
 
     let mut threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let mut admin: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>>> = None;
@@ -1819,145 +1738,121 @@ async fn run(
         lines = Some(Box::pin(root::serve::lines::serve_lines(
             served,
             app_handle.clone(),
-            || root::kernel::ROOT_CARD.pin(),
+            Arc::clone(&request_admission),
             stop,
         )));
     } else {
-        let framer = listener_plan.has_root_listener().then(|| {
-            listener_framer(
-                &listen,
-                listener_plan.root_claim().unwrap_or_else(|e| die(e)),
-                &listener_plan,
-                "listen",
-                max_inbound,
-            )
-        });
-        let mut plugin_listeners = Vec::new();
-        for bind in listener_plan.stream_binds() {
-            let framer = listener_framer(
-                &bind.at,
-                &bind.transport,
-                &listener_plan,
-                &bind.at,
-                max_inbound,
+        // Validate every physical factory before any worker starts accepting sockets.
+        let mut native_listeners = Vec::with_capacity(listener_plan.binds().len());
+        for bind in listener_plan.binds() {
+            let supplier = listener_plan
+                .supplier(&bind.at)
+                .unwrap_or_else(|| die("native listener supplier disappeared"));
+            let class = match bind.at.as_str() {
+                "listen" => AdmissionClass::Data,
+                "admin_listen" => AdmissionClass::Operator,
+                _ => die("unsupported native listener slot"),
+            };
+            let native_alpn = supplier
+                .port
+                .alpn(busbar_plugin_abi::transport::ROLE_SERVER)
+                .to_vec();
+            let native = Arc::new(
+                root::listener_native::NativeListener::new(
+                    Arc::clone(&app_handle),
+                    bind.at.clone().into_boxed_str(),
+                    Arc::clone(&supplier.port),
+                    Arc::clone(&request_admission),
+                    class,
+                    Arc::new(root::serve::native_slot),
+                    root::listener_native::NativeLimits {
+                        max_connections: native_bind_limits(
+                            bind.max_conns,
+                            native_handshake_timeout,
+                        )
+                        .max_conns,
+                        body_bytes: req_body_max,
+                        stall_ms: None,
+                        handshake_timeout: native_handshake_timeout,
+                        request_timeout: native_request_timeout,
+                        write_timeout: native_write_timeout,
+                        // Shutdown may shorten the existing output deadline, never restart it.
+                        drain_grace: busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+                    },
+                    (bind.at == "admin_listen").then(|| admin_router.clone()),
+                )
+                .unwrap_or_else(|error| die(format!("native listener {}: {error:?}", bind.at))),
             );
-            let tls = bind.tls.clone();
+            native_listeners.push((bind, native, native_alpn));
+        }
+        for (bind, native, native_alpn) in native_listeners {
             let addr = bind.listen.to_string();
-            busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
-            let limits = busbar_core_connector::listen::AcceptLimits {
-                max_conns: usize::try_from(bind.max_conns).unwrap_or(usize::MAX),
-                handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
-            };
-            let router = physical_routers
-                .remove(&bind.at)
-                .expect("each physical listener has its own boot router");
-            plugin_listeners.push((limits, framer, tls, addr, router));
-        }
-        for (limits, framer, tls, addr, router) in plugin_listeners {
-            threads.push(serve_private_listener(
-                addr,
-                limits,
-                router,
-                tls,
-                Arc::clone(&tls_secret_resolver),
-                shutdown_tx.subscribe(),
-                worker_shutdown_rx.clone(),
-                framer,
-            ));
-        }
-
-        #[cfg(unix)]
-        {
-            let binds = listener_plan.binds();
-            let bound_at = |setting: &str, addr: &str| {
-                binds
-                    .iter()
-                    .find(|b| b.at == setting)
-                    .map(|b| b.listen.to_string())
-                    .unwrap_or_else(|| {
-                        die(format!(
-                            "cannot bind listen address '{addr}': it resolves to no socket address"
-                        ))
-                    })
-            };
-            let admin_at = bound_at("admin_listen", &admin_listen);
-
-            let admin_via = root::connector::the().address_via();
-            let admin_listener =
-                Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
-                    .unwrap_or_else(|e| {
-                        die(format!("cannot bind listen address '{admin_listen}': {e}"))
-                    });
-            if let Some(framer) = framer {
+            #[cfg(unix)]
+            let limits = native_bind_limits(bind.max_conns, native_handshake_timeout);
+            if bind.at == "admin_listen" {
+                #[cfg(unix)]
+                let listener = Listening::bind_stream(
+                    root::connector::the().address_via().as_ref(),
+                    &addr,
+                    limits,
+                )
+                .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
+                #[cfg(not(unix))]
+                let listener = root::listener::SocketAdmits::new(bind_listener(&addr).await);
+                admin = Some(Box::pin(serve_listener(
+                    listener,
+                    native,
+                    root::plane_node::node(),
+                    native_alpn,
+                    bind.tls.clone(),
+                    Arc::clone(&tls_secret_resolver),
+                    addr,
+                    recv_shutdown(shutdown_tx.subscribe()),
+                    None,
+                    true,
+                )));
+            } else {
+                #[cfg(unix)]
                 threads.extend(serve_thread_per_core(
                     data_workers,
-                    listen.clone(),
-                    bound_at("listen", &listen),
-                    data_router,
-                    tls_cfg,
-                    tls_secret_resolver.clone(),
+                    addr.clone(),
+                    addr,
+                    limits,
+                    native,
+                    native_alpn,
+                    bind.tls.clone(),
+                    Arc::clone(&tls_secret_resolver),
                     &shutdown_tx,
-                    worker_shutdown_rx,
-                    framer,
+                    worker_shutdown_rx.clone(),
                 ));
+                #[cfg(not(unix))]
+                {
+                    let resolver = Arc::clone(&tls_secret_resolver);
+                    let tls = bind.tls.clone();
+                    let shutdown = shutdown_tx.subscribe();
+                    threads.push(spawn_multithread_data(
+                        data_workers,
+                        worker_shutdown_rx.clone(),
+                        async move {
+                            let listener =
+                                root::listener::SocketAdmits::new(bind_listener(&addr).await);
+                            serve_listener(
+                                listener,
+                                native,
+                                root::plane_node::node(),
+                                native_alpn,
+                                tls,
+                                resolver,
+                                addr,
+                                recv_shutdown(shutdown),
+                                None,
+                                true,
+                            )
+                            .await;
+                        },
+                    ));
+                }
             }
-            tracing::debug!(
-                listen = %admin_listen,
-                carrier = %root::connector::carrier_name(admin_via.as_ref()),
-                "admin listening through the connector"
-            );
-            admin = Some(Box::pin(serve_listener(
-                admin_listener,
-                admin_router,
-                admin_tls_cfg,
-                tls_secret_resolver.clone(),
-                &admin_listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                None,
-            )));
-        }
-        #[cfg(not(unix))]
-        {
-            let admin_listener =
-                root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
-            if let Some(framer) = framer {
-                let resolver = tls_secret_resolver.clone();
-                let shutdown = shutdown_tx.subscribe();
-                threads.push(spawn_multithread_data(
-                    data_workers,
-                    worker_shutdown_rx,
-                    async move {
-                        let data_listener =
-                            root::listener::SocketAdmits::new(bind_listener(&listen).await);
-                        serve_listener(
-                            data_listener,
-                            data_router,
-                            tls_cfg,
-                            resolver,
-                            &listen,
-                            recv_shutdown(shutdown),
-                            None,
-                            true,
-                            Some(framer),
-                        )
-                        .await;
-                    },
-                ));
-            }
-            admin = Some(Box::pin(serve_listener(
-                admin_listener,
-                admin_router,
-                admin_tls_cfg,
-                tls_secret_resolver.clone(),
-                &admin_listen,
-                recv_shutdown(shutdown_tx.subscribe()),
-                None,
-                true,
-                None,
-            )));
         }
     }
 
@@ -1966,14 +1861,18 @@ async fn run(
         lines,
         threads,
         work_recovery,
+        generation_workers,
+        exports,
+        export_observers,
+        export_observer_retry,
+        export_captures,
         control_drain: Box::pin(control_work.drain()),
         node_lease: node_lease_task,
         flusher: budget_flusher,
         governance,
-        late: Arc::clone(&late_services),
+        late: Arc::clone(&services),
         book,
         startup: store_admission,
-        shutdown_tx: shutdown_tx.clone(),
         predecessor,
     };
     let code = root::shutdown::finish(post, &drain).await;
@@ -1986,6 +1885,7 @@ async fn run(
 /// boundary; the drain joins it and settles its fence in the seal phase.
 fn spawn_predecessor_task(
     gov: Option<&Arc<busbar_kernel::governance::GovState>>,
+    book: Option<&root::durability::NodeBook>,
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Option<(
     tokio::task::JoinHandle<()>,
@@ -2001,9 +1901,13 @@ fn spawn_predecessor_task(
             return None;
         }
     };
+    let sealing = book
+        .and_then(|book| book.audit.as_ref())
+        .and_then(|audit| audit.take_predecessor());
+    let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
     let handle = tokio::spawn(root::measurements::maintenance(async move {
-        task.run(stop).await;
+        root::durability::predecessor::run(task, sealing, book, stop).await;
     }));
     Some((handle, fence))
 }
@@ -2081,11 +1985,21 @@ async fn refresh_node_lease(
     }
 }
 
-#[cfg(unix)]
 const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
-    max_conns: usize::MAX,
-    handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+    max_conns: busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+    handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
 };
+
+fn native_bind_limits(max_conns: u64, handshake_timeout: Duration) -> AcceptLimits {
+    AcceptLimits {
+        // Root bind declarations use u64::MAX as their unspecified cap. Preserve the
+        // connector's physical bound instead of turning that declaration into unlimited IO.
+        max_conns: usize::try_from(max_conns)
+            .unwrap_or(usize::MAX)
+            .min(ROOT_BIND_LIMITS.max_conns),
+        handshake_timeout,
+    }
+}
 
 #[cfg(not(unix))]
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
@@ -2094,39 +2008,16 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
 }
 
-fn listener_framer(
-    listen: &str,
-    scheme: &str,
-    plan: &Arc<root::serve::ListenerPlan>,
-    at: &str,
-    max_inbound: usize,
-) -> root::listener::framed::DataFramer {
-    let framer = root::listener::framed::listener_framer(
-        Arc::new(|scheme: &str| root::connector::the().framer_for(scheme)),
-        scheme,
-        plan.policy(at.into()),
-    )
-    .unwrap_or_else(|| {
-        die(format!(
-            "cannot serve data listener '{listen}': no loaded transport plugin provides an \
-         accepting framer for '{}'; load a transport plugin that accepts this listener's scheme",
-            scheme,
-        ))
-    });
-    tracing::debug!(
-        framer = %framer.door().facts().name,
-        "data door served through its framer's accept side"
-    );
-    let plan = Arc::clone(plan);
-    let at = at.to_string();
-    framer
-        .with_dispatch(Arc::new(move |admission| {
-            plan.prepared(&admission.app(), &at)?
-                .data()?
-                .downcast()
-                .ok()
-        }))
-        .with_inbound_limit(max_inbound)
+fn stage_native_inbound(app: &busbar_kernel::state::App) {
+    let Some(slot) = root::serve::native_slot(app, "listen") else {
+        return;
+    };
+    let routes = slot
+        .prepared()
+        .data()
+        .and_then(|data| data.downcast::<root::serve::DataRoutes>().ok())
+        .unwrap_or_else(|| die("native data slot has no retained route owner"));
+    root::inbound::stage(routes.guests.clone(), slot.prepared().refusals.clone());
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
@@ -2183,18 +2074,24 @@ fn serve_thread_per_core(
     addr: String,
 
     bind_at: String,
-    data_router: Router,
+    limits: AcceptLimits,
+    native: Arc<root::listener_native::NativeListener>,
+    alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
-
-    framer: root::listener::framed::DataFramer,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
-        let _ =
-            busbar_core_connector::tls::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
-                .unwrap_or_else(|e| die(e.to_string()));
+        let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
+        let _ = busbar_core_connector::tls::prepare_for_alpn(
+            &addr,
+            tls_cfg.as_ref(),
+            &secret_resolver,
+            true,
+            &protocols,
+        )
+        .unwrap_or_else(|e| die(e.to_string()));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let cores: Vec<Option<core_affinity::CoreId>> =
@@ -2215,7 +2112,8 @@ fn serve_thread_per_core(
             .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
-        let router = data_router.clone();
+        let native = Arc::clone(&native);
+        let alpn = alpn.clone();
         let tls = tls_cfg.clone();
         let resolver = secret_resolver.clone();
         let listen = addr.clone();
@@ -2223,7 +2121,6 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
-        let framer = framer.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -2245,7 +2142,7 @@ fn serve_thread_per_core(
                     });
                 rt.block_on(async move {
                     let via = crate::root::connector::the().address_via();
-                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, limits)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
@@ -2259,14 +2156,15 @@ fn serve_thread_per_core(
                     );
                     serve_listener(
                         listener,
-                        router,
+                        native,
+                        root::plane_node::node(),
+                        alpn,
                         tls,
                         resolver,
-                        &listen,
+                        listen,
                         recv_shutdown(shutdown_rx),
                         balancer,
                         i == 0,
-                        Some(framer),
                     )
                     .await;
 
@@ -2284,66 +2182,19 @@ fn serve_thread_per_core(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn serve_private_listener(
-    addr: String,
-    limits: AcceptLimits,
-    router: Router,
-    tls: Option<busbar_kernel::config::sections::TlsCfg>,
-    resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
-    shutdown: tokio::sync::broadcast::Receiver<()>,
-    worker_shutdown: tokio::sync::watch::Receiver<bool>,
-    framer: root::listener::framed::DataFramer,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("busbar-listener".into())
-        .spawn(move || {
-            let detached = busbar_kernel::detached::DetachedTasks::new();
-            busbar_kernel::detached::set_worker_detached(detached.clone());
-            busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
-            let runtime = busbar_kernel::rt::current_thread()
-                .enable_all()
-                .build()
-                .unwrap_or_else(|e| die(format!("cannot build listener runtime for {addr}: {e}")));
-            runtime.block_on(async move {
-                let via = root::connector::the().address_via();
-                let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
-                    .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
-                serve_listener(
-                    listener,
-                    router,
-                    tls,
-                    resolver,
-                    &addr,
-                    recv_shutdown(shutdown),
-                    None,
-                    true,
-                    Some(framer),
-                )
-                .await;
-                let _ = tokio::time::timeout(
-                    busbar_kernel::detached::DETACHED_DRAIN_GRACE,
-                    detached.drained(),
-                )
-                .await;
-            });
-        })
-        .unwrap_or_else(|e| die(format!("cannot spawn listener worker: {e}")))
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
-    router: Router,
+    native: Arc<root::listener_native::NativeListener>,
+    node: Arc<root::plane_node::Node>,
+    alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
-    label: &str,
+    label: String,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 
     balancer: Option<root::listener::ConnBalancer>,
 
     log_at_info: bool,
-
-    framer: Option<root::listener::framed::DataFramer>,
 ) {
     let security = match tls_cfg {
         None => {
@@ -2355,9 +2206,15 @@ async fn serve_listener(
             None
         }
         Some(tls) => {
-            let security =
-                busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
-                    .unwrap_or_else(|e| die(e.to_string()));
+            let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
+            let security = busbar_core_connector::tls::prepare_for_alpn(
+                &label,
+                Some(&tls),
+                &secret_resolver,
+                true,
+                &protocols,
+            )
+            .unwrap_or_else(|e| die(e.to_string()));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
@@ -2367,22 +2224,9 @@ async fn serve_listener(
             Some(security)
         }
     };
-    let result = match framer {
-        Some(framer) => {
-            root::listener::serve_admitted_framed(
-                listener,
-                router,
-                security,
-                shutdown,
-                balancer,
-                Some(framer),
-            )
-            .await
-        }
-        None => {
-            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
-        }
-    };
+    let result =
+        root::listener_native::serve_admitted(listener, native, security, node, shutdown, balancer)
+            .await;
     if let Err(e) = result {
         die(format!("server error on '{label}': {e}"));
     }
@@ -2458,11 +2302,7 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
-    // The drain has begun: the refresher starts nothing more, and a refresh in flight commits
-    // nothing and reports at debug (a renewal failing because the process is stopping is not an
-    // outage).
-    busbar_kernel::refresh::begin_stopping();
-    tracing::info!("shutdown signal received; draining in-flight requests");
+    tracing::info!("shutdown signal received");
 }
 
 mod root;
@@ -2497,3 +2337,23 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+#[cfg(all(test, unix))]
+#[test]
+fn root_listeners_keep_the_connector_connection_bound() {
+    assert_eq!(
+        ROOT_BIND_LIMITS.max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "root data and admin binds must not disable connection admission"
+    );
+    assert_eq!(
+        native_bind_limits(u64::MAX, ROOT_BIND_LIMITS.handshake_timeout).max_conns,
+        busbar_core_connector::listen::DEFAULT_MAX_CONNS,
+        "native root declarations must retain the connector connection admission bound"
+    );
+    assert_eq!(
+        native_bind_limits(1, ROOT_BIND_LIMITS.handshake_timeout).max_conns,
+        1,
+        "a stricter declared connection cap must remain effective"
+    );
+}

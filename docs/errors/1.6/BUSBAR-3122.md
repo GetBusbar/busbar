@@ -14,7 +14,7 @@ BUSBAR-3122: <detail>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3122
 
 ## What it means
 
-`security.blocked_metadata_hosts` and `security.allow_metadata_hosts` are matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add (or remove) a no-op.
+`security.blocked_metadata_hosts` is matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add a no-op.
 
 ## How to fix it
 

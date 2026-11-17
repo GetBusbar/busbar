@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::cost::{
@@ -6,6 +9,9 @@ use busbar_kernel_ledger::cost::{
 use std::collections::BTreeMap;
 
 use crate::store::now_ms as wall_ms;
+
+#[path = "admitted_view.rs"]
+pub(super) mod admitted_view;
 
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
@@ -19,6 +25,7 @@ pub(super) mod identity_runtime;
 
 #[path = "self_serve.rs"]
 mod self_serve;
+pub use self_serve::self_subject_id;
 
 #[path = "ledger_adjust.rs"]
 pub(super) mod ledger_adjust;
@@ -145,23 +152,6 @@ impl From<MintError> for RecordStoreError {
     }
 }
 
-/// The current signing key id, read in place from the shared signing material (no copy).
-pub struct SigningKid(Arc<SigningMaterial>);
-
-impl std::ops::Deref for SigningKid {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        self.0.signer.kid()
-    }
-}
-
-impl serde::Serialize for SigningKid {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.0.signer.kid())
-    }
-}
-
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
@@ -205,7 +195,6 @@ impl GovState {
 
     fn from_identity_cache(
         core: Arc<crate::persistence::facade::CoreStore>,
-        admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
         caches: Arc<RwLock<GovCaches>>,
         refresh_order: Arc<CacheOrder>,
@@ -214,6 +203,11 @@ impl GovState {
         let mut boot_caller_ref = busbar_contract::secure::SecureArray::<32>::zeroed();
         busbar_contract::crypto::fill(&mut boot_caller_ref[..])
             .expect("OS randomness for the per-boot caller-reference key");
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let unit_checkpoints = unit_checkpoint::UnitCheckpointBook::default();
         let admissions = Arc::new(super::drain::AdmissionGate::over(
             unit_checkpoints.terminal_counter(),
@@ -224,16 +218,15 @@ impl GovState {
             identity_claims: claims::AsyncClaimSet::new(),
             caches,
             concurrent: RwLock::default(),
-            admin_token_hash: RwLock::new(
-                admin_token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
-            ),
             budget: Sharded::new(),
+            selected_rates: Arc::new(super::selected_resource::SelectedRates::new()),
             recovery_book: recovery::RecoveryBook::default(),
             correction_claims: claims::AsyncClaimSet::new(),
             corrections: std::sync::Mutex::default(),
             ticket_operations: tickets::TicketOperations::default(),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             budget_flush_runner: BudgetFlushRunner::default(),
+            fee_debt: super::fee_debt::FeeDebtProducer::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             unit_checkpoints,
@@ -246,7 +239,7 @@ impl GovState {
             deployment_caller_ref: RwLock::new(None),
             boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
-            at_rest: RwLock::new(None),
+            at_rest: RwLock::new(at_rest),
             denylist,
             refresh_order,
             #[cfg(test)]
@@ -283,15 +276,8 @@ impl GovState {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Option<Arc<VirtualKey>> {
-        let material = self.signing_material()?;
-        let claims = match material.verifier.verify(token, now, expected_aud) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!(reason = %e, "signed-token verify rejected");
-                return None;
-            }
-        };
-        self.standing_key(&claims, now)
+        self.verify_token_authority(token, now, expected_aud)
+            .map(super::current_credential::VerifiedKeyAuthority::into_original_key)
     }
 
     /// WHY `verify_token` refused `token`, as the closed admin 401 reason (ADMIN-API r5 section
@@ -320,10 +306,26 @@ impl GovState {
         claims: &super::signing::TokenClaims,
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
+        self.prepare_current_credentials(now);
+        self.standing_key_cached(claims, now).ok()
+    }
+
+    /// Schedule the existing refresh outside the publication admission guard. A refresh failure
+    /// retains the existing confirmed cache; this does not promise synchronous fleet freshness.
+    pub fn prepare_current_credentials(&self, now: u64) {
         self.sync_revocations_if_stale(now);
+    }
+
+    /// The standing-key policy over already hydrated authority. No refresh is scheduled here.
+    pub(super) fn standing_key_cached(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Result<Arc<VirtualKey>, super::current_credential::CurrentCredentialRefusal> {
+        use super::current_credential::CurrentCredentialRefusal;
         if self.denylist.contains(&claims.sub) {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
-            return None;
+            return Err(CurrentCredentialRefusal::Revoked);
         }
 
         match self.lookup_by_sub(&claims.sub) {
@@ -338,31 +340,35 @@ impl GovState {
                     sub = %claims.sub,
                     "signed-token rejected: the key's self-serve subject is held"
                 );
-                None
+                Err(CurrentCredentialRefusal::SubjectHeld)
             }
             Some(key) if key_row_expired(&key, now) => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the key row's expires_at has passed"
                 );
-                None
+                Err(CurrentCredentialRefusal::KeyExpired)
             }
             Some(key)
                 if key.enabled
                     && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
             {
-                Some(key)
+                Ok(key)
             }
             Some(key) if key.enabled => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the binding was rotated after this token was minted"
                 );
-                None
+                Err(CurrentCredentialRefusal::RotatedKey)
             }
-            _ => {
+            Some(_) => {
                 tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
-                None
+                Err(CurrentCredentialRefusal::DisabledKey)
+            }
+            None => {
+                tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
+                Err(CurrentCredentialRefusal::MissingKey)
             }
         }
     }
@@ -406,10 +412,6 @@ impl GovState {
             },
         };
         *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
-    }
-
-    pub fn signing_kid(&self) -> Option<SigningKid> {
-        self.signing_material().map(SigningKid)
     }
 
     pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {
@@ -754,6 +756,7 @@ impl GovState {
             MeterCounts::request(exact)
         } else {
             MeterCounts {
+                pricing: None,
                 requests: 1,
                 tokens_input: whole_count(usage.map(|u| u.input).unwrap_or(0)),
                 tokens_output: whole_count(usage.map(|u| u.output).unwrap_or(0)),
@@ -935,19 +938,26 @@ impl GovState {
         now: u64,
     ) -> Option<f64> {
         let chain = cost.chain_for(key).ok()?;
+        self.rate_headroom_on(
+            chain.iter().copied().filter(|bucket| match pool {
+                Some(pool) => bucket.applies_to_pool(pool),
+                None => bucket.scope.is_none(),
+            }),
+            now,
+        )
+    }
+
+    fn rate_headroom_on<'a>(
+        &self,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Option<f64> {
         let mut headroom: Option<f64> = None;
-        for bucket in chain.iter() {
+        for bucket in buckets {
             if bucket.requests_cap.is_none() && bucket.tokens_cap.is_none() {
                 continue;
             }
 
-            let applies = match pool {
-                Some(p) => bucket.applies_to_pool(p),
-                None => bucket.scope.is_none(),
-            };
-            if !applies {
-                continue;
-            }
             let window = budget_window(bucket.window, now);
 
             let (requests, tokens) = match self.budget.read(bucket.bucket_id).get(bucket.bucket_id)
@@ -987,24 +997,16 @@ impl GovState {
         self.caches.write().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub fn admin_token_hash(&self) -> Option<String> {
-        self.admin_token_hash
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    pub fn set_admin_token(&self, token: Option<&str>) {
-        let hash = token.map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes()));
-        *self
-            .admin_token_hash
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = hash;
-    }
-
     pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
+        // The at-rest key is derived from the signing secret, so the two move together.
+        let at_rest = signer.as_ref().map(|s| {
+            Arc::new(super::at_rest::AtRestKeys::from_signing_secret(
+                &s.secret_bytes(),
+            ))
+        });
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
+        *self.at_rest.write().unwrap_or_else(|e| e.into_inner()) = at_rest;
         self.refresh_caller_refs();
     }
 
@@ -1135,9 +1137,8 @@ impl GovState {
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate_minor: Option<i64>,
     ) -> Result<(), LimitBlocked> {
-        self.check_observation_admission_on(cost, key, None, pool, now, estimate_minor)
+        self.check_observation_admission_on(cost, key, None, pool, now)
             .await
     }
 
@@ -1150,7 +1151,6 @@ impl GovState {
         chain: Option<&crate::cost::ChainPlan>,
         pool: &str,
         now: u64,
-        estimate_minor: Option<i64>,
     ) -> Result<(), LimitBlocked> {
         use crate::persistence::observations::ObservationStore;
         use busbar_kernel_ledger::cost::NANOS_PER_CENT;
@@ -1222,22 +1222,6 @@ impl GovState {
             {
                 return Err(blocked(bucket, "tokens"));
             }
-            for cap in bucket.class_caps {
-                let mut observed = Count::ZERO;
-                for (lane, units) in &total.units {
-                    observed = class_total(lane, units, cap.class)
-                        .and_then(|class| observed.checked_add(class))
-                        .map_err(|_| blocked(bucket, cap.metric.as_str()))?;
-                }
-                if !observed.is_zero()
-                    && ordinary_cell
-                        .total_tier(cap.class)
-                        .checked_add(observed)
-                        .map_or(true, |n| n >= whole_count(cap.cap))
-                {
-                    return Err(blocked(bucket, cap.metric.as_str()));
-                }
-            }
             // Let the ordinary governor retain its existing free, estimate and downgrade
             // semantics when this cell has no delayed accounting liability.
             if liability == 0 {
@@ -1246,19 +1230,14 @@ impl GovState {
             let Some(cap) = bucket.budget_cap else {
                 continue;
             };
-            let estimate = match bucket.budget_admission {
-                crate::config::groups::AdmissionMode::Exact => Some(0),
-                crate::config::groups::AdmissionMode::Estimate => estimate_minor,
-            };
             let ordinary_nanos = ordinary
                 .iter()
                 .find(|b| b.bucket_id == bucket.bucket_id)
                 .and_then(|b| u128::try_from(b.spend_micros_at_current_rate).ok())
                 .and_then(|v| v.checked_mul(1_000));
             let used = ordinary_nanos.and_then(|ordinary| liability.checked_add(ordinary));
-            let added = estimate
-                .and_then(|estimate| cost.request_fee_on(plane).checked_add(estimate))
-                .and_then(|v| u128::try_from(v).ok())
+            let added = u128::try_from(cost.request_fee_on(plane))
+                .ok()
                 .and_then(|v| v.checked_mul(NANOS_PER_CENT));
             let cap_nanos = u128::try_from(cap)
                 .ok()
@@ -1305,11 +1284,19 @@ impl GovState {
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let mut states = self.ordinary_budget_state(cost, key, now);
+        self.apply_observation_liability(&mut states);
+        states
+    }
+
+    fn apply_observation_liability(
+        &self,
+        states: &mut [busbar_contract::hooks::BudgetBucketState],
+    ) {
         let observed = self
             .observation_view
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        for state in &mut states {
+        for state in states {
             let total = observed
                 .get(state.bucket_id.as_str())
                 .and_then(|windows| windows.get(&state.window_start));
@@ -1328,7 +1315,6 @@ impl GovState {
                     .map(|n| n.saturating_sub(liability).max(0));
             }
         }
-        states
     }
 
     pub(crate) fn ordinary_budget_state(
@@ -1358,8 +1344,17 @@ impl GovState {
         chain: &crate::cost::Chain<'_>,
         now: u64,
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        let mut out = Vec::with_capacity(chain.len());
-        for bucket in chain.iter() {
+        self.ordinary_budget_state_buckets(cost, chain.iter().copied(), now)
+    }
+
+    fn ordinary_budget_state_buckets<'a>(
+        &self,
+        cost: &crate::cost::CostModel,
+        buckets: impl Iterator<Item = crate::cost::ChainBucket<'a>>,
+        now: u64,
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        let mut out = Vec::with_capacity(buckets.size_hint().0);
+        for bucket in buckets {
             let window = budget_window(bucket.window, now);
             let spend = {
                 let map = self.budget.read(bucket.bucket_id);
@@ -1469,52 +1464,51 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, Some(0), None)
+        self.admit_checked(cost, key, pool, now, None, None)
     }
 
-    pub fn try_admit_estimated(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        now: u64,
-        models: &[&str],
-        expected: &BTreeMap<String, u64>,
-    ) -> Result<AdmitGrant, LimitBlocked> {
-        self.try_admit_estimated_counts(cost, key, pool, now, models, &whole_counts(expected))
-    }
-
-    pub fn try_admit_estimated_counts(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        now: u64,
-        models: &[&str],
-        expected: &BTreeMap<String, Count>,
-    ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(
-            cost,
-            key,
-            pool,
-            now,
-            cost.estimate_counts_minor(models, expected),
-            None,
-        )
-    }
-
-    /// Admit a unit on the estimate and budget chain its admission already resolved
-    /// (SINGLE-PATH SP-AD1): neither is derived again. A `None` chain is resolved here.
+    /// Admit a unit on the budget chain its admission already resolved (SINGLE-PATH SP-AD1): it is
+    /// not derived again. A `None` chain is resolved here.
     pub fn try_admit_planned(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate: Option<i64>,
         chain: Option<&crate::cost::ChainPlan>,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        self.admit_checked(cost, key, pool, now, estimate, chain)
+        self.admit_checked(cost, key, pool, now, chain, None)
+    }
+
+    /// FEE-DEBT r1: the native ordinary admission. The funded observer reserves one target per
+    /// original bucket leg before any mutation, then receives each charge marker under the same
+    /// shard lock as that charge. Target refusal leaves the admission gate closed.
+    pub(crate) fn try_admit_observed(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        chain: Option<&crate::cost::ChainPlan>,
+        observer: &super::fee_debt::FeeDebtObserver,
+    ) -> Result<AdmitGrant, super::fee_debt::ObservedAdmission> {
+        let (_, lane_pool) = split_plane_lane(pool);
+        let resolved = cost
+            .chain_carried(key, chain)
+            .map_err(crate::cold::governance::state::state_missing_group)
+            .map_err(super::fee_debt::ObservedAdmission::Blocked)?;
+        // The observer may walk the applicable buckets more than once; `prepare` takes a
+        // cloneable iterator, which the carried chain's own iterator is not.
+        let applicable: Vec<&str> = resolved
+            .iter()
+            .filter(|b| b.applies_to_pool(lane_pool))
+            .map(|b| b.bucket_id)
+            .collect();
+        observer
+            .prepare(self, applicable.iter().copied())
+            .map_err(super::fee_debt::ObservedAdmission::Observer)?;
+        self.admit_checked(cost, key, pool, now, chain, Some(observer))
+            .map_err(super::fee_debt::ObservedAdmission::Blocked)
     }
 
     fn admit_checked(
@@ -1523,8 +1517,8 @@ impl GovState {
         key: &VirtualKey,
         pool: &str,
         now: u64,
-        estimate: Option<i64>,
         carried: Option<&crate::cost::ChainPlan>,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
 
@@ -1633,7 +1627,6 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             if bucket.requests_cap.is_none()
                 && bucket.tokens_cap.is_none()
-                && bucket.class_caps.is_empty()
                 && bucket.budget_cap.is_none()
             {
                 continue;
@@ -1642,7 +1635,7 @@ impl GovState {
             let window = budget_window(bucket.window, now);
             let map = guards[gi].as_deref().expect("guard held");
 
-            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
+            let (requests, tokens, derived) = match map.get(bucket.bucket_id) {
                 Some(cell) if cell.window_start >= window => (
                     cell.correction.as_ref().map_or(cell.requests, |branch| {
                         cell.requests.max(branch.accepted.requests)
@@ -1653,7 +1646,6 @@ impl GovState {
                             |branch| cell.total_tokens().max(branch.accepted.total_tokens()),
                         )
                     }),
-                    Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
                         let before = cell.spend(cost, true).and_then(Money::minor_i64)?;
                         match &cell.correction {
@@ -1667,32 +1659,14 @@ impl GovState {
                     }),
                 ),
 
-                _ => (0, Count::ZERO, None, Ok(0)),
+                _ => (0, Count::ZERO, Ok(0)),
             };
-            let class_blocked = (bucket.class_caps.iter())
-                .find(|c| {
-                    live.map_or(Count::ZERO, |cell| {
-                        cell.correction.as_ref().map_or_else(
-                            || cell.total_tier(c.class),
-                            |branch| {
-                                cell.total_tier(c.class)
-                                    .max(branch.accepted.total_tier(c.class))
-                            },
-                        )
-                    }) >= whole_count(c.cap)
-                })
-                .map(|c| c.metric.as_str());
 
             let (derived, refused) = match derived {
                 Ok(d) => (d, false),
                 Err(_) => (0, true),
             };
 
-            let (guess, refused) = match (bucket.budget_admission, estimate) {
-                (crate::config::groups::AdmissionMode::Exact, _) => (0, refused),
-                (crate::config::groups::AdmissionMode::Estimate, Some(e)) => (e, refused),
-                (crate::config::groups::AdmissionMode::Estimate, None) => (0, true),
-            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -1703,11 +1677,10 @@ impl GovState {
                 .is_some_and(|cap| tokens >= whole_count(cap))
             {
                 Some("tokens")
-            } else if class_blocked.is_some() {
-                class_blocked
-            } else if bucket.budget_cap.is_some_and(|cap| {
-                refused || derived >= cap || derived.saturating_add(fee).saturating_add(guess) > cap
-            }) {
+            } else if bucket
+                .budget_cap
+                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
+            {
                 Some("budget")
             } else {
                 None
@@ -1774,6 +1747,9 @@ impl GovState {
                 cell.dirty = true;
                 cell.last_touch = now;
             });
+            if let Some(observer) = observer {
+                Self::fee_marker(&self.fee_debt, observer, bi, bucket.bucket_id, cell, true);
+            }
 
             let reached = (bucket.bucket_id.to_string(), cell.window_start);
             grant.charge.cells.push(reached);
@@ -1782,10 +1758,22 @@ impl GovState {
     }
 
     pub fn refund_charge(&self, charge: &FeeCharge) {
+        self.refund_charge_observed(charge, None);
+    }
+
+    /// The actual refund mutations; each publishes its original marker under the same lock.
+    pub(crate) fn refund_charge_observed(
+        &self,
+        charge: &FeeCharge,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+    ) {
         let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
         for (bucket_id, window) in &charge.cells {
             let mut map = self.budget.write(bucket_id);
             let Some(cell) = map.get_mut(bucket_id) else {
+                if let Some(observer) = observer {
+                    observer.unresolved();
+                }
                 continue;
             };
             cell.mutate(|cell| {
@@ -1799,13 +1787,25 @@ impl GovState {
                     cell.dirty = true;
                 }
             });
+            Self::fee_refund_marker(observer, bucket_id, *window, cell);
         }
     }
 
     pub fn release_request(&self, charge: &FeeCharge) {
+        self.release_request_observed(charge, None);
+    }
+
+    pub(crate) fn release_request_observed(
+        &self,
+        charge: &FeeCharge,
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+    ) {
         for (bucket_id, window) in &charge.cells {
             let mut map = self.budget.write(bucket_id);
             let Some(cell) = map.get_mut(bucket_id) else {
+                if let Some(observer) = observer {
+                    observer.unresolved();
+                }
                 continue; // swept: nothing in memory holds the count any more
             };
             cell.mutate(|cell| {
@@ -1823,7 +1823,94 @@ impl GovState {
                     cell.dirty = true;
                 }
             });
+            Self::fee_refund_marker(observer, bucket_id, *window, cell);
         }
+    }
+
+    /// Publish one original marker for an observed mutation, under the caller's shard lock.
+    /// The incarnation is minted here for the actual installed cell; the sequence is checked.
+    /// Correction mirroring receives the same fields through `mutate`, so one logical mutation
+    /// publishes exactly one marker.
+    fn fee_marker(
+        producer: &super::fee_debt::FeeDebtProducer,
+        observer: &super::fee_debt::FeeDebtObserver,
+        leg: usize,
+        bucket: &str,
+        cell: &mut BudgetCell,
+        obligate: bool,
+    ) {
+        let incarnation = match cell.fee_incarnation {
+            0 => producer.next_incarnation(),
+            held => Some(held),
+        };
+        let sequence = cell.fee_sequence.checked_add(1);
+        let obligations = if obligate {
+            cell.fee_obligations.checked_add(1)
+        } else {
+            Some(cell.fee_obligations)
+        };
+        let (Some(incarnation), Some(sequence), Some(obligations)) =
+            (incarnation, sequence, obligations)
+        else {
+            observer.unresolved();
+            return;
+        };
+        cell.mutate(|cell| {
+            cell.fee_incarnation = incarnation;
+            cell.fee_sequence = sequence;
+            cell.fee_obligations = obligations;
+        });
+        observer.mark(leg, bucket, incarnation, cell.window_start, sequence);
+    }
+
+    /// A refund or release marker on the exact original (bucket, window) target. A cell that is
+    /// no longer the charged incarnation, or a target this observer never charged, is unresolved.
+    fn fee_refund_marker(
+        observer: Option<&super::fee_debt::FeeDebtObserver>,
+        bucket: &str,
+        window: u64,
+        cell: &mut BudgetCell,
+    ) {
+        let Some(observer) = observer else {
+            return;
+        };
+        let Some(leg) = observer.leg(bucket, window) else {
+            observer.unresolved();
+            return;
+        };
+        let Some(sequence) = cell.fee_sequence.checked_add(1) else {
+            observer.unresolved();
+            return;
+        };
+        let incarnation = cell.fee_incarnation;
+        if incarnation == 0 {
+            observer.unresolved();
+            return;
+        }
+        cell.mutate(|cell| cell.fee_sequence = sequence);
+        // The marker keeps the original target window even when the debt parked as rolled.
+        observer.mark(leg, bucket, incarnation, window, sequence);
+    }
+
+    /// Release one observer target's eviction obligation on the exact original cell.
+    pub(crate) fn release_fee_obligation(&self, bucket: &str, incarnation: u64) {
+        let mut map = self.budget.write(bucket);
+        let Some(cell) = map.get_mut(bucket) else {
+            return;
+        };
+        if cell.fee_incarnation != incarnation {
+            return;
+        }
+        let obligations = cell.fee_obligations.saturating_sub(1);
+        cell.mutate(|cell| cell.fee_obligations = obligations);
+    }
+
+    /// Bind the trusted native observer owner (the Node book) once, weakly, at assembly.
+    pub fn bind_fee_debt_owner(
+        &self,
+        owner: std::sync::Weak<dyn super::fee_debt::FeeDebtAssociate>,
+    ) -> Result<(), &'static str> {
+        self.fee_debt.bind(owner)
     }
 
     pub fn refund_fee_unit(
@@ -1835,6 +1922,53 @@ impl GovState {
         fee_unit: &str,
     ) {
         self.refund_fee_unit_in_era(cost, key, pool, now, fee_unit, None);
+    }
+
+    /// FEE-DEBT r1: an observed extra fee-unit refund on exactly the legs the original charge
+    /// reached (never a recomputed chain). A leg whose cell is gone or recreated is unresolved.
+    pub(crate) fn refund_fee_unit_observed(
+        &self,
+        pool: &str,
+        fee_unit: &str,
+        era: Option<RawRateEra>,
+        observer: &super::fee_debt::FeeDebtObserver,
+    ) {
+        let (plane, _) = split_plane_lane(pool);
+        if plane.is_empty() {
+            return;
+        }
+        let fee_lane = plane_fee_lane(plane);
+        let mut leg = 0;
+        while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
+            leg += 1;
+            let Some(window) = window else {
+                observer.unresolved();
+                continue;
+            };
+            let mut map = self.budget.write(&bucket);
+            let Some(cell) = map.get_mut(&*bucket) else {
+                observer.unresolved();
+                continue;
+            };
+            if cell.fee_incarnation != incarnation || cell.window_start < window {
+                observer.unresolved();
+                continue;
+            }
+            cell.mutate(|cell| {
+                let held = (cell.models.iter_mut())
+                    .filter(|m| {
+                        &*m.model == fee_lane.as_str()
+                            && era.is_none_or(|era| m.era == era)
+                            && m.cur.get(fee_unit).is_some_and(|n| *n >= Count::ONE)
+                    })
+                    .max_by_key(|m| m.era);
+                if let Some(m) = held {
+                    take_one(&mut m.cur, fee_unit);
+                }
+                cell.dirty = true;
+            });
+            Self::fee_refund_marker(Some(observer), &bucket, window, cell);
+        }
     }
 
     pub fn refund_fee_unit_in_era(

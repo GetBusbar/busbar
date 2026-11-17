@@ -11,16 +11,21 @@ mod far_end;
 mod govern;
 pub(crate) mod hooks;
 pub mod host;
+pub mod image_identity;
 mod money;
+pub mod native_hook_bindings;
 pub mod plane_judge;
 pub mod port;
 pub mod port_admin;
+pub mod port_admission;
 pub mod port_auth;
 pub mod port_billing;
 pub mod port_carrier;
 pub mod port_channels;
 pub mod port_charge;
 pub mod port_egress;
+pub mod port_fetch;
+pub mod port_hooks;
 pub mod port_intents;
 pub mod port_money;
 pub mod port_observations;
@@ -31,11 +36,19 @@ pub mod port_services;
 pub mod port_session;
 pub mod port_upstream;
 pub mod port_work;
+pub mod provider_catalog;
+pub mod request_admission;
+pub use money::native_attempt::NativeRequestMoney;
+pub(crate) use money::native_attempt::PreparedRateAttempt;
+pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError, NativeCommitError};
 pub(crate) use money::observation_budget_id;
+pub use money::SelectedTerminalReceipt;
+pub use money::{AdmissionRollback, NativeAdmissionError};
 pub(crate) mod needs;
 mod probe;
 pub mod registry;
 mod route;
+pub mod route_identity;
 pub mod route_input;
 pub mod route_tables;
 pub mod serve;
@@ -73,8 +86,9 @@ pub use cancel::{CancelBill, Checkpoint, MoneySeam, OpenUnitEvidence};
 #[cfg(test)]
 pub(crate) use far_end::tests::lent_on_egress;
 pub use far_end::{
-    fixed_breaker, AuthBinding, BreakerSource, Egress, EgressFarEnd, MemberFacts, MemberRoute,
-    MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    fixed_breaker, AuthBinding, BreakerSource, ConfiguredAuthBinding, Egress, EgressFarEnd,
+    MemberFacts, MemberRoute, MemberSignals, MemberStanding, ResponseKeep, Ride, UnitRoute,
+    DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     dialect_at, GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys,
@@ -86,13 +100,14 @@ pub use hooks::{
 };
 pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
-    standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
+    policy_standing, standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle,
+    LiveHostFactory, MeterPin,
 };
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
     ObservationRuntimeError, ParentMoney, PlaneMoney, ReservedRequestLineage,
     ReturnedTicketReservation, SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
-    UsageFold,
+    UsageFold, UsageView,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
@@ -434,6 +449,11 @@ impl PlaneDriver {
         self
     }
 
+    /// The exact opened instance identity retained with its core service owner.
+    pub fn invocation_caller(&self) -> Option<&Caller> {
+        self.records.as_ref().map(|(_, caller)| caller)
+    }
+
     /// Host scheduler access to this exact opened instance's durable polling work.
     pub async fn recovery_work(
         &self,
@@ -544,6 +564,11 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 }
 
 pub trait DriverSteps {
+    /// Authority retained by this request. Health/open stages have no admitted unit context.
+    fn invocation(&self, _unit: u64) -> Option<crate::host_services::InvocationContext> {
+        None
+    }
+
     /// Read authoritative delayed-accounting liability before synchronous admission.
     fn prepare_admission<'a>(
         &'a self,
@@ -724,6 +749,9 @@ pub(crate) struct UnitState {
     screened: bool,
     /// The session open's request hooks passed, either at its opener or its route leg.
     open_hooks_ran: bool,
+    /// The node was told the unit's end user, or that its first projection stated none
+    /// (`records.user`, ADMIN-API-1.6 §3.5).
+    end_user_noted: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<bytes::Bytes>,
     /// The unit's hooks and the shape of its effective request (no prompt text), once the request
@@ -1404,6 +1432,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     fn decoded_op(&self, ctx: &UnitCtx) -> Result<OpClassId, Refusal> {
         self.driver.sweep();
         self.lock().unit = ctx.key.get();
+        // `records.labels` (ADMIN-API-1.6 §3.5): the node copies the allow-listed headers at
+        // Decode; one that keeps none returns at once.
+        if let Some(journal) = &self.driver.hook_journal {
+            journal.decoded_fields(
+                busbar_contract::UnitKey::new(ctx.key.get()),
+                &self.arrival.fields,
+            );
+        }
         let decoded = self.arrive(ctx.key.get());
         if !self.driver.authenticated_route
             && decoded

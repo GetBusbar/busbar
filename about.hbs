@@ -1,0 +1,17 @@
+Third-party software included in Busbar
+
+Busbar itself is licensed under the Apache License, Version 2.0 (see LICENSE). The binary links the
+third-party crates below; each is listed under the license text it is distributed under.
+
+{{#each licenses}}
+================================================================
+{{{name}}} ({{{id}}})
+
+Used by:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} ({{{crate.repository}}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

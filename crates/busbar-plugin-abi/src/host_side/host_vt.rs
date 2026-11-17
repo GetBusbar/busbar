@@ -16,8 +16,7 @@
 //! `busbar_ffi::host::grow` on the entry's own `&mut RawOut` (W1-H1's pool feeds the `OutLease` it matches).
 //! The outermost entry guard (W1-H1) calls [`reset_arena`] once at its exit, never while a `Host::scoped`
 //! call is live: it zeroes everything lent in that entry (I11). `migrate_admit` is K9's seam, valid only in
-//! a store's open chain, which the entry guard knows; it is `None` (the entry's fallback, REFUSED) until the
-//! guard lands.
+//! a store's open chain, whose operation-owned admission is scoped by the entry guard.
 
 use core::cell::RefCell;
 use core::panic::AssertUnwindSafe;
@@ -162,7 +161,7 @@ fn status_of(error: Error) -> u32 {
         Error::Mismatch => status::BAD,
         Error::Invalid(_) => status::INVALID,
         Error::Unsupported(_) => status::UNAVAILABLE,
-        Error::Rng(_) => status::RNG,
+        Error::Rng(_) | Error::ProviderUnavailable => status::RNG,
         Error::SelfTest(_) => {
             HOST_FAULTS[SELF_TEST].fetch_add(1, Relaxed);
             status::RNG
@@ -540,16 +539,24 @@ pub mod vt {
     use super::*;
 
     pub fn now() -> u64 {
-        contain(0, now_ns)
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, now_ns)
+        }
     }
 
     pub fn mono() -> u64 {
-        contain(0, mono_ns)
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, mono_ns)
+        }
     }
 
     pub fn random(ctx: Ctx<'_>, len: usize) -> CryptoRet<'_> {
         contain(CryptoRet::empty(ctx, status::RNG), || {
-            if entry::owner().is_none() {
+            if entry::deny_service() || entry::owner().is_none() {
                 return CryptoRet::empty(ctx, status::RNG);
             }
             lend(ctx, &random_body(len))
@@ -558,7 +565,7 @@ pub mod vt {
 
     pub fn crypto<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
         contain(CryptoRet::empty(ctx, status::RNG), || {
-            if entry::owner().is_none() {
+            if entry::deny_service() || entry::owner().is_none() {
                 return CryptoRet::empty(ctx, status::RNG);
             }
             lend(
@@ -578,11 +585,17 @@ pub mod vt {
 
     /// Round 34: `error` reaches the sink as the raw `u32` it arrived as.
     pub fn log(level: u32, error: u32, msg: &str) {
-        contain((), || log_body(level, error, msg));
+        if !entry::deny_service() {
+            contain((), || log_body(level, error, msg));
+        }
     }
 
     pub fn log_level() -> u32 {
-        contain(0, || LOG_LEVEL.load(Relaxed))
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, || LOG_LEVEL.load(Relaxed))
+        }
     }
 
     /// Grows this thread's ACTIVE out buffer by `need` (I10, §10.1); false on any refusal or a caught panic.
@@ -591,7 +604,11 @@ pub mod vt {
     }
 
     pub fn deployment() -> DeploymentId {
-        contain(DeploymentId([0; 16]), deployment_body)
+        if entry::deny_service() {
+            DeploymentId([0; 16])
+        } else {
+            contain(DeploymentId([0; 16]), deployment_body)
+        }
     }
 }
 
@@ -628,8 +645,17 @@ extern "C" fn host_deployment(_ctx: Ctx<'_>) -> DeploymentId {
     vt::deployment()
 }
 
-/// The process-wide host table every plugin is handed (IF §5, §10.7). `migrate_admit` stays `None` (the entry's
-/// fallback, REFUSED) until the entry guard, which knows a store's open chain, supplies it.
+extern "C" fn host_migrate_admit(_ctx: Ctx<'_>, recoverable: u64) -> busbar_ffi::Status {
+    contain(busbar_ffi::Status::REFUSED, || {
+        if entry::migration_admitted(recoverable) {
+            busbar_ffi::Status::OK
+        } else {
+            busbar_ffi::Status::REFUSED
+        }
+    })
+}
+
+/// The process-wide host table; Store recovery authority comes from the current open operation.
 pub static HOST: Host = Host::new(
     0,
     HostFns {
@@ -641,7 +667,7 @@ pub static HOST: Host = Host::new(
         log_level: Some(host_log_level),
         grow: Some(host_grow),
         deployment: Some(host_deployment),
-        migrate_admit: None,
+        migrate_admit: Some(host_migrate_admit),
     },
 );
 
@@ -717,6 +743,9 @@ mod tests {
         assert_eq!(status_of(Error::SelfTest("pct")), status::RNG);
         assert_eq!(faults(SELF_TEST), before + 1);
         assert_eq!(status_of(Error::Rng(crypto::RngError)), status::RNG);
+        let faults_before = HOST_FAULTS[SELF_TEST].load(Relaxed);
+        assert_eq!(status_of(Error::ProviderUnavailable), status::RNG);
+        assert_eq!(HOST_FAULTS[SELF_TEST].load(Relaxed), faults_before);
         assert_eq!(status_of(Error::Mismatch), status::BAD);
         assert_eq!(status_of(Error::Invalid("x")), status::INVALID);
         let refused = crypto::Unsupported {
@@ -873,8 +902,8 @@ mod tests {
             assert!(fns.now.is_some() && fns.mono.is_some() && fns.log.is_some());
             assert!(fns.log_level.is_some() && fns.grow.is_some() && fns.deployment.is_some());
             assert!(
-                fns.migrate_admit.is_none(),
-                "K9's seam waits for the entry guard"
+                fns.migrate_admit.is_some(),
+                "the native gate is wired and denies outside a Store open"
             );
             let random = fns.random.expect("random");
             let crypto = fns.crypto.expect("crypto");

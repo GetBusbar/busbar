@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 #[test]
 fn list_reports_unparseable_suites_yaml() {
     let d = std::env::temp_dir().join(format!("hammer-list-{}", std::process::id()));

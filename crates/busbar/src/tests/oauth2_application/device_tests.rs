@@ -7,8 +7,8 @@ use super::{
 };
 use base64::Engine as _;
 use busbar_contract::crypto::ecdsa_p256;
+use busbar_contract::json::{self, JsonValueTrait as _, Value};
 use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
-use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -43,9 +43,9 @@ impl Key {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let header = B64.encode(serde_json::json!({"alg":"ES256","kid":"device-key"}).to_string());
+        let header = B64.encode(json::json!({"alg":"ES256","kid":"device-key"}).to_string());
         let claims = B64.encode(
-            serde_json::json!({"iss":CLIENT,"sub":CLIENT,"aud":issuer,"iat":now,"exp":now+60,
+            json::json!({"iss":CLIENT,"sub":CLIENT,"aud":issuer,"iat":now,"exp":now+60,
             "jti":format!("device-{now}-{}",NEXT.fetch_add(1,Ordering::Relaxed))})
             .to_string(),
         );
@@ -116,7 +116,7 @@ async fn start(subject: &Subject) -> Value {
         .await
         .unwrap();
     let status = response.status();
-    let grant: Value = response.json().await.unwrap();
+    let grant: Value = super::read_json(response).await;
     assert_eq!(status, 200, "{grant}");
     assert_eq!(
         grant["verification_uri"],
@@ -144,7 +144,7 @@ async fn poll(subject: &Subject, grant: &Value) -> (reqwest::StatusCode, Value) 
         .send()
         .await
         .unwrap();
-    (response.status(), response.json().await.unwrap())
+    (response.status(), super::read_json(response).await)
 }
 
 fn csrf(page: &str) -> String {
@@ -201,14 +201,14 @@ async fn submit(
 async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
     let subject = setup().await;
     let (origin, client) = (subject.origin.clone(), subject.client.clone());
-    let meta: Value = client
-        .get(format!("{origin}/.well-known/oauth-authorization-server"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let meta: Value = super::read_json(
+        client
+            .get(format!("{origin}/.well-known/oauth-authorization-server"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(
         meta["device_authorization_endpoint"],
         format!("{origin}/device_authorization")
@@ -265,7 +265,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
         .await
         .unwrap();
     let status = kept.status();
-    let kept: Value = kept.json().await.unwrap();
+    let kept: Value = super::read_json(kept).await;
     assert_eq!(
         status, 200,
         "the wrongly authenticated revocation left the grant live: {kept}"
@@ -293,7 +293,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
         .await
         .unwrap();
     assert!(retry.status().is_client_error());
-    let retry: Value = retry.json().await.unwrap();
+    let retry: Value = super::read_json(retry).await;
     assert_eq!(retry["error"], "invalid_grant");
     let mut unknown = credentials(&subject, &subject.key);
     unknown.push(("token", "unknown-token".into()));
@@ -396,7 +396,7 @@ async fn the_browser_device_routes_require_admin_and_public_registration_keeps_i
     }
     let response = client
         .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "redirect_uris": ["https://client.example/cb"],
             "grant_types": [DEVICE_GRANT],
             "token_endpoint_auth_method": "none",
@@ -410,7 +410,7 @@ async fn the_browser_device_routes_require_admin_and_public_registration_keeps_i
     );
     let registration = client
         .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "redirect_uris":["https://client.example/cb"],"grant_types":["authorization_code"],
             "token_endpoint_auth_method":"none","scope":"read",
         }))
@@ -418,7 +418,7 @@ async fn the_browser_device_routes_require_admin_and_public_registration_keeps_i
         .await
         .unwrap();
     assert_eq!(registration.status(), 201);
-    let registration: Value = registration.json().await.unwrap();
+    let registration: Value = super::read_json(registration).await;
     let code_client = registration["client_id"].as_str().unwrap();
     let response = client
         .post(format!("{origin}/device_authorization"))
@@ -427,7 +427,7 @@ async fn the_browser_device_routes_require_admin_and_public_registration_keeps_i
         .await
         .unwrap();
     assert!(response.status().is_client_error());
-    let error: Value = response.json().await.unwrap();
+    let error: Value = super::read_json(response).await;
     assert_eq!(
         error["error"], "unauthorized_client",
         "a pre-existing code-only registration does not gain device permission"

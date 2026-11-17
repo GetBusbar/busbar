@@ -51,8 +51,6 @@ pub enum Derive {
     EntryResolve,
     /// A unit's expected budget units built (SP-AD1).
     BudgetUnits,
-    /// A unit's cost estimate computed (SP-AD1).
-    Estimate,
     /// A key's budget chain resolved (SP-AD1).
     ChainFor,
     /// An upstream target located through its framer (SP-R1).
@@ -79,7 +77,7 @@ pub enum Derive {
 
 impl Derive {
     /// Every id, in counter order (declaration order).
-    pub const ALL: [Derive; 29] = [
+    pub const ALL: [Derive; 28] = [
         Derive::PlaneAdmission,
         Derive::AdmissionOnHead,
         Derive::HeaderMap,
@@ -97,7 +95,6 @@ impl Derive {
         Derive::SecretCopy,
         Derive::EntryResolve,
         Derive::BudgetUnits,
-        Derive::Estimate,
         Derive::ChainFor,
         Derive::Locate,
         Derive::OutboundHead,

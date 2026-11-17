@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 use crate::diagnostics::{diag_error, diag_warn, METERING_FLUSH_PARTIAL_FAILURE};
 use busbar_contract::records::OpId;
@@ -9,7 +12,7 @@ pub(super) struct MeteringWrite {
     op: Option<MeteringAttempt>,
     delta: MeteringDelta,
     remainder: MeterCounts,
-    key: MeterKey,
+    key: MeterIdentity,
 }
 
 #[derive(Clone, Copy)]
@@ -26,7 +29,7 @@ impl MeteringWrite {
         op.first_sent_at_ms -= u64::try_from(by.as_millis()).expect("a short interval");
     }
 
-    fn new((key, counts): (MeterKey, MeterCounts)) -> Option<Self> {
+    fn new((key, counts): (MeterIdentity, MeterCounts)) -> Option<Self> {
         if counts.is_zero() {
             return None;
         }
@@ -43,6 +46,7 @@ impl MeteringWrite {
     pub(super) fn counts(&self) -> MeterCounts {
         let mut counts = self.remainder.clone();
         counts.merge(MeterCounts {
+            pricing: self.delta.pricing.clone(),
             requests: self.delta.requests,
             tokens_input: Count::from_micros(self.delta.tokens_input),
             tokens_output: Count::from_micros(self.delta.tokens_output),
@@ -60,7 +64,10 @@ impl MeteringWrite {
 }
 
 /// One representable store operation; the untouched remainder keeps its exact Count range.
-pub(super) fn metering_chunk(key: &MeterKey, counts: &MeterCounts) -> (MeteringDelta, MeterCounts) {
+pub(super) fn metering_chunk(
+    key: &MeterIdentity,
+    counts: &MeterCounts,
+) -> (MeteringDelta, MeterCounts) {
     fn take(count: Count) -> (i128, Count) {
         assert!(!count.is_negative(), "negative metering count");
         (count.micros(), Count::ZERO)
@@ -82,6 +89,7 @@ pub(super) fn metering_chunk(key: &MeterKey, counts: &MeterCounts) -> (MeteringD
     }
     (
         MeteringDelta {
+            pricing: counts.pricing.clone(),
             key_id: key.0.clone(),
             bucket: key.1,
             model: key.2.clone(),
@@ -99,6 +107,7 @@ pub(super) fn metering_chunk(key: &MeterKey, counts: &MeterCounts) -> (MeteringD
             usage_units: units,
         },
         MeterCounts {
+            pricing: counts.pricing.as_ref().map(|pricing| pricing.zeroed()),
             requests: 0,
             tokens_input: input_left,
             tokens_output: output_left,

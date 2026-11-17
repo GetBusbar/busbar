@@ -21,23 +21,22 @@ use crate::abi::host::service::{
     HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
 };
 use crate::abi::host::service::{
-    check_clock_now, check_content_scan, check_dest_judge, check_entitlement_check,
-    check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
-    check_records_claim, check_records_claim_in, check_records_get, check_records_list,
-    check_records_secret, check_session_emit, check_session_emit_in, check_sign,
-    check_snapshot_read, check_ticket_mint, check_ticket_mint_in, check_ticket_take,
-    check_trust_decide, check_trust_due, check_trust_serves, check_trust_sight,
-    check_trust_sight_item, check_trust_state, check_trust_verify, check_unit_nest,
-    check_verify_lookup, check_verify_store, check_work_find, check_work_open, check_work_resume,
-    check_work_settle, op, ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn,
-    EntitlementCheckIn, HookCallIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
+    check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_hook_call_in,
+    check_random_fill, check_random_fill_in, check_records_claim, check_records_claim_in,
+    check_records_get, check_records_list, check_records_secret, check_session_emit,
+    check_session_emit_in, check_sign, check_snapshot_read, check_ticket_mint,
+    check_ticket_mint_in, check_ticket_take, check_trust_decide, check_trust_due,
+    check_trust_serves, check_trust_sight, check_trust_sight_item, check_trust_state,
+    check_trust_verify, check_unit_nest, check_verify_lookup, check_verify_store, check_work_find,
+    check_work_open, check_work_resume, check_work_settle, op, ClockNowIn, ClockReading,
+    ContentScanIn, DestJudgeIn, HookCallIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
     RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
     SessionEmitIn, SignIn, SnapshotReadIn, TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn,
     TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn,
     VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
-    CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
-    REFUSED_UNSERVED, SECRET_LIVE, SNAPSHOT_NOT_READY_VALUE, TICKET_TAKEN, TRUST_DECIDE_APPROVE,
-    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
+    CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, FOUND, HOOK_STOP_MIN, REFUSED_UNSERVED,
+    SECRET_LIVE, SNAPSHOT_NOT_READY_VALUE, TICKET_TAKEN, TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE,
+    TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -539,27 +538,6 @@ impl<K: KindMarker> Services<K> {
             .0
         {
             Outcome::Ready => Ok(reading),
-            other => Err(ServiceError::Declined(other)),
-        }
-    }
-
-    /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,
-    pub fn entitled(&self, handle: CompletionHandle, target: &str) -> Result<bool, ServiceError>
-    where
-        K: crate::abi::host::access::Permitted<{ op::ENTITLEMENT_CHECK }>,
-    {
-        let input = EntitlementCheckIn {
-            head: head::<EntitlementCheckIn>(op::ENTITLEMENT_CHECK, handle),
-            target: text(target),
-        };
-        let (outcome, out, _) = self.cross(
-            op::ENTITLEMENT_CHECK,
-            |t| t.entitlement_check,
-            &input,
-            check_entitlement_check,
-        )?;
-        match outcome {
-            Outcome::Ready => Ok(out.value == ENTITLED),
             other => Err(ServiceError::Declined(other)),
         }
     }

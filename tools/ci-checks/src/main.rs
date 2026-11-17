@@ -9,12 +9,14 @@
 //!   `crates/busbar-crypto*` names the `getrandom` crate, except test code: an item or module under a
 //!   test-only `#[cfg(test)]` (read from the syn AST, as bad-patterns does), a `#[test]` fn, or a
 //!   `tests/` tree. A file syn cannot parse is scanned line by line instead, so it is never skipped.
+//! - `spdx-headers`: every tracked `.rs` file and migration-corpus YAML carries `SPDX-License-Identifier:
+//!   Apache-2.0` near the top and none names another licence (#277, `spdx.rs`).
 //! - `no-serde-json`: JSON is sonic-rs through `busbar_contract::json` (DEP-3, #162): no first-party
 //!   Rust file or manifest under `crates/`, `dist/`, `tools/` or `testing/` names serde_json, tests
 //!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
-//!   kind), `ring`, `sha2`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
+//!   kind), `ring`, `sha2`, `hmac`, `md-5`, `aes`, `cipher`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
 //!   `busbar-crypto*`. Dev edges count: tests use the facade too. And `curve25519-dalek` is built
 //!   only beneath `busbar-crypto-backend`, never by the facade itself: a FIPS build swaps the
 //!   backend and keeps the facade, and admits no unvalidated crypto crate (QE-BOOT-KEYCHECK).
@@ -29,6 +31,8 @@
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
+//! - `no-known-red`: no known-red, baseline or allow-failure list of failing tests (TST-8, busbar#280;
+//!   `known_red.rs`).
 //! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
 //! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
 //!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
@@ -44,6 +48,7 @@
 #![forbid(unsafe_code)]
 #![doc(test(attr(forbid(unsafe_code))))]
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -62,10 +67,13 @@ mod oracle;
 mod oracle_judge;
 mod oracle_run;
 mod oracle_selftest;
+mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 16] = [
+const CHECKS: [&str; 18] = [
     "no-getrandom",
+    "no-known-red",
+    "spdx-headers",
     "no-serde-json",
     "crypto-graph",
     "fleet-manifest",
@@ -100,6 +108,7 @@ mod core_scan;
 mod core_src;
 mod fleet;
 mod host_link;
+mod known_red;
 mod plugin_rules;
 mod rule13;
 mod supply;
@@ -107,8 +116,18 @@ mod supply;
 const SEAM: &str = "busbar-crypto";
 /// The backend inside the seam: a private build swaps it by `[patch]`.
 const BACKEND: &str = "busbar-crypto-backend";
-/// Crypto crates reachable only through the seam.
-const SEAM_ONLY: [&str; 4] = ["ring", "sha2", "ed25519-dalek", "curve25519-dalek"];
+/// Crypto crates reachable only through the seam. `sha2`, `hmac` and `md-5` are what
+/// `postgres-protocol`'s SCRAM builds itself (#289).
+const SEAM_ONLY: [&str; 8] = [
+    "ring",
+    "sha2",
+    "hmac",
+    "md-5",
+    "aes",
+    "cipher",
+    "ed25519-dalek",
+    "curve25519-dalek",
+];
 /// Crates only core's software backend may build: never the facade, which a FIPS build keeps
 /// (QE-BOOT-KEYCHECK: curve25519-dalek decompresses pinned Ed25519 keys in the backend alone).
 const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
@@ -134,6 +153,8 @@ fn main() -> ExitCode {
     for name in names {
         let outcome = match name {
             "no-getrandom" => no_getrandom(&root),
+            "no-known-red" => known_red::no_known_red(&root),
+            "spdx-headers" => spdx::spdx_headers(&root),
             "no-serde-json" => no_serde_json::no_serde_json(&root),
             "crypto-graph" => crypto_graph(&root),
             "migrate-flag-text" => migrate::flag_text(&root),
@@ -552,13 +573,115 @@ fn rel(root: &Path, file: &Path) -> String {
 
 // ---- crypto-graph -------------------------------------------------------------------------------
 
-/// The root workspace's feature-resolved graph (every feature, target and edge kind), outside the
+/// Both the root and shipped workspace's feature-resolved graphs (every feature, target and edge kind), outside the
 /// seam: cargo's own resolver decides what builds. `Cargo.lock` alone over-reports: it also records
 /// an optional dependency that only a weak feature names (rustls-webpki's `alloc = ["ring?/alloc"]`
 /// keeps a `ring` entry that no build compiles). Then the facade's own graph without the backend:
 /// a private (FIPS) build swaps the backend and keeps the facade, so a backend-only crate reached
 /// from the facade would enter that build too.
+///
+/// The facade's own graph is read once, in the root workspace, where busbar-crypto is a member and
+/// `--all-features` turns on every feature it has. In the shipped workspace busbar-crypto is a path
+/// dependency, not a member: cargo refuses features for it there, and the features its members
+/// unify on it are a subset of the root reading's, so only the graph outside the seam is read.
+///
+/// The recorded exceptions are the one list in `deny.toml` (see `recorded_exceptions`): a seam-only
+/// crate built by a recorded parent is printed as a tracked exception with its issue and does not
+/// fail; anything else fails.
 fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
+    let (findings, tracked) = crypto_graph_report(root)?;
+    for line in tracked {
+        println!("tracked exception: {line}");
+    }
+    Ok(findings)
+}
+
+/// The failing findings and the tracked exceptions of `crypto_graph`.
+fn crypto_graph_report(root: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    let deny = std::fs::read_to_string(root.join("deny.toml")).unwrap_or_default();
+    let recorded = recorded_exceptions(&deny);
+    let (mut findings, mut tracked) = seam_outside_graph(root, &recorded)?;
+    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
+    findings.extend(backend_only_reached(&facade));
+    let shipped = root.join("dist/default");
+    if shipped.join("Cargo.toml").is_file() {
+        let (fail, note) = seam_outside_graph(&shipped, &recorded)?;
+        findings.extend(fail.into_iter().map(|f| format!("dist/default: {f}")));
+        tracked.extend(note.into_iter().map(|n| format!("dist/default: {n}")));
+    }
+    Ok((findings, tracked))
+}
+
+/// A recorded, tracked exception to the seam: the parents `deny.toml` lets build the crate, and
+/// the issue that closes the exception.
+#[derive(Debug, PartialEq, Eq)]
+struct Tracked {
+    parents: Vec<String>,
+    issue: String,
+}
+
+/// The seam's recorded exceptions, read from `deny.toml`'s `[bans] deny` rows: the ONE list (cargo
+/// deny enforces the same wrappers). A row counts when it names `wrappers` and a
+/// `tracked: <repo>#<n>` marker in its reason; a row without the marker is a ban exception only,
+/// never an exception here.
+fn recorded_exceptions(deny: &str) -> BTreeMap<String, Tracked> {
+    let mut out: BTreeMap<String, Tracked> = BTreeMap::new();
+    for line in deny.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            let row = &rest[open + 1..open + close];
+            rest = &rest[open + close + 1..];
+            let (Some(name), Some(wrappers), Some(reason)) = (
+                quoted_after(row, "crate = "),
+                row.split_once("wrappers = [")
+                    .and_then(|(_, tail)| tail.split_once(']'))
+                    .map(|(list, _)| list),
+                quoted_after(row, "reason = "),
+            ) else {
+                continue;
+            };
+            let Some(issue) = reason
+                .split_once("tracked: ")
+                .map(|(_, tail)| tail.split(|c: char| c.is_whitespace() || c == ',').next())
+                .and_then(|issue| issue.filter(|issue| issue.contains('#')))
+            else {
+                continue;
+            };
+            let parents = wrappers
+                .split(',')
+                .map(|w| w.trim().trim_matches('"').to_string())
+                .filter(|w| !w.is_empty());
+            out.entry(name.to_string())
+                .or_insert_with(|| Tracked {
+                    parents: Vec::new(),
+                    issue: issue.to_string(),
+                })
+                .parents
+                .extend(parents);
+        }
+    }
+    out
+}
+
+/// The text of the quoted string after `key` in an inline-table row.
+fn quoted_after<'a>(row: &'a str, key: &str) -> Option<&'a str> {
+    let tail = row.split_once(key)?.1.strip_prefix('"')?;
+    tail.split_once('"').map(|(text, _)| text)
+}
+
+/// Every seam-only crate the workspace reaches outside busbar-crypto (and its backend): the failing
+/// findings, and the recorded exceptions with their issue.
+fn seam_outside_graph(
+    root: &Path,
+    recorded: &BTreeMap<String, Tracked>,
+) -> Result<(Vec<String>, Vec<String>), String> {
     let outside = cargo_tree(
         root,
         &[
@@ -571,10 +694,12 @@ fn crypto_graph(root: &Path) -> Result<Vec<String>, String> {
             BACKEND,
         ],
     )?;
-    let facade = cargo_tree(root, &["--package", SEAM, "--prune", BACKEND])?;
-    let mut findings = seam_only_reached(&outside);
-    findings.extend(backend_only_reached(&facade));
-    Ok(findings)
+    Ok(reached(
+        &outside,
+        &SEAM_ONLY,
+        "outside busbar-crypto*",
+        recorded,
+    ))
 }
 
 /// `cargo tree` over every feature, target and edge kind, as `--prefix depth` lines of `{p}`.
@@ -609,7 +734,7 @@ fn cargo_tree(root: &Path, select: &[&str]) -> Result<String, String> {
 
 /// Each seam-only crate in a `cargo tree --prefix depth` listing, with the path that reaches it.
 fn seam_only_reached(tree: &str) -> Vec<String> {
-    reached(tree, &SEAM_ONLY, "outside busbar-crypto*")
+    reached(tree, &SEAM_ONLY, "outside busbar-crypto*", &BTreeMap::new()).0
 }
 
 /// Each backend-only crate in the facade's listing (backend pruned), with the path that reaches it.
@@ -618,12 +743,22 @@ fn backend_only_reached(tree: &str) -> Vec<String> {
         tree,
         &BACKEND_ONLY,
         "by busbar-crypto outside busbar-crypto-backend, so a swapped-in (FIPS) backend would link it",
+        &BTreeMap::new(),
     )
+    .0
 }
 
-fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
+/// Each listed crate with the path that reaches it: `(failures, tracked exceptions)`. A crate whose
+/// direct parent is a recorded wrapper of it is a tracked exception, named with its issue.
+fn reached(
+    tree: &str,
+    crates: &[&str],
+    outside: &str,
+    recorded: &BTreeMap<String, Tracked>,
+) -> (Vec<String>, Vec<String>) {
     let mut path: Vec<&str> = Vec::new();
     let mut findings = Vec::new();
+    let mut tracked = Vec::new();
     for line in tree.lines() {
         let digits = line.bytes().take_while(u8::is_ascii_digit).count();
         let Ok(depth) = line[..digits].parse::<usize>() else {
@@ -635,13 +770,17 @@ fn reached(tree: &str, crates: &[&str], outside: &str) -> Vec<String> {
         path.push(name);
         // `(*)`: a repeat of a subtree already listed (and reported) above.
         if crates.contains(&name) && !package.ends_with("(*)") {
-            findings.push(format!(
-                "{package} is built {outside}: {}",
-                path.join(" -> ")
-            ));
+            let line = format!("{package} is built {outside}: {}", path.join(" -> "));
+            let parent = path.len().checked_sub(2).map(|at| path[at]);
+            match recorded.get(name) {
+                Some(row) if parent.is_some_and(|p| row.parents.iter().any(|w| w == p)) => {
+                    tracked.push(format!("{line} (tracked: {})", row.issue));
+                }
+                _ => findings.push(line),
+            }
         }
     }
-    findings
+    (findings, tracked)
 }
 
 #[cfg(test)]
@@ -653,3 +792,9 @@ mod migrate_size_tests;
 
 #[cfg(test)]
 mod checks_tests;
+
+#[cfg(test)]
+mod spdx_tests;
+
+#[cfg(test)]
+mod known_red_tests;

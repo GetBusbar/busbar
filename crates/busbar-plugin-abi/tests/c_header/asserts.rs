@@ -5,11 +5,6 @@
 //! struct size and alignment, field offset and constant of `busbar_plugin.h`, each value read from the Rust
 //! item it mirrors (`size_of`, `align_of`, `offset_of!`, the consts, `CORE_FP` and `secret::FP`). Compiled with
 //! the header, any drift on either side is a compile error until both move in one MR.
-//!
-//! Hold (W1-A13 follow-up): `bb_host`'s fn fields, `bb_plugin`'s five entries and `former_names`, and
-//! `bb_secret_vt` have no Rust field yet (UNSAFE-MIN: they land with W1-A2, W1-A4 and busbar-ffi). Until then
-//! they are asserted against their frozen §5/§7.1/§8.2 order in pointer words; each moves to `offset_of!` on
-//! the Rust field when it lands.
 
 use core::mem::{align_of, offset_of, size_of};
 use std::fmt::Write as _;
@@ -33,7 +28,6 @@ pub fn generate() -> String {
     let mut eq = |what: &str, value: u64| {
         writeln!(c, "_Static_assert(({what}) == {value}ull, \"{what}\");").expect("a String");
     };
-    let word = size_of::<usize>() as u64;
 
     macro_rules! layout {
         ($c:literal = $rust:ty { $($cf:ident = $rf:tt),* }) => {
@@ -59,6 +53,69 @@ pub fn generate() -> String {
     );
     layout!("bb_status" = Status {});
     layout!("bb_token" = Token {});
+    layout!("bb_pair" = abi::types::Pair<'static> { name=name, value=value });
+    layout!("bb_pairs" = abi::types::Slice<'static,abi::types::Pair<'static>> {});
+    layout!("bb_plane_req" = abi::plane::PlaneReq<'static> {
+        route=route, flags=flags, auth=auth, _r=_r, method=method, path=path, query=query,
+        headers=headers, identity=identity, request_id=request_id, carrier=carrier, work=work,
+        ticket_record=ticket_record
+    });
+    layout!("bb_target" = abi::plane::Target<'static> {
+        attempt=attempt, flags=flags, dialect=dialect, model=model, base_path=base_path,
+        upstream=upstream, provider=provider, params=params, admission=admission
+    });
+    layout!("bb_resource_echo_rec" = abi::plane::ResourceEchoRec {
+        invocation=invocation, generation=generation, route=route, descriptor=descriptor
+    });
+    layout!("bb_plane_vt" = busbar_ffi::vt::plane::Vt {
+        request=request, upstream=upstream, piece=piece, end=end, rewrite=rewrite,
+        render=render, admin=admin, probe=probe, demux=demux, select_resources=select_resources,
+        channel=channel
+    });
+    eq(
+        "BB_PLANE_FB_RESOURCE_ADMISSION",
+        abi::plane::FB_RESOURCE_ADMISSION,
+    );
+    eq(
+        "BB_PLANE_M_SELECT_RESOURCES",
+        abi::plane::M_SELECT_RESOURCES,
+    );
+    eq("BB_PLANE_FB_CHANNEL_OPEN", abi::plane::FB_CHANNEL_OPEN);
+    eq("BB_PLANE_M_CHANNEL", abi::plane::M_CHANNEL);
+    eq(
+        "BB_RESOURCE_INVENTORY",
+        abi::plane::RESOURCE_INVENTORY.into(),
+    );
+    eq("BB_RESOURCE_SELECT", abi::plane::RESOURCE_SELECT.into());
+    for (name, tag) in [
+        ("BB_TAG_RESOURCE_ENTRY", abi::plane::tag::RESOURCE_ENTRY),
+        (
+            "BB_TAG_RESOURCE_DESCRIPTOR",
+            abi::plane::tag::RESOURCE_DESCRIPTOR,
+        ),
+        ("BB_TAG_RESOURCE_KIND", abi::plane::tag::RESOURCE_KIND),
+        ("BB_TAG_RESOURCE_VALUE", abi::plane::tag::RESOURCE_VALUE),
+        ("BB_TAG_RESOURCE_FORWARD", abi::plane::tag::RESOURCE_FORWARD),
+        (
+            "BB_TAG_RESOURCE_UPSTREAM",
+            abi::plane::tag::RESOURCE_UPSTREAM,
+        ),
+        ("BB_TAG_RESOURCE_DIALECT", abi::plane::tag::RESOURCE_DIALECT),
+        ("BB_TAG_RESOURCE_MODEL", abi::plane::tag::RESOURCE_MODEL),
+        (
+            "BB_TAG_RESOURCE_SELECTED",
+            abi::plane::tag::RESOURCE_SELECTED,
+        ),
+        ("BB_TAG_RESOURCE_ECHO", abi::plane::tag::RESOURCE_ECHO),
+        ("BB_TAG_RESOURCE_POOL", abi::plane::tag::RESOURCE_POOL),
+        ("BB_TAG_RESOURCE_MEMBER", abi::plane::tag::RESOURCE_MEMBER),
+        (
+            "BB_TAG_D_ROUTE_RESOURCES",
+            abi::plane::tag::D_ROUTE_RESOURCES,
+        ),
+    ] {
+        eq(name, tag.into());
+    }
     layout!("bb_crypto_req" = CryptoReq<'static> {
         alg = alg, key_form = key_form, param = param, key = key, data = data, aux = aux, aad = aad
     });
@@ -88,40 +145,53 @@ pub fn generate() -> String {
         "offsetof(bb_plugin, kind_vt)",
         abi::plugin::PLUGIN_KIND_VT_AT as u64,
     );
-    // The hold above: the frozen order, in pointer words.
-    let host = [
-        "ctx",
-        "now",
-        "mono",
-        "random",
-        "crypto",
-        "log",
-        "log_level",
-        "grow",
-        "deployment",
-        "migrate_admit",
-    ];
-    for (i, field) in host.iter().enumerate() {
-        eq(&format!("offsetof(bb_host, {field})"), i as u64 * word);
+    eq(
+        "offsetof(bb_plugin, describe)",
+        abi::plugin::PLUGIN_DESCRIBE_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, open)",
+        abi::plugin::PLUGIN_OPEN_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, resume)",
+        abi::plugin::PLUGIN_RESUME_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, cancel)",
+        abi::plugin::PLUGIN_CANCEL_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, close)",
+        abi::plugin::PLUGIN_CLOSE_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, former_names)",
+        abi::plugin::PLUGIN_FORMER_NAMES_AT as u64,
+    );
+    eq("sizeof(bb_plugin)", size_of::<abi::plugin::Plugin>() as u64);
+    eq("offsetof(bb_host, ctx)", abi::host::HOST_CTX_AT as u64);
+    macro_rules! host_fns {
+        ($($f:ident),*) => {
+            $(eq(
+                concat!("offsetof(bb_host, ", stringify!($f), ")"),
+                (abi::host::HOST_FNS_AT + offset_of!(abi::host::HostFns, $f)) as u64,
+            );)*
+        };
     }
-    eq("sizeof(bb_host)", 10 * word);
-    let entries = [
-        "describe",
-        "open",
-        "resume",
-        "cancel",
-        "close",
-        "former_names",
-    ];
-    for (i, field) in entries.iter().enumerate() {
-        eq(
-            &format!("offsetof(bb_plugin, {field})"),
-            (i as u64 + 2) * word,
-        );
-    }
-    eq("sizeof(bb_plugin)", 9 * word);
-    eq("offsetof(bb_secret_vt, resolve)", 0);
-    eq("sizeof(bb_secret_vt)", word);
+    host_fns!(
+        now,
+        mono,
+        random,
+        crypto,
+        log,
+        log_level,
+        grow,
+        deployment,
+        migrate_admit
+    );
+    eq("sizeof(bb_host)", size_of::<abi::host::Host>() as u64);
+    layout!("bb_secret_vt" = busbar_ffi::vt::secret::Vt { resolve = resolve });
 
     // Constants.
     eq("BB_MECHANISM", versions::MECHANISM.into());

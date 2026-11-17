@@ -1,4 +1,0 @@
-// lint-allow(validate-drops-reason): the refusal is reported by the caller without a reason on purpose
-if site.validate(host, &h).is_err() {
-    ledger.failures.push("refused".into());
-}

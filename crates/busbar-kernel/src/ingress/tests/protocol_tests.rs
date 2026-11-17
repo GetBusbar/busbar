@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use axum::response::Response;
-use serde_json::{json, Value};
+use busbar_contract::json::{json, JsonValueTrait as _, Value};
 
 use super::super::protocol::{metadata, Metadata};
 
 async fn read(r: Response) -> (u16, Value) {
     let status = r.status().as_u16();
     let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
-    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let value = busbar_contract::json::parse_value(&bytes).unwrap_or(Value::new());
     (status, value)
 }
 

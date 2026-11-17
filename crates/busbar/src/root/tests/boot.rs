@@ -573,77 +573,6 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
     );
 }
 
-#[test]
-fn an_applied_plugins_logs_level_reaches_a_live_sink() {
-    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
-    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO, SEVERITY_WARN};
-    let dir = scratch("logs-apply");
-    let words = |level: &str| {
-        let mut cfg = busbar_kernel::config::PluginsCfg::default();
-        cfg.logs.dir = Some(dir.display().to_string());
-        cfg.logs.level = Some(level.to_string());
-        cfg
-    };
-    let boot = words("warn");
-    let l = &boot.logs;
-    let logs = PluginLogConfig::from_words(
-        l.dir.as_deref(),
-        l.level.as_deref(),
-        &l.levels,
-        l.rotate_mb,
-        l.keep,
-    )
-    .expect("the boot words resolve");
-    let sink = logs
-        .clone()
-        .sink(
-            "applied",
-            busbar_contract::abi::mechanism::KindCode::Hook,
-            Arc::new(NoSink),
-        )
-        .expect("the sink opens");
-    let info = |text: &str| {
-        sink.diag(Diagnostic {
-            id: DIAG_LOG,
-            name: &[],
-            severity: SEVERITY_INFO,
-            text: text.as_bytes(),
-        });
-    };
-    info("under warn");
-    follow_plugin_logs(&logs, &words("info"));
-    info("under info");
-    follow_plugin_logs(&logs, &words("warn"));
-    info("under warn again");
-
-    sink.diag(Diagnostic {
-        id: DIAG_LOG,
-        name: &[],
-        severity: SEVERITY_WARN,
-        text: b"after the final level change",
-    });
-    let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let text = loop {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("after the final level change") || std::time::Instant::now() > deadline {
-            break text;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    drop(sink);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        text.contains(" WARN  applied hook after the final level change"),
-        "the writer reached the final level change:\n{text}"
-    );
-    assert!(
-        text.contains(" INFO  applied hook under info"),
-        "the applied level reached the live sink:\n{text}"
-    );
-    assert!(!text.contains("under warn"), "{text}");
-}
-
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 fn first_party_signed_by(
@@ -761,7 +690,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -769,16 +698,14 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &Default::default(),
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: core,
+        rules,
+        ..
+    } = crate::root::min3_boot::fixture::open(&config, &Default::default(), rules.clone())
         .await
-        .expect("the configured native target opens"),
-    )
-    .await;
+        .expect("the configured native target opens");
+    let core = crate::root::real_store::core_over(core).await;
     crate::root::boot::bind_plugin_floor(core.clone())
         .await
         .expect("the catalog uses the configured native plugin-floor owner");
@@ -1075,7 +1002,7 @@ async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
 }
 
 pub(super) fn constructor_child(validate: bool) -> ! {
-    let late = crate::root::serve::LateServices::new();
+    let late = crate::root::serve::Services::bootstrap();
     crate::root::boot::install_native_load_guard().unwrap();
     crate::root::loader::dispatch::handle::arm().unwrap();
     let dispatcher = crate::root::dispatch::boot(1, &late);
@@ -1275,3 +1202,126 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(boot_http_locate);
 owner_test_sources!(boot_carrier_locate);
 owner_test_sources!(boot_session_locate);
+
+/// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission
+/// is the boot's store admission (taken once) and the old ABI's preparation is never entered; a boot with no
+/// MIN-3 store image keeps the old path and takes nothing from the walk; a walk that reports a store it did not
+/// admit refuses the boot.
+#[test]
+fn the_min3_walks_store_admission_is_the_boots() {
+    let taken = std::cell::Cell::new(0);
+    let admitted = walk_admission(true, || {
+        taken.set(taken.get() + 1);
+        Some(7u8)
+    });
+    assert_eq!(admitted, Ok(Some(7)));
+    assert_eq!(taken.get(), 1, "the walk's admission is taken once");
+    let old_path = walk_admission(false, || -> Option<u8> {
+        panic!("the old path takes nothing from the walk")
+    });
+    assert_eq!(old_path, Ok(None));
+    let refused = walk_admission(true, || None::<u8>).unwrap_err();
+    assert!(refused.contains("no admission"), "{refused}");
+}
+
+/// MIGRATE-ON-BOOT r42 §7 D14 (C3): a record-bootstrap store witness resolves only through a
+/// compiled core schema. busbar-migrations' `legacy::archive` route (1.5.5 raw-record framing of a
+/// plugin instance's rows) is deleted with the crate, so an instance-scoped row is refused, never
+/// adopted into a migration-scope address.
+#[test]
+fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
+    use busbar_kernel::persistence::import_target::records::builtin_record_address;
+    let core = "busbar.principal-transition.v1";
+    let expected = builtin_record_address(core, b"head", b"baseline")
+        .expect("a core schema routes")
+        .expect("a compiled core schema");
+    assert_eq!(bootstrap_witness(core, b"head", b"baseline"), Ok(expected));
+    let scoped = busbar_kernel::host_records::record_key("plane", b"row");
+    assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
+    assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
+}
+
+/// UPG-7 (#332): the plugin anti-downgrade floor is keyed by the deployment identity the store
+/// keeps, never by the host name. A fresh k8s pod has a fresh host name, so a host-keyed floor is
+/// off for exactly the pod a rollout starts, and its rows pile up per pod name.
+#[tokio::test]
+async fn the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name() {
+    if !isolated_card_case("the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name").await
+    {
+        return;
+    }
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let authority = PLUGIN_FLOOR.get().expect("the floor authority is bound");
+    assert_eq!(authority.host, deployment);
+    assert_ne!(authority.host, crate::root::durability::host_identity());
+}
+
+/// UPG-7 (#332), PRD-4/ARC-5 migrate-on-boot: floors a 1.6 build already wrote under host names
+/// are carried into the deployment's slot on the first boot that keys by the deployment, and the
+/// host rows are deleted. Two hosts sharing one Store fold into the highest floor, so no host's
+/// floor is lowered; rerunning the step is a kernel test
+/// (`plugin_floor_tests`).
+#[tokio::test]
+async fn host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot() {
+    use busbar_kernel::persistence::plugin_floor::{Candidate, PluginFloor};
+    if !isolated_card_case("host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot")
+        .await
+    {
+        return;
+    }
+    let candidate = |version| Candidate {
+        name: "busbar-store-sqlite",
+        version,
+        file: "busbar-store-sqlite.so",
+        first_party: true,
+        linked: false,
+        rollback_pinned: false,
+    };
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    let seed = PluginFloor::new(core.clone()).unwrap();
+    for (host, version, keys) in [("pod-a", "1.6.2", 5), ("pod-b", "1.6.5", 7)] {
+        seed.enforce_candidate(host, candidate(version), true)
+            .await
+            .unwrap();
+        seed.enforce_release_keys(host, &[keys], true)
+            .await
+            .unwrap();
+    }
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core.clone())
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let floor = PluginFloor::new(core).unwrap();
+    assert_eq!(floor.release_keys_floor(&deployment).await.unwrap(), 7);
+    assert!(floor
+        .enforce_candidate(&deployment, candidate("1.6.4"), false)
+        .await
+        .is_err());
+    floor
+        .enforce_candidate(&deployment, candidate("1.6.5"), false)
+        .await
+        .unwrap();
+    for host in ["pod-a", "pod-b"] {
+        assert_eq!(floor.release_keys_floor(host).await.unwrap(), 0);
+        floor
+            .enforce_candidate(host, candidate("1.0.0"), false)
+            .await
+            .unwrap();
+    }
+}

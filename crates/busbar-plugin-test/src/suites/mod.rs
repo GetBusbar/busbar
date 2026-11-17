@@ -21,20 +21,29 @@ mod hook;
 mod migrate;
 mod plane;
 mod secret;
-mod store;
+pub(crate) mod store;
 mod transport;
 
 pub use busbar_plugin_abi::plugin::Plugin;
 /// The case-input types the suite signatures and case structs mention, public so a plugin's tests name them
 /// as `busbar_plugin_test::suites::{AuthIn, PlaneIn, Pair, Plugin}` (IF §14).
 pub use busbar_plugin_abi::types::Pair;
-pub use busbar_plugin_loader::ports::auth::AuthIn;
-pub use busbar_plugin_loader::ports::plane::PlaneIn;
+pub use busbar_ports::auth::AuthIn;
+pub use busbar_ports::plane::PlaneIn;
 
 use crate::fake_needs::FakeNeeds;
 
-/// config: the converted bag in operator form (canonical JSON compare), None = canonical already; core_cfg:
-/// (section, name, value).
+/// An explicit initial migration input. Purpose is host intent, never inferred from the bag or expectation.
+/// Later fixed-point and newer probes use Canonical with these same limits.
+pub struct MigrateCase<'a> {
+    pub bag: &'a [u8],
+    pub purpose: harness::OpenPurpose,
+    pub limits: harness::InstanceLimits,
+}
+
+/// config: Some requires emitted CONFIG equal to the expected operator-form JSON tree; None requires
+/// unchanged settings (an equal CONFIG echo, or no CONFIG, which on a conversion core settles as the bag,
+/// #432). core_cfg: (section, name, value).
 pub enum MigrateExpect<'a> {
     Settled {
         config: Option<&'a [u8]>,
@@ -57,6 +66,11 @@ pub struct PlaneCase<'a> {
     pub expect_status: u16,
 }
 
+/// One scripted transport case. ROLE_CLIENT: after `begin` the suite opens the stream the way core does, with
+/// `emit(E_HEAD)` on stream 0 (IF §8.7) carrying a default dial head (GET `/`, authority `peer.test`, scheme
+/// `https`), then feeds `input`. The fields are frozen (IF §14); conn facts a case may need beyond them
+/// (CONN_UPGRADED and the adopted head, leftover bytes, its own dial head) go on a [`TransportConnCase`].
+#[derive(Clone, Copy)]
 pub struct TransportCase<'a> {
     pub role: u32,
     pub alpn: &'a str,
@@ -64,7 +78,64 @@ pub struct TransportCase<'a> {
     pub expect_streams: u32,
 }
 
+/// A [`TransportCase`] with the conn facts the suite otherwise leaves at their defaults, run by
+/// [`transport_conns`]. Additive to IF §14: `TransportCase` and `transport` stay as frozen, so every existing
+/// struct literal still builds. Build one with [`TransportConnCase::new`] (or `From<TransportCase>`) and the
+/// builder methods.
+#[derive(Clone, Copy)]
+pub struct TransportConnCase<'a> {
+    pub case: TransportCase<'a>,
+    /// `ConnInfo.flags`: CONN_UPGRADED on a ROLE_SERVER conn core adopted from an UPGRADE. Default 0.
+    pub flags: u32,
+    /// `ConnInfo.head`: with CONN_UPGRADED, the adopted request's head records (H_METHOD, H_PATH, H_AUTHORITY,
+    /// PAIR*, then H_STATUS(101) and the plane's RESPOND PAIR*). Default empty.
+    pub head: &'a [u8],
+    /// `ConnInfo.leftover`: bytes adopted from the UPGRADE. Default empty.
+    pub leftover: &'a [u8],
+    /// ROLE_CLIENT only: the head records the suite's `emit(E_HEAD)` on stream 0 carries. Empty = the suite's
+    /// default dial head.
+    pub dial_head: &'a [u8],
+}
+
+impl<'a> TransportConnCase<'a> {
+    pub const fn new(case: TransportCase<'a>) -> Self {
+        TransportConnCase {
+            case,
+            flags: 0,
+            head: &[],
+            leftover: &[],
+            dial_head: &[],
+        }
+    }
+    pub const fn flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
+        self
+    }
+    pub const fn head(mut self, head: &'a [u8]) -> Self {
+        self.head = head;
+        self
+    }
+    pub const fn leftover(mut self, leftover: &'a [u8]) -> Self {
+        self.leftover = leftover;
+        self
+    }
+    pub const fn dial_head(mut self, dial_head: &'a [u8]) -> Self {
+        self.dial_head = dial_head;
+        self
+    }
+}
+
+impl<'a> From<TransportCase<'a>> for TransportConnCase<'a> {
+    fn from(case: TransportCase<'a>) -> Self {
+        Self::new(case)
+    }
+}
+
 pub enum Expect<'a> {
+    /// Raw one-call ISSUED_WANTED; host lookup is tested in kernel.
+    IssuedWanted(&'a str),
+    /// Raw one-call KEYS_STALE; host refresh is tested in kernel.
+    KeysStale,
     Subject(&'a str),
     NotMine,
     Rejected(u32),
@@ -106,13 +177,54 @@ pub fn plane(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[
 }
 
 pub fn transport(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<'_>]) {
+    let cases: Vec<TransportConnCase<'_>> =
+        cases.iter().copied().map(TransportConnCase::new).collect();
+    transport::run(plugin, config, &cases);
+}
+
+/// Additive to IF §14: [`transport`] over cases that state their conn facts (an upgraded server conn, a dial
+/// with its own head).
+pub fn transport_conns(plugin: &'static Plugin, config: &[u8], cases: &[TransportConnCase<'_>]) {
     transport::run(plugin, config, cases);
 }
 
 /// Round 31, any kind: `open` an older `bag` (operator form) through the registry's `open_<kind>` (bind, inline
 /// steps, `decode_settled`, unbind_refs) and compare the settled answer; then `open` the returned CONFIG again and
-/// require no CONFIG back (canonical is a fixed point) and, for a store, one marker read and no write; then data
+/// require absent or semantically identical CONFIG (canonical is a fixed point) and no CORE_CFG or writes; then data
 /// marked newer than the plugin must give REFUSED R_VERSION (NEWER).
 pub fn migrate(plugin: &'static Plugin, bag: &[u8], needs: FakeNeeds, expect: MigrateExpect<'_>) {
-    migrate::run(plugin, bag, needs, expect);
+    migrate_case(
+        plugin,
+        MigrateCase {
+            bag,
+            purpose: harness::OpenPurpose::ConvertUnstamped,
+            limits: harness::InstanceLimits::default(),
+        },
+        needs,
+        expect,
+    );
+}
+
+/// Run the migration suite with explicit initial purpose and instance limits. Use Canonical for an
+/// already canonical input. A ConvertUnstamped open that answers no CONFIG settles the bag unchanged (#432).
+pub fn migrate_case(
+    plugin: &'static Plugin,
+    case: MigrateCase<'_>,
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+) {
+    migrate::run(plugin, case, &[], needs, expect);
+}
+
+/// [`migrate_case`] for a converting case whose bag carries 1.5.5 values at the D_SECRET_PATH pointers `legacy`
+/// (LEGACY-KEYFILE-MARKER r2): the first open sees `"$migrated": {"legacy": [..]}` in its bag, as core's
+/// migration plan marks it, and the settled answer is compared with the marker stripped.
+pub fn migrate_legacy(
+    plugin: &'static Plugin,
+    case: MigrateCase<'_>,
+    legacy: &[&str],
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+) {
+    migrate::run(plugin, case, legacy, needs, expect);
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use std::sync::Arc;
 
 use crate::diagnostics::{
@@ -59,67 +62,6 @@ impl StoreRow<LinkedStoreDoor> {
     pub const fn former_names(self) -> &'static [&'static str] {
         let (_, _, door, _) = self.0;
         door.former_names()
-    }
-}
-
-pub type StoreAxisOf =
-    fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
-
-/// The store's MIN-3 open (W2-SW-STORE; IF §11.2 `Registry::open_store`, §11.3): the one way the kernel's store
-/// boot opens its configured store. The answer's backend is the store adapter, the kernel's own
-/// `PersistenceBackend` over the proxy (on the store lane for a blocking-file store); there is no other store
-/// port. The store converts its own bag in that `open` (WBS rule 12): no migrate call is made here.
-pub trait StoreOpener: Send + Sync {
-    /// `Registry::open_store` for `spec`.
-    fn open_store<'a>(
-        &'a self,
-        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
-        'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
-    >;
-}
-
-impl<N: busbar_plugin_abi::host_side::needs::Needs> StoreOpener
-    for busbar_plugin_loader::instance::Registry<N>
-{
-    fn open_store<'a>(
-        &'a self,
-        spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
-        'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
-    > {
-        busbar_plugin_loader::instance::Registry::open_store(self, spec)
-    }
-}
-
-/// The opener of a caller that holds no MIN-3 registry (a tool, a fixture): every open refuses, so a store is
-/// never opened through a registry that was not handed over.
-pub struct Unopened;
-
-impl StoreOpener for Unopened {
-    fn open_store<'a>(
-        &'a self,
-        _spec: &'a busbar_plugin_loader::instance::InstanceSpec<'a>,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
-        'a,
-        Result<
-            busbar_plugin_loader::ports::store::StoreHandle,
-            busbar_plugin_loader::instance::OpenError,
-        >,
-    > {
-        Box::pin(core::future::ready(Err(
-            busbar_plugin_loader::instance::OpenError::Unknown(
-                "no store registry is installed".into(),
-            ),
-        )))
     }
 }
 
@@ -241,8 +183,6 @@ pub struct RootInstall {
     /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
     /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
     pub hook_names: &'static [&'static str],
-    /// The root's store axis: what boot opens the configured store through.
-    pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
@@ -273,9 +213,6 @@ pub struct RootInstall {
     /// The ONE durable-write primitive ([`crate::durable`]). `None` = no durable write: every write
     /// through the seam answers an error naming the missing root.
     pub durable: Option<&'static dyn crate::durable::DurableFs>,
-    /// The root's reading of the `plugins.logs` block (the plugin log sinks are the loader's): a
-    /// block it cannot use is refused, on every path the preflight runs. `None` = nothing to check.
-    pub plugin_logs: Option<PluginLogsCheck>,
     /// Whether a DROPPED-IN `kind: hook` row of a registry answers a word by the rule the hook axis
     /// opens it by (its signed Statement's names and hook words beside the manifest's). `None` =
     /// only the registry's own words answer.
@@ -297,10 +234,6 @@ pub struct RootInstall {
     /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
     /// no projection.
     pub config_projection: Option<crate::appbuild::ConfigProjection>,
-    /// The root's phase 1 ([`config::grammar::grammar_for`]): the grammar the modules one read's
-    /// `plugins:` block admits declare, judged by the registry build's own scan, pure. `None` = a
-    /// read that loads no plugin admits nothing and one that would scan `plugins.dir` is refused.
-    pub grammar: Option<config::grammar::GrammarFn>,
     /// The grammar of the registry a build admits: the same judgement as [`Self::grammar`], over
     /// the registry admission put on the axis, so the grammar pin (BUSBAR-3170) compares the read's
     /// grammar with what was admitted. `None` (or `Ok(None)` for rows that are not the root's
@@ -318,8 +251,6 @@ pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
 
 /// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
 pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
-
-pub type PluginLogsCheck = fn(&config::PluginsCfg) -> Result<(), String>;
 
 pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
 
@@ -696,10 +627,6 @@ pub fn plugins_preflight(
     plugins_cfg: &config::PluginsCfg,
     export_cfg: &config::ExportCfg,
 ) -> Result<Arc<dyn PluginRows>, String> {
-    if let Some(check) = root_rows().plugin_logs {
-        check(plugins_cfg)?;
-    }
-
     let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
 
     let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
@@ -1034,35 +961,6 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-pub(crate) fn resolve_at_rest_keys(
-    credentials: &config::CredentialsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<governance::at_rest::AtRestKeys>, String> {
-    let Some(at_rest) = credentials.at_rest.as_ref() else {
-        return Ok(None);
-    };
-    let resolve = |path: &str, r: &config::SecretRef| {
-        let held = resolver
-            .resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-            .map_err(|e| {
-                format!(
-                    "{path} did not resolve: {e}. It is a reference to an EXISTING secret                      (env/file/plugin) holding 32 random bytes; create one with `openssl rand -hex                      32`"
-                )
-            })?;
-        governance::at_rest::parse_key(path, held.expose(&crate::seal::lend()))
-    };
-    let key = resolve("credentials.at_rest.key", &at_rest.key)?;
-    let previous = at_rest
-        .previous
-        .as_ref()
-        .map(|p| resolve("credentials.at_rest.previous", p))
-        .transpose()?;
-    Ok(Some(governance::at_rest::AtRestKeys::new(
-        &key[..],
-        previous.as_ref().map(|p| &p[..]),
-    )))
-}
-
 pub(crate) fn is_real_auth_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {
     m != config::KEYS_MODULE && !in_process(m)
 }
@@ -1086,6 +984,7 @@ pub(crate) fn valid_identity_provider_modules(registry: &dyn PluginRows) -> Stri
     names.join(" | ")
 }
 
+#[cfg(test)]
 fn check_secret_module_claim(
     claimed_by: &std::collections::BTreeMap<String, String>,
     canonical: &str,
@@ -1101,68 +1000,6 @@ fn check_secret_module_claim(
     Ok(())
 }
 
-/// The secret resolver of one generation: its `secret_modules` opened over `registry`, serving the
-/// shorthand `sources` that generation was read under (SECRET-SHORTHAND-BOOT §3.4).
-pub(crate) fn build_secret_resolver(
-    registry: Arc<dyn PluginRows>,
-    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
-    sources: &busbar_contract::secret_ref::Sugars,
-) -> Result<config::secret::SecretResolver, String> {
-    let builtins = config::secret::SecretResolver::builtins_only().with_sources(sources.clone());
-
-    let mut raw_config: std::collections::BTreeMap<
-        String,
-        busbar_contract::plugin_settings::Settings,
-    > = std::collections::BTreeMap::new();
-
-    let mut claimed_by: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for (module, mcfg) in secret_modules {
-        let canonical = config_validate::secret_module(registry.as_ref(), module)?;
-
-        check_secret_module_claim(&claimed_by, &canonical, module)?;
-        config::secret::resolve_settings(
-            &mcfg.settings,
-            &registry.secret_slots(module),
-            &[],
-            module,
-            &builtins,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|e| format!("secrets.{module} settings: {e}"))?;
-        claimed_by.insert(canonical.clone(), module.clone());
-        raw_config.insert(canonical, mcfg.settings.clone());
-    }
-
-    let opened = OpenedSecrets::default();
-    let sources = sources.clone();
-    Ok(config::secret::SecretResolver::with_scoped_plugin(Box::new(
-        move |module: &str,
-              settings: &busbar_contract::plugin_settings::Settings,
-              scope: Option<&busbar_contract::config_time::ConfigScope>|
-              -> Result<config::secret::Held, config::secret::SecretRefused> {
-            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                let canonical = registry.resolve(module).map(|p| p.key);
-                let key = canonical.as_deref().unwrap_or(module);
-                return opened.resolve(key, settings, scope, || {
-                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                    let linked = config::secret::SecretResolver::builtins_only();
-                    axis.open(module, raw, &|r| match scope {
-                        Some(scope) => linked.resolve_at_config(r, scope),
-                        None => linked.resolve(r),
-                    })
-                });
-            }
-
-            Err(config::secret::SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
-                text: registry.secret_refusal(module),
-            })
-        },
-    ))
-    .with_sources(sources))
-}
-
 /// THE SECRET PLUGINS A RESOLVER OPENED, one SOURCE per plugin (audit kernel-K1 #6).
 ///
 /// The map's lock is held only to find or insert a source, never across an open or a resolve: one
@@ -1170,6 +1007,7 @@ pub(crate) fn build_secret_resolver(
 /// another module's, and never a second caller of its own that already holds the handle. Two first
 /// resolutions racing to open one module may both open; the loser's instance is dropped (closed)
 /// outside the lock.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct OpenedSecrets(std::sync::Mutex<std::collections::BTreeMap<String, Arc<Source>>>);
 
@@ -1178,6 +1016,7 @@ pub(crate) struct OpenedSecrets(std::sync::Mutex<std::collections::BTreeMap<Stri
 /// polled by the host refresher every [`RELEND_EVERY`] ± 10 %: a rotated credential (a
 /// workload-identity token file) reaches the plugin's `refresh`, or a successor instance, with no
 /// reload; a refusal keeps the running instance (BUSBAR-8028).
+#[cfg(test)]
 pub(crate) struct Source {
     key: String,
     calls: arc_swap::ArcSwap<Arc<dyn busbar_contract::secret::SecretCalls>>,
@@ -1259,6 +1098,7 @@ impl RelendStreak {
 /// The audit action a re-lend writes.
 pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
 
+#[cfg(test)]
 impl Source {
     fn new(
         key: &str,
@@ -1304,6 +1144,7 @@ impl Source {
     }
 }
 
+#[cfg(test)]
 impl crate::refresh::Refreshable for Source {
     fn refresh(&self, now: std::time::Instant) -> std::time::Instant {
         self.relend_now(now);
@@ -1311,6 +1152,7 @@ impl crate::refresh::Refreshable for Source {
     }
 }
 
+#[cfg(test)]
 impl OpenedSecrets {
     fn calls(
         &self,

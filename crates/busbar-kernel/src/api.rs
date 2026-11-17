@@ -96,13 +96,14 @@ fn token_configured_description() -> String {
 
 #[cfg(feature = "openapi-schema")]
 pub fn set_response_schema(
-    paths: &mut serde_json::Map<String, serde_json::Value>,
+    paths: &mut busbar_contract::json::Map,
     abs_path: &str,
     method: &str,
     status: &str,
-    schema: serde_json::Value,
+    schema: busbar_contract::json::Value,
 ) {
-    let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) else {
+    use busbar_contract::json::JsonValueMutTrait as _;
+    let Some(op) = paths.get_mut(&abs_path).and_then(|p| p.get_mut(method)) else {
         return;
     };
 
@@ -113,12 +114,12 @@ pub fn set_response_schema(
         return;
     };
     let entry = resp_map
-        .entry(status.to_string())
-        .or_insert_with(|| serde_json::json!({"description": "OK"}));
+        .entry(status)
+        .or_insert_with(|| busbar_contract::json::json!({"description": "OK"}));
     if let Some(obj) = entry.as_object_mut() {
         obj.insert(
-            "content".to_string(),
-            serde_json::json!({"application/json": {"schema": schema}}),
+            "content",
+            busbar_contract::json::json!({"application/json": {"schema": schema}}),
         );
     }
 }

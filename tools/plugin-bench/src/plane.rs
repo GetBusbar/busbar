@@ -20,9 +20,9 @@ use busbar_contract::abi::plane::{
     RecordWrite, UnitCount, EMIT_DONE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS,
     PIECE_LAST,
 };
+use busbar_contract::json::{self, json, JsonContainerTrait, Value};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::{ConnTable, Dispatcher, Frame, Plugin};
-use serde_json::{json, Value};
 
 use crate::frames::{abi, fields, input, json as json_blob, octets, output, pairs};
 use crate::stats::Recorder;
@@ -60,19 +60,18 @@ fn default_settings() -> Value {
 /// keyed section (or consumes others), the settings themselves otherwise.
 fn handed(plugin: &Plugin<Plane>, settings: &[u8]) -> Result<Vec<u8>, String> {
     let facts = plugin.served();
-    let value: Value =
-        serde_json::from_slice(settings).map_err(|e| format!("plane settings: {e}"))?;
+    let value: Value = json::parse_value(settings).map_err(|e| format!("plane settings: {e}"))?;
     let keyed =
         facts.section == busbar_contract::section::RESERVED_POOLS_KEY || !facts.consumed.is_empty();
     let already = value.as_object().is_some_and(|o| {
-        o.contains_key(facts.section)
-            && o.keys()
-                .all(|k| k == facts.section || facts.consumed.contains(&k.as_str()))
+        o.contains_key(&facts.section)
+            && o.iter()
+                .all(|(k, _)| k == facts.section || facts.consumed.contains(&k))
     });
     if !keyed || already {
         return Ok(settings.to_vec());
     }
-    serde_json::to_vec(&json!({ facts.section: value })).map_err(|e| e.to_string())
+    json::to_vec(&json!({ facts.section: value })).map_err(|e| e.to_string())
 }
 
 fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
@@ -80,7 +79,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
     let plugin = crate::load::<Plane>(target, crate::bind(&d, "bench-plane", ConnTable::Probe))?;
     let settings = match &cfg.settings {
         Some(s) => s.clone(),
-        None => serde_json::to_vec(&default_settings()).map_err(|e| e.to_string())?,
+        None => json::to_vec(&default_settings()).map_err(|e| e.to_string())?,
     };
     let settings = handed(&plugin, &settings)?;
     let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -161,7 +160,7 @@ fn request(caller: Dialect, model: &str, size: usize, stream: bool) -> Vec<u8> {
             }
         }
     }
-    let base = serde_json::to_vec(&v).expect("json").len();
+    let base = json::to_vec(&v).expect("json").len();
     let words = "the quick brown fox jumps over the lazy dog ";
     let pad: String = words
         .chars()
@@ -170,7 +169,7 @@ fn request(caller: Dialect, model: &str, size: usize, stream: bool) -> Vec<u8> {
         .collect();
     let last = v["messages"].as_array().map_or(0, |a| a.len() - 1);
     v["messages"][last]["content"] = json!(pad);
-    serde_json::to_vec(&v).expect("json")
+    json::to_vec(&v).expect("json")
 }
 
 /// The far end's whole answer.
@@ -191,7 +190,7 @@ fn whole_answer(far: Dialect, model: &str) -> Vec<u8> {
             "usage": {"input_tokens": 312, "output_tokens": 96}
         }),
     };
-    serde_json::to_vec(&v).expect("json")
+    json::to_vec(&v).expect("json")
 }
 
 /// The far end's streamed answer: one SSE event per piece.
@@ -209,10 +208,10 @@ fn sse_events(far: Dialect, model: &str, deltas: usize) -> Vec<Vec<u8>> {
             };
             out.push(chunk(
                 json!({"role": "assistant", "content": ""}),
-                Value::Null,
+                Value::new(),
             ));
             for i in 0..deltas {
-                out.push(chunk(json!({"content": format!(" tok{i}")}), Value::Null));
+                out.push(chunk(json!({"content": format!(" tok{i}")}), Value::new()));
             }
             out.push(chunk(json!({}), json!("stop")));
             let usage = json!({

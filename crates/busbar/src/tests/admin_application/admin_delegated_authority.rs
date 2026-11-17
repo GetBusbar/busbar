@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-delegated-authority";
@@ -42,7 +44,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -64,10 +66,11 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -110,13 +113,14 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
             .header("x-admin-token", tok)
             .header("content-type", "application/json")
             .header("idempotency-key", "shared-value")
-            .body(serde_json::json!({"name": "k"}).to_string())
+            .body(json::json!({"name": "k"}).to_string())
             .send()
     };
 
-    let a: serde_json::Value = mint("admintok").await.unwrap().json().await.unwrap();
+    let a = json::parse_value(&mint("admintok").await.unwrap().bytes().await.unwrap()).unwrap();
 
-    let b: serde_json::Value = mint(&delegated_token).await.unwrap().json().await.unwrap();
+    let b =
+        json::parse_value(&mint(&delegated_token).await.unwrap().bytes().await.unwrap()).unwrap();
 
     assert!(a["id"].is_string() && b["id"].is_string());
     assert_ne!(
@@ -128,7 +132,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         "B must never receive A's once-shown token via a cross-principal replay"
     );
 
-    let a2: serde_json::Value = mint("admintok").await.unwrap().json().await.unwrap();
+    let a2 = json::parse_value(&mint("admintok").await.unwrap().bytes().await.unwrap()).unwrap();
     assert_eq!(a2["id"], a["id"], "A's own retry replays A's response");
 
     handle.abort();
@@ -167,7 +171,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -190,10 +194,11 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -230,7 +235,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let put = |tok: &str, body: serde_json::Value| {
+    let put = |tok: &str, body: json::Value| {
         client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
             .header("x-admin-token", tok)
@@ -239,7 +244,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
             .send()
     };
 
-    let r = put("admintok", serde_json::json!({"admin_auth": ["saml"]}))
+    let r = put("admintok", json::json!({"admin_auth": ["saml"]}))
         .await
         .unwrap();
     assert_eq!(
@@ -253,10 +258,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("if-match", "\"999\"")
-        .body(
-            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
-                .to_string(),
-        )
+        .body(json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]}).to_string())
         .send()
         .await
         .unwrap();
@@ -264,7 +266,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let r = put(
         "admintok",
-        serde_json::json!({"admin_auth": ["test-scope-module"]}),
+        json::json!({"admin_auth": ["test-scope-module"]}),
     )
     .await
     .unwrap();
@@ -273,7 +275,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         409,
         "a chain that locks the caller out is refused"
     );
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
@@ -285,7 +287,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     let r = put(
         &delegated_token,
-        serde_json::json!({"admin_auth": ["test-scope-module"]}),
+        json::json!({"admin_auth": ["test-scope-module"]}),
     )
     .await
     .unwrap();
@@ -294,7 +296,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         200,
         "the surviving caller's change applies"
     );
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["applied"], true);
 
     let r = client
@@ -317,19 +319,20 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
 
-    let body: serde_json::Value = client
+    let body = client
         .get(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", &delegated_token)
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let body = json::parse_value(&body).unwrap();
     assert_eq!(body["configured"], true);
     assert_eq!(
         body["modules"],
-        serde_json::json!(["test-scope-module"]),
+        json::json!(["test-scope-module"]),
         "GET admin-auth mirrors the PUT'd chain verbatim"
     );
 
@@ -361,7 +364,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -373,15 +376,15 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
-    let put = |chain: serde_json::Value| {
+    let put = |chain: json::Value| {
         client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
             .header("x-admin-token", "admintok")
             .header("content-type", "application/json")
-            .body(serde_json::json!({ "admin_auth": chain }).to_string())
+            .body(json::json!({ "admin_auth": chain }).to_string())
             .send()
     };
-    let r = put(serde_json::json!(["ops"])).await.unwrap();
+    let r = put(json::json!(["ops"])).await.unwrap();
     let status = r.status().as_u16();
     let body = r.text().await.unwrap();
     assert_eq!(
@@ -399,7 +402,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
         200,
         "the operator token admits through `ops`"
     );
-    let r = put(serde_json::json!(["saml"])).await.unwrap();
+    let r = put(json::json!(["saml"])).await.unwrap();
     assert_eq!(
         r.status().as_u16(),
         400,
@@ -449,7 +452,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -478,10 +481,11 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -543,13 +547,13 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
             .header("x-admin-token", tok)
             .header("content-type", "application/json")
             .header("idempotency-key", "shared-value")
-            .body(serde_json::json!({"name": "k"}).to_string())
+            .body(json::json!({"name": "k"}).to_string())
             .send()
     };
 
-    let a: serde_json::Value = mint(&token_a).await.unwrap().json().await.unwrap();
+    let a = json::parse_value(&mint(&token_a).await.unwrap().bytes().await.unwrap()).unwrap();
 
-    let b: serde_json::Value = mint(&token_b).await.unwrap().json().await.unwrap();
+    let b = json::parse_value(&mint(&token_b).await.unwrap().bytes().await.unwrap()).unwrap();
 
     assert!(a["id"].is_string() && b["id"].is_string());
     assert_ne!(
@@ -561,7 +565,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
         "B must never receive A's once-shown token via a cross-principal replay"
     );
 
-    let a2: serde_json::Value = mint(&token_a).await.unwrap().json().await.unwrap();
+    let a2 = json::parse_value(&mint(&token_a).await.unwrap().bytes().await.unwrap()).unwrap();
     assert_eq!(a2["id"], a["id"], "A's own retry replays A's response");
 
     assert_ne!(
@@ -612,7 +616,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         "models": {},
         "auth": { "chain": ["test-scope-module"], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -641,10 +645,11 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -712,7 +717,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":connector,"check":"named-verb-allowed","method":"GET","path":"/api/v1/admin/info","status":allowed.status().as_u16()}));
+        cells.push(json::json!({"connector":connector,"check":"named-verb-allowed","method":"GET","path":"/api/v1/admin/info","status":allowed.status().as_u16()}));
         assert_eq!(
             allowed.status().as_u16(),
             200,
@@ -724,7 +729,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":connector,"check":"ungranted-read-denied","method":"GET","path":"/api/v1/admin/keys","status":denied_read.status().as_u16()}));
+        cells.push(json::json!({"connector":connector,"check":"ungranted-read-denied","method":"GET","path":"/api/v1/admin/keys","status":denied_read.status().as_u16()}));
         assert_eq!(
             denied_read.status().as_u16(),
             403,
@@ -733,11 +738,11 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         let denied_mint = client
             .post(format!("http://{addr}/api/v1/admin/keys"))
             .bearer_auth(token)
-            .json(&serde_json::json!({"name":"must-not-mint"}))
+            .json(&json::json!({"name":"must-not-mint"}))
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":connector,"check":"mint-denied","method":"POST","path":"/api/v1/admin/keys","status":denied_mint.status().as_u16()}));
+        cells.push(json::json!({"connector":connector,"check":"mint-denied","method":"POST","path":"/api/v1/admin/keys","status":denied_mint.status().as_u16()}));
         assert_eq!(
             denied_mint.status().as_u16(),
             403,
@@ -746,11 +751,11 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         let denied_escalation = client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
             .bearer_auth(token)
-            .json(&serde_json::json!({"admin_auth":[operator]}))
+            .json(&json::json!({"admin_auth":[operator]}))
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":connector,"check":"policy-escalation-denied","method":"PUT","path":"/api/v1/admin/admin-auth","status":denied_escalation.status().as_u16()}));
+        cells.push(json::json!({"connector":connector,"check":"policy-escalation-denied","method":"PUT","path":"/api/v1/admin/admin-auth","status":denied_escalation.status().as_u16()}));
         assert_eq!(
             denied_escalation.status().as_u16(),
             403,
@@ -765,7 +770,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     let revoked = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"admin_auth":["second-issuer",operator]}))
+        .json(&json::json!({"admin_auth":["second-issuer",operator]}))
         .send()
         .await
         .unwrap();
@@ -774,8 +779,8 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         200,
         "operator removes only connector A's issuer from the actual admin chain"
     );
-    cells.push(serde_json::json!({"check":"operator-revokes-only-A-issuer","method":"PUT","path":"/api/v1/admin/admin-auth","status":revoked.status().as_u16()}));
-    let body: serde_json::Value = revoked.json().await.unwrap();
+    cells.push(json::json!({"check":"operator-revokes-only-A-issuer","method":"PUT","path":"/api/v1/admin/admin-auth","status":revoked.status().as_u16()}));
+    let body = json::parse_value(&revoked.bytes().await.unwrap()).unwrap();
     assert_eq!(body["applied"], true);
     for attempt in 0..2 {
         let a = client
@@ -784,7 +789,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":"A","check":"revoked-still-signed-token-refused","attempt":attempt,"method":"GET","path":"/api/v1/admin/info","status":a.status().as_u16()}));
+        cells.push(json::json!({"connector":"A","check":"revoked-still-signed-token-refused","attempt":attempt,"method":"GET","path":"/api/v1/admin/info","status":a.status().as_u16()}));
         assert_eq!(
             a.status().as_u16(),
             401,
@@ -796,7 +801,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":"B","check":"continues-without-token-reissue","attempt":attempt,"method":"GET","path":"/api/v1/admin/info","status":b.status().as_u16()}));
+        cells.push(json::json!({"connector":"B","check":"continues-without-token-reissue","attempt":attempt,"method":"GET","path":"/api/v1/admin/info","status":b.status().as_u16()}));
         assert_eq!(
             b.status().as_u16(),
             200,
@@ -808,29 +813,30 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
             .send()
             .await
             .unwrap();
-        cells.push(serde_json::json!({"connector":"B","check":"named-verb-ceiling-remains","attempt":attempt,"method":"GET","path":"/api/v1/admin/keys","status":b_denied.status().as_u16()}));
+        cells.push(json::json!({"connector":"B","check":"named-verb-ceiling-remains","attempt":attempt,"method":"GET","path":"/api/v1/admin/keys","status":b_denied.status().as_u16()}));
         assert_eq!(
             b_denied.status().as_u16(),
             403,
             "B retains its named-verb ceiling after A is revoked"
         );
     }
-    let configured: serde_json::Value = client
+    let configured = client
         .get(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let configured = json::parse_value(&configured).unwrap();
     assert_eq!(
         configured["modules"],
-        serde_json::json!(["second-issuer", operator])
+        json::json!(["second-issuer", operator])
     );
     println!(
         "{}",
-        serde_json::json!({"schema":"busbar.admin-issuer-ab-scoped-proof/1","actor_a":actor_a,"actor_b":actor_b,"same_sub_distinct_issuers":true,"cells":cells,"revocation":"issuerA removed from admin_auth only; stays in data chain; no data request or external IdP JWT revocation claimed","bootstrap_operator_used_as_connector":false,"tls_scope":"separate protocol proof"})
+        json::json!({"schema":"busbar.admin-issuer-ab-scoped-proof/1","actor_a":actor_a,"actor_b":actor_b,"same_sub_distinct_issuers":true,"cells":cells,"revocation":"issuerA removed from admin_auth only; stays in data chain; no data request or external IdP JWT revocation claimed","bootstrap_operator_used_as_connector":false,"tls_scope":"separate protocol proof"})
     );
     handle.abort();
     println!("{WITNESS}");

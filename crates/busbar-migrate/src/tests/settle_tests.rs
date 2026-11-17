@@ -34,6 +34,9 @@ fn store(index: u32, settings: Option<&str>, core_cfg: Vec<CoreCfg>) -> Settled 
         path: vec!["store".to_owned()],
         settings: settings.map(busbar_contract::secure::SecureString::from),
         core_cfg,
+        placement: crate::settle::BagPlacement::Settings,
+        allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
     }
 }
 
@@ -86,32 +89,6 @@ fn an_answer_that_changes_nothing_writes_the_same_bytes() {
 }
 
 #[test]
-fn limits_fill_the_instance_and_an_operator_key_wins() {
-    let text = "config_version: 1\nstore: {module: m, limits: {timeout_ms: 1}}\n";
-    let frag = cfg(
-        section::LIMITS,
-        "",
-        r#"{"timeout_ms": 3000, "max_inflight": 8}"#,
-    );
-    let applied = apply(text, &[store(0, None, vec![frag])], false).unwrap();
-    let limits = tree(&applied).at("store").at("limits").clone();
-    assert_eq!(
-        limits.at("timeout_ms").as_u64(),
-        Some(1),
-        "the operator's key is never overwritten"
-    );
-    assert_eq!(limits.at("max_inflight").as_u64(), Some(8));
-    assert!(
-        applied
-            .report()
-            .iter()
-            .any(|line| line.contains("timeout_ms") && line.contains("operator")),
-        "{:?}",
-        applied.report()
-    );
-}
-
-#[test]
 fn limits_carry_an_empty_name_once_and_a_plaintext_key_is_not_a_mapping_target() {
     let named = cfg(section::LIMITS, "x", r#"{"timeout_ms": 1}"#);
     assert_eq!(
@@ -158,12 +135,15 @@ fn a_current_config_moves_nothing() {
 }
 
 #[test]
-fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_refused() {
+fn retired_named_filings_leave_equal_different_and_operator_values_unchanged() {
     let same = |index| Settled {
+        placement: crate::settle::BagPlacement::Settings,
+        allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: None,
-        core_cfg: vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+        core_cfg: vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
     };
     let applied = apply(
         STAMPED,
@@ -171,72 +151,49 @@ fn a_named_section_is_one_entry_when_two_instances_state_it_identically_else_ref
             store(
                 0,
                 None,
-                vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+                vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
             ),
             same(1),
         ],
         false,
     )
     .unwrap();
-    assert_eq!(
-        tree(&applied).at("upstreams").at("dc1").at("url").as_str(),
-        Some("https://dc1")
-    );
+    assert_eq!(applied.text(), STAMPED);
     let differs = Settled {
-        core_cfg: vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://other"}"#)],
+        core_cfg: vec![cfg(
+            section::ROUTE_MEDIA,
+            "12",
+            r#"{"url": "https://other"}"#,
+        )],
         ..same(1)
     };
-    let refused = apply(
+    let different = apply(
         STAMPED,
         &[
             store(
                 0,
                 None,
-                vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+                vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
             ),
             differs,
         ],
         false,
     )
-    .unwrap_err();
-    let text = refused.to_string();
-    assert!(
-        text.contains("instance 0") && text.contains("instance 1"),
-        "{text}"
-    );
+    .unwrap();
+    assert_eq!(different.text(), STAMPED);
     let operator =
-        "config_version: 1\nupstreams: {dc1: {url: 'https://mine'}}\nstore: {module: m}\n";
+        "config_version: 1\nroutes: {'12': {media: {url: 'https://mine'}}}\nstore: {module: m}\n";
     let clash = apply(
         operator,
         &[store(
             0,
             None,
-            vec![cfg(section::UPSTREAM, "dc1", r#"{"url": "https://dc1"}"#)],
+            vec![cfg(section::ROUTE_MEDIA, "12", r#"{"url": "https://dc1"}"#)],
         )],
         false,
     )
-    .unwrap_err();
-    assert_eq!(clash.word(), "CONFIG");
-}
-
-#[test]
-fn trust_and_route_media_go_where_their_sections_say() {
-    let trust = cfg(section::TRUST_APPROVAL, "up1", r#"{"root": "r"}"#);
-    let media = cfg(section::ROUTE_MEDIA, "12", r#"{"inline": true}"#);
-    let applied = apply(STAMPED, &[store(0, None, vec![trust, media])], false).unwrap();
-    let tree = tree(&applied);
-    assert_eq!(
-        tree.at("trust").at("store").at("up1").at("root").as_str(),
-        Some("r")
-    );
-    assert_eq!(
-        tree.at("routes")
-            .at("12")
-            .at("media")
-            .at("inline")
-            .as_bool(),
-        Some(true)
-    );
+    .unwrap();
+    assert_eq!(clash.text(), operator);
 }
 
 /// C-LIFT: the slot's exact bytes become a planned 0600 secret file beside config.yaml and the slot a
@@ -244,6 +201,9 @@ fn trust_and_route_media_go_where_their_sections_say() {
 #[test]
 fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
     let settled = Settled {
+        placement: crate::settle::BagPlacement::Settings,
+        allowed_lifts: ["/bind_service_password".to_owned()].into_iter().collect(),
+        known_secrets: Vec::new(),
         index: 2,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -286,8 +246,12 @@ fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
 fn a_lift_names_a_string_slot_once_with_an_empty_name() {
     let lift = |name: &str, pointer: &str| cfg(section::LIFT, name, pointer);
     let with = |frags: Vec<CoreCfg>, settings: &str| {
-        apply(STAMPED, &[store(1, Some(settings), frags)], false)
-            .map(|applied| applied.text().to_owned())
+        let mut answer = store(1, Some(settings), frags);
+        answer.allowed_lifts = ["/token", "/missing", "/a/0/b", "/a~1b"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        apply(STAMPED, &[answer], false).map(|applied| applied.text().to_owned())
     };
     assert_eq!(
         with(vec![lift("x", "\"/token\"")], r#"{"token": "t"}"#)
@@ -340,4 +304,196 @@ fn a_converted_store_bag_is_written_as_answered() {
     );
     assert!(!applied.text().contains("junk"));
     assert!(applied.text().ends_with("listen: y\n"));
+}
+
+#[test]
+fn an_upstream_core_fragment_is_retired_even_during_conversion() {
+    let answer = store(
+        4,
+        None,
+        vec![cfg(1, "endpoint", r#"{"url":"https://example.test"}"#)],
+    );
+    let refused = apply(STAMPED, &[answer], false).expect_err("r3 retires section 1");
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("instance 4"));
+}
+
+#[test]
+fn a_literal_string_does_not_authorize_its_own_lift() {
+    let answer = store(
+        4,
+        Some(r#"{"display_name":"not a secret"}"#),
+        vec![cfg(section::LIFT, "", r#""/display_name""#)],
+    );
+    let refused = apply(STAMPED, &[answer], false)
+        .expect_err("no described secret path authorizes this slot");
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(!refused.to_string().contains("not a secret"));
+}
+
+#[test]
+fn authorized_lifts_still_require_exact_rfc6901_pointers_and_existing_strings() {
+    for (pointer, bag) in [
+        ("/bad~2", r#"{"bad~2":"secret"}"#),
+        ("/bad~", r#"{"bad~":"secret"}"#),
+        ("/items/01", r#"{"items":["first","secret"]}"#),
+        ("/items/+1", r#"{"items":["first","secret"]}"#),
+        ("/missing", r#"{}"#),
+        ("/value", r#"{"value":{"file":"already-a-reference"}}"#),
+    ] {
+        let mut answer = store(
+            8,
+            Some(bag),
+            vec![cfg(section::LIFT, "", &format!("\"{pointer}\""))],
+        );
+        answer.allowed_lifts.insert(pointer.to_owned());
+        let refused = apply(STAMPED, &[answer], false)
+            .expect_err("authorization does not relax pointer or value grammar");
+        assert_eq!(refused.word(), "CONFIG");
+        assert!(!refused.to_string().contains("secret"));
+    }
+}
+
+#[test]
+fn a_plane_settles_its_whole_top_level_bag_and_lifts_only_admitted_slots() {
+    let source = "config_version: 1\nplane: {old: true}\nstore: {module: m}\n";
+    let mut answer = store(
+        2,
+        Some(r#"{"member":{"secret":"literal"}}"#),
+        vec![cfg(section::LIFT, "", r#""/member/secret""#)],
+    );
+    answer.path = vec!["plane".to_owned()];
+    answer.placement = crate::settle::BagPlacement::Block;
+    answer.allowed_lifts.insert("/member/secret".to_owned());
+    let applied = apply(source, &[answer], false).unwrap();
+    let doc = tree(&applied);
+    assert!(doc.at("plane").get("settings").is_none());
+    assert!(doc.at("plane").get("old").is_none());
+    assert!(doc
+        .at("plane")
+        .at("member")
+        .at("secret")
+        .get("file")
+        .is_some());
+    assert_eq!(applied.secrets()[0].bytes(), b"literal");
+}
+
+/// The settled LIMITS, TRUST_APPROVAL and ROUTE_MEDIA answers are never filed into config.yaml: the grammar has no
+/// `limits`, `trust` or `routes` key, so writing one would break the next boot. The document comes out as it went in.
+#[test]
+fn settled_limits_trust_and_route_media_are_not_written_to_the_config() {
+    let text = "config_version: 1\nstore: {module: m, settings: {url: old}}\n";
+    let frags = vec![
+        cfg(
+            section::LIMITS,
+            "",
+            r#"{"timeout_ms": 3000, "max_inflight": 8}"#,
+        ),
+        cfg(section::TRUST_APPROVAL, "up1", r#"{"root": "r"}"#),
+        cfg(section::ROUTE_MEDIA, "12", r#"{"inline": true}"#),
+    ];
+    let applied = apply(text, &[store(0, None, frags)], false).unwrap();
+    let written = applied.text();
+    for key in ["limits", "trust", "routes", "timeout_ms", "inline"] {
+        assert!(!written.contains(key), "`{key}` was filed:\n{written}");
+    }
+    assert_eq!(written, text, "nothing else moved");
+}
+
+fn ldap(settings: &str, lifts: &[&str], known: &[&str]) -> Settled {
+    Settled {
+        placement: crate::settle::BagPlacement::Settings,
+        allowed_lifts: lifts.iter().map(|p| (*p).to_owned()).collect(),
+        known_secrets: known
+            .iter()
+            .map(|s| busbar_contract::secure::SecureString::from(*s))
+            .collect(),
+        index: 2,
+        path: vec!["auth".to_owned(), "ldap".to_owned()],
+        settings: Some(busbar_contract::secure::SecureString::from(settings)),
+        core_cfg: Vec::new(),
+    }
+}
+
+/// #441 path 1: a literal the plugin left at a declared secret position and did not ask to LIFT is
+/// lifted by core, so it is never written back as plaintext.
+#[test]
+fn an_unlifted_literal_at_a_declared_slot_is_lifted_by_core() {
+    let settled = ldap(
+        r#"{"bind_service_password": "hunter2", "url": "ldaps://dc", "empty": ""}"#,
+        &["/bind_service_password", "/empty"],
+        &[],
+    );
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    let applied = apply_settled(STAMPED, &path, &[settled], false, no_env).unwrap();
+    assert!(!applied.text().contains("hunter2"), "{}", applied.text());
+    assert!(applied
+        .report()
+        .iter()
+        .all(|line| !line.contains("hunter2")));
+    let tree = tree(&applied);
+    let settings = tree.at("auth").at("ldap").at("settings");
+    assert!(settings
+        .at("bind_service_password")
+        .at("file")
+        .as_str()
+        .is_some());
+    assert_eq!(
+        settings.at("empty").as_str(),
+        Some(""),
+        "an empty value is not a secret"
+    );
+    let [secret] = applied.secrets() else {
+        panic!("one planned secret file")
+    };
+    assert_eq!(secret.bytes(), b"hunter2");
+}
+
+/// #441 path 2: a known 1.5.5 secret value that the plugin moved to a position it does not declare
+/// secret refuses the migration instead of persisting plaintext.
+#[test]
+fn a_known_secret_moved_to_an_undeclared_slot_refuses_the_migration() {
+    let settled = ldap(
+        r#"{"bind_service_password": {"file": "/x"}, "note": "hunter2-secret"}"#,
+        &["/bind_service_password"],
+        &["hunter2-secret"],
+    );
+    let refused = apply(STAMPED, &[settled], false)
+        .err()
+        .expect("the moved secret refuses");
+    let text = refused.to_string();
+    assert!(
+        text.contains("/note") && text.contains("plaintext"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("hunter2"),
+        "the value is never printed: {text}"
+    );
+}
+
+/// The refusal is only for a known secret: other settings, and a reference at a declared slot, pass.
+#[test]
+fn settings_that_are_not_known_secrets_pass() {
+    let settled = ldap(
+        r#"{"bind_service_password": {"file": "/x"}, "note": "plain"}"#,
+        &["/bind_service_password"],
+        &["hunter2"],
+    );
+    assert!(apply(STAMPED, &[settled], false).is_ok());
+}
+
+/// A short or generic known value (a bare boolean or number, or under 8 bytes) is never matched, so
+/// it cannot refuse a correct migration.
+#[test]
+fn short_and_generic_known_values_pass() {
+    for known in ["admin", "true", "12345678", "1.5e10", "short"] {
+        let settled = ldap(
+            &format!(r#"{{"bind_service_password": {{"file": "/x"}}, "note": "{known}"}}"#),
+            &["/bind_service_password"],
+            &[known],
+        );
+        assert!(apply(STAMPED, &[settled], false).is_ok(), "{known}");
+    }
 }

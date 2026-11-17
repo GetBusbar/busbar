@@ -27,16 +27,23 @@ pub(super) fn extend(document: &mut Value) {
     let Some(inputs) = INPUT_SCHEMAS.get() else {
         return;
     };
-    let definitions = document["$defs"].as_object_mut().expect("host definitions");
-    definitions.extend(inputs.definitions.clone());
-    let properties = document["properties"]
-        .as_object_mut()
-        .expect("host properties");
-    for (name, schema) in &inputs.properties {
-        // Host-owned blocks cannot be replaced by a plane's additional declaration.
-        properties
-            .entry(name.clone())
-            .or_insert_with(|| schema.clone());
+    inputs.extend_document(document);
+}
+
+#[cfg(feature = "openapi-schema")]
+impl InputSchemas {
+    fn extend_document(&self, document: &mut Value) {
+        let definitions = document["$defs"].as_object_mut().expect("host definitions");
+        definitions.extend(self.definitions.clone());
+        let properties = document["properties"]
+            .as_object_mut()
+            .expect("host properties");
+        for (name, schema) in &self.properties {
+            // Host-owned blocks cannot be replaced by a plane's additional declaration.
+            properties
+                .entry(name.clone())
+                .or_insert_with(|| schema.clone());
+        }
     }
 }
 

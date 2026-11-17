@@ -71,7 +71,7 @@ pub(crate) fn render_settings<T: serde::Serialize + ?Sized>(
     settings: &T,
 ) -> Result<Vec<u8>, (Outcome, String)> {
     let mut rendered = Vec::new();
-    serde_json::to_writer(&mut rendered, settings)
+    busbar_contract::json::to_writer(&mut rendered, settings)
         .map_err(|e| (Outcome::Refused, e.to_string()))?;
     Ok(rendered)
 }

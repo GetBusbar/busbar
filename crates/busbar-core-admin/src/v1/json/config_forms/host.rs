@@ -75,19 +75,15 @@ mod tests {
         assert!(defs["Plugins"]["properties"]
             .get("first_party_floors")
             .is_none());
-        assert!(defs["Plugins"]["properties"].get("logs").is_some());
         let schema = json!({"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":defs,"$ref":"#/$defs/Plugins"});
         let validator = jsonschema::validator_for(&schema).unwrap();
         for value in [
             json!({}),
             json!({"enabled":true,"trust":{"publishers":[{"name":"third","public_key":"hex"}]}}),
             json!({"fetch":[{"github":"org/repo@tag","sha256":null},{"url":"https://example/a.tar.gz"},{"env":"URL"}]}),
-            json!({"logs":{"level":null,"rotate_mb":null}}),
-            json!({"logs":{"levels":{"instance":"debug"},"keep":5}}),
             json!({"first_party_floors":{}}),
             json!({"fetch":[{"url":"https://example/a.tar.gz","env":"URL"}]}),
             json!({"trust":null}),
-            json!({"logs":{"unknown":true}}),
         ] {
             assert_eq!(
                 validator.is_valid(&value),

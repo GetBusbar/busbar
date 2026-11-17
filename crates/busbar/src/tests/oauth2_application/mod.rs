@@ -23,6 +23,12 @@ mod issuer;
 mod mount_tests;
 mod registration_tests;
 
+/// The JSON body of `response`, read as a tree (lexemes kept, last duplicate key wins).
+async fn read_json(response: reqwest::Response) -> busbar_contract::json::Value {
+    busbar_contract::json::parse_value(&response.bytes().await.expect("the response body reads"))
+        .expect("the response body is JSON")
+}
+
 fn tls_identity() -> (Arc<rustls::ServerConfig>, &'static str) {
     static IDENTITY: std::sync::LazyLock<(Arc<rustls::ServerConfig>, String)> =
         std::sync::LazyLock::new(|| {
@@ -227,19 +233,13 @@ async fn build_application(
     crate::dist_root_install::install();
 
     let store_library = crate::root::test_plugins::application_store_library();
-    let stated = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&stated)
-        .expect("the actual store statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&store_library).name;
     let library = std::fs::read(&store_library).expect("the actual store library reads");
-    let mut manifest = plugins::manifest(
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(stated));
     let instance = busbar_kernel::door::op_id().counter();
     let directory = plugins::scratch(&format!("oauth-application-{instance}"));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -256,7 +256,7 @@ async fn build_application(
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         })
     });
     document["store"] = serde_json::json!({"module":module,"settings":settings});
@@ -317,6 +317,16 @@ async fn build_application(
         } else {
             None
         };
+        let rules = crate::root::min3_boot::fixture::carry(
+            match &fresh_store {
+                Some(fresh) => fresh.rules(),
+                None => prior
+                    .expect("retained authorization-server app")
+                    .root_rules
+                    .clone(),
+            },
+            rules.clone(),
+        );
         let opened_store = match &fresh_store {
             Some(fresh) => fresh.opened(),
             None => prior
@@ -423,8 +433,12 @@ async fn build_application(
                 .governance
                 .as_ref()
                 .expect("the actual AS owns governance");
-            gov.core_store_handle()
-                .expect("the actual AS owns native persistence")
+            crate::root::min3_boot::fixture::Admitted {
+                core: gov
+                    .core_store_handle()
+                    .expect("the actual AS owns native persistence"),
+                rules: app.root_rules.clone(),
+            }
         })
     });
 
@@ -453,21 +467,13 @@ async fn build_application(
         {
             plugins::bootstrap_fresh_application_store(&config, &plugins, &directory).await
         } else {
-            Ok::<_, String>(
-                crate::root::real_store::core_over(
-                    busbar_kernel::appbuild::bootstrap_config_store(
-                        &config,
-                        &plugins,
-                        &busbar_kernel::preflight::Unopened,
-                    )
-                    .await
-                    .expect("the actual backend opens"),
-                )
-                .await,
-            )
+            match crate::root::min3_boot::fixture::open(&config, &plugins, rules.clone()).await {
+                Ok(opened) => Ok(opened.admit().await),
+                Err(error) => Err(error),
+            }
         }
         .expect("the actual hosted-login Store anchors its config authority");
-        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(opened.clone())
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(opened.core.clone())
             .expect("the actual hosted-login Store supports a writable config overlay");
         (Some(opened), Some(overlay))
     } else {
@@ -478,25 +484,26 @@ async fn build_application(
         Some(opened) => opened,
         None => {
             if let Some(app) = carried {
-                app.governance
-                    .as_ref()
-                    .expect("retained governance")
-                    .core_store_handle()
-                    .unwrap()
+                crate::root::min3_boot::fixture::Admitted {
+                    core: app
+                        .governance
+                        .as_ref()
+                        .expect("retained governance")
+                        .core_store_handle()
+                        .unwrap(),
+                    rules: app.root_rules.clone(),
+                }
             } else {
-                crate::root::real_store::core_over(
-                    busbar_kernel::appbuild::bootstrap_config_store(
-                        &config,
-                        &plugins,
-                        &busbar_kernel::preflight::Unopened,
-                    )
+                crate::root::min3_boot::fixture::open(&config, &plugins, rules.clone())
                     .await
-                    .expect("the actual backend opens"),
-                )
-                .await
+                    .expect("the actual backend opens")
+                    .admit()
+                    .await
             }
         }
     };
+    let rules = crate::root::min3_boot::fixture::carry(opened_store.rules, rules);
+    let opened_store = opened_store.core;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugins,

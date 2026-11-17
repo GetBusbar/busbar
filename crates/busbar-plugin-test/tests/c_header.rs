@@ -76,20 +76,23 @@ fn the_c_fixture_is_admitted_as_a_dropped_in_secret_plugin() {
     );
     let bytes = std::fs::read(fixture_library()).expect("the fixture library");
     let manifest = test_manifest(&bytes, &["secret-c"]).expect("the fixture's own stamp scans");
-    let admitted = admit_bytes(&bytes, &manifest).unwrap_or_else(|r| panic!("{r}"));
+    let admitted =
+        admit_bytes(&bytes, &manifest, "busbar-secret-c-fixture").unwrap_or_else(|r| panic!("{r}"));
     assert_eq!(admitted.identity(), "busbar-secret-c-fixture");
     assert_eq!(admitted.kind(), KindCode::Secret);
     assert_eq!(&admitted.stamp.crypto, b"external");
     assert!(admitted.sha256().is_some(), "a dropped-in image");
 
-    let again = admit_bytes(&bytes, &manifest).unwrap_or_else(|r| panic!("{r}"));
+    let again =
+        admit_bytes(&bytes, &manifest, "busbar-secret-c-fixture").unwrap_or_else(|r| panic!("{r}"));
     assert!(
         std::sync::Arc::ptr_eq(&admitted.image, &again.image),
         "identical bytes answer the resident image"
     );
 
     let renamed = test_manifest(&bytes, &["secret-d"]).expect("scans");
-    let refused = admit_bytes(&bytes, &renamed).expect_err("the header states secret-c");
+    let refused = admit_bytes(&bytes, &renamed, "busbar-secret-c-fixture")
+        .expect_err("the header states secret-c");
     assert_eq!(
         (refused.code, refused.field),
         (RefusalCode::DoorStampMismatch, "former_names")
@@ -106,13 +109,13 @@ fn the_c_fixture_admits_and_runs_every_entry() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: entry::guard absent, GetBusbar/busbar#272 (W1-H1)"]
 fn arena_outputs_never_overlap_and_are_zero_after_the_entry() {
     todo!("owner: W1-H1 (C-HEADER)")
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: entry::guard absent, GetBusbar/busbar#272 (W1-H1)"]
 fn the_full_table_nested_arm() {
     todo!("owner: W1-H1 (C-HEADER)")
 }

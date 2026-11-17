@@ -58,11 +58,10 @@ const FIXED_PREFIXES: [&str; 5] = [
     "plugin_loader::dispatch::migrate::",
     "busbar_contract::abi::sdk::migrate::",
 ];
-const ANCHOR_SYMBOLS: [&str; 5] = [
+const ANCHOR_SYMBOLS: [&str; 4] = [
     "busbar_migrate::plan",
     "busbar::root::migrate::run",
     "busbar_kernel::persistence::startup::Manifest::decode",
-    "plugin_loader::dispatch::migrate::settings_migration",
     "busbar_contract::abi::sdk::migrate::read_answer",
 ];
 

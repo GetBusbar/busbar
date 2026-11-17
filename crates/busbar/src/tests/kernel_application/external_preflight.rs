@@ -24,8 +24,9 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
             token: None,
             browser_login: None,
             settings: Default::default(),
-            limits: None,
             insecure_transport: None,
+            provisioning: None,
+            issued_kinds: None,
         },
     );
     let refusal = busbar_kernel::plugins_preflight(

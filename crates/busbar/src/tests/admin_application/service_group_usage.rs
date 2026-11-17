@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use busbar_kernel::governance::VirtualKey;
@@ -30,14 +31,13 @@ struct GroupBucketRead {
 
 fn usage_group_cfg() -> GroupCfg {
     let limit = |metric, amount, per, pool: Option<&str>| LimitCfg {
+        selected: None,
         metric,
         amount,
         per: Some(per),
         scope: pool.map(busbar_contract::records::ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     GroupCfg {
         limits: vec![
@@ -103,18 +103,12 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -144,7 +138,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -263,18 +257,12 @@ async fn get_group_usage_unknown_group_not_found() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -304,7 +292,7 @@ async fn get_group_usage_unknown_group_not_found() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -361,7 +349,7 @@ async fn get_group_usage_unknown_group_not_found() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         error["error"]["message"]
@@ -382,18 +370,12 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -423,7 +405,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});

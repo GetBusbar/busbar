@@ -10,7 +10,7 @@ use crate::persistence::{
     facade::CoreStore,
     journal::{
         runtime::{Carried, RuntimeError, RuntimeJournal, StagedRun},
-        RowChange, StoreJournal, VerifiedHead, WriteResult,
+        RowChange, VerifiedHead, WriteResult,
     },
     partition,
 };
@@ -32,8 +32,11 @@ use std::{
 const FAMILY: NamespaceId = NamespaceId(*b"busbar.unitcp.v1");
 const TAG: &str = "unit.accrued";
 const MEASUREMENT_TAG: &str = "measurement.accrued";
+const PARTITIONED_TAG: &str = "unit.partitioned.v1";
 fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
-    if snapshot.measurement.is_some() {
+    if snapshot.partitions.is_some() {
+        PARTITIONED_TAG
+    } else if snapshot.measurement.is_some() {
         MEASUREMENT_TAG
     } else {
         TAG
@@ -69,7 +72,11 @@ struct Head {
 #[async_trait]
 pub trait UnitCheckpointAudit: Send + Sync {
     fn keys(&self) -> AuditKeySet;
-    fn sign_checkpoint(&self, body: &[u8]) -> RecordStoreResult<Vec<u8>>;
+    /// SIGN A BATCH OF CHECKPOINT BODIES under the deployment key, one signature per body, in
+    /// order (SEALING-FIX §3.3 "Checkpoint signing"): one job on the root's Bootstrap signer
+    /// thread per persist call, never on the calling runtime. All or nothing: any failure fails
+    /// every body, and nothing is staged.
+    async fn sign_checkpoints(&self, bodies: &[&[u8]]) -> RecordStoreResult<Vec<Vec<u8>>>;
     /// Confirm a terminal unit's sealed audit line. `hint` is the line's carried evidence when
     /// this process sealed it (SHUTDOWN-HANG F1a): one read; `None` keeps the cold scan.
     async fn confirm(
@@ -110,7 +117,7 @@ impl UnitCheckpointEvidence {
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
         self.journal.live_proof().await.map_err(error)
     }
-    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
+    pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<(u64, AuditRecord)> {
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -118,17 +125,20 @@ impl UnitCheckpointEvidence {
             .filter(|p| {
                 p.audit.what.unit_key.get() == unit && p.audit.what.incarnation == incarnation
             })
-            .map(|p| p.audit.clone())
+            .and_then(|p| {
+                p.run
+                    .records()
+                    .first()
+                    .map(|record| (record.node_seq, p.audit.clone()))
+            })
     }
     /// Complete the native chain before returning any reconstructed audit facts.
     pub async fn find_audit(
         &self,
         unit: u64,
         incarnation: u64,
-    ) -> RecordStoreResult<Option<AuditRecord>> {
+    ) -> RecordStoreResult<Option<(u64, AuditRecord)>> {
         crate::off_path::governance::runtime::unit_checkpoint_store_find_audit(
-            &self.store,
-            self.node,
             &self.journal,
             unit,
             incarnation,
@@ -159,7 +169,10 @@ impl UnitCheckpointEvidence {
     }
     /// Retain the exact signed audit and original sealed frame before native IO.
     /// Callers reuse pending_audit after uncertainty rather than sealing a new line.
-    pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<()> {
+    /// Append a recovered running unit's audit line and confirm it. Returns the WAL `node_seq` of
+    /// the record that carries it (SEALING-FIX §3.5 r16), including when the identical line was
+    /// already confirmed in the journal by an earlier attempt.
+    pub async fn append_audit(&self, audit: AuditRecord) -> RecordStoreResult<u64> {
         let _driving = self.audit_driving.lock().await;
         let existing = self
             .audit_pending
@@ -172,12 +185,12 @@ impl UnitCheckpointEvidence {
             }
             pending
         } else {
-            if let Some(selected) = self
+            if let Some((node_seq, selected)) = self
                 .find_audit(audit.what.unit_key.get(), audit.what.incarnation)
                 .await?
             {
                 return if selected == audit {
-                    Ok(())
+                    Ok(node_seq)
                 } else {
                     Err(refusal("running audit identity already differs"))
                 };
@@ -194,11 +207,17 @@ impl UnitCheckpointEvidence {
             pending
         };
         self.journal.confirm(&pending.run).await.map_err(error)?;
+        let node_seq = pending
+            .run
+            .records()
+            .first()
+            .ok_or_else(|| refusal("running audit staging produced no original"))?
+            .node_seq;
         self.audit_pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        Ok(())
+        Ok(node_seq)
     }
 }
 
@@ -229,8 +248,10 @@ struct Pending {
     /// The proof the retained attempt CASes against; `None` until the first crossing (live head)
     /// and after a definite no-effect re-arm.
     proof: Option<Arc<VerifiedHead>>,
-    /// A re-driven uncertain attempt met a definite no-effect; never resubmitted.
-    reconciling: bool,
+    /// The last crossing definitely applied nothing and our authority was lost or could not be
+    /// read: the next crossing first repeats the authority read, and nothing crosses until it
+    /// passes (owner ruling 2026-11-16).
+    authority_first: bool,
     operation: [u8; 16],
 }
 impl Pending {
@@ -249,7 +270,7 @@ impl Pending {
             run: self.run.clone(),
             appended: self.appended,
             proof: None,
-            reconciling: false,
+            authority_first: false,
             operation: crate::door::op_id().0,
         };
         (half(first), half(rest))
@@ -267,6 +288,10 @@ enum Attempt {
         conflict: bool,
         why: RecordStoreError,
     },
+    /// A re-driven in-doubt attempt met a definite no-effect with our authority intact (owner
+    /// ruling 2026-11-16): the same rows, re-armed under a new operation id and saved in the
+    /// slot, to re-select against the live head.
+    Reselect(Pending),
 }
 
 const UNRESOLVED: &str = "running money native custody remains unresolved";
@@ -347,11 +372,12 @@ impl StoreUnitCheckpoints {
         raw: &Secret<Vec<u8>>,
         proof: &VerifiedHead,
     ) -> RecordStoreResult<(Head, UnitCheckpoint, Record, Option<u64>, Carried)> {
-        let head: Head = serde_json::from_slice(raw.expose(&crate::seal::lend())).map_err(error)?;
-        if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
+        let head: Head =
+            busbar_contract::json::parse(raw.expose(&crate::seal::lend())).map_err(error)?;
+        if !matches!(head.version, 1 | 2) || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
-        let journal = StoreJournal::new(&self.evidence.store, head.node).map_err(error)?;
+        let journal = self.evidence.journal.history().map_err(error)?;
         // Every record is located in O(1) from the runtime's segment map (W1); no replay.
         let ordinal = self
             .evidence
@@ -368,14 +394,16 @@ impl StoreUnitCheckpoints {
                 .await
                 .map_err(carried_error)?,
             None => journal
-                .read_verified_record_at(proof, head.sequence, ordinal)
+                .record_at(proof, head.sequence, ordinal)
                 .await
                 .map_err(error)?,
         };
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
         let tag = reader.text();
-        if record.class != RecordClass::Checkpoint || !matches!(tag, Some(TAG | MEASUREMENT_TAG)) {
+        if record.class != RecordClass::Checkpoint
+            || !matches!(tag, Some(TAG | MEASUREMENT_TAG | PARTITIONED_TAG))
+        {
             return Err(refusal(
                 "running money head does not name unit.accrued evidence",
             ));
@@ -402,7 +430,15 @@ impl StoreUnitCheckpoints {
         {
             return Err(refusal("host measurement evidence exceeds bound"));
         }
-        let snapshot: UnitCheckpoint = serde_json::from_slice(encoded).map_err(error)?;
+        if (head.version == 2) != (tag == Some(PARTITIONED_TAG)) {
+            return Err(refusal(
+                "checkpoint head version differs from its signed domain",
+            ));
+        }
+        if tag == Some(PARTITIONED_TAG) {
+            crate::governance::unit_checkpoint::partitions::check_encoded(encoded)?;
+        }
+        let snapshot: UnitCheckpoint = busbar_contract::json::parse(encoded).map_err(error)?;
         snapshot.validate()?;
         if tag != Some(checkpoint_tag(&snapshot)) {
             return Err(refusal(
@@ -471,12 +507,15 @@ impl StoreUnitCheckpoints {
             .is_some()
     }
     /// A definite no-effect re-arms the attempt: the same rows (and staged originals) under a
-    /// new operation id, against the live head on the next crossing.
-    fn rearm(&self, mut pending: Pending) {
+    /// new operation id, against the live head on the next crossing. It is saved in the slot and
+    /// returned. With `authority_first` the next crossing first repeats the authority read, and
+    /// nothing crosses until it passes.
+    fn rearm(&self, mut pending: Pending, authority_first: bool) -> Pending {
         pending.proof = None;
-        pending.reconciling = false;
+        pending.authority_first = authority_first;
         pending.operation = crate::door::op_id().0;
-        self.save(pending);
+        self.save(pending.clone());
+        pending
     }
     /// Write the proof `change_rows_live` will CAS against into the retained slot,
     /// synchronously under its driver and before any native claim. Only the
@@ -502,10 +541,17 @@ impl StoreUnitCheckpoints {
             }
         }
         // A retained proof means an earlier crossing of this exact attempt has an unknown outcome
-        // (cancelled or reply lost); once a re-drive met a definite no-effect, only
-        // reconciliation resolves it.
-        if pending.reconciling {
-            return Err(refusal(UNRESOLVED));
+        // (cancelled or reply lost).
+        if pending.authority_first {
+            // (owner ruling 2026-11-16) Our authority was lost or unread after a crossing that
+            // applied nothing: only the authority read repeats until it passes.
+            self.evidence
+                .journal
+                .confirm_with(&[])
+                .await
+                .map_err(error)?;
+            pending.authority_first = false;
+            self.save(pending.clone());
         }
         let redrive = pending.proof.is_some();
         let operation = pending.operation;
@@ -546,11 +592,16 @@ impl StoreUnitCheckpoints {
             }
             Err(Failed::Unresolved(why)) => Err(why),
             Err(Failed::Definite { .. }) if redrive => {
-                // The re-drive's no-effect does not resolve the earlier crossing, which may still
-                // land: keep the exact attempt, never resubmit it.
-                pending.reconciling = true;
-                self.save(pending);
-                Err(refusal(UNRESOLVED))
+                // (F2.2, owner ruling 2026-11-16 "Re-select, after authority check") The re-drive
+                // resubmitted the retained attempt under its own commit key, and the store answers
+                // an attempt that already applied as Applied: this no-effect is definitive. Our
+                // authority first: lost, nothing crosses again until it passes; otherwise the same
+                // rows and staged originals are re-selected once under a new operation id.
+                if let Err(lost) = self.evidence.journal.confirm_with(&[]).await {
+                    self.rearm(pending, true);
+                    return Err(error(lost));
+                }
+                Ok(Attempt::Reselect(self.rearm(pending, false)))
             }
             Err(Failed::Definite { conflict, why }) => Ok(Attempt::Definite {
                 pending,
@@ -597,6 +648,7 @@ impl StoreUnitCheckpoints {
             let ids = next.ids();
             match self.attempt(next).await {
                 Ok(Attempt::Applied) => out.extend(ids.into_iter().map(|id| (id, Ok(())))),
+                Ok(Attempt::Reselect(pending)) => work.push(pending),
                 Err(why) => {
                     out.extend(ids.iter().map(|id| (*id, Err(copied(&why)))));
                     blocked = Some(why.0);
@@ -622,9 +674,9 @@ impl StoreUnitCheckpoints {
                     } else if let Err(lost) = self.evidence.journal.confirm_with(&[]).await {
                         // Authority first (F3.2 step 4, r13): fenced, or not read. Nothing is
                         // split and the limit is not halved; the attempt is re-armed whole and
-                        // the next call repeats only this check after its no-effect.
+                        // the next call repeats only this check; nothing crosses until it passes.
                         let why = error(lost);
-                        self.rearm(pending);
+                        self.rearm(pending, true);
                         out.extend(ids.iter().map(|id| (*id, Err(copied(&why)))));
                         blocked = Some(why.0);
                     } else {
@@ -666,7 +718,7 @@ impl StoreUnitCheckpoints {
         let current = match self.head(&row.snapshot.id).await {
             Ok(current) => current,
             Err(failed) => {
-                self.rearm(pending);
+                self.rearm(pending, false);
                 return (failed, true);
             }
         };
@@ -687,15 +739,15 @@ impl StoreUnitCheckpoints {
         // (F2.2) With the head row unchanged, a definite no-effect is our authority (a fence, a
         // moved root epoch, an execution epoch no longer admitted; a size refusal and a fenced
         // send answer alike) or a changed original. Authority first, in one read: then the
-        // attempt is kept as it is and never retried as benign.
+        // attempt is kept, never retried as benign, and nothing crosses until the read passes.
         if let Err(lost) = self.evidence.journal.confirm_with(&[]).await {
-            self.save(pending);
+            self.rearm(pending, true);
             return (error(lost), true);
         }
         // Under the driver a no-effect is a real fence, epoch or foreign change, or changed
         // original bytes: name a changed original as such instead of a moved head.
         let mut diagnosis = None;
-        match StoreJournal::new(&self.evidence.store, self.evidence.node) {
+        match self.evidence.journal.history() {
             Ok(journal) => {
                 let ordinal = self
                     .evidence
@@ -704,9 +756,7 @@ impl StoreUnitCheckpoints {
                     .ok()
                     .or(row.ordinal);
                 if let Some(ordinal) = ordinal {
-                    if let Err(failed) = journal
-                        .confirm_original_record(&used, ordinal, &row.record)
-                        .await
+                    if let Err(failed) = journal.confirm_original(&used, ordinal, &row.record).await
                     {
                         diagnosis = Some(error(failed));
                     }
@@ -715,7 +765,7 @@ impl StoreUnitCheckpoints {
             Err(failed) => diagnosis = Some(error(failed)),
         }
         // Re-arm with the live head on the next call.
-        self.rearm(pending);
+        self.rearm(pending, false);
         (diagnosis.unwrap_or(why), true)
     }
 
@@ -770,7 +820,7 @@ impl StoreUnitCheckpoints {
         if let Err(why) = self.no_foreign_pending() {
             return answered(out, &why);
         }
-        let mut entries = Vec::new();
+        let mut unsigned: Vec<(Vec<u8>, u64)> = Vec::new();
         let mut staged: Vec<(usize, Option<Secret<Vec<u8>>>)> = Vec::new();
         for (at, snapshot) in snapshots.iter().enumerate() {
             if out[at].is_some() {
@@ -787,8 +837,8 @@ impl StoreUnitCheckpoints {
             }
             match self.prepare_persist(snapshot).await {
                 Ok(None) => out[at] = Some(Ok(())),
-                Ok(Some((entry, previous))) => {
-                    entries.push(entry);
+                Ok(Some((body, arrived, previous))) => {
+                    unsigned.push((body, arrived));
                     staged.push((at, previous));
                 }
                 Err(why) => out[at] = Some(Err(why)),
@@ -797,6 +847,32 @@ impl StoreUnitCheckpoints {
         if staged.is_empty() {
             return answered(out, &refusal("unit checkpoint batch result missing"));
         }
+        // One signing job for the whole batch (SEALING-FIX §3.3): all or nothing, before staging.
+        let bodies: Vec<&[u8]> = unsigned.iter().map(|(body, _)| body.as_slice()).collect();
+        let signed = match self.audit.sign_checkpoints(&bodies).await {
+            Ok(signatures) if signatures.len() == unsigned.len() => Ok(signatures),
+            Ok(_) => Err(refusal("unit checkpoint signer answered a different count")),
+            Err(why) => Err(why),
+        };
+        let signatures = match signed {
+            Ok(signatures) => signatures,
+            Err(why) => {
+                for (at, _) in &staged {
+                    out[*at] = Some(Err(copied(&why)));
+                }
+                return answered(out, &why);
+            }
+        };
+        let entries: Vec<Entry> = unsigned
+            .into_iter()
+            .zip(signatures)
+            .map(|((mut signed, arrived), signature)| {
+                let mut field = BodyWriter::new();
+                field.bytes(&signature);
+                signed.extend_from_slice(&field.finish());
+                Entry::new(RecordClass::Checkpoint, signed).at(arrived, 0)
+            })
+            .collect();
         let run = match self.evidence.journal.stage_run(&entries).map_err(error) {
             Ok(run) => run,
             Err(why) => {
@@ -815,7 +891,7 @@ impl StoreUnitCheckpoints {
                 continue;
             };
             let head = Head {
-                version: 1,
+                version: if snapshot.partitions.is_some() { 2 } else { 1 },
                 node: self.evidence.node,
                 sequence: record.node_seq,
                 revision: snapshot.revision,
@@ -840,7 +916,7 @@ impl StoreUnitCheckpoints {
                 run: Some(run),
                 appended: false,
                 proof: None,
-                reconciling: false,
+                authority_first: false,
                 operation: crate::door::op_id().0,
             };
             place(&mut out, snapshots.iter(), self.drive(pending).await);
@@ -849,11 +925,12 @@ impl StoreUnitCheckpoints {
     }
 
     /// One checkpoint's pre-checks before staging: `None` when its exact revision is already
-    /// selected (confirmed in place), else its signed original and the head row it replaces.
+    /// selected (confirmed in place), else its unsigned original body, its arrival, and the head
+    /// row it replaces. The caller signs every body of the batch in one job.
     async fn prepare_persist(
         &self,
         snapshot: &UnitCheckpoint,
-    ) -> RecordStoreResult<Option<(Entry, Option<Secret<Vec<u8>>>)>> {
+    ) -> RecordStoreResult<Option<(Vec<u8>, u64, Option<Secret<Vec<u8>>>)>> {
         snapshot.validate()?;
         if snapshot.measurement.is_none() && snapshot.audit.is_none() {
             return Err(refusal("unit.accrued lacks captured admission audit facts"));
@@ -880,6 +957,11 @@ impl StoreUnitCheckpoints {
                     "running money checkpoint would overwrite selected custody",
                 ));
             }
+            if selected.partitions.is_some() || snapshot.partitions.is_some() {
+                crate::governance::unit_checkpoint::partitions::validate_successor(
+                    &selected, snapshot,
+                )?;
+            }
         }
         let encoded = crate::off_path::governance::runtime::unit_checkpoint_store_encode(snapshot)
             .map_err(error)?;
@@ -890,15 +972,7 @@ impl StoreUnitCheckpoints {
         }
         let mut body = BodyWriter::new();
         body.text(checkpoint_tag(snapshot)).bytes(&encoded);
-        let mut signed = body.finish();
-        let signature = self.audit.sign_checkpoint(&signed)?;
-        let mut field = BodyWriter::new();
-        field.bytes(&signature);
-        signed.extend_from_slice(&field.finish());
-        Ok(Some((
-            Entry::new(RecordClass::Checkpoint, signed).at(snapshot.arrived, 0),
-            previous,
-        )))
+        Ok(Some((body.finish(), snapshot.arrived, previous)))
     }
 
     /// Phase R (SHUTDOWN-HANG F3.1): each terminal checkpoint's audit is confirmed (by its carried
@@ -940,7 +1014,7 @@ impl StoreUnitCheckpoints {
                 run: None,
                 appended: true,
                 proof: None,
-                reconciling: false,
+                authority_first: false,
                 operation: crate::door::op_id().0,
             };
             place(&mut out, refs.iter().copied(), self.drive(pending).await);

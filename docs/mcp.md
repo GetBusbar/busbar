@@ -115,7 +115,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `args` | list of strings | no; **refused** on non-stdio | `[]` | The child's argv, verbatim. Never split on spaces. |
 | `env` | map of name → string \| secret ref | no; **refused** on non-stdio | `{}` | The child's WHOLE environment. |
 | `cwd` | string | no; **refused** on non-stdio | Busbar's own | Absolute. |
-| `verify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`tools_config.rs`) | The longest an observation of this upstream's tool list may be reused on the `tools/call` path before it is re-fetched and re-verified. `0` = strict-live (re-verify every call); a larger value is an explicit security downgrade. Renamed from `refresh_ttl` in 1.6.0 — see [Tool and agent trust](/docs/tool-and-agent-trust/). |
+| `verify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`tools_config.rs`) | The longest an observation of this upstream's tool list may be reused on the `tools/call` path before it is re-fetched and re-verified. `0` = strict-live (re-verify every call); a larger value is an explicit security downgrade. See [Tool and agent trust](/docs/tool-and-agent-trust/). |
 | `timeout` | `<n><s\|m\|h\|d>` | no | `30s` (the core's default for a tool-server registration, `DEFAULT_ENTRY_TIMEOUT_MS` in `crates/busbar-contract/src/section.rs`) | Wall-clock budget for one outbound leg (the tool call; separately, the tool-list fetch and the RFC 8693 exchange). `0` is refused. |
 | `tools_allow` | map of tool name → object | no | `{}` | The approved tools. A map, not a list, because every tool needs a slot for its approved schema hash. |
 | `prompts_allow` | map of prompt name → object | no | `{}` | |
@@ -123,12 +123,12 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `resource_templates_allow` | map of URI template → object | no | `{}` | RFC 6570 **level 1 only**. |
 | `aud` | absolute http(s) URI | required when `token_exchange:` is set; **refused** on `stdio` | — | The RFC 8707 resource indicator for the OUTBOUND token. Not Busbar's own audience — that is `mcp.canonical_uri`. |
 | `grants` | object of three booleans | no | all `false` | `sampling`, `elicitation`, `roots` — which asks this upstream may put to your callers. A granted ask is relayed to the caller; Busbar answers none itself. |
-| `allow_private` | — | **refused** (BUSBAR-3135) | — | Retired in 1.6.0. One setting governs every outbound connection: list the server's host (or its address) in [`advanced.allow_destinations`](/docs/configuration/#advanced). the first-boot migration removes the key and lists exactly that registration's host. A cloud-metadata address stays refused whatever is listed. |
+| `allow_private` | bool | no | `false` | Lets this registration's own private, loopback or link-local host be reached. It is judged for this registration alone and widens nothing else; a cloud-metadata address stays refused whatever is written. |
 | `token_exchange` | object | no; **refused** on `stdio` | absent | RFC 8693 exchange. Absent ⇒ no credential is sent at all. |
 | `max_input_required_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on the rounds of an UPSTREAM's asks Busbar relays to its caller, per dispatch. `0` means never. |
 | `max_caller_ask_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on rounds Busbar asks ITS OWN CALLER for. `0` is an operator kill switch for every `ask_caller` on this server. |
 | `sampling_bounds` | object | no | see below | Input-side bounds on a relayed `sampling/createMessage` ask. An ask past any bound is refused by name (`sampling_bound_exceeded`), never relayed. |
-| `upstream_credentials` | `own` \| `passthrough` | no; **refused** on `stdio` | section value, else engine default | |
+| `upstream_credentials` | `own` \| `passthrough` \| `connection` | no; **refused** on `stdio` | section value, else engine default | `own` spends Busbar's own credential, `passthrough` is refused (see above), and `connection` spends the calling user's separately consented upstream OAuth connection: it requires HTTPS and the host's connection services, excludes `stdio`, and cannot be combined with `token_exchange`. |
 | `hooks` | list of bare names | no | `[]` | Adds to `tools.hooks:`. |
 
 **`tools_allow.<tool>`** (`tools_config.rs`):
@@ -154,7 +154,7 @@ One round of `ask_caller` is a map from a server-assigned key to `{method, param
 
 **`resource_templates_allow.<template>`**: `name`, `description`, `mime_type`, `text`. There is deliberately no `blob:`.
 
-**`token_exchange`**: `token_url` (must be `https`; its host is governed by [`advanced.allow_destinations`](/docs/configuration/#advanced) like every other destination), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`tools_config.rs`; the derivation is `tool_scope.rs`).
+**`token_exchange`**: `token_url` (must be `https`; its host is judged like every other outbound destination), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`tools_config.rs`; the derivation is `tool_scope.rs`).
 
 ```yaml
 tools:
@@ -206,37 +206,37 @@ tools:
 
 All of these are checked by `validate_server` / `validate_endpoint`, which is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`tools_config.rs`).
 
-| Refusal | Condition | `tools_config.rs` |
-|---|---|---|
-| server id may not contain `_` | the id is the first half of the `<server>_<tool>` routing key; with a separator inside it two different `(server, tool)` pairs render the same key and one `mcp_tool` grant silently names both. **Tool names may contain `_`** — only the id may not | `1202-1212` |
-| `command:` / `args:` / `env:` / `cwd:` on a network registration | those describe a child process | `1062-1076` |
-| `url:` missing / not http(s) on a network registration | | `1077-1087` |
-| `url:` present on `transport: stdio` | the registration named two different servers | `1091-1096` |
-| `command:` missing on `transport: stdio` | there is no default and Busbar will not guess one | `1097-1107` |
-| `command:` not an absolute path | a bare name is resolved through `PATH`, so whoever controls Busbar's environment chooses the binary. Checked with `Path::is_absolute`, which is platform-correct (a drive-relative `\foo` on Windows is refused for the same reason) | `1123-1129` |
-| `cwd:` not absolute | | `1130-1137` |
-| `env:` name empty, or containing `=` or NUL | not a variable an exec can carry | `1138-1149` |
-| `token_exchange:` on `stdio` | a pipe has no header block to carry a bearer. Refused rather than silently dropped | `1154-1160` |
-| `aud:` on `stdio` | stdio mints no outbound token | `1161-1166` |
-| `upstream_credentials:` on `stdio` | stdio makes no network hop | `1167-1172` |
-| rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin | `1218-1225` |
-| `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist | `1226-1232` |
-| `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later | `tools_config.rs` |
-| `timeout:` unparseable, or `0` | zero would refuse every call before it was sent. There is deliberately no spelling for "unlimited" | `1246-1256` |
-| `task_ask_caller:` with `task_support` absent or `none` | the ask could never be emitted | `1324-1331` |
-| `publish_as:` empty, or with leading/trailing whitespace | it is compared byte-for-byte against a `tools/call` name and against an `mcp_tool:` grant | `1337-1354` |
-| empty `tools_allow` / `prompts_allow` name key, empty `resources_allow` URI key | | `1550-1555`, `1361-1363` |
-| `prompts_allow.<n>` declares both `template:` and `messages:` | two alternative spellings of one prompt | `1559-1566` |
-| `messages[i].role` not `user` or `assistant` | | `1571-1577` |
-| base64 that does not decode (`image.data`, `audio.data`, `resource.blob`, `resources_allow.<uri>.blob`) | | `1607-1618` |
-| `resources_allow.<uri>` declares both `text:` and `blob:` | | `1365-1372` |
-| a resource template using anything above RFC 6570 level 1 (`+ # / ? & *`), an unbalanced brace, an empty `{}`, a duplicated parameter, or no parameter at all | a matcher that accepted level-3 syntax with level-1 semantics would resolve some URIs to the wrong template — content served under an approval nobody gave | `1629-1684` |
-| `resource_templates_allow.<t>.text:` substitutes none of the template's parameters | a concrete resource behind a URI wildcard | `1382-1393` |
-| `token_exchange.token_url:` not https | it receives Busbar's own subject token | `1401-1409` |
-| `token_exchange:` beside `upstream_credentials: passthrough` | one says Busbar mints the credential, the other says the caller supplies it | `1413-1422` |
-| `token_exchange:` with no `aud:` | without a resource indicator the issued token is spendable at any backend the AS serves | `1426-1432` |
-| `aud:` not an absolute http(s) URI | | `1435-1442` |
-| a `hooks:` entry that is not a bare name, or that reaches onto another section (`pools.x`, `agents.y`) | | `crates/busbar-kernel/src/config/plane_sections.rs` |
+| Refusal | Condition |
+|---|---|
+| server id may not contain `_` | the id is the first half of the `<server>_<tool>` routing key; with a separator inside it two different `(server, tool)` pairs render the same key and one `mcp_tool` grant silently names both. **Tool names may contain `_`** — only the id may not |
+| `command:` / `args:` / `env:` / `cwd:` on a network registration | those describe a child process |
+| `url:` missing / not http(s) on a network registration | |
+| `url:` present on `transport: stdio` | the registration named two different servers |
+| `command:` missing on `transport: stdio` | there is no default and Busbar will not guess one |
+| `command:` not an absolute path | a bare name is resolved through `PATH`, so whoever controls Busbar's environment chooses the binary. Checked with `Path::is_absolute`, which is platform-correct (a drive-relative `\foo` on Windows is refused for the same reason) |
+| `cwd:` not absolute | |
+| `env:` name empty, or containing `=` or NUL | not a variable an exec can carry |
+| `token_exchange:` on `stdio` | a pipe has no header block to carry a bearer. Refused rather than silently dropped |
+| `aud:` on `stdio` | stdio mints no outbound token |
+| `upstream_credentials:` on `stdio` | stdio makes no network hop |
+| rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin |
+| `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist |
+| `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later |
+| `timeout:` unparseable, or `0` | zero would refuse every call before it was sent. There is deliberately no spelling for "unlimited" |
+| `task_ask_caller:` with `task_support` absent or `none` | the ask could never be emitted |
+| `publish_as:` empty, or with leading/trailing whitespace | it is compared byte-for-byte against a `tools/call` name and against an `mcp_tool:` grant |
+| empty `tools_allow` / `prompts_allow` name key, empty `resources_allow` URI key | |
+| `prompts_allow.<n>` declares both `template:` and `messages:` | two alternative spellings of one prompt |
+| `messages[i].role` not `user` or `assistant` | |
+| base64 that does not decode (`image.data`, `audio.data`, `resource.blob`, `resources_allow.<uri>.blob`) | |
+| `resources_allow.<uri>` declares both `text:` and `blob:` | |
+| a resource template using anything above RFC 6570 level 1 (`+ # / ? & *`), an unbalanced brace, an empty `{}`, a duplicated parameter, or no parameter at all | a matcher that accepted level-3 syntax with level-1 semantics would resolve some URIs to the wrong template — content served under an approval nobody gave |
+| `resource_templates_allow.<t>.text:` substitutes none of the template's parameters | a concrete resource behind a URI wildcard |
+| `token_exchange.token_url:` not https | it receives Busbar's own subject token |
+| `token_exchange:` beside `upstream_credentials: passthrough` | one says Busbar mints the credential, the other says the caller supplies it |
+| `token_exchange:` with no `aud:` | without a resource indicator the issued token is spendable at any backend the AS serves |
+| `aud:` not an absolute http(s) URI | |
+| a `hooks:` entry that is not a bare name, or that reaches onto another section (`pools.x`, `agents.y`) | |
 
 Two more refusals run over the **whole** effective registry (file base + admin overlay), in `config::resolve`:
 
@@ -311,9 +311,9 @@ If you do not have an IdP you can register clients in, the separate **`oauth_as:
 
 This is the load-bearing one, and it is the difference between a gateway and an open relay. Without it, a token an agent legitimately obtained for some *other* resource — a token your IdP happily issued, for a service that has nothing to do with Busbar — is spendable here against Busbar's pools, budget and upstream credentials.
 
-Busbar compares the token's `aud` for **equality** against `mcp.canonical_uri`, and refuses anything else including a token that carries no audience at all. Never prefix, never suffix, never case-insensitively: a resource indicator is an opaque identifier, and treating it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for `https://gw.example.com/mcp-staging` (`crates/busbar-kernel/src/plane/mod.rs`, `crates/busbar-kernel/src/auth/audience.rs`). RFC 7519's single-string and array forms of `aud` are both accepted.
+Busbar compares the token's `aud` for **equality** against `mcp.canonical_uri`, and refuses anything else including a token that carries no audience at all. Never prefix, never suffix, never case-insensitively: a resource indicator is an opaque identifier, and treating it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for `https://gw.example.com/mcp-staging` (`crates/busbar-kernel/src/auth/audience.rs`). RFC 7519's single-string and array forms of `aud` are both accepted.
 
-The check lives beside the **mount**, not in a handler, so every path behind that door inherits it and a route added later cannot forget it (`crates/busbar-kernel/src/plane/mod.rs`). For a token Busbar did not mint, core makes its own determination *before* the auth chain runs, and only ever to refuse: an unverified `aud` read is sound here precisely because the result can only narrow what is admitted, never widen it (`crates/busbar-kernel/src/auth/audience.rs`).
+The check lives beside the **mount**, not in a handler, so every path behind that door inherits it and a route added later cannot forget it. For a token Busbar did not mint, core makes its own determination *before* the auth chain runs, and only ever to refuse: an unverified `aud` read is sound here precisely because the result can only narrow what is admitted, never widen it (`crates/busbar-kernel/src/auth/audience.rs`).
 
 `canonical_uri` is operator-configured rather than derived from the request's `Host`. Deriving it from the request would let a caller choose its own audience by sending a header, which turns the defence into a formality.
 
@@ -397,13 +397,13 @@ An unsupported protocol version answers `-32022`.
 
 **The session revisions:** sessions are bound to the caller's key and bounded per owner in count and bytes (`door_sessions.rs`, `tool_sessions.rs`). A session request whose `MCP-Protocol-Version` disagrees with its session's revision is `400`. On an ungoverned chain every caller is one owner, so a session isolates nothing; the first `2024-11-05` stream on such an instance reports that once, as a warning.
 
-### Inbound: `busbar --mcp-stdio`
+### Inbound: `busbar --stdio`
 
-For an MCP host that runs Busbar as a child process (Claude Desktop-class), `busbar --mcp-stdio` serves the MCP plane on Busbar's own stdin and stdout, newline-delimited JSON-RPC, and **binds no listener at all** — a child that opened ports would be a network server its supervisor never asked for. The plane states the flag (`tool_meta.rs`); the root serves the plane's line-carrier claim on the process's own stdin and stdout (`crates/busbar/src/main.rs`, `crates/busbar/src/root/serve.rs`), and each line is its own unit (`line.rs`, `door_line.rs`).
+For an MCP host that runs Busbar as a child process (Claude Desktop-class), `busbar --stdio` serves the one configured plane line route on Busbar's own stdin and stdout, newline-delimited JSON-RPC, and **binds no listener at all** — a child that opened ports would be a network server its supervisor never asked for. Core owns the whole command line: a plane or any other plugin defines no flag, and `--stdio` is the one switch for every plane that serves a line route. It is refused (exit 1) unless exactly one admitted plane serves a line route, takes no value, and does not combine with a command that exits. Each line is its own unit. The unreleased `--mcp-stdio` spelling is not accepted; see the [migration guide](migration-1.6.md#command-line).
 
 The **same boot** runs: config load, plugin preflight, governance and the flusher. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`line.rs`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
 
-**Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_MCP_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts, judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (end to end in `crates/busbar/tests/mcp_stdio_serve.rs`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
+**Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_<INSTANCE>_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts (`<INSTANCE>` is the plane instance's name, upper-cased, with every character that is not a letter or digit written as `_`), judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (end to end in `dist/default/tests/mcp_stdio_serve.rs`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
 
 The credential rides an environment variable and not a flag, because argv is world-readable on most platforms and an MCP host's `env` block already has exactly this shape.
 
@@ -411,7 +411,7 @@ The identity is **frozen for the life of the session**: a key revoked mid-sessio
 
 Busbar's log stream is always stderr, so stdout carries the MCP channel and nothing else (`busbar_kernel::observability::init_logging`).
 
-`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`line.rs`).
+`--stdio` requires the plane instance that serves the line route (the `mcp:` block, for the MCP plane). Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`line.rs`).
 
 ### Outbound: `transport: streamable_http`
 
@@ -463,9 +463,9 @@ The plane runs no background re-fetch: a stale server is re-verified on the call
 
 | Route | Scope | What it does |
 |---|---|---|
-| `POST /api/v1/admin/tools/{name}/connect` | mutation | **Reaches the network.** Fetches the upstream's live tool list, re-hashes it, records the observation, and audits whatever it found. It does **not** approve anything — adopting what was seen is a separate, explicit act, precisely so a poisoned capability list cannot be adopted by the same call that fetched it. |
-| `GET /api/v1/admin/tools/{name}/changes` | read | The trust view, computed from the last observation. Contacts nothing; safe to poll. |
-| `GET /api/v1/admin/tools/{name}/health` | read | Can Busbar use this server right now, and if not, why. Contacts nothing. |
+| `connect` operation under the kind-instance admin mount | mutation | **Reaches the network.** Fetches the upstream's live tool list, re-hashes it, records the observation, and audits whatever it found. It does **not** approve anything — adopting what was seen is a separate, explicit act, precisely so a poisoned capability list cannot be adopted by the same call that fetched it. |
+| Instance trust changes view | read | The trust view, computed from the last observation. Contacts nothing; safe to poll. |
+| Instance health view | read | Can Busbar use this server right now, and if not, why. Contacts nothing. |
 
 The plane states these verbs and their OpenAPI fragment (`door.rs`, `ADMIN_OPENAPI`); the admin API mounts them (`crates/busbar-core-admin/src/v1/json/mod.rs`) and the shared sequence is `crates/busbar-core-admin/src/planeverbs.rs`. `connect` is audited; the two reads are not. A registration missing from either the catalogue or config answers the same `404` — two answers a caller could tell apart would be an existence oracle.
 
@@ -564,17 +564,15 @@ The claim is **tamper-evidence, not tamper-prevention.** A chain detects an alte
 
 **An upstream's ask is relayed to the caller; Busbar answers nothing on the caller's behalf.** A server-initiated ask arrives as an `input_required` result of a call Busbar made. `grants.{sampling,elicitation,roots}` decides whether that server may put the ask to your callers at all — every kind the ask names must be granted, or the call is refused (`ask_ungranted`). A granted ask reaches the caller with the upstream's `inputRequests` exactly as sent, under Busbar's own sealed `requestState`, which nests the upstream's state and binds it to that caller, that call (tool and arguments) and the server that asked. The caller's retry is a new request with its own admission: the state is checked and spent once, the call goes back to that same server and no other, and the caller's `inputResponses` and the upstream's own state are handed to it verbatim. Busbar only declares a capability upstream that both the grant and the caller declare. A result that still carries an ask after the relay decision is refused (`ask_not_proxied`). Busbar's own `ask_caller:` rounds are resolved first, as before (`call.rs`, `ask.rs`).
 
-The same rule holds where there is no request waiting to carry the ask back. **Inside a task** (SEP-2663), an upstream's ask parks the task `input_required` with the upstream's `inputRequests` verbatim, under Busbar's sealed state (bound to the caller, the tool and the server that asked, nesting the upstream's own); `tasks/get` shows the asks and `tasks/update` answers them. Once every key is answered the task continues as a new unit: the call goes back to that same server with the caller's answers and the upstream's state, verbatim, and the state is spent once. The answers never become tool arguments (`door_tasks.rs`). **From a `transport: stdio` child**, a `sampling/createMessage`, `elicitation/create` or `roots/list` request the child sends while it serves a call goes to the caller of that call: across HTTP it comes back as an `input_required` result whose `inputRequests` carry the child's requests verbatim (keyed by the child's request ids), correlated with a work handle; on `busbar --mcp-stdio` it is sent to the caller as a live request on the pipe. The caller's answer is written to the child under the child's own request id, and the call the child still owes is read on. A retry must answer every request the child made (`ask_unanswered` otherwise, and the state stays unspent); a spent or forged state is refused. A request over stdio names no call it serves, so calls to a stdio server that holds any of these grants reach its child ONE AT A TIME, in arrival order: a call waits its turn behind the one the child is serving (within its own `timeout:`; past it, it is answered as an upstream failure and never sent), and a call whose ask went to its caller keeps its place until the caller's retry or the ask's state lapses. The child's ask is the caller's of the call it is serving, never another's; one raised while no call is open is refused on the child's input with `-32001` (`ask_unattributed`). An ungranted ask is refused on the child's input with `-32001` (`ask_ungranted`), as is one past `max_input_required_rounds`; `ping` is still answered by Busbar, because it is keepalive, not an ask (`client/peer.rs`, `door_program.rs`).
+The same rule holds where there is no request waiting to carry the ask back. **Inside a task** (SEP-2663), an upstream's ask parks the task `input_required` with the upstream's `inputRequests` verbatim, under Busbar's sealed state (bound to the caller, the tool and the server that asked, nesting the upstream's own); `tasks/get` shows the asks and `tasks/update` answers them. Once every key is answered the task continues as a new unit: the call goes back to that same server with the caller's answers and the upstream's state, verbatim, and the state is spent once. The answers never become tool arguments (`door_tasks.rs`). **From a `transport: stdio` child**, a `sampling/createMessage`, `elicitation/create` or `roots/list` request the child sends while it serves a call goes to the caller of that call: across HTTP it comes back as an `input_required` result whose `inputRequests` carry the child's requests verbatim (keyed by the child's request ids), correlated with a work handle; on `busbar --stdio` it is sent to the caller as a live request on the pipe. The caller's answer is written to the child under the child's own request id, and the call the child still owes is read on. A retry must answer every request the child made (`ask_unanswered` otherwise, and the state stays unspent); a spent or forged state is refused. A request over stdio names no call it serves, so calls to a stdio server that holds any of these grants reach its child ONE AT A TIME, in arrival order: a call waits its turn behind the one the child is serving (within its own `timeout:`; past it, it is answered as an upstream failure and never sent), and a call whose ask went to its caller keeps its place until the caller's retry or the ask's state lapses. The child's ask is the caller's of the call it is serving, never another's; one raised while no call is open is refused on the child's input with `-32001` (`ask_unattributed`). An ungranted ask is refused on the child's input with `-32001` (`ask_ungranted`), as is one past `max_input_required_rounds`; `ping` is still answered by Busbar, because it is keepalive, not an ask (`client/peer.rs`, `door_program.rs`).
 
 ---
 
 ## Conformance
 
-Busbar's MCP conformance is checked by two batteries, both driven from this repository by `scripts/mcp-conformance.sh`:
+Busbar's MCP conformance is checked by two instruments that live in the plane's own repository, GetBusbar/busbar-plane-mcp, and run in that repository's CI against a Busbar binary with the plane dropped in:
 
-- the **official suite** at a pinned version, against a pinned third-party SDK (the control leg) and against a Busbar binary built from the commit under test (the subject leg);
-- an **in-house adversarial/seam battery** in `testing/mcp-conformance/`, likewise control and subject.
+- the **official conformance suite** at a pinned version, run against a pinned third-party SDK (the control leg) and against Busbar (the subject leg);
+- an **independent adversarial/seam battery** (`testing/mcp-conformance/` in that repository), written from the published specification and likewise run as control and subject.
 
-Two rules make the numbers mean something. **Control legs run always** — a battery that cannot judge a known-good third-party peer cannot be trusted to judge Busbar, and a red control is a finding about the harness, never about Busbar. **Subject legs are armed or red** — a disarmed subject leg proves the suite works and proves nothing about Busbar, and it renders as the same green tick as a leg that judged Busbar and passed, so "not armed, so not run" is a failure. Once armed, a run producing fewer than the revision's full required scenario set fails: set equality, never a floor, because a floor of 30 is satisfied by any 30 of 37. No workflow under `.github/workflows/` invokes the script on `dev`; run it yourself.
-
-To run it, arm the subject leg with `MCP_SUBJECT_BUSBAR_BIN` pointing at a binary built from your tree and invoke `scripts/mcp-conformance.sh --official-subject` or `--battery-subject` (`--official-control` and `--battery-control` run the control legs); `--selftest` proves the anti-vacuity assertions still bite before any verdict is trusted. The plane's own repository also runs a plugin conformance test (`plane-mcp-plugin/tests/conformance.rs`, in GetBusbar/busbar-plane-mcp).
+Two rules make the numbers mean something. **Control legs run always**: a battery that cannot judge a known-good third-party peer cannot be trusted to judge Busbar, and a red control is a finding about the harness, never about Busbar. **Subject legs are armed or red**: a disarmed subject leg proves the suite works and proves nothing about Busbar, so "not armed, so not run" is a failure. Once armed, a run producing fewer than the revision's full required scenario set fails: set equality, never a floor.

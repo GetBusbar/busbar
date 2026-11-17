@@ -92,6 +92,11 @@ pub enum ScrapeRefusal {
 async fn collect(
     app: Option<&App>,
 ) -> Result<Vec<busbar_contract::export_calls::Family>, ScrapeRefusal> {
+    prepare(app).await?;
+    crate::snapshot::snapshot().ok_or(ScrapeRefusal::NotReady)
+}
+
+async fn prepare(app: Option<&App>) -> Result<(), ScrapeRefusal> {
     if crate::snapshot::explicitly_off() {
         return Err(ScrapeRefusal::TelemetryDisabled);
     }
@@ -100,13 +105,46 @@ async fn collect(
         if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {
             return Err(ScrapeRefusal::Failed(error));
         }
-        super::plugin::status_if_stale();
+        super::plugin::status_if_stale(&app.exports);
     }
     if installed {
         metrics::gauge!(crate::snapshot::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION"))
             .set(1.0);
     }
-    crate::snapshot::snapshot().ok_or(ScrapeRefusal::NotReady)
+    Ok(())
+}
+
+/// Source availability and output-capacity failure keep their distinct refusal meanings.
+#[derive(Debug)]
+pub enum BudgetedScrapeRefusal {
+    Source(ScrapeRefusal),
+    Output(crate::limits::output::OutputError),
+}
+
+pub async fn app_families_budgeted(
+    app: &App,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    crate::limits::output::Captured<Vec<busbar_contract::export_calls::Family>>,
+    BudgetedScrapeRefusal,
+> {
+    // Refresh/drain maintenance is explicitly excluded; owned output projection is not.
+    prepare(Some(app))
+        .await
+        .map_err(BudgetedScrapeRefusal::Source)?;
+    crate::snapshot::snapshot_budgeted(request)
+        .map_err(BudgetedScrapeRefusal::Output)?
+        .ok_or(BudgetedScrapeRefusal::Source(ScrapeRefusal::NotReady))
+}
+
+pub fn hook_families_budgeted(
+    app: &App,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    crate::limits::output::Captured<Vec<busbar_contract::export_calls::Family>>,
+    crate::limits::output::OutputError,
+> {
+    crate::snapshot::hooks::families_budgeted(app, request)
 }
 
 /// The whole-registry families for the admin `/metrics` (the same read the snapshot service gives

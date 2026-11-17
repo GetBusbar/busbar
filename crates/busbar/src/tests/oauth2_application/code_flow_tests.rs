@@ -6,6 +6,7 @@ use super::{
     browser::{answer_consent, encode_component, location, path_of, query_param, send, Jar},
 };
 use base64::Engine as _;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_core_oauth2::config::OauthAsCfg;
 use std::sync::Arc;
 
@@ -40,23 +41,20 @@ async fn register_client(origin: &str) -> String {
 }
 
 async fn register_client_with_scope(origin: &str, scope: &str) -> String {
-    let response = super::client().post(format!("{origin}/register")).json(&serde_json::json!({
+    let response = super::client().post(format!("{origin}/register")).json(&json::json!({
         "redirect_uris":[REDIRECT_URI],"token_endpoint_auth_method":"none",
         "response_types":["code"],"grant_types":["authorization_code","refresh_token"],"scope":scope,"client_name":"Flow Test",
     })).send().await.expect("register actual public client");
     let status = response.status();
     let body = response.text().await.unwrap();
     assert_eq!(status, 201, "the public client registers: {body}");
-    serde_json::from_str::<serde_json::Value>(&body).unwrap()["client_id"]
+    json::parse_value(body.as_bytes()).unwrap()["client_id"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
-pub(super) async fn verified_claims(
-    app: &busbar_kernel::state::App,
-    access: &str,
-) -> serde_json::Value {
+pub(super) async fn verified_claims(app: &busbar_kernel::state::App, access: &str) -> json::Value {
     let calls = app
         .auth
         .position_calls("oauth-resource")
@@ -81,7 +79,7 @@ pub(super) async fn verified_claims(
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .unwrap();
-    serde_json::from_slice(&bytes).expect("verified claims JSON")
+    json::parse_value(&bytes).expect("verified claims JSON")
 }
 
 #[tokio::test]
@@ -176,7 +174,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     let access = token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"))
@@ -260,7 +258,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"))
@@ -273,7 +271,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
 
     let resp = super::client()
         .post(format!("{origin}/register"))
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "redirect_uris": [REDIRECT_URI],
             "token_endpoint_auth_method": "none",
             "response_types": ["code"],
@@ -290,7 +288,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         "RFC 7591 §3.2.1: a registration is 201 Created; the endpoint mounts with the plane, \
          unconditionally"
     );
-    let registration: serde_json::Value = resp.json().await.expect("a registration response");
+    let registration: json::Value = super::read_json(resp).await;
     let client_id = registration["client_id"]
         .as_str()
         .unwrap_or_else(|| panic!("no client_id in {registration}"))
@@ -359,7 +357,7 @@ async fn shown_and_granted(
     )
     .await;
     assert_eq!(status, 200, "the code must be exchangeable: {body}");
-    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let token: json::Value = json::parse_value(body.as_bytes()).expect("a token response is JSON");
     let access = token["access_token"]
         .as_str()
         .unwrap_or_else(|| panic!("no access_token: {body}"));
@@ -390,4 +388,160 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     let (shown, granted) = shown_and_granted(&origin, &app, &empty, "").await;
     assert_eq!(granted, "", "an empty default grants nothing");
     assert_eq!(shown, "no scopes", "and the screen says so");
+}
+
+async fn public_client_code(origin: &str, client_id: &str) -> String {
+    let client = super::client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let mut jar = Jar::new(true);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope={SCOPE}&code_challenge={CHALLENGE}&code_challenge_method=S256",
+        encode_component(REDIRECT_URI),
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "{body}");
+    let consent = location(&headers, origin);
+    let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "{body}");
+    let return_to =
+        percent_decode(&query_param(&consent, "return").expect("pending authorization"));
+    let (status, headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/consent"),
+        Some(&[("return", &return_to), ("answer", "approve")]),
+    )
+    .await;
+    assert_eq!(status, 302, "{body}");
+    let back = location(&headers, origin);
+    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+    assert_eq!(status, 302, "{body}");
+    let redirect = location(&headers, origin);
+    assert!(redirect.starts_with(REDIRECT_URI), "{redirect}");
+    query_param(&redirect, "code").expect("approved authorization code")
+}
+
+#[tokio::test]
+async fn the_default_profile_binds_public_codes_to_client_redirect_and_pkce() {
+    use busbar_contract::json::JsonValueTrait as _;
+
+    let (origin, _) = serve().await;
+    let owner = register_client(&origin).await;
+    let other = register_client(&origin).await;
+    for (case, verifier, redirect, client_id, expected) in [
+        (
+            "wrong verifier",
+            Some("a-verifier-that-does-not-hash-to-the-challenge-at-all-00"),
+            REDIRECT_URI,
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "missing verifier",
+            None,
+            REDIRECT_URI,
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "wrong redirect",
+            Some(VERIFIER),
+            "http://127.0.0.1:9999/other",
+            owner.as_str(),
+            "invalid_grant",
+        ),
+        (
+            "another registered client",
+            Some(VERIFIER),
+            REDIRECT_URI,
+            other.as_str(),
+            "invalid_grant",
+        ),
+    ] {
+        let code = public_client_code(&origin, &owner).await;
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", redirect),
+        ];
+        if let Some(verifier) = verifier {
+            form.push(("code_verifier", verifier));
+        }
+        let response = super::client()
+            .post(format!("{origin}/token"))
+            .form(&form)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, 400, "{case}: {body}");
+        let value = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+        assert_eq!(value["error"].as_str(), Some(expected), "{case}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn default_profile_code_reuse_revokes_the_previously_admitted_token() {
+    use busbar_contract::json::JsonValueTrait as _;
+
+    let (origin, _) = serve().await;
+    let client_id = register_client(&origin).await;
+    let code = public_client_code(&origin, &client_id).await;
+    let form = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("client_id", client_id.as_str()),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_verifier", VERIFIER),
+    ];
+    let client = super::client();
+    let first = client
+        .post(format!("{origin}/token"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    let status = first.status();
+    let body = first.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let token = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+    let access = token["access_token"].as_str().expect("access token");
+    let resource = format!("{origin}/stats");
+    assert_eq!(
+        client
+            .get(&resource)
+            .bearer_auth(access)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let replay = client
+        .post(format!("{origin}/token"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    let status = replay.status();
+    let body = replay.text().await.unwrap();
+    assert_eq!(status, 400, "{body}");
+    let error = busbar_contract::json::parse_value(body.as_bytes()).unwrap();
+    assert_eq!(error["error"].as_str(), Some("invalid_grant"), "{body}");
+    assert_eq!(
+        client
+            .get(&resource)
+            .bearer_auth(access)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
 }

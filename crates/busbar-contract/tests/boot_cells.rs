@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! One boot cell per route of the previous release's protocol-detection ladder.
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use axum::Router;
 
 use crate::off_path::router::base_data_router_scoped;
@@ -171,10 +174,33 @@ async fn admin_response_boundary(
         return next.run(req).await;
     }
     let request_id = crate::admin::gate::request_id_of(handle.load().next_request_id());
+    // ADMIN-API-1.6-ONE-MODEL section 7: the caller's own id and trace ride beside the minted id.
+    // The admin span is the child of the caller's span; with no randomness it has no id to name,
+    // and the answer then carries no traceparent.
+    let correlation = crate::admin::gate::Correlation::of(req.headers());
+    let span_id = correlation
+        .trace
+        .as_ref()
+        .and_then(|_| busbar_contract::crypto::random::<8>().ok());
+    let span = tracing::info_span!(
+        "admin_request",
+        request_id = %request_id,
+        trace_id = correlation.trace.as_ref().map(|t| t.trace_id.as_str()),
+        parent_span_id = correlation.trace.as_ref().map(|t| t.parent_id.as_str()),
+        span_id = span_id.map(hex::encode).as_deref(),
+        client_request_id = correlation.client_request_id.as_deref(),
+    );
     // The admin router layer that owns ETags and `Idempotency-Key` (ADMIN-API-1.6 6) reads the
     // handle from here: a layer on a `Router<Arc<AppHandle>>` cannot extract `State`.
     req.extensions_mut().insert(handle.clone());
-    let mut response = crate::admin::gate::with_request_id(request_id.clone(), next.run(req)).await;
+    let mut response = tracing::Instrument::instrument(
+        crate::admin::gate::with_request_id(
+            request_id.clone(),
+            crate::admin::gate::with_correlation(correlation.clone(), next.run(req)),
+        ),
+        span,
+    )
+    .await;
     let plain_text = response
         .headers()
         .get(CONTENT_TYPE)
@@ -211,6 +237,7 @@ async fn admin_response_boundary(
             .entry(crate::admin::gate::HEADER_REQUEST_ID)
             .or_insert(value);
     }
+    correlation.answer(span_id.as_ref(), response.headers_mut());
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -484,20 +511,18 @@ pub fn build_router_with_limits(
     let plugin_routes = app.plugin_routes.clone();
 
     // The data router borrows the snapshot's plane slots before the handle takes the snapshot.
-    let (router, core_routes) = base_data_router(
+    let router = base_data_router_scoped(
         &plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),
         Vec::new(),
+        true,
     );
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // One listener serving both planes: the admin listener's operator approval pages too.
-    let (operator, operator_routes) =
-        crate::oauth_as::seam::mount_operator(crate::core_routes::CoreRouter::new()).into_parts();
-    let router = router.merge(operator);
-    let core_routes = core_routes.merged(operator_routes);
-    let router = crate::admin::seam::mount_admin(router);
+    let router = crate::oauth_as::seam::mount_operator(router);
+    let (router, core_routes) = crate::admin::seam::mount_admin(router).into_parts();
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
@@ -526,7 +551,12 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, sessions, true)
+        .into_parts()
 }
+
+/// The exact configured bound used to prepare this router, including explicit test overrides.
+#[derive(Clone, Copy)]
+struct PlaneBodyLimit(usize);
 
 pub(crate) fn mount_plane_route(
     router: crate::core_routes::CoreRouter,
@@ -545,18 +575,28 @@ pub(crate) fn mount_plane_route(
         path,
         method,
         auth,
-        move |state::CurrentApp(app): state::CurrentApp,
+        move |axum::extract::Extension(request): axum::extract::Extension<
+            limits::process_admission::RequestLease,
+        >,
+              axum::extract::State(handle): axum::extract::State<
+            std::sync::Arc<state::AppHandle>,
+        >,
+              axum::extract::Extension(PlaneBodyLimit(body_limit)): axum::extract::Extension<
+            PlaneBodyLimit,
+        >,
+              state::CurrentApp(app): state::CurrentApp,
 
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
             axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
         >,
               mut headers: axum::http::HeaderMap,
-              body: axum::body::Bytes| {
+              body: axum::body::Body| {
             let consumed_fields =
                 auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
@@ -569,14 +609,49 @@ pub(crate) fn mount_plane_route(
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
             async move {
+                let body = match limits::input_body::gather(body, &request, body_limit).await {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let (reason, status, kind, message) = match error {
+                            limits::input_body::GatherError::Capacity(_) => {
+                                return limits::admission::inbound_overloaded_response();
+                            }
+                            limits::input_body::GatherError::TooLarge => (
+                                busbar_contract::caps::ReasonCode::BodyTooLarge,
+                                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                                busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
+                                OVERSIZED_MESSAGE,
+                            ),
+                            limits::input_body::GatherError::Body(_) => (
+                                busbar_contract::caps::ReasonCode::DecodeFailed,
+                                axum::http::StatusCode::BAD_REQUEST,
+                                busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
+                                "request body could not be read",
+                            ),
+                        };
+                        return kernel_refusal_response(
+                            &handle,
+                            &app.planes,
+                            reason,
+                            uri.path(),
+                            target_of(&uri),
+                            status,
+                            kind,
+                            message,
+                        );
+                    }
+                };
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+                    request,
+                    handle,
                     path: ctx_path,
                     uri,
                     method,
                     headers,
                     body,
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
@@ -611,11 +686,18 @@ pub(crate) fn mount_plane_session(
         path,
         RouteMethod::Get,
         auth,
-        move |upgrade: busbar_kernel::ingress::session::SessionUpgrade,
+        move |axum::extract::Extension(request): axum::extract::Extension<
+            limits::process_admission::RequestLease,
+        >,
+              axum::extract::State(handle): axum::extract::State<
+            std::sync::Arc<state::AppHandle>,
+        >,
+              upgrade: busbar_kernel::ingress::session::SessionUpgrade,
               state::CurrentApp(app): state::CurrentApp,
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -636,12 +718,15 @@ pub(crate) fn mount_plane_session(
             async move {
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+                    request,
+                    handle,
                     path: ctx_path,
                     uri,
                     method: RouteMethod::Get,
                     headers,
                     body: axum::body::Bytes::new(),
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
                     slot,
@@ -692,6 +777,7 @@ fn apply_common_layers_for_mounts(
     observe_mounts: bool,
 ) -> Router {
     let core_routes = std::sync::Arc::new(core_routes);
+    let auth_handle = handle.clone();
     let router = router
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
@@ -699,10 +785,22 @@ fn apply_common_layers_for_mounts(
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
                 let core_routes = core_routes.clone();
-                async move { auth::auth_middleware(app, &core_routes, req, next).await }
+                let auth_handle = auth_handle.clone();
+                async move {
+                    auth::auth_middleware(
+                        app,
+                        auth_handle,
+                        request_body_max_bytes,
+                        &core_routes,
+                        req,
+                        next,
+                    )
+                    .await
+                }
             },
         ))
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
+        .layer(axum::Extension(PlaneBodyLimit(request_body_max_bytes)))
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
             reshape_body_limit_413,
@@ -1108,29 +1206,14 @@ pub(crate) fn unchanged_dispatch_layer(
     router
 }
 
-/// The core routes the ADMIN listener declares: `/healthz`, and the authorization server's operator
-/// approval pages (#140), which are admin pages.
-pub(crate) fn admin_core_router() -> crate::core_routes::CoreRouter {
-    let admin = crate::core_routes::CoreRouter::new().route(
-        crate::auth::HEALTHZ_PATH,
-        busbar_contract::abi::mechanism::route::RouteMethod::Get,
-        busbar_contract::abi::mechanism::route::RouteAuth::None,
-        endpoints::healthz,
-    );
-    crate::oauth_as::seam::mount_operator(admin)
-}
-
 pub fn build_admin_router_on_with_dispatch_layer(
     handle: &std::sync::Arc<state::AppHandle>,
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
     dispatch_layer: DispatchLayer,
 ) -> Router {
-    let plugin_routes = handle.load().plugin_routes.clone();
-
-    let (admin, admin_core_routes) = admin_core_router().into_parts();
-    let admin = crate::admin::seam::mount_admin(admin);
-    let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
+    let selected = handle.load();
+    let (admin, admin_core_routes) = crate::off_path::router::admin_routes(&selected.plugin_routes);
     apply_common_layers(
         dispatch_layer(admin),
         admin_core_routes,
@@ -1162,7 +1245,8 @@ pub fn build_data_router_on(
         doors,
         sessions,
         false,
-    );
+    )
+    .into_parts();
     let data = apply_common_layers(
         data,
         core_routes.with_door_refusals(refusals),
@@ -1183,6 +1267,7 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
+    pub(crate) physical: Option<std::sync::Arc<crate::inbound::native::PhysicalPlan>>,
     pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     pub(crate) router: Router<std::sync::Arc<state::AppHandle>>,
     pub(crate) core_routes: crate::core_routes::CoreRouteTable,
@@ -1202,6 +1287,32 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Actual declarations mounted in this exact prepared router; this view grants no execution.
+    pub fn core_lines(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &str,
+            busbar_contract::abi::mechanism::route::RouteMethod,
+            busbar_contract::abi::mechanism::route::RouteAuth,
+        ),
+    > {
+        self.core_routes
+            .routes()
+            .iter()
+            .map(|route| (route.path.as_str(), route.method, route.auth))
+    }
+
+    /// Complete root-owned routes and their authentication declarations together before publication.
+    pub fn with_core_routes(
+        mut self,
+        mount: impl FnOnce(crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter,
+    ) -> Self {
+        let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
+        (self.router, self.core_routes) = mount(routes).into_parts();
+        self
+    }
+
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()

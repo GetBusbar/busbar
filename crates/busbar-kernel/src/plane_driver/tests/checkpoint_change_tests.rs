@@ -33,14 +33,13 @@ fn card_cost(budget_cents: Option<u64>) -> Arc<CostModel> {
     let limits = budget_cents
         .map(|amount| {
             vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount,
                 per: Some(LimitWindow::Month),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }]
         })
         .unwrap_or_default();

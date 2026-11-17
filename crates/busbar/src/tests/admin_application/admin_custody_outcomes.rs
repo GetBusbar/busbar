@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use busbar_contract::json::{json, JsonValueTrait as _, Value};
 use busbar_contract::persistence::*;
 use busbar_kernel::state::AppHandle;
-use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::root::test_plugins as plugins;
@@ -57,6 +57,12 @@ struct Store {
     fail_refresh_after_write: AtomicBool,
     fail_list: AtomicBool,
     refuse_write: AtomicBool,
+    refuse_replay: AtomicBool,
+    pause_replay: AtomicBool,
+    replay_write: Arc<Pause>,
+    held_reads: AtomicUsize,
+    lose_head_reply: AtomicBool,
+    fail_head_read: AtomicBool,
 }
 
 impl Store {
@@ -74,6 +80,12 @@ impl Store {
             fail_refresh_after_write: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
             refuse_write: AtomicBool::new(false),
+            refuse_replay: AtomicBool::new(false),
+            pause_replay: AtomicBool::new(false),
+            replay_write: Arc::new(Pause::default()),
+            held_reads: AtomicUsize::new(0),
+            lose_head_reply: AtomicBool::new(false),
+            fail_head_read: AtomicBool::new(false),
         })
     }
 }
@@ -87,6 +99,30 @@ impl PersistenceBackend for Store {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
+            if self.fail_head_read.load(Ordering::SeqCst)
+                && request.addresses.iter().any(|address| {
+                    address
+                        .key
+                        .windows(b"held-head:".len())
+                        .any(|part| part == b"held-head:")
+                })
+            {
+                return Err(Failure::Unavailable);
+            }
+            self.held_reads.fetch_add(
+                request
+                    .addresses
+                    .iter()
+                    .filter(|address| {
+                        address.key.first() == Some(&b'R')
+                            && address
+                                .key
+                                .windows(b"held:".len())
+                                .any(|part| part == b"held:")
+                    })
+                    .count(),
+                Ordering::SeqCst,
+            );
             if request.addresses.iter().any(identity_key) && self.fail_read.load(Ordering::SeqCst) {
                 return Err(Failure::Unavailable);
             }
@@ -112,7 +148,7 @@ impl PersistenceBackend for Store {
             if key && self.refuse_write.load(Ordering::SeqCst) {
                 return Err(Failure::Refused);
             }
-            if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && serde_json::from_slice::<Value>(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
+            if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && busbar_contract::json::parse_value(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
                 return Err(Failure::Refused);
             }
             if key && self.pause_write.swap(false, Ordering::SeqCst) {
@@ -148,8 +184,24 @@ impl PersistenceBackend for Store {
                 }
                 _ => false,
             });
+            if replay && self.pause_replay.swap(false, Ordering::SeqCst) {
+                self.replay_write.entered.notify_one();
+                while !*self.replay_write.released.lock().unwrap() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+            if replay && self.refuse_replay.load(Ordering::SeqCst) {
+                return Err(Failure::Refused);
+            }
+            let head = candidate.candidate().mutations.iter().any(|mutation| {
+                matches!(mutation, Mutation::Put { address, .. } if address.key.windows(b"held-head:".len()).any(|part| part == b"held-head:"))
+            });
             let answer = self.inner.commit(candidate, commit_key).await?;
             if matches!(answer, Decision::Applied(_)) {
+                if head && self.lose_head_reply.load(Ordering::SeqCst) {
+                    self.fail_head_read.store(true, Ordering::SeqCst);
+                    return Err(Failure::Unknown);
+                }
                 if claim {
                     self.claimed.notify_one();
                 }
@@ -228,14 +280,8 @@ async fn app() -> (
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(3600));
     crate::dist_root_install::install();
     let library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .unwrap()
-        .unwrap();
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .unwrap()
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library).name;
+    let manifest = crate::root::test_plugins::native_manifest("store", &library, "third-party");
     let directory = plugins::scratch("admin-custody-outcomes");
     let archive = plugins::signed(
         &plugins::key(0x33),
@@ -244,7 +290,8 @@ async fn app() -> (
     );
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
-    let settings: Value = crate::root::test_plugins::application_store_settings(&directory);
+    let settings: serde_json::Value =
+        crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC artifact");
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
@@ -256,11 +303,11 @@ async fn app() -> (
     common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", false);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32])).unwrap();
-    let deploy=busbar_kernel::config::deploy_from_deserializer(json!({
+    let deploy=busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers":{},"models":{},
         "identity-providers":{"custody-auth":{"module":oidc_module,"max_admin_scope":"full","settings":common::credentials::settings("api://admin-custody")}},
         "auth":{"chain":[],"admin_auth":["custody-auth"],"signing_key":{"file":signing},"role_bindings":{"custody-auth":{"custodians":{"admin_scope":"full"}}}},
-        "store":{"module":module,"settings":settings},"advanced":{"allow_destinations":["127.0.0.1"]}
+        "store":{"module":module,"settings":settings},"advanced":{}
     }), &crate::root::boot::axis_test_grammar()).unwrap();
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
@@ -279,7 +326,11 @@ async fn app() -> (
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let mut observed = None;
     let fresh = crate::root::test_plugins::provision_fresh_application_store_with_backend(
@@ -294,15 +345,16 @@ async fn app() -> (
     )
     .await
     .expect("the custody fixture exclusively provisions its wrapped native Store");
-    let anchor = fresh
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = fresh
         .initialize_principal_format(&config, &plugin_config)
         .await
         .expect("the new custody namespace receives its principal baseline before serving");
     let store = observed.expect("the primitive custody fault wrapper was installed");
     store.core.set(anchor.clone()).ok().unwrap();
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -379,7 +431,7 @@ fn create_replay_key(header: &str) -> String {
 }
 
 async fn body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
+    busbar_contract::json::parse_value(
         &axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap(),
@@ -544,7 +596,7 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
         format!("/{id}/rotate"),
         "custody:rotate",
         Some("rotate"),
-        Value::Null,
+        Value::new(),
     ));
     signal(&store.write.entered).await;
     caller.abort();
@@ -567,7 +619,7 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
         format!("/{id}/rotate"),
         "custody:rotate",
         Some("rotate"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -613,7 +665,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}/rotate"),
         "custody:rotate-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     let revoke = request(
@@ -622,7 +674,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}/revoke"),
         "custody:revoke-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     let delete = request(
@@ -631,7 +683,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
         format!("/{id}"),
         "custody:delete-error",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     for (actor, action, response) in [
@@ -662,7 +714,7 @@ async fn failed_delete_records_the_revocation_that_already_applied() {
         format!("/{id}"),
         "custody:partial-delete",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -777,7 +829,7 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         format!("/{id}/rotate"),
         "custody:lost-rotate",
         Some("lost"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -820,7 +872,7 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
         format!("/{id}/rotate"),
         "custody:lost-rotate",
         Some("lost"),
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
@@ -860,7 +912,7 @@ async fn committed_mint_publishes_without_refresh_and_same_idempotency_cannot_mi
         format!("/{id}"),
         "custody:applied-refresh",
         None,
-        Value::Null,
+        Value::new(),
     )
     .await;
     assert_eq!(listed.status(), StatusCode::OK);
@@ -950,6 +1002,409 @@ async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
         .await,
         Err(busbar_core_admin::idempotency::durable::Refused::InFlight)
     ));
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_effect_receipt_refusal_prevents_handler_dispatch() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+
+    let (store, handle, _router, _book) = app().await;
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/receipt-before-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                StatusCode::OK
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, handle.load());
+    let request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/receipt-before-effect")
+            .header("idempotency-key", "receipt-refused")
+            .body(axum::body::Body::from("exact request"))
+            .unwrap()
+    };
+    let response = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(request()).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn held_history_cursor_bounds_reads_without_a_lifetime_reuse_cap() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:reuse".into());
+    for _ in 0..70 {
+        let claim = durable::claim_held(&scoped, &key, now).await.unwrap();
+        durable::settle(&scoped, &claim, now, &Settled::Released)
+            .await
+            .unwrap();
+    }
+    store.held_reads.store(0, Ordering::SeqCst);
+    let current = durable::claim_held(&scoped, &key, now).await.unwrap();
+    assert!(
+        store.held_reads.load(Ordering::SeqCst) <= 2,
+        "admission must start at its retained current-generation cursor"
+    );
+    durable::settle(&scoped, &current, now, &Settled::Retained(vec![3; 49]))
+        .await
+        .unwrap();
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(durable::lookup(&scoped, &key, now).await.unwrap().is_some());
+    assert!(
+        store.held_reads.load(Ordering::SeqCst) <= 1,
+        "lookup must not traverse retired generations"
+    );
+    let framed = format!("{}:{}:{}", key.0.len(), key.0, key.1);
+    let head = format!(
+        "held-head:{}",
+        busbar_contract::redacted::sha256_hex(framed.as_bytes())
+    );
+    scoped
+        .delete("busbar.admin-idempotency", head.as_bytes())
+        .await
+        .unwrap();
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(
+        durable::lookup(&scoped, &key, now).await.is_err(),
+        "a pre-index history beyond the read budget is unavailable, not absent"
+    );
+    assert_eq!(store.held_reads.load(Ordering::SeqCst), 64);
+    assert!(
+        scoped
+            .get("busbar.admin-idempotency", head.as_bytes())
+            .await
+            .unwrap()
+            .is_none(),
+        "lookup never publishes an index"
+    );
+    store.held_reads.store(0, Ordering::SeqCst);
+    assert!(matches!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Unavailable(_))
+    ));
+    assert_eq!(store.held_reads.load(Ordering::SeqCst), 64);
+    let checkpoint = scoped
+        .get("busbar.admin-idempotency", head.as_bytes())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        checkpoint.expose(&busbar_kernel::seal::lend()),
+        &[1, 0, 0, 0, 64]
+    );
+    assert_eq!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Retained(vec![3; 49])),
+        "bounded progress cannot skip the unresolved current generation"
+    );
+    scoped
+        .put(
+            "busbar.admin-idempotency",
+            head.as_bytes(),
+            busbar_contract::Secret::new(vec![255]),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(durable::Refused::Unavailable(_))
+    ));
+    assert!(durable::lookup(&scoped, &key, now).await.is_err());
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_persistence_refusal_cannot_admit_a_successor() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:refused-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    assert!(
+        matches!(
+            durable::claim_held(&scoped, &key, now).await,
+            Err(Refused::Unavailable(_))
+        ),
+        "an unconfirmed cursor publication must not return an effect capability"
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uncertain_cursor_write_cannot_grant_until_its_state_is_observed() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+    let (store, handle, _router, _book) = app().await;
+    let scoped = durable::scoped_store(
+        handle
+            .load()
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:uncertain-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    store.lose_head_reply.store(true, Ordering::SeqCst);
+    let uncertain = tokio::time::timeout(
+        Duration::from_secs(10),
+        durable::claim_held(&scoped, &key, now),
+    )
+    .await
+    .expect("unknown cursor outcome returns without dispatch");
+    assert!(matches!(uncertain, Err(Refused::Unavailable(_))));
+    store.lose_head_reply.store(false, Ordering::SeqCst);
+    store.fail_head_read.store(false, Ordering::SeqCst);
+    assert!(durable::claim_held(&scoped, &key, now).await.is_ok());
+    assert_eq!(
+        durable::claim_held(&scoped, &key, now).await,
+        Err(Refused::InFlight)
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_cursor_advances_still_grant_exactly_one_claim() {
+    if isolated() {
+        return;
+    }
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+    let (_store, handle, _router, _book) = app().await;
+    let scoped = Arc::new(
+        durable::scoped_store(
+            handle
+                .load()
+                .governance
+                .as_ref()
+                .unwrap()
+                .core_store_handle()
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    let now = busbar_kernel::store::now();
+    let key = ("cursor-owner".into(), "op:concurrent-cursor".into());
+    let first = durable::claim_held(&scoped, &key, now).await.unwrap();
+    durable::settle(&scoped, &first, now, &Settled::Released)
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut callers = Vec::new();
+    for _ in 0..8 {
+        let scoped = scoped.clone();
+        let key = key.clone();
+        let barrier = barrier.clone();
+        callers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            durable::claim_held(&scoped, &key, now).await
+        }));
+    }
+    let mut grants = 0;
+    for caller in callers {
+        match caller.await.unwrap() {
+            Ok(_) => grants += 1,
+            Err(Refused::InFlight | Refused::Unavailable(_)) => {}
+            other => panic!("unexpected cursor contender: {other:?}"),
+        }
+    }
+    assert_eq!(
+        grants, 1,
+        "cursor publication does not itself grant an effect capability"
+    );
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_answer_persistence_keeps_the_acknowledged_intent() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let handler_store = store.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/answer-persistence",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            let store = handler_store.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                store.refuse_replay.store(true, Ordering::SeqCst);
+                (StatusCode::OK, "effect committed")
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, handle.load());
+    let request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/answer-persistence")
+            .header("idempotency-key", "answer-persistence")
+            .body(axum::body::Body::from("original"))
+            .unwrap()
+    };
+    assert_eq!(
+        router.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(request()).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    println!("custody assertions completed");
+}
+
+fn precondition_request(if_match: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/v1/admin/config/settings")
+        .header("if-match", if_match)
+        .header("idempotency-key", "stale-precondition-release")
+        .body(axum::body::Body::from("exact request"))
+        .unwrap()
+}
+
+fn counted_settings(effects: Arc<AtomicUsize>) -> axum::Router {
+    axum::Router::new().route(
+        "/api/v1/admin/config/settings",
+        axum::routing::put(move || {
+            let effects = effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                StatusCode::OK
+            }
+        }),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_precondition_failed_release_never_dispatches_or_grants_retry() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let router = busbar_core_admin::test_support::with_idempotency(
+        counted_settings(effects.clone()),
+        handle.load(),
+    );
+    store.refuse_replay.store(true, Ordering::SeqCst);
+    let refused = router
+        .clone()
+        .oneshot(precondition_request("\"stale\""))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(body(refused).await["error"]["reason"], "stale_if_match");
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(precondition_request("*")).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body(retry).await["error"]["reason"],
+        "idempotency_in_flight"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    println!("custody assertions completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_stale_precondition_keeps_exclusion_while_release_is_unknown() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let router = busbar_core_admin::test_support::with_idempotency(
+        counted_settings(effects.clone()),
+        handle.load(),
+    );
+    let _release = ReleaseOnDrop(store.replay_write.clone());
+    store.pause_replay.store(true, Ordering::SeqCst);
+    let first_router = router.clone();
+    let first = tokio::spawn(async move {
+        first_router
+            .oneshot(precondition_request("\"stale\""))
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        store.replay_write.entered.notified(),
+    )
+    .await
+    .unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let retry = router.oneshot(precondition_request("*")).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body(retry).await["error"]["reason"],
+        "idempotency_in_flight"
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    store.replay_write.release();
     println!("custody assertions completed");
 }
 

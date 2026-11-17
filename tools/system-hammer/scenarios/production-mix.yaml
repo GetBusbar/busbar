@@ -39,7 +39,7 @@ config: |
     m-gemini: { input_utok: 1000, output_utok: 2000 }
   decisions:
     models:
-      d-jev: { provider: dec, upstream_model: systemone, protocol: jev }
+      d-jev: { provider: dec, upstream_model: systemone }
   pools:
     p-cheapest:
       hooks: [cheapest]

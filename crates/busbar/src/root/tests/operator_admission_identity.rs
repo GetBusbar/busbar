@@ -7,6 +7,7 @@ use busbar_contract::abi::host::service::FLOW_CONTINUE;
 use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyAnswer};
 use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+use busbar_contract::json;
 use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
 use std::sync::Mutex;
 use tower::ServiceExt;
@@ -122,7 +123,7 @@ async fn admitted(
 async fn operator_first_auth_identity_survives_reload_and_seals_once_without_charges() {
     let (original, _, _) = app(false).await;
     let mut pinned = (*original).clone();
-    pinned.role_bindings = serde_json::from_value(serde_json::json!({
+    pinned.role_bindings = json::from_value(&json::json!({
         (PROVIDER): {"reader": {"admin_scope": "read-only"}}
     }))
     .unwrap();

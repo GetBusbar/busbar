@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! ADMIN-API r5 section 2 (MR2): an admin credential is a virtual key with an `admin` grant, the
 //! admin chain's `keys` position admits it, and its verbs are judged per verb.
 
@@ -37,6 +40,7 @@ fn door_of(key: VirtualKey) -> AdminDoor {
             module: crate::config::KEYS_MODULE.to_string(),
             principal,
             resolved: Some(std::sync::Arc::new(key)),
+            signed_authority: None,
         },
         None,
         verb_rung,
@@ -127,14 +131,15 @@ fn admin_auth_absent_defaults_to_tokens_and_keys() {
         names.iter().all(|n| !n.trim().is_empty()),
         "never the empty word: {names:?}"
     );
-    let absent: crate::config::auth::AuthDeployCfg = serde_json::from_str("{}").unwrap();
+    let absent: crate::config::auth::AuthDeployCfg =
+        busbar_contract::json::parse_str("{}").unwrap();
     assert_eq!(absent.admin_auth, names);
 }
 
 #[test]
 fn explicit_admin_auth_not_extended() {
     let explicit: crate::config::auth::AuthDeployCfg =
-        serde_json::from_str(r#"{"admin_auth":["only-this"]}"#).unwrap();
+        busbar_contract::json::parse_str(r#"{"admin_auth":["only-this"]}"#).unwrap();
     assert_eq!(explicit.admin_auth, vec!["only-this".to_string()]);
 }
 

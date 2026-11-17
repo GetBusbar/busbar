@@ -372,19 +372,12 @@ pools:
 #   allowed_origins: []
 
 # ── Observability (optional) ─────────────────────────────────────────────────────────────────────
-# ALL telemetry egress is the single `export:` NAMED map (1.5.3): `<name>: { module, settings }`,
-# presence = the switch. Zero-config default: collection is inert. The four built-in modules:
-#   prometheus          — PULL: install the recorder + serve `/metrics` (buffer_seconds REQUIRED).
-#   request-log-webhook — PUSH: fire-and-forget a JSON request-log POST per request (https-only);
-#                          optional `auth_header: { name, value }`.
-#   request-log-file    — PUSH: append each request-log line as JSONL.
-#   otlp                — export OpenTelemetry traces (OTLP/HTTP) to a collector.
-# The SAME module may back SEVERAL named instances — e.g. two webhooks to two URLs:
+# ALL telemetry egress is the single `export:` NAMED map: `<name>: { module, settings }`,
+# presence = the switch. Zero-config default: collection is inert. Each `module:` names an `export`-kind
+# plugin and `settings:` is that plugin's own config (see its documentation). The SAME module may back
+# SEVERAL named instances.
 # export:
-#   metrics:  { module: prometheus,          settings: { buffer_seconds: 60, key_gauge_limit: 2000 } }
-#   req-log:  { module: request-log-webhook, settings: { url: "https://logs.example.com/busbar" } }
-#   req-siem: { module: request-log-webhook, settings: { url: "https://siem.internal/ingest" } }
-#   traces:   { module: otlp,                settings: { url: "http://localhost:4318/v1/traces" } }
+#   <name>: { module: <export-plugin>, settings: { } }
 
 # ── Response headers (optional; see docs/observability.md#response-headers) ────────────────────────
 # Every busbar-INJECTED response header is an opt-in toggle under `advanced.response_headers`, default
@@ -402,7 +395,7 @@ pools:
 # Named enforcement buckets forming an acyclic tree (parent chains AND together). A
 # minted key binds to at most one group; a key with no group is authed + unlimited. Generic limits:
 # each is `{ <metric>: <amount>, per: <window> }` with metric one of requests|tokens|budget|
-# concurrent|tokens_input|tokens_output|tokens_cache_read|tokens_cache_write and window one of
+# concurrent and window one of
 # minute|hour|day|month|total (`concurrent` is instantaneous: no per).
 # `enabled: false` freezes a group (history kept).
 # groups:
@@ -455,20 +448,16 @@ pools:
 
 # ── Store (required) ─────────────────────────────────────────────────────────────────────────────
 # Where keys/usage/audit live: `{ module, settings }`. `memory` is the compiled-in RAM store (keys/
-# usage reset on restart). A config with no `store:` block is refused; `busbar --migrate-config`
-# inserts `store: { module: memory }`. A non-memory module requires plugins.enabled below; settings
+# usage reset on restart). A config with no `store:` block is refused; the first 1.6.0 boot of a 1.5.5
+# config inserts `store: { module: memory }`. `memory` is compiled in but is not a default. A non-memory module requires plugins.enabled below; settings
 # are the module's own config, passed through verbatim.
 store:
   module: memory
+# A durable store is a `kind: store` plugin: name its alias in `module:` and give it the plugin's own
+# `settings:` (see that plugin's documentation for the keys).
 # store:
-#   module: sqlite                          # busbar-store-sqlite (single-node durable)
-#   settings: { db_path: /var/lib/busbar/governance.db }
-# store:
-#   module: postgres                        # cluster-shared keys/usage/audit
-#   settings: { url: "postgres://user:pass@host/db" }
-# store:
-#   module: valkey                          # cluster-shared; `redis://` is the driver's URL scheme
-#   settings: { url: "redis://host:6379/0" }
+#   module: <store-plugin>
+#   settings: { }                           # the plugin's own settings, passed through verbatim
 
 # ── Advanced (optional) ──────────────────────────────────────────────────────────────────────────
 # Internal tuning; the defaults are right for almost everyone.

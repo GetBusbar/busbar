@@ -234,7 +234,10 @@ impl Rig {
     }
     pub async fn approve(&self) {
         self.observe(ORIGINAL).await;
-        self.node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+        self.node
+            .trust_rule_reviewed(KEY, Ruling::Approve)
+            .await
+            .unwrap();
     }
     pub fn next_window(&self) {
         self.clock.fetch_add(

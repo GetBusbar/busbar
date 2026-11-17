@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The pure `(method, path) -> verb` match over the closed verb table in [`crate::verb`].
 
-use crate::verb::{admin_rows, VerbRow, VerbScope};
+use crate::verb::{admin_grant_rows, admin_rows, VerbRow, VerbScope};
 use busbar_contract::ids::OpClassId;
 
 /// The operation class every read-only verb prices under.
@@ -56,8 +59,16 @@ pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
 ) -> Option<(&'static VerbRow, Vec<(&'static str, &'p str)>)> {
+    find_in(admin_rows(), method, path)
+}
+
+fn find_in<'p>(
+    mut rows: impl Iterator<Item = &'static VerbRow>,
+    method: &str,
+    path: &'p str,
+) -> Option<(&'static VerbRow, Vec<(&'static str, &'p str)>)> {
     let path = operation_target(path);
-    admin_rows().find_map(|entry| {
+    rows.find_map(|entry| {
         if entry.method != method {
             return None;
         }
@@ -116,19 +127,21 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 #[must_use]
 pub fn named_rung(name: &str) -> Option<busbar_contract::authz::Scope> {
     use busbar_contract::authz::Scope;
-    admin_rows().find(|entry| entry.name == name).map(|entry| {
-        if entry.scope == VerbScope::ReadOnly {
-            Scope::ReadOnly
-        } else {
-            Scope::Full
-        }
-    })
+    admin_grant_rows()
+        .find(|entry| entry.name == name)
+        .map(|entry| {
+            if entry.scope == VerbScope::ReadOnly {
+                Scope::ReadOnly
+            } else {
+                Scope::Full
+            }
+        })
 }
 
-/// The operation NAME a request line resolves to — [`resolve`]'s row, by the name an allow-list
+/// The operation name checked by an admin allow-list, including externally mounted handlers.
 #[must_use]
 pub fn name_at(method: &str, path: &str) -> Option<&'static str> {
-    resolve(method, path).map(|resolved| resolved.verb)
+    find_in(admin_grant_rows(), method, path).map(|(entry, _params)| entry.name)
 }
 
 /// Every row the closed table declares, in the order the table holds them.

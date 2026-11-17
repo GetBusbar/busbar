@@ -25,7 +25,7 @@ fn every_empty_view_reads_empty() {
 }
 
 #[test]
-#[ignore = "owner: W1-A13"]
+#[ignore = "blocked: needs a C fixture sending {NULL,0} in CryptoReq fields; no C fixture and no unsafe allowed here (UNSAFE-MIN); owner W1-A13"]
 fn a_c_fixture_sends_null_zero_in_every_crypto_req_field() {
     todo!("owner: W1-A13 (C-NULL-EMPTY)")
 }
@@ -165,7 +165,7 @@ mod empty_arm {
         },
     );
 
-    pub fn lease() -> OutLease {
+    pub fn lease() -> OutLease<'static> {
         OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot")
     }
 

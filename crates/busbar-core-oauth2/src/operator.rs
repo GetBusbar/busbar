@@ -91,8 +91,10 @@ pub(crate) async fn device_page(
 /// single-use token. First decision wins (`approve_device`/`deny_device` compare-and-swap).
 pub(crate) async fn device_decide(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<DeviceForm>,
+    busbar_kernel::inbound::http_projection::ProjectedForm {
+        headers,
+        value: form,
+    }: busbar_kernel::inbound::http_projection::ProjectedForm<DeviceForm>,
 ) -> Response {
     let Some(plane) = as_plane(&app) else {
         return not_found();
@@ -291,8 +293,10 @@ pub(crate) async fn consent_screen(
 /// that T, can spend it.
 pub(crate) async fn consent_submit(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<ConsentForm>,
+    busbar_kernel::inbound::http_projection::ProjectedForm {
+        headers,
+        value: form,
+    }: busbar_kernel::inbound::http_projection::ProjectedForm<ConsentForm>,
 ) -> Response {
     let Some(plane) = as_plane(&app) else {
         return not_found();
@@ -427,15 +431,10 @@ fn form_cookie(name: &str, path: &str, id: &str, admin_origin: &str, same_site: 
 
 /// An operator page: never cached, never framed, never named in a `Referer`.
 fn page(status: axum::http::StatusCode, html: String) -> Response {
-    let mut response = (status, axum::response::Html(html)).into_response();
+    let mut response = (status, crate::page::Page(html)).into_response();
     let headers = response.headers_mut();
     for (name, value) in [
         (axum::http::header::CACHE_CONTROL, "no-store"),
-        (axum::http::header::X_FRAME_OPTIONS, "DENY"),
-        (
-            axum::http::header::CONTENT_SECURITY_POLICY,
-            "frame-ancestors 'none'",
-        ),
         (axum::http::header::REFERRER_POLICY, "no-referrer"),
     ] {
         headers.insert(name, axum::http::HeaderValue::from_static(value));

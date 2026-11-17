@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueMutTrait as _, JsonValueTrait as _};
+
 use crate::config::{AsCfgError, AsIdentity, OauthAsCfg, StaticClientCfg};
 
 fn cfg(issuer: &str) -> OauthAsCfg {
@@ -102,7 +104,7 @@ fn the_registration_path_is_always_derived() {
 #[test]
 fn the_fapi2_posture_is_off_unless_the_block_names_it() {
     let written: OauthAsCfg =
-        serde_json::from_value(serde_json::json!({ "issuer": "https://gw.example.com" }))
+        json::from_value(&json::json!({ "issuer": "https://gw.example.com" }))
             .expect("a block naming only the issuer parses");
     assert!(!written.fapi2, "an unnamed `fapi2` must parse as off");
     let id = AsIdentity::from_cfg(&written).expect("valid");
@@ -114,7 +116,7 @@ fn the_fapi2_posture_is_off_unless_the_block_names_it() {
 
 #[test]
 fn fapi2_true_turns_the_posture_on() {
-    let written: OauthAsCfg = serde_json::from_value(serde_json::json!({
+    let written: OauthAsCfg = json::from_value(&json::json!({
         "issuer": "https://gw.example.com",
         "fapi2": true,
     }))
@@ -131,16 +133,16 @@ fn the_par_endpoint_is_derived_under_the_issuer() {
     assert_eq!(root.par_path(), "/par");
 }
 
-fn public_jwk() -> serde_json::Value {
-    serde_json::json!({
+fn public_jwk() -> json::Value {
+    json::json!({
         "kty": "EC", "crv": "P-256", "kid": "k1", "use": "sig", "alg": "ES256",
         "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
         "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
     })
 }
 
-fn with_client(client: serde_json::Value) -> Result<AsIdentity, AsCfgError> {
-    let written: OauthAsCfg = serde_json::from_value(serde_json::json!({
+fn with_client(client: json::Value) -> Result<AsIdentity, AsCfgError> {
+    let written: OauthAsCfg = json::from_value(&json::json!({
         "issuer": "https://gw.example.com",
         "clients": [client],
     }))
@@ -148,8 +150,8 @@ fn with_client(client: serde_json::Value) -> Result<AsIdentity, AsCfgError> {
     AsIdentity::from_cfg(&written)
 }
 
-fn client(jwk: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
+fn client(jwk: json::Value) -> json::Value {
+    json::json!({
         "client_id": "fapi-client",
         "redirect_uris": ["https://client.example/cb"],
         "jwks": { "keys": [jwk] },
@@ -159,8 +161,7 @@ fn client(jwk: serde_json::Value) -> serde_json::Value {
 #[test]
 fn no_static_client_is_declared_unless_the_block_lists_one() {
     let written: OauthAsCfg =
-        serde_json::from_value(serde_json::json!({ "issuer": "https://gw.example.com" }))
-            .expect("parses");
+        json::from_value(&json::json!({ "issuer": "https://gw.example.com" })).expect("parses");
     assert!(written.clients.is_empty());
     assert!(AsIdentity::from_cfg(&written)
         .expect("valid")
@@ -182,39 +183,39 @@ fn a_static_private_key_jwt_client_with_a_public_jwk_validates() {
 
 #[test]
 fn a_malformed_static_client_is_refused_at_boot() {
-    let refused = |c: serde_json::Value, why: &str| match with_client(c) {
+    let refused = |c: json::Value, why: &str| match with_client(c) {
         Err(AsCfgError::StaticClient { .. }) => {}
         other => panic!("{why}: expected a StaticClient refusal, got {other:?}"),
     };
     let mut private = public_jwk();
-    private["d"] = serde_json::json!("ESExQVFhcYGRobHB0eHxAhIiMkJSYnKCkqKywtLi8gM");
+    private["d"] = json::json!("ESExQVFhcYGRobHB0eHxAhIiMkJSYnKCkqKywtLi8gM");
     refused(client(private), "a private key must never be configured");
     let mut other_curve = public_jwk();
-    other_curve["crv"] = serde_json::json!("P-384");
+    other_curve["crv"] = json::json!("P-384");
     refused(client(other_curve), "P-256 only");
     let mut rsa_alg = public_jwk();
-    rsa_alg["alg"] = serde_json::json!("RS256");
+    rsa_alg["alg"] = json::json!("RS256");
     refused(client(rsa_alg), "ES256 only");
     let mut short = public_jwk();
-    short["x"] = serde_json::json!("AAAA");
+    short["x"] = json::json!("AAAA");
     refused(client(short), "a P-256 coordinate is 32 bytes");
     let mut no_keys = client(public_jwk());
-    no_keys["jwks"]["keys"] = serde_json::json!([]);
+    no_keys["jwks"]["keys"] = json::json!([]);
     refused(no_keys, "a key is required");
     let mut no_redirect = client(public_jwk());
-    no_redirect["redirect_uris"] = serde_json::json!([]);
+    no_redirect["redirect_uris"] = json::json!([]);
     refused(no_redirect, "a redirect URI is required");
     let mut relative = client(public_jwk());
-    relative["redirect_uris"] = serde_json::json!(["/cb"]);
+    relative["redirect_uris"] = json::json!(["/cb"]);
     refused(relative, "a redirect URI is absolute");
     let mut fragment = client(public_jwk());
-    fragment["redirect_uris"] = serde_json::json!(["https://client.example/cb#f"]);
+    fragment["redirect_uris"] = json::json!(["https://client.example/cb#f"]);
     refused(fragment, "a redirect URI carries no fragment");
     let mut empty_id = client(public_jwk());
-    empty_id["client_id"] = serde_json::json!("");
+    empty_id["client_id"] = json::json!("");
     refused(empty_id, "a client id is required");
 
-    let twice: OauthAsCfg = serde_json::from_value(serde_json::json!({
+    let twice: OauthAsCfg = json::from_value(&json::json!({
         "issuer": "https://gw.example.com",
         "clients": [client(public_jwk()), client(public_jwk())],
     }))
@@ -235,8 +236,8 @@ fn modulus(bytes: usize) -> String {
     )
 }
 
-fn rsa_jwk() -> serde_json::Value {
-    serde_json::json!({ "kty": "RSA", "kid": "r1", "use": "sig", "alg": "PS256", "n": modulus(256), "e": "AQAB" })
+fn rsa_jwk() -> json::Value {
+    json::json!({ "kty": "RSA", "kid": "r1", "use": "sig", "alg": "PS256", "n": modulus(256), "e": "AQAB" })
 }
 
 #[test]
@@ -244,30 +245,30 @@ fn a_static_ps256_client_with_an_rsa_public_jwk_validates() {
     let id = with_client(client(rsa_jwk())).expect("a 2048-bit RSA public JWK for PS256 validates");
     assert_eq!(id.clients[0].jwks.keys[0].kty, "RSA");
     let mut no_alg = rsa_jwk();
-    no_alg.as_object_mut().unwrap().remove("alg");
+    no_alg.as_object_mut().unwrap().remove(&"alg");
     with_client(client(no_alg)).expect("an RSA key with no `alg` is PS256");
 }
 
 #[test]
 fn a_malformed_rsa_static_client_is_refused_at_boot() {
-    let refused = |c: serde_json::Value, why: &str| match with_client(c) {
+    let refused = |c: json::Value, why: &str| match with_client(c) {
         Err(AsCfgError::StaticClient { .. }) => {}
         other => panic!("{why}: expected a StaticClient refusal, got {other:?}"),
     };
     let mut private = rsa_jwk();
-    private["d"] = serde_json::json!(modulus(256));
+    private["d"] = json::json!(modulus(256));
     refused(client(private), "a private key must never be configured");
     let mut weak = rsa_jwk();
-    weak["n"] = serde_json::json!(modulus(128));
+    weak["n"] = json::json!(modulus(128));
     refused(client(weak), "a modulus under 2048 bits");
     let mut rs256 = rsa_jwk();
-    rs256["alg"] = serde_json::json!("RS256");
+    rs256["alg"] = json::json!("RS256");
     refused(client(rs256), "PS256 only, never RS256");
     let mut no_e = rsa_jwk();
-    no_e.as_object_mut().unwrap().remove("e");
+    no_e.as_object_mut().unwrap().remove(&"e");
     refused(client(no_e), "an RSA key carries `e`");
     let mut mixed = client(rsa_jwk());
-    mixed["jwks"]["keys"] = serde_json::json!([rsa_jwk(), public_jwk()]);
+    mixed["jwks"]["keys"] = json::json!([rsa_jwk(), public_jwk()]);
     refused(mixed, "one client, one algorithm");
 }
 
@@ -277,10 +278,10 @@ fn section_refusal(text: impl std::fmt::Display) -> String {
     busbar_kernel::diagnostics::coded::config_section_invalid(text).into()
 }
 
-fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
+fn resolve_block(block: json::Value) -> Result<busbar_kernel::config::RootCfg, Vec<String>> {
     crate::testkit::install_test_seam();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {},
             "models": {},
             "oauth_as": block,
@@ -293,7 +294,7 @@ fn resolve_block(block: serde_json::Value) -> Result<busbar_kernel::config::Root
 
 #[test]
 fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
-    let refused = resolve_block(serde_json::json!({ "issuer": "https://gw.example.com/" }))
+    let refused = resolve_block(json::json!({ "issuer": "https://gw.example.com/" }))
         .expect_err("a trailing slash must refuse the whole config");
     assert_eq!(
         refused,
@@ -301,13 +302,13 @@ fn an_invalid_block_is_refused_at_resolve_with_this_crates_text() {
             "https://gw.example.com/".into()
         ))]
     );
-    let refused = resolve_block(serde_json::json!({ "issuer": "" })).expect_err("empty issuer");
+    let refused = resolve_block(json::json!({ "issuer": "" })).expect_err("empty issuer");
     assert_eq!(refused, vec![section_refusal(AsCfgError::MissingIssuer)]);
 }
 
 #[test]
 fn an_unknown_key_in_the_block_is_refused_at_resolve() {
-    let refused = resolve_block(serde_json::json!({
+    let refused = resolve_block(json::json!({
         "issuer": "https://gw.example.com",
         "not_a_key": true,
     }))
@@ -323,7 +324,7 @@ fn an_unknown_key_in_the_block_is_refused_at_resolve() {
 fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     // db6f4149aa retired the built-in `{env: …}` / `{file: …}` sugar: a shorthand exists only when
     // an admitted source declares it, so with none admitted it refuses without echoing the value.
-    let refused = resolve_block(serde_json::json!({
+    let refused = resolve_block(json::json!({
         "issuer": "https://gw.example.com",
         "signing_key": { "env": "AS_SIGNING_KEY" },
     }))
@@ -335,7 +336,7 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
         )]
     );
 
-    let resolved = resolve_block(serde_json::json!({
+    let resolved = resolve_block(json::json!({
         "issuer": "https://gw.example.com",
         "signing_key": { "module": "fixture-source", "settings": { "slot": "AS_SIGNING_KEY" } },
     }))
@@ -349,15 +350,14 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     assert_eq!(paths, ["oauth_as.signing_key"]);
 
     let resolved =
-        resolve_block(serde_json::json!({ "issuer": "https://gw.example.com" })).expect("valid");
+        resolve_block(json::json!({ "issuer": "https://gw.example.com" })).expect("valid");
     assert!(resolved.oauth_as.expect("accepted").secret_refs.is_empty());
 }
 
 #[tokio::test]
 async fn a_refresh_chain_has_a_bounded_lifetime() {
     let plain: crate::config::OauthAsCfg =
-        serde_json::from_value(serde_json::json!({"issuer": "https://as.example.com"}))
-            .expect("parses");
+        json::from_value(&json::json!({"issuer": "https://as.example.com"})).expect("parses");
     let plane = crate::plane::AsPlane::build(
         crate::config::AsIdentity::from_cfg(&plain).expect("valid"),
         None,
@@ -372,7 +372,7 @@ async fn a_refresh_chain_has_a_bounded_lifetime() {
         "absent, a refresh chain lives thirty days"
     );
 
-    let written: crate::config::OauthAsCfg = serde_json::from_value(serde_json::json!({
+    let written: crate::config::OauthAsCfg = json::from_value(&json::json!({
         "issuer": "https://as.example.com",
         "refresh_token_ttl_secs": 3600,
     }))
@@ -400,11 +400,10 @@ fn a_token_lifetime_out_of_range_is_refused() {
         ("refresh_token_ttl_secs", 0),
         ("refresh_token_ttl_secs", 365 * 24 * 60 * 60 + 1),
     ] {
-        let mut block = serde_json::Map::new();
-        block.insert("issuer".into(), "https://as.example.com".into());
-        block.insert(key.into(), secs.into());
-        let cfg: Result<crate::config::OauthAsCfg, _> =
-            serde_json::from_value(serde_json::Value::Object(block));
+        let mut block = json::Map::new();
+        block.insert("issuer", "https://as.example.com");
+        block.insert(key, secs);
+        let cfg: Result<crate::config::OauthAsCfg, _> = json::from_value(&json::Value::from(block));
         let refused = cfg.map(|cfg| crate::config::AsIdentity::from_cfg(&cfg).is_err());
         assert!(
             matches!(refused, Ok(true)),
@@ -432,7 +431,7 @@ fn an_absolute_url_split_differently_by_the_dialling_stack_is_refused_at_boot() 
         "https://\\@evil.example/cb",
     ] {
         let mut c = client(public_jwk());
-        c["redirect_uris"] = serde_json::json!([bad]);
+        c["redirect_uris"] = json::json!([bad]);
         assert!(
             matches!(with_client(c), Err(AsCfgError::StaticClient { .. })),
             "{bad}"

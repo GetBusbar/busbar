@@ -24,8 +24,8 @@ use busbar_contract::plugin_rows::PluginRows;
 /// 1. A NEW FIELD ON A TYPE ALREADY WALKED HERE is a COMPILE ERROR. Every struct below is taken
 ///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
 ///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
-///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg`,
-///    `CredentialsCfg`, `AtRestCfg` or `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
+///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg`
+///    or `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
 ///    decided, here, whether it carries a secret.
 /// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
 ///    added to a struct this function never destructures, so
@@ -176,7 +176,6 @@ fn walk_secret_refs_with_boot_token<'a>(
         auth,
         providers,
         identity_providers,
-        credentials,
         operator_overlay_names: _,
         operator_file_defs: _,
 
@@ -189,7 +188,6 @@ fn walk_secret_refs_with_boot_token<'a>(
 
         groups: _,
         rate_card: _,
-        plugin_rate_cards: _,
         per_request_fee: _,
         plane_fees: _,
         limits: _,
@@ -233,14 +231,6 @@ fn walk_secret_refs_with_boot_token<'a>(
         refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
     }
 
-    let crate::config::CredentialsCfg { at_rest } = credentials;
-    if let Some(crate::config::AtRestCfg { key, previous }) = at_rest {
-        refs.push(("credentials.at_rest.key".to_string(), key));
-        if let Some(previous) = previous {
-            refs.push(("credentials.at_rest.previous".to_string(), previous));
-        }
-    }
-
     for (name, p) in providers {
         let crate::config::ResolvedProvider {
             api_key,
@@ -268,8 +258,9 @@ fn walk_secret_refs_with_boot_token<'a>(
             module: _,
             max_admin_scope: _,
             settings: _,
-            limits: _,
             insecure_transport: _,
+            provisioning: _,
+            issued_kinds: _,
         } = def;
 
         if let (Some(tok), TokenRefs::Every) = (token, tokens) {
@@ -284,6 +275,10 @@ fn walk_secret_refs_with_boot_token<'a>(
 
     if let Some(auth) = auth {
         let crate::config::AuthCfg {
+            verdict_cache: _,
+            outbound: _,
+            unknown_key_refresh_s: _,
+            require_if_match: _,
             signing_key,
             chain,
             admin_auth,
@@ -407,7 +402,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     ("AuthCfg", SecretBearing::Walked),
-    ("AtRestCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
@@ -432,6 +426,23 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
             "the boot walk's step table (busbar::root::min3_boot): it holds a clone of `auth.signing_key`, \
              copied from `AuthCfg`, which IS walked, so the reference is already enumerated and validated; \
              `Steps` is built from a loaded `RootCfg` and is never part of it.",
+        ),
+    ),
+    (
+        "BootstrapSteps",
+        SecretBearing::NotInResolvedConfig(
+            "the bootstrap (S5/S6) step owner in busbar::root::min3_boot: `at_rest` is a clone of \
+             `auth.signing_key`, copied from `AuthCfg`, which IS walked, so the reference is already \
+             enumerated and validated; `BootstrapSteps` is built from a loaded `RootCfg` and is \
+             never part of it.",
+        ),
+    ),
+    (
+        "DeclaredAuth",
+        SecretBearing::NotInResolvedConfig(
+            "a runtime CARRIER (upstreams::declared): `Declared::resolve_bindings` builds it at \
+             bind time from an `upstreams.<name>.auth` form already parsed into `UpstreamCfg`, \
+             copying that form's reference; it is never part of `RootCfg`.",
         ),
     ),
     (

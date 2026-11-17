@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::any::Any;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use crate::state::{App, AppHandle};
+use crate::core_routes::CoreRouter;
+use crate::state::App;
 
 pub struct AdminMountSeam {
-    pub mount: fn(axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>>,
+    pub mount: fn(CoreRouter) -> CoreRouter,
 
     pub record_boot: fn(&App),
 }
@@ -45,7 +46,7 @@ pub fn install_admin_mount_seam(seam: AdminMountSeam) {
     let _ = SEAM.set(seam);
 }
 
-pub(crate) fn mount_admin(router: axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>> {
+pub(crate) fn mount_admin(router: CoreRouter) -> CoreRouter {
     match SEAM.get() {
         Some(seam) => (seam.mount)(router),
         None => router,

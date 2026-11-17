@@ -1,6 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 #[macro_use]
 #[path = "rig.rs"]
 mod rig;
+
+#[path = "stdio_boot.rs"]
+mod stdio_boot;
 
 #[path = "../../../../dist/default/tests/product/auth_plugin_chain_trust.rs"]
 mod auth_plugin_chain_trust;
@@ -86,9 +92,6 @@ mod rate_apply_commit;
 #[path = "../../../../dist/default/tests/product/registry_cross_plane.rs"]
 mod registry_cross_plane;
 
-#[path = "../../../../dist/default/tests/product/plugins_logs_preflight.rs"]
-mod plugins_logs_preflight;
-
 #[path = "../../../../dist/default/tests/product/plane_integration.rs"]
 mod plane_integration;
 
@@ -112,9 +115,6 @@ mod config_parser_deploy;
 
 #[path = "kernel_application/config_parser_groups_collision.rs"]
 mod config_parser_groups_collision;
-
-#[path = "kernel_application/config_parser_legacy.rs"]
-mod config_parser_legacy;
 
 #[path = "kernel_application/config_parser_migration.rs"]
 mod config_parser_migration;
@@ -255,6 +255,8 @@ mod config_key_transactions;
 mod config_document_patch;
 #[path = "admin_application/config_price_activation.rs"]
 mod config_price_activation;
+#[path = "admin_application/instance_settings.rs"]
+mod instance_settings;
 
 #[path = "admin_application/service_group_deletion.rs"]
 mod service_group_deletion;
@@ -435,34 +437,6 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(admin_application);
 owner_test_sources!(sqlite_application);
 
-/// The migration engine (`busbar-migrations`, deleted whole at C3) reads its 1.5.5 vocabulary from rows
-/// a root hands it. The root no longer carries a table, so the tests that drive the engine install the
-/// frozen customer rows the engine's own tests use.
-pub(crate) fn install_migration_rows() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        use busbar_contract::yaml::ValueExt as _;
-        let frozen: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(include_str!(
-            "../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
-        ))
-        .expect("the frozen customer migration rows parse");
-        let rows: Vec<(&'static str, &'static str)> = frozen
-            .get("migration_rows")
-            .and_then(busbar_contract::yaml::Value::as_mapping)
-            .expect("the frozen migration rows are a map")
-            .iter()
-            .map(|(key, value)| {
-                let key = key.as_str().expect("a migration row name").to_owned();
-                let value = value.as_str().expect("a migration row value").to_owned();
-                (
-                    &*Box::leak(key.into_boxed_str()),
-                    &*Box::leak(value.into_boxed_str()),
-                )
-            })
-            .collect();
-        busbar_migrations::config::migration_table::install(Box::leak(rows.into_boxed_slice()));
-    });
-}
 #[path = "admin_application/admin_generation_etags.rs"]
 mod admin_application_admin_generation_etags;
 

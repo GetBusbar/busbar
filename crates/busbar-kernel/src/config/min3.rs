@@ -2,44 +2,56 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The MIN-3 config keys: the top-level `upstreams:` section with each entry's `auth` and `upstream_credentials`,
-//! `routes.<id>.auth_instances`, per-instance `limits` and `insecure_transport`, and the auth `provisioning:` block
-//! (IF §12.1, §12.11, §12.18, §12.22, §12.29; TRANSPORT-SECURITY-POLICY §4). Every key is additive (PRD-4: a 1.5.5
-//! config parses unchanged). W1-K7 parses the upstreams section, `limits` and `insecure_transport` into
-//! [`RootCfg::min3`](super::RootCfg::min3) at load ([`parse_min3`], called by `config::resolve`, which also calls
-//! W1-K6's [`check_upstream_credentials`] hook); `routes` and `provisioning` are still the W0 stubs.
+//! per-instance `insecure_transport`, and the auth `provisioning:` block (IF §12.1, §12.18, §12.29;
+//! TRANSPORT-SECURITY-POLICY §4). Every key is additive (PRD-4: a 1.5.5 config parses unchanged). W1-K7 parses the
+//! upstreams section and `insecure_transport` into [`RootCfg::min3`](super::RootCfg::min3) at load
+//! ([`parse_min3`], called by `config::resolve`, which also calls W1-K6's [`check_upstream_credentials`] hook);
+//! There is no per-instance `limits` key and no `routes` section: an instance
+//! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::config::UpstreamCreds;
+use busbar_contract::json::{
+    self, JsonContainerTrait as _, JsonValueTrait as _, Map as JsonMap, Value as JsonValue,
+};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::yaml::{Value as YamlValue, ValueExt};
 use serde::Deserialize;
-use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::DeployCfg;
 
 /// Every MIN-3 key of one config load, carried on [`RootCfg::min3`](super::RootCfg::min3). Empty (the default)
 /// for a config that writes none of them.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Min3Config {
-    /// `upstreams.<name>`, by configured upstream name (IF §12.1, §12.18).
-    pub upstreams: BTreeMap<Box<str>, UpstreamCfg>,
-    /// `routes.<id>`, by route id (IF §12.11 "Route credential header").
-    pub routes: BTreeMap<Box<str>, RouteCfg>,
-    /// `<kind>.<name>.limits`, by (kind section, configured instance name) (IF §12.22).
-    pub limits: InstanceLimitsMap,
-    /// `auth.<name>.provisioning`, by configured auth instance name (IF §12.29).
+    /// Checked host outbound credential custody policy (IF §12.18).
+    pub outbound: crate::custody::CredPolicy,
+    /// Checked host refresh interval (IF §8.3), never a plugin setting.
+    pub unknown_key_refresh_s: u64,
+    /// Explicit issued-kind grants keyed by configured auth instance, never image name.
+    pub issued_kinds: BTreeMap<Box<str>, BTreeSet<Box<str>>>,
+    /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
+    pub verdict_cache: crate::auth::verdicts::VerdictPolicy,
+    /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
     pub provisioning: BTreeMap<Box<str>, ProvisioningCfg>,
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
-    /// The top-level `upstreams:` section as written (upstream name → entry), which
-    /// [`crate::upstreams::ConfiguredUpstreams::from_config`] types over [`Self::upstreams`] (IF §12.1).
-    pub upstream_section: JsonMap<String, JsonValue>,
 }
 
-/// Per-instance `limits`, by (kind section, configured instance name).
-pub type InstanceLimitsMap = BTreeMap<(Box<str>, Box<str>), InstanceLimitsCfg>;
+impl Default for Min3Config {
+    fn default() -> Self {
+        Self {
+            outbound: crate::custody::CredPolicy::DEFAULT,
+            unknown_key_refresh_s: 30,
+            issued_kinds: BTreeMap::new(),
+            verdict_cache: Default::default(),
+            provisioning: BTreeMap::new(),
+            insecure_transport: BTreeMap::new(),
+        }
+    }
+}
 
 /// Per-instance `insecure_transport`, by (kind section, configured instance name).
 pub type InsecureTransportMap = BTreeMap<(Box<str>, Box<str>), InsecureTransport>;
@@ -47,6 +59,8 @@ pub type InsecureTransportMap = BTreeMap<(Box<str>, Box<str>), InsecureTransport
 /// The MIN-3 keys of one `upstreams.<name>` entry (the rest of the entry is W1-K1's `UpstreamDef`).
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct UpstreamCfg {
+    /// Opaque configured rate identity; omitted/null means no selected resource.
+    pub resource: Option<Box<str>>,
     /// `upstreams.<name>.auth`: the operator form or one core-vocabulary form (IF §12.18 upstream bindings).
     pub auth: Option<UpstreamAuthCfg>,
     /// `upstreams.<name>.upstream_credentials`; None = derived from the binding (IF §12.18 round 22).
@@ -90,27 +104,9 @@ pub enum UpstreamAuthForm {
     },
 }
 
-/// The MIN-3 keys of one `routes.<id>` entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RouteCfg {
-    /// `routes.<id>.auth_instances`: the route's effective chain, configured auth instance names in order; None =
-    /// rule (2) or (3) of IF §12.11 "Route credential header".
-    pub auth_instances: Option<Vec<Box<str>>>,
-}
-
-/// `<kind>.<name>.limits`, beside `module` (IF §12.22). 0 = unset (the kind default) in every field. The
-/// `plaintext` row is deleted (owner ruling; transport security is `insecure_transport`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct InstanceLimitsCfg {
-    pub timeout_ms: u32,
-    pub connect_timeout_ms: u32,
-    pub max_inflight: u32,
-    /// Transport instances only.
-    pub stream_stall_ms: u32,
-}
-
-/// `auth.<name>.provisioning` (IF §12.29).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `identity-providers.<name>.provisioning` (IF §12.29).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningCfg {
     pub clients: Vec<Box<str>>,
     /// Absent = no CA-5 hold.
@@ -119,7 +115,8 @@ pub struct ProvisioningCfg {
 }
 
 /// `provisioning.link`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningLink {
     pub index: Box<str>,
     pub auth: Vec<Box<str>>,
@@ -127,7 +124,8 @@ pub struct ProvisioningLink {
 }
 
 /// `provisioning.guard`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProvisioningGuard {
     pub max: u32,
     pub window_s: u64,
@@ -137,30 +135,76 @@ pub struct ProvisioningGuard {
 /// in the file; an `insecure_transport` refusal is BUSBAR-3163). Every key is additive: a 1.5.5-shaped document
 /// carries none of them and parses to the empty config.
 ///
-/// `limits` and `insecure_transport` sit beside `module` in an instance block of any kind (`store`,
-/// `secrets.<name>`, `identity-providers.<name>`, `hooks.<name>`, `export.<name>`; IF §12.22,
-/// TRANSPORT-SECURITY-POLICY §4). The typed section structs keep them as written, so the grammar admits them
-/// and the authoring view writes them back; they are never part of an instance's `settings`, the only bag a
-/// plugin is bound from, so they are stripped before binding by construction. Each is keyed here by (the
+/// `insecure_transport` sits beside `module` in an instance block of any kind (`store`,
+/// `secrets.<name>`, `identity-providers.<name>`, `hooks.<name>`, `export.<name>`;
+/// TRANSPORT-SECURITY-POLICY §4). The typed section structs keep it as written, so the grammar admits it
+/// and the authoring view writes it back; it is never part of an instance's `settings`, the only bag a
+/// plugin is bound from, so it is stripped before binding by construction. It is keyed here by (the
 /// section word, the configured instance name); the store is (`store`, `store`).
 pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
-    let upstreams = kept(parse_upstreams(deploy), &mut refused);
-    let routes = kept(parse_routes(deploy), &mut refused);
-    let limits = kept(parse_limits(deploy), &mut refused);
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
+    let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
+    let outbound = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.outbound)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
+    let verdict_cache = kept(
+        deploy
+            .auth
+            .as_ref()
+            .map_or_else(Default::default, |auth| auth.verdict_cache)
+            .resolve()
+            .map_err(|why| vec![why.to_owned()]),
+        &mut refused,
+    );
     if !refused.is_empty() {
         return Err(refused);
     }
     Ok(Min3Config {
-        upstreams,
-        routes,
-        limits,
+        outbound,
+        unknown_key_refresh_s: deploy
+            .auth
+            .as_ref()
+            .map_or(30, |auth| auth.unknown_key_refresh_s)
+            .max(5),
+        issued_kinds,
+        verdict_cache,
         provisioning,
         insecure_transport,
-        upstream_section: deploy.upstreams.clone().unwrap_or_default(),
     })
+}
+
+fn parse_issued_kinds(
+    deploy: &DeployCfg,
+) -> Result<BTreeMap<Box<str>, BTreeSet<Box<str>>>, Vec<String>> {
+    let mut grants = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, provider) in &deploy.identity_providers {
+        let Some(kinds) = &provider.issued_kinds else {
+            continue;
+        };
+        let mut unique = BTreeSet::new();
+        for kind in kinds {
+            if kind.trim().is_empty() || !unique.insert(kind.clone()) {
+                refused.push(format!(
+                    "identity-providers.{name}.issued_kinds: expected distinct nonblank kind names"
+                ));
+            }
+        }
+        grants.insert(name.as_str().into(), unique);
+    }
+    if refused.is_empty() {
+        Ok(grants)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The parsed value, or its default with its refusals appended to `refused`.
@@ -171,7 +215,7 @@ fn kept<T: Default>(parsed: Result<T, Vec<String>>, refused: &mut Vec<String>) -
     })
 }
 
-/// One instance block that may carry `limits` and `insecure_transport` beside `module`.
+/// One instance block that may carry `insecure_transport` beside `module`.
 struct Block<'a> {
     /// The section word (`store`, `secrets`, `identity-providers`, `hooks`, `export`).
     section: &'static str,
@@ -179,7 +223,6 @@ struct Block<'a> {
     name: &'a str,
     /// The block's path in the file, as a refusal names it (`store`, `secrets.vault`).
     path: String,
-    limits: Option<&'a YamlValue>,
     insecure_transport: Option<&'a YamlValue>,
 }
 
@@ -193,7 +236,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: STORE_INSTANCE,
             name: STORE_INSTANCE,
             path: STORE_INSTANCE.to_owned(),
-            limits: store.limits.as_ref(),
             insecure_transport: store.insecure_transport.as_ref(),
         });
     }
@@ -202,7 +244,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "secrets",
             name: name.as_str(),
             path: format!("secrets.{name}"),
-            limits: secret.limits.as_ref(),
             insecure_transport: secret.insecure_transport.as_ref(),
         });
     }
@@ -211,7 +252,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "identity-providers",
             name: name.as_str(),
             path: format!("identity-providers.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -220,7 +260,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "hooks",
             name: name.as_str(),
             path: format!("hooks.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -229,7 +268,6 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             section: "export",
             name: name.as_str(),
             path: format!("export.{name}"),
-            limits: def.limits.as_ref(),
             insecure_transport: def.insecure_transport.as_ref(),
         });
     }
@@ -239,48 +277,52 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
 /// Parses `upstreams.<name>.auth` and `upstreams.<name>.upstream_credentials` (consumers W1-K1, W1-K6): an
 /// upstream with neither key has no entry. An entry that is not a map is left to
 /// [`crate::upstreams::ConfiguredUpstreams::from_config`], which refuses it with the rest of the entry grammar.
-pub fn parse_upstreams(deploy: &DeployCfg) -> Result<BTreeMap<Box<str>, UpstreamCfg>, Vec<String>> {
-    let mut out = BTreeMap::new();
+pub fn parse_upstream_entry(at: &str, entry: &JsonValue) -> Result<UpstreamCfg, Vec<String>> {
     let mut refused = Vec::new();
-    for (name, entry) in deploy.upstreams.iter().flatten() {
-        let Some(map) = entry.as_object() else {
-            continue;
-        };
-        let at = format!("upstreams.{name}");
-        let auth = match map.get("auth") {
-            None | Some(JsonValue::Null) => None,
-            Some(value) => match upstream_auth(&at, value) {
-                Ok(auth) => Some(auth),
-                Err(why) => {
-                    refused.push(why);
-                    None
-                }
-            },
-        };
-        let upstream_credentials = match map.get("upstream_credentials") {
-            None | Some(JsonValue::Null) => None,
-            Some(value) => match UpstreamCreds::deserialize(value) {
-                Ok(creds) => Some(creds),
-                Err(e) => {
-                    refused.push(format!(
+    let Some(map) = entry.as_object() else {
+        return Err(vec![format!("{at}: a registration must be an object")]);
+    };
+    let resource = match map.get(&"resource").filter(|value| !value.is_null()) {
+        None => None,
+        Some(value) => match value
+            .as_str()
+            .filter(|text| super::groups::valid_selected_identifier(text))
+        {
+            Some(text) => Some(text.into()),
+            None => {
+                refused.push(format!("{at}.resource must be a nonempty string of at most 128 UTF-8 bytes without controls"));
+                None
+            }
+        },
+    };
+    let auth = match map.get(&"auth").filter(|v| !v.is_null()) {
+        None => None,
+        Some(value) => match upstream_auth(at, value) {
+            Ok(auth) => Some(auth),
+            Err(why) => {
+                refused.push(why);
+                None
+            }
+        },
+    };
+    let upstream_credentials = match map.get(&"upstream_credentials").filter(|v| !v.is_null()) {
+        None => None,
+        Some(value) => match json::from_value::<UpstreamCreds>(value) {
+            Ok(creds) => Some(creds),
+            Err(e) => {
+                refused.push(format!(
                         "`{at}.upstream_credentials` is not one of `own`, `passthrough` or `connection`: {e}"
                     ));
-                    None
-                }
-            },
-        };
-        if auth.is_some() || upstream_credentials.is_some() {
-            out.insert(
-                Box::<str>::from(name.as_str()),
-                UpstreamCfg {
-                    auth,
-                    upstream_credentials,
-                },
-            );
-        }
-    }
+                None
+            }
+        },
+    };
     if refused.is_empty() {
-        Ok(out)
+        Ok(UpstreamCfg {
+            resource,
+            auth,
+            upstream_credentials,
+        })
     } else {
         Err(refused)
     }
@@ -313,7 +355,7 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
     let mut cache_max_s = None;
     let mut forms: Vec<(&str, &JsonValue)> = Vec::new();
     for (key, form) in map {
-        match key.as_str() {
+        match key {
             "cache_max_s" => match form.as_u64().and_then(|s| u32::try_from(s).ok()) {
                 Some(seconds) if seconds > 0 => cache_max_s = Some(seconds),
                 _ => {
@@ -324,7 +366,7 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 }
             },
             "bearer" | "api_key" | "token_exchange" | "connection" => {
-                forms.push((key.as_str(), form));
+                forms.push((key, form));
             }
             other => {
                 return Err(format!(
@@ -344,8 +386,8 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
         "api_key" => {
             let m = form_map(at, word, form, &["header", "secret"])?;
             UpstreamAuthForm::ApiKey {
-                header: auth_text(at, "api_key.header", m.get("header"))?,
-                secret: auth_secret(at, "api_key.secret", m.get("secret"))?,
+                header: auth_text(at, "api_key.header", m.get(&"header"))?,
+                secret: auth_secret(at, "api_key.secret", m.get(&"secret"))?,
             }
         }
         "token_exchange" => {
@@ -361,15 +403,16 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 ],
             )?;
             UpstreamAuthForm::TokenExchange {
-                token_url: auth_text(at, "token_exchange.token_url", m.get("token_url"))?,
-                resource: auth_text(at, "token_exchange.resource", m.get("resource"))?,
+                token_url: auth_text(at, "token_exchange.token_url", m.get(&"token_url"))?,
+                resource: auth_text(at, "token_exchange.resource", m.get(&"resource"))?,
                 subject_token: auth_secret(
                     at,
                     "token_exchange.subject_token",
-                    m.get("subject_token"),
+                    m.get(&"subject_token"),
                 )?,
-                subject_token_type: match m.get("subject_token_type") {
-                    None | Some(JsonValue::Null) => None,
+                subject_token_type: match m.get(&"subject_token_type") {
+                    None => None,
+                    Some(value) if value.is_null() => None,
                     some => Some(auth_text(at, "token_exchange.subject_token_type", some)?),
                 },
             }
@@ -389,11 +432,14 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                     "scopes",
                 ],
             )?;
-            let scopes = match m.get("scopes") {
-                None | Some(JsonValue::Null) => None,
-                Some(JsonValue::Array(items)) => Some(
-                    items
-                        .iter()
+            let scopes = match m.get(&"scopes") {
+                None => None,
+                Some(value) if value.is_null() => None,
+                Some(value) if value.is_array() => Some(
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
                         .map(|item| {
                             item.as_str()
                                 .filter(|scope| !scope.is_empty())
@@ -411,19 +457,19 @@ fn upstream_auth(at: &str, value: &JsonValue) -> Result<UpstreamAuthCfg, String>
                 }
             };
             UpstreamAuthForm::Connection {
-                issuer: auth_text(at, "connection.issuer", m.get("issuer"))?,
-                resource: auth_text(at, "connection.resource", m.get("resource"))?,
-                client_id: auth_text(at, "connection.client_id", m.get("client_id"))?,
-                redirect_uri: auth_text(at, "connection.redirect_uri", m.get("redirect_uri"))?,
+                issuer: auth_text(at, "connection.issuer", m.get(&"issuer"))?,
+                resource: auth_text(at, "connection.resource", m.get(&"resource"))?,
+                client_id: auth_text(at, "connection.client_id", m.get(&"client_id"))?,
+                redirect_uri: auth_text(at, "connection.redirect_uri", m.get(&"redirect_uri"))?,
                 authorization_endpoint: auth_text(
                     at,
                     "connection.authorization_endpoint",
-                    m.get("authorization_endpoint"),
+                    m.get(&"authorization_endpoint"),
                 )?,
                 token_endpoint: auth_text(
                     at,
                     "connection.token_endpoint",
-                    m.get("token_endpoint"),
+                    m.get(&"token_endpoint"),
                 )?,
                 scopes,
             }
@@ -438,7 +484,7 @@ fn form_map<'a>(
     word: &str,
     form: &'a JsonValue,
     keys: &[&str],
-) -> Result<&'a JsonMap<String, JsonValue>, String> {
+) -> Result<&'a JsonMap, String> {
     let listed = keys
         .iter()
         .map(|key| format!("`{key}`"))
@@ -447,7 +493,11 @@ fn form_map<'a>(
     let Some(map) = form.as_object() else {
         return Err(format!("`{at}.auth.{word}` must be a map of {listed}"));
     };
-    if let Some(key) = map.keys().find(|key| !keys.contains(&key.as_str())) {
+    if let Some(key) = map
+        .iter()
+        .map(|(key, _)| key)
+        .find(|key| !keys.contains(key))
+    {
         return Err(format!(
             "`{at}.auth.{word}.{key}` is not a key of `{word}`; the keys are {listed}"
         ));
@@ -469,45 +519,12 @@ fn auth_secret(at: &str, key: &str, value: Option<&JsonValue>) -> Result<SecretR
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Err(format!("`{at}.auth.{key}` must be a secret reference"));
     };
-    match SecretRef::deserialize(value) {
+    match json::from_value::<SecretRef>(value) {
         Ok(SecretRef::None) => Err(format!(
             "`{at}.auth.{key}` is `none`, which names no credential; drop `{at}.auth` for an upstream that takes none"
         )),
         Ok(reference) => Ok(reference),
         Err(e) => Err(format!("`{at}.auth.{key}` must be a secret reference: {e}")),
-    }
-}
-
-/// Parses `routes.<id>.auth_instances` (consumer W1-K8B). W0-ABI stub: none.
-pub fn parse_routes(deploy: &DeployCfg) -> Result<BTreeMap<Box<str>, RouteCfg>, Vec<String>> {
-    let _ = deploy;
-    Ok(BTreeMap::new())
-}
-
-/// Parses every instance's `limits` (consumers W1-K8D, W1-C1A; see [`parse_min3`] for where it sits and how it
-/// is stripped): an unknown key (`plaintext` included) or an out-of-bounds value refuses naming
-/// `<path>.limits[.<key>]`.
-pub fn parse_limits(deploy: &DeployCfg) -> Result<InstanceLimitsMap, Vec<String>> {
-    let mut out = InstanceLimitsMap::new();
-    let mut refused = Vec::new();
-    for block in blocks(deploy) {
-        let Some(value) = block.limits else {
-            continue;
-        };
-        let parsed = busbar_contract::yaml::from_value::<LimitsDoc>(value.clone())
-            .map_err(|e| format!("{}.limits: {e}", block.path))
-            .and_then(|doc| doc.resolve(&block.path));
-        match parsed {
-            Ok(limits) => {
-                out.insert((block.section.into(), block.name.into()), limits);
-            }
-            Err(why) => refused.push(why),
-        }
-    }
-    if refused.is_empty() {
-        Ok(out)
-    } else {
-        Err(refused)
     }
 }
 
@@ -594,12 +611,36 @@ fn insecure_transport_of(path: &str, value: &YamlValue) -> Result<InsecureTransp
     doc.resolve(path)
 }
 
-/// Parses every auth instance's `provisioning:` block (consumer W1-K6P). W0-ABI stub: none.
+/// Parses every auth instance's core-owned provisioning policy. Image capabilities and
+/// inbound link references are checked after the boot walk by `directory::check_provisioning`.
 pub fn parse_provisioning(
     deploy: &DeployCfg,
 ) -> Result<BTreeMap<Box<str>, ProvisioningCfg>, Vec<String>> {
-    let _ = deploy;
-    Ok(BTreeMap::new())
+    let mut out = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, def) in &deploy.identity_providers {
+        let Some(value) = &def.provisioning else {
+            continue;
+        };
+        let cfg = match busbar_contract::yaml::from_value::<ProvisioningCfg>(value.clone()) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                refused.push(format!("identity-providers.{name}.provisioning: {error}"));
+                continue;
+            }
+        };
+        match crate::directory::check_provisioning_shape(name, &cfg) {
+            Ok(()) => {
+                out.insert(name.as_str().into(), cfg);
+            }
+            Err(mut reasons) => refused.append(&mut reasons),
+        }
+    }
+    if refused.is_empty() {
+        Ok(out)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The `upstream_credentials` refusals (IF §12.18 round 22, (i)-(iii)), run at config load once the bindings are
@@ -609,61 +650,8 @@ pub fn check_upstream_credentials(min3: &Min3Config) -> Result<(), Vec<String>> 
     Ok(())
 }
 
-/// The longest any `limits` duration may be (IF §12.22).
-pub(crate) const MAX_LIMIT_MS: u64 = 600_000;
-/// The most concurrent port calls `limits.max_inflight` may name (IF §12.22).
-pub const MAX_INFLIGHT: u64 = 65_535;
 /// The longest a reason may be (TRANSPORT-SECURITY-POLICY §4).
 pub(crate) const MAX_REASON_CHARS: usize = 256;
-
-/// `<kind>.<name>.limits` as written: the grammar of the object, before validation. A key outside these four
-/// (`plaintext` included: the row is deleted) is refused as unknown.
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LimitsDoc {
-    #[serde(default)]
-    pub timeout_ms: u64,
-    #[serde(default)]
-    pub connect_timeout_ms: u64,
-    #[serde(default)]
-    pub max_inflight: u64,
-    #[serde(default)]
-    pub stream_stall_ms: u64,
-}
-
-impl LimitsDoc {
-    /// Validates the object (numbers at most 600,000 ms and 65,535 in flight; `stream_stall_ms` 0 or
-    /// 1,000..=600,000) and returns the parsed limits. `path` is the instance's config path (`store.main`); the
-    /// refusal names `<path>.limits.<key>`.
-    pub fn resolve(self, path: &str) -> Result<InstanceLimitsCfg, String> {
-        let ms = |key: &str, v: u64| -> Result<u32, String> {
-            if v > MAX_LIMIT_MS {
-                return Err(format!(
-                    "{path}.limits.{key} is {v}: at most {MAX_LIMIT_MS} milliseconds"
-                ));
-            }
-            Ok(v as u32)
-        };
-        let stall = self.stream_stall_ms;
-        if stall != 0 && !(1_000..=MAX_LIMIT_MS).contains(&stall) {
-            return Err(format!(
-                "{path}.limits.stream_stall_ms is {stall}: 0 (the default) or 1000..={MAX_LIMIT_MS} milliseconds"
-            ));
-        }
-        if self.max_inflight > MAX_INFLIGHT {
-            return Err(format!(
-                "{path}.limits.max_inflight is {}: at most {MAX_INFLIGHT} calls in flight",
-                self.max_inflight
-            ));
-        }
-        Ok(InstanceLimitsCfg {
-            timeout_ms: ms("timeout_ms", self.timeout_ms)?,
-            connect_timeout_ms: ms("connect_timeout_ms", self.connect_timeout_ms)?,
-            max_inflight: self.max_inflight as u32,
-            stream_stall_ms: stall as u32,
-        })
-    }
-}
 
 /// One `accept` word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]

@@ -32,7 +32,6 @@ pub fn resolve_store_bootstrap_with_security(
     bootstrap.advanced.clone_from(&deploy.advanced);
     bootstrap.health.clone_from(&deploy.health);
     bootstrap.routing.clone_from(&deploy.routing);
-    bootstrap.credentials.clone_from(&deploy.credentials);
     // The projection is read under the grammar of the document it projects.
     bootstrap.grammar = deploy.grammar.clone();
     bootstrap.auth = deploy.auth.clone().map(|mut auth| {

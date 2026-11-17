@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use busbar_contract::crypto::{ecdsa_p256, rsa as crypto_rsa};
-use serde_json::{json, Value};
+use busbar_contract::json::{self, json, JsonType, JsonValueTrait as _, Value};
 
 use busbar_core_oauth2::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 
@@ -334,7 +334,10 @@ async fn post(
     let resp = req.send().await.expect("request");
     let status = resp.status().as_u16();
     let body = resp.text().await.expect("body");
-    (status, serde_json::from_str(&body).unwrap_or(Value::Null))
+    (
+        status,
+        json::parse_value(body.as_bytes()).unwrap_or(Value::new()),
+    )
 }
 
 fn push_form(s: &Subject, client_id: &str, key: &Key) -> Vec<(&'static str, String)> {
@@ -437,10 +440,10 @@ fn with(form: &[(&'static str, String)], name: &str, value: Value) -> Vec<(&'sta
             if *k != name {
                 return Some((*k, v.clone()));
             }
-            match &value {
-                Value::Null => None,
-                Value::String(s) => Some((*k, s.clone())),
-                other => Some((*k, other.to_string())),
+            match value.get_type() {
+                JsonType::Null => None,
+                JsonType::String => value.as_str().map(|s| (*k, s.to_string())),
+                _ => Some((*k, value.to_string())),
             }
         })
         .collect()
@@ -448,7 +451,7 @@ fn with(form: &[(&'static str, String)], name: &str, value: Value) -> Vec<(&'sta
 
 fn payload(jwt: &str) -> Value {
     let part = jwt.split('.').nth(1).expect("a compact JWS");
-    serde_json::from_slice(&B64.decode(part).expect("base64url")).expect("JSON claims")
+    json::parse_value(&B64.decode(part).expect("base64url")).expect("JSON claims")
 }
 
 async fn metadata(s: &Subject) -> Value {
@@ -462,7 +465,7 @@ async fn metadata(s: &Subject) -> Value {
         .await
         .expect("metadata");
     assert_eq!(resp.status(), 200);
-    resp.json().await.expect("JSON metadata")
+    json::parse_value(&resp.bytes().await.expect("metadata body")).expect("JSON metadata")
 }
 
 #[tokio::test]
@@ -616,7 +619,7 @@ async fn showing_the_consent_screen_does_not_spend_the_pushed_request() {
 async fn a_pushed_request_naming_no_scope_is_shown_the_default_it_is_granted() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
-    let form = with(&push_form(&s, CLIENT_ID, &s.key), "scope", Value::Null);
+    let form = with(&push_form(&s, CLIENT_ID, &s.key), "scope", Value::new());
     let request_uri = push(&s, &form, &dpop).await;
     let authorize = authorize_url(&s, CLIENT_ID, &request_uri);
     let mut jar = Jar::new(true);
@@ -751,9 +754,9 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &with(&good(), "client_assertion", Value::Null),
+            &with(&good(), "client_assertion", Value::new()),
             "client_assertion_type",
-            Value::Null,
+            Value::new(),
         ),
         &[400, 401],
         &["invalid_client"],
@@ -814,9 +817,9 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     assert_push_refused(
         &s,
         &with(
-            &with(&good(), "code_challenge", Value::Null),
+            &with(&good(), "code_challenge", Value::new()),
             "code_challenge_method",
-            Value::Null,
+            Value::new(),
         ),
         &[400],
         &["invalid_request"],
@@ -845,7 +848,7 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
     .await;
     assert_push_refused(
         &s,
-        &with(&good(), "redirect_uri", Value::Null),
+        &with(&good(), "redirect_uri", Value::new()),
         &[400],
         &["invalid_request"],
         "FAPI2 s5.3.2.2-6: redirect_uri is required in a pushed request",
@@ -874,7 +877,7 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
     let s = serve(true).await;
     let dpop = Key::new("dpop");
     let token_endpoint = format!("{}/token", s.origin);
-    let dpop_errors = &["invalid_dpop_proof", "invalid_request", "invalid_grant"];
+    let dpop_errors = &["invalid_dpop_proof"];
 
     let code = code_for(&s, &dpop).await;
     assert_token_refused(

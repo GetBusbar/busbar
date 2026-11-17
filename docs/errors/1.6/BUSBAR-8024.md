@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-8024
 
 ## What it means
 
-A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under.
+A boot or reload re-seals every stored recoverable credential stored in the clear before 1.6.0 under the key derived from auth.signing_key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate.
 
 ## How to fix it
 
-Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
+A later boot or reload re-seals them (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
 
 ---
 

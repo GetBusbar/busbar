@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
+
 const ISSUER: &str = "https://as.example.com";
 
 #[test]
 fn an_absent_block_resolves_to_no_authorization_server() {
     let deploy: busbar_kernel::config::DeployCfg =
-        serde_json::from_value(serde_json::json!({"providers": {}, "models": {}}))
+        json::from_value(&json::json!({"providers": {}, "models": {}}))
             .expect("a minimal deploy config parses");
     let resolved = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("a minimal config resolves");
@@ -19,7 +21,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 
     crate::testkit::install_test_seam();
     let deploy: busbar_kernel::config::DeployCfg = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {},
             "models": {},
             "oauth_as": { "issuer": ISSUER },

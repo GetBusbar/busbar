@@ -99,14 +99,9 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest =
+        crate::root::test_plugins::native_manifest("store", &library_path, "third-party");
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("inbound-signed-custody");
     let archive = plugins::signed(&plugins::key(0x33), manifest, &library);
@@ -122,16 +117,12 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
         .expect("write the actual configured signing key");
-    let at_rest = directory.join("at-rest-key");
-    std::fs::write(&at_rest, hex::encode([17u8; 32])).expect("write actual at-rest key");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "credentials": { "at_rest": { "key": { "file": at_rest } } },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -154,23 +145,26 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let auth_config = config.auth.clone().expect("the fixture configures auth");
+    let destinations = config.destinations();
     let native_config = config;
     let native_plugins = plugin_config;
-    let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &native_config,
-            &native_plugins,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: native_core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup"),
-    )
-    .await;
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        .expect("actual Store opens for native startup");
+    let native_core = crate::root::real_store::core_over(native_core).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         native_config,
         native_plugins,
         None,
@@ -179,7 +173,7 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
         (None, None),
         None,
         &rules,
-        Some(native_core),
+        Some(native_core.clone()),
         true,
     )
     .await
@@ -193,9 +187,33 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    // Open the actual credential readers over this generation's completed governance and
+    // persistence owners. The general fixture dispatcher has no credential authority.
+    let services = crate::root::serve::compose(
+        crate::root::connector::guard_for(&destinations).expect("fixture destination policy"),
+        &app,
+        native_core,
+        &[],
+    );
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
+    let registry = Arc::new(crate::root::boot::linked_registry());
+    let axis: Arc<dyn busbar_contract::auth_calls::AuthAxis> = Arc::new(
+        busbar_plugin_loader::auth_axis::AuthRows::new(registry.clone(), dispatcher)
+            .with_conns(|| crate::root::connector::admit(crate::root::connector::the().clone())),
+    );
+    let mut instances = busbar_kernel::auth::instances::AuthInstances::default();
+    app.auth = Arc::new(
+        busbar_kernel::auth::AuthMiddleware::build_on(
+            &auth_config,
+            registry.as_ref(),
+            &app.secret_resolver,
+            &mut instances,
+            &|| Some(axis.clone()),
+        )
+        .expect("real signed credential readers open over the generation services"),
+    );
+    app.auth_instances = instances.sealed();
     let app = Arc::new(app);
-    let credential_owner = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
-    crate::dist_root_install::bind_credentials_once(credential_owner.clone());
     let gov = app
         .governance
         .as_ref()

@@ -10,7 +10,7 @@ use busbar_plugin_abi::auth::{
     FB_LOGIN_CREDENTIAL, FB_LOGIN_REDIRECT, LOGIN_BEGIN, LOGIN_COMPLETE, LOGIN_CREDENTIAL,
     SECURITY_CHECK,
 };
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::PortError;
 
 /// Why a describe's login facts are refused (DescribeInvalid). Core text, never plugin text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

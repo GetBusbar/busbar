@@ -188,19 +188,18 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
     static HOST: OnceLock<(Arc<Dispatcher>, Arc<Connector>)> = OnceLock::new();
     HOST.get_or_init(|| {
         let guard = process::dest_judge(&busbar_kernel::config::Destinations {
-            allow: vec!["127.0.0.1".into()],
+            block_private_addresses: true,
             ..Default::default()
         })
         .expect("the local IdP destination policy");
-        assert!(
-            guard
-                .judge_name(
-                    "https://127.0.0.1:443/jwks",
-                    busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
-                    true,
-                )
-                .is_ok(),
-            "the actual strict destination guard permits the configured TLS IdP"
+        assert_eq!(
+            guard.judge_name(
+                "https://127.0.0.1:443/jwks",
+                busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
+                true,
+            ),
+            Err(busbar_contract::abi::host::service::DEST_INTERNAL),
+            "UPSTREAMS-DECLARED r3: strict OPEN_WEB never borrows configured route reach"
         );
 
         let services = Arc::new(KernelServices::new().with_dest_judge(guard.clone()));

@@ -129,7 +129,13 @@ pub mod tag {
     /// 1..=256 of them, each 1..=9999. At most one. Any kind. Core renders a number n of this image as
     /// BUSBAR-<identity>-<n as 4 digits> (§11.2 `ErrorBook`). A bad list drops that image's codes; the image is
     /// still admitted (never DescribeInvalid for this item's content).
-    pub const D_ERRORS: u16 = 0x004C;
+pub const D_ERRORS: u16 = 0x004C;
+/// RFC 6901 pointer to this plane's registrations. Final decoded token is `*` (object members),
+/// with no earlier wildcard. Plane only, at most four; duplicates and ancestor overlap refuse describe.
+/// Core consumes url, command, tls, auth, upstream_credentials and allow_private at each member before
+/// schema/check/open. Other path declarations may name plugin-owned siblings, never consumed core fields.
+/// Absence declares no registration upstreams. No ABI layout or version change.
+pub const D_UPSTREAM_PATH: u16 = 0x004D;
     /// Describe: one metric this plugin may report (Pod MetricDecl; tail = nested TEXT name, TEXT help,
     /// TEXT label key*). Any kind may declare metrics; core owns the series, retention and exposition (§12.17).
     pub const D_METRIC: u16 = 0x0047;
@@ -398,7 +404,7 @@ const REPLY_CAP: usize = 16 << 20;
 const REPLY_MIN: usize = 256;
 
 /// The bytes one record takes: head, `len` body bytes, zero padding to the next multiple of 8.
-const fn record_size(len: usize) -> Option<usize> {
+pub const fn record_size(len: usize) -> Option<usize> {
     match HEAD.checked_add(len) {
         Some(n) => match n.checked_add(ALIGN - 1) {
             Some(n) => Some(n & !(ALIGN - 1)),
@@ -521,6 +527,23 @@ pub struct Full;
 
 pub trait Writer {
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full>;
+    /// One atomic record from borrowed body segments, without collecting or copying them first.
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full>;
+    /// A POD prefix followed by nested records. Full wipes and rolls back the whole outer record.
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full>;
+
+    /// One flat body of little-endian u32 words. Any failed push, caller error or unwind
+    /// rolls back this record, including when `fill` ignores a failed push.
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full>;
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full>;
     fn put_pod_tail<T: Pod>(&mut self, tag: u16, v: &T, tail: &[u8]) -> Result<(), Full>;
     fn put_text(&mut self, tag: u16, s: &str) -> Result<(), Full>;
@@ -555,14 +578,105 @@ pub(crate) trait RawWrite {
     fn truncate(&mut self, len: usize);
 }
 
+/// The flat word body of one record. A failed push poisons the enclosing write.
+pub struct U32s<'a> {
+    w: &'a mut dyn RawWrite,
+    body: &'a mut usize,
+    failed: &'a mut bool,
+}
+
+impl U32s<'_> {
+    pub fn push(&mut self, value: u32) -> Result<(), Full> {
+        if *self.failed {
+            return Err(Full);
+        }
+        let next = self
+            .body
+            .checked_add(4)
+            .filter(|&len| u32::try_from(len).is_ok());
+        let Some(next) = next else {
+            *self.failed = true;
+            return Err(Full);
+        };
+        if self.w.room(4).is_err() {
+            *self.failed = true;
+            return Err(Full);
+        }
+        self.w.append(&value.to_le_bytes());
+        *self.body = next;
+        Ok(())
+    }
+}
+
+/// Lives outside the user callback, so dropping or forgetting its U32s borrow cannot commit.
+struct WordRecord<'a> {
+    w: &'a mut dyn RawWrite,
+    start: usize,
+    committed: bool,
+}
+
+impl Drop for WordRecord<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.w.truncate(self.start);
+        }
+    }
+}
+
+pub(crate) fn put_u32s_in(
+    w: &mut dyn RawWrite,
+    tag: u16,
+    fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+) -> Result<(), Full> {
+    let start = w.written();
+    let patch_at = start
+        .checked_add(core::mem::offset_of!(RecHead, len))
+        .ok_or(Full)?;
+    start.checked_add(HEAD).ok_or(Full)?;
+    w.room(HEAD)?;
+    let mut record = WordRecord {
+        w,
+        start,
+        committed: false,
+    };
+    record.w.append(RecHead { tag, _r: 0, len: 0 }.as_bytes());
+    let mut body = 0;
+    let mut failed = false;
+    fill(&mut U32s {
+        w: &mut *record.w,
+        body: &mut body,
+        failed: &mut failed,
+    })?;
+    if failed {
+        return Err(Full);
+    }
+    let len = u32::try_from(body).map_err(|_| Full)?;
+    let size = record_size(body).ok_or(Full)?;
+    start.checked_add(size).ok_or(Full)?;
+    let padding = size - HEAD - body;
+    record.w.room(padding)?;
+    record.w.append(&ZEROS[..padding]);
+    record.w.patch(patch_at, len.as_bytes());
+    record.committed = true;
+    Ok(())
+}
+
 /// One whole record from `parts` (the body, back to back), or Full with nothing written.
 pub(crate) fn put_parts<W: RawWrite + ?Sized>(
     w: &mut W,
     tag: u16,
     parts: &[&[u8]],
 ) -> Result<(), Full> {
+    put_parts_iter(w, tag, parts.iter().copied())
+}
+
+pub(crate) fn put_parts_iter<'a, W: RawWrite + ?Sized>(
+    w: &mut W,
+    tag: u16,
+    parts: impl Iterator<Item = &'a [u8]> + Clone,
+) -> Result<(), Full> {
     let len = parts
-        .iter()
+        .clone()
         .try_fold(0usize, |len, part| len.checked_add(part.len()))
         .ok_or(Full)?;
     let head = RecHead {
@@ -611,7 +725,16 @@ pub(crate) fn put_nested_in(
     tag: u16,
     f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
 ) -> Result<(), Full> {
-    let start = open_record(w, tag, &[])?;
+    put_prefixed_nested_in(w, tag, &[], f)
+}
+
+pub(crate) fn put_prefixed_nested_in(
+    w: &mut dyn RawWrite,
+    tag: u16,
+    prefix: &[u8],
+    f: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+) -> Result<(), Full> {
+    let start = open_record(w, tag, prefix)?;
     let filled = f(&mut Nested { w: &mut *w });
     let done = filled.and_then(|()| close_record(w, start));
     if done.is_err() {
@@ -677,8 +800,26 @@ pub struct Nested<'w> {
     w: &'w mut dyn RawWrite,
 }
 impl Writer for Nested<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self.w, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self.w, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self.w, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_u32s_in(self.w, tag, fill)
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self.w, tag, &[v.as_bytes()])
@@ -748,8 +889,26 @@ impl RawWrite for Out<'_> {
     }
 }
 impl Writer for Out<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_u32s_in(self, tag, fill)
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self, tag, &[v.as_bytes()])
@@ -781,6 +940,106 @@ impl Writer for Out<'_> {
     }
 }
 
+/// Canonical record encoding into caller-owned, already funded storage. This writer allocates
+/// nothing and never grows. The caller retains the backing's custody and wipes it on abandonment;
+/// only the prefix returned by `as_bytes` is a complete published record sequence.
+pub struct Fixed<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+impl<'a> Fixed<'a> {
+    pub fn new(bytes: &'a mut [u8]) -> Self {
+        Self { bytes, len: 0 }
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn capacity(&self) -> usize {
+        self.bytes.len()
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+impl RawWrite for Fixed<'_> {
+    fn written(&self) -> usize {
+        self.len
+    }
+    fn room(&mut self, need: usize) -> Result<(), Full> {
+        self.len
+            .checked_add(need)
+            .filter(|end| *end <= self.bytes.len())
+            .map(|_| ())
+            .ok_or(Full)
+    }
+    fn append(&mut self, bytes: &[u8]) {
+        let end = self.len + bytes.len();
+        self.bytes[self.len..end].copy_from_slice(bytes);
+        self.len = end;
+    }
+    fn patch(&mut self, at: usize, bytes: &[u8]) {
+        self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    fn truncate(&mut self, len: usize) {
+        self.bytes[len..self.len].zeroize();
+        self.len = len;
+    }
+}
+impl Writer for Fixed<'_> {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
+    fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_u32s_in(self, tag, fill)
+    }
+    fn put_pod<T: Pod>(&mut self, tag: u16, value: &T) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes()])
+    }
+    fn put_pod_tail<T: Pod>(&mut self, tag: u16, value: &T, tail: &[u8]) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes(), tail])
+    }
+    fn put_text(&mut self, tag: u16, value: &str) -> Result<(), Full> {
+        put_parts(self, tag, &[value.as_bytes()])
+    }
+    fn put_pair(&mut self, tag: u16, name: &str, value: &[u8]) -> Result<(), Full> {
+        put_pair_in(self, tag, name, value)
+    }
+    fn put_fact(&mut self, key: u32, value: u64) -> Result<(), Full> {
+        put_fact_in(self, key, value)
+    }
+    fn put_fact_text(&mut self, key: u32, value: &str) -> Result<(), Full> {
+        put_fact_text_in(self, key, value)
+    }
+    fn put_metric(&mut self, id: u32, op: u32, value: f64, labels: &[&str]) -> Result<(), Full> {
+        put_metric_in(self, id, op, value, labels)
+    }
+    fn put_nested(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_nested_in(self, tag, fill)
+    }
+}
+
 /// Async-method output: an owned record buffer. On Ready the shim copies it into the terminal call's Out.
 /// Zeroized on drop (it may hold secrets, rows or tokens). Cap 16 MiB; the host's max_out applies on copy.
 /// Growth never reallocates in place: when a write needs capacity, Reply allocates max(2 × cap, need, 256)
@@ -803,6 +1062,45 @@ impl Reply {
     }
     pub fn len(&self) -> usize {
         self.buf.len()
+    }
+    /// Consume an empty reply as bounded unframed scratch. Invalid entry consumes and wipes
+    /// the reply. Finishing the scratch wipes its bytes and returns this allocation for records.
+    pub fn into_scratch(self, limit: usize) -> Result<Scratch, Full> {
+        if !self.buf.is_empty() || limit > REPLY_CAP {
+            return Err(Full);
+        }
+        Ok(Scratch { reply: self, limit })
+    }
+}
+
+/// One call's unframed bytes. Owns its reply through awaits; cancellation and unwind wipe
+/// through Reply's Drop. This phase cannot write records or be returned as an answer.
+pub struct Scratch {
+    reply: Reply,
+    limit: usize,
+}
+
+impl Scratch {
+    pub fn as_bytes(&self) -> &[u8] {
+        self.reply.as_bytes()
+    }
+
+    /// Append within the supplied limit. Full leaves the current bytes unchanged.
+    pub fn put(&mut self, bytes: &[u8]) -> Result<(), Full> {
+        let end = self.reply.len().checked_add(bytes.len()).ok_or(Full)?;
+        if end > self.limit {
+            return Err(Full);
+        }
+        self.reply.room(bytes.len())?;
+        self.reply.append(bytes);
+        Ok(())
+    }
+
+    /// Wipe the entire scratch allocation, retaining its capacity for terminal records.
+    /// The returned reply has its normal record limit, independent of this scratch limit.
+    pub fn finish(mut self) -> Reply {
+        self.reply.buf.zeroize();
+        self.reply
     }
 }
 impl Default for Reply {
@@ -848,14 +1146,32 @@ impl RawWrite for Reply {
     }
     fn truncate(&mut self, len: usize) {
         if let Some(tail) = self.buf.get_mut(len..) {
-            tail.fill(0);
+            tail.zeroize();
         }
         self.buf.truncate(len);
     }
 }
 impl Writer for Reply {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_u32s_in(self, tag, fill)
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self, tag, &[v.as_bytes()])
@@ -891,3 +1207,7 @@ impl Drop for Reply {
         self.buf.zeroize();
     }
 }
+
+#[cfg(test)]
+#[path = "records_buffer_tests.rs"]
+mod buffer_tests;

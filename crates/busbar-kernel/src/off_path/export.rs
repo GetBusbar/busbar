@@ -10,7 +10,7 @@ use crate::config::secret::ResolvedSettings;
 use crate::config::ExportCfg;
 use crate::diagnostics::coded;
 use crate::export::plugin::{
-    axis, sinks, Admission, PluginSink, Served, Unopened, MAX_INFLIGHT_PLUGIN_DELIVERIES, SINKS,
+    axis, Admission, Exports, PluginSink, Served, Unopened, MAX_INFLIGHT_PLUGIN_DELIVERIES,
 };
 use crate::export::projection::{
     produced_fields, stream_produced, Member, Projection, FIELDS, PRODUCED_STREAMS,
@@ -21,7 +21,7 @@ use busbar_contract::abi::export::{CheckPhase, ExportField};
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::ExportAxis;
 use busbar_contract::export_stream::ExportStream;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 // --- export (mod.rs) ---
 
@@ -701,8 +701,12 @@ impl Admission {
     }
 }
 
-pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -> bool {
-    let sink = sinks().find(|sink| sink.name == name);
+pub fn requires_restart(
+    exports: &Exports,
+    name: &str,
+    def: Option<&crate::config::ExportDefCfg>,
+) -> bool {
+    let sink = exports.sinks.iter().find(|sink| sink.name == name);
     let boot = sink.map(|sink| (&*sink.module, sink.projection, sink.sink.streams()));
     if definition_requires_restart(name, boot, def) {
         return true;
@@ -745,27 +749,44 @@ pub(crate) fn definition_requires_restart(
     !errors.is_empty() || desired != projection
 }
 
-pub fn open(cfg: &ExportCfg) -> Result<(), String> {
-    let Some(axis) = axis() else {
-        return Ok(());
-    };
+/// Compose the kernel projections over instances already opened by the process root.
+/// This path never opens another instance or resolves settings through the legacy axis.
+pub fn open_prepared(
+    cfg: &ExportCfg,
+    prepared: &std::collections::BTreeMap<
+        String,
+        Arc<dyn busbar_contract::export_calls::ExportCalls>,
+    >,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+) -> Result<Exports, String> {
+    if prepared
+        .keys()
+        .any(|name| !cfg.plugins.iter().any(|plugin| &plugin.name == name))
+    {
+        return Err("opened export has no effective configuration projection".into());
+    }
+    open_with(cfg, amendments, |name, _| {
+        prepared
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("export.{name}: no opened MIN3 export instance"))
+    })
+}
+
+fn open_with(
+    cfg: &ExportCfg,
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
+    mut open: impl FnMut(
+        &str,
+        &crate::config::ExportDefCfg,
+    ) -> Result<Arc<dyn busbar_contract::export_calls::ExportCalls>, String>,
+) -> Result<Exports, String> {
     let mut errors = Vec::new();
     let mut opened = Vec::new();
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
 
-        let settings = match sink_settings(axis, module, &def.settings) {
-            Ok(settings) => settings,
-            Err(e) => {
-                errors.push(
-                    coded::config_export_invalid(format!("export.{name}.settings: {e}")).into(),
-                );
-                continue;
-            }
-        };
-        let admitted = busbar_contract::export_calls::ExportOpening::new(def.settings.clone());
-        let prepared = admitted.with_settings(settings.clone());
-        let opened_sink = axis.open(module, &format!("export.{name}"), &prepared);
+        let opened_sink = open(name, def);
         let Ok(sink) = instance_opened(name, opened_sink)
             .map_err(|e| errors.push(coded::config_export_invalid(e).into()))
         else {
@@ -797,6 +818,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             continue;
         }
         let span_record = sink.takes_span_records();
+        let admission = Admission::of(module, sink.admission());
         opened.push(PluginSink {
             name: name.clone(),
             module: module.into(),
@@ -804,17 +826,18 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             sink,
             scrape: p.scrape,
             projection,
-            admission: OnceLock::new(),
-            reads: OnceLock::new(),
+            admission,
+            started: std::sync::atomic::AtomicBool::new(false),
+            reads: Some(Arc::clone(&amendments)),
         });
     }
     if !errors.is_empty() {
         return Err(errors.join("\n  - "));
     }
-    let _ = SINKS.set(opened);
-    crate::export::traces::sinks_fixed();
-    tracing::callsite::rebuild_interest_cache();
-    Ok(())
+    Ok(Exports {
+        sinks: opened,
+        ..Exports::default()
+    })
 }
 
 pub(crate) fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Result<T, String> {
@@ -822,29 +845,23 @@ pub(crate) fn instance_opened<T>(name: &str, opened: Result<T, String>) -> Resul
 }
 
 #[derive(Default)]
-struct Refreshes {
+pub(crate) struct Refreshes {
     running: bool,
     version: Option<u64>,
     next: Option<(crate::config::ExportDefs, u64)>,
 }
 
-static REFRESHES: std::sync::Mutex<Refreshes> = std::sync::Mutex::new(Refreshes {
-    running: false,
-    version: None,
-    next: None,
-});
-
-pub(crate) fn queue_refresh(defs: &crate::config::ExportDefs, generation: u64) {
-    let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+pub(crate) fn queue_refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64) {
+    let mut queued = exports.refreshes.lock().unwrap_or_else(|p| p.into_inner());
     if queued.version.is_none_or(|version| generation > version) {
         queued.version = Some(generation);
         queued.next = Some((defs.clone(), generation));
     }
 }
 
-pub(crate) fn refresh_pending() {
+pub(crate) fn refresh_pending(exports: &Exports) {
     {
-        let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+        let mut queued = exports.refreshes.lock().unwrap_or_else(|p| p.into_inner());
         if queued.running {
             return;
         }
@@ -852,7 +869,7 @@ pub(crate) fn refresh_pending() {
     }
     loop {
         let next = {
-            let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+            let mut queued = exports.refreshes.lock().unwrap_or_else(|p| p.into_inner());
             let next = queued.next.take();
             if next.is_none() {
                 queued.running = false;
@@ -862,34 +879,36 @@ pub(crate) fn refresh_pending() {
         let Some((defs, generation)) = next else {
             return;
         };
-        refresh(&defs, generation);
+        refresh(exports, &defs, generation);
     }
 }
 
-fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
+fn refresh(exports: &Exports, defs: &crate::config::ExportDefs, generation: u64) {
     let Some(axis) = axis() else {
         return;
     };
-    let names: std::collections::BTreeSet<_> = sinks()
+    let names: std::collections::BTreeSet<_> = exports
+        .sinks
+        .iter()
         .map(|sink| sink.name.as_str())
         .chain(defs.keys().map(String::as_str))
         .collect();
     for name in names {
-        if requires_restart(name, defs.get(name)) {
+        if requires_restart(exports, name, defs.get(name)) {
             tracing::warn!(
                 instance = %name,
                 "export instance membership, module, projection or recorder requirements differ from boot; restart is required for push delivery"
             );
         }
     }
-    for sink in sinks() {
+    for sink in &exports.sinks {
         let Some(def) = defs
             .get(&sink.name)
             .filter(|def| def.module.trim() == &*sink.module)
         else {
             continue;
         };
-        if requires_restart(&sink.name, Some(def)) {
+        if requires_restart(exports, &sink.name, Some(def)) {
             continue;
         }
         let refreshed = sink_settings(axis, &sink.module, &def.settings)
@@ -904,9 +923,9 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
     }
 }
 
-pub fn start() -> Result<(), String> {
+pub fn start(exports: &Exports) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
-    for s in sinks() {
+    for s in &exports.sinks {
         if let Err(e) = s.sink.start() {
             errors.push(coded::config_export_invalid(format!("export.{}: {e}", s.name)).into());
             continue;
@@ -921,20 +940,25 @@ pub fn start() -> Result<(), String> {
 }
 
 pub(crate) fn start_one(s: &PluginSink) {
-    let stated = s.sink.admission();
-    let _ = s.admission.set(Admission::of(&s.module, stated));
+    s.started.store(true, std::sync::atomic::Ordering::Release);
 }
 
 // --- export::plugin: the route table, once per configuration generation ---
 
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    route_projection(cfg).0
+    route_projection(cfg, None).0
 }
 
 pub(crate) fn route_projection(
     cfg: &ExportCfg,
+    exports: Option<&Exports>,
 ) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
-    project_routes(cfg, SINKS.get().map(Vec::as_slice).unwrap_or_default())
+    project_routes(
+        cfg,
+        exports
+            .map(|exports| exports.sinks.as_slice())
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]

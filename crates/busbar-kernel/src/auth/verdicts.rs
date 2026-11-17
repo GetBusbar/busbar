@@ -5,15 +5,18 @@
 //! `host_verify.rs`'s `VerifyBook` (its `room`, `Slot`, `fresh`, `idle`, `lead_until`/`LEAD_MS`, `MAX_FOLLOWERS`
 //! and `expire`), re-keyed by auth instance id and credential hash, holding the adapter's `Identity`, sharded 16
 //! ways by instance (a read lock on the hit path), with `oneshot` followers and per-instance flush epochs.
+//! Standing leads live in their own bounded table, sharded by credential hash, so a lookup in flight never takes
+//! room from a cached identity (#359 SEC-L12, DES-359 r3).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use super::chain_run::Verdict;
 use busbar_plugin_abi::auth::{FB_NEEDS_BODY, FB_NEEDS_BODY_HASH};
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_loader::ports::auth::{Identity, Verdict};
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::auth::Identity;
+use busbar_ports::PortError;
 use foldhash::HashMap;
 use tokio::sync::oneshot;
 
@@ -23,6 +26,11 @@ pub const LEAD_MS: u64 = 30_000;
 pub const MAX_FOLLOWERS: usize = 1024;
 pub(crate) const LEAD_S: u64 = LEAD_MS / 1_000;
 const SHARDS: usize = 16;
+/// The most slots one eviction looks at (rule 5): with every one recently referenced, the fill is declined.
+pub const SWEEP_STEPS: usize = 16;
+/// The most standing leads, every instance's, across the lead table's shards; a full shard answers `Bypass`.
+pub const MAX_LEADS: usize = 4_096;
+const LEADS_PER_SHARD: usize = MAX_LEADS / SHARDS;
 
 /// The credential a verify read, by hash only (the credential itself is never stored). `credential` = SHA-256
 /// (through the facade) over, for each of the instance's D_CRED_HEADER names in declared order, the u32 LE name
@@ -30,6 +38,7 @@ const SHARDS: usize = 16;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VerdictKey {
     pub auth_instance: u64,
+    pub policy_epoch: u64,
     pub credential: CredentialHash,
 }
 
@@ -140,13 +149,13 @@ pub enum VerdictGet<'a, V = Identity, O = Outcome> {
     /// A lead stands for this key: await it. `Ok` = the leader's outcome (shared, never re-verified); `Err` = the
     /// lead passed to this caller (the leader was dropped unsettled, or `LEAD_MS` lapsed), which now verifies.
     Follow(BoxFut<'a, Result<O, VerdictLead<'a, V, O>>>),
-    /// Ineligible instance (rule 1), cache off, no room with every entry leading, or `MAX_FOLLOWERS` reached:
-    /// verify unshared and do not fill.
+    /// Ineligible instance (rule 1), cache off, a full lead-table shard, or `MAX_FOLLOWERS` reached: verify
+    /// unshared and do not fill.
     Bypass,
 }
 
-/// One standing lead (VerifyBook's `lead_until`). Holds the cache, the key and the instance's flush epoch read in
-/// `begin` (rule 6).
+/// One standing lead held by its caller. Holds the cache, the key and the instance's flush epoch read in `begin`
+/// (rule 6).
 pub struct VerdictLead<'a, V = Identity, O = Outcome> {
     cache: &'a Verdicts<V, O>,
     key: VerdictKey,
@@ -154,28 +163,27 @@ pub struct VerdictLead<'a, V = Identity, O = Outcome> {
     settled: bool,
 }
 
-impl<V, O: Clone> VerdictLead<'_, V, O> {
+impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> VerdictLead<'_, V, O> {
     /// Ends the lead with the leader's outcome: fills only for an eligible answer (rules 2, 3; discarded if the
     /// epoch moved) and hands `outcome` (cloned) to every follower, whatever it is (an identity, NotMine, Rejected
     /// or a `PortError`): followers carry the same credential bytes to the same instance at the same moment.
     pub fn settle(mut self, outcome: &O, now_s: u64) {
         self.settled = true;
-        let fill = (self.cache.fill)(outcome, now_s, &self.cache.policy);
-        let followers = {
-            let mut book = self.cache.write(self.key.auth_instance);
-            let Some(keys) = book.get_mut(&self.key.auth_instance) else {
-                return;
-            };
-            let current = keys.epoch.load(Ordering::Relaxed) == self.epoch;
-            let Some(slot) = keys.keys.get_mut(&self.key.credential.0) else {
-                return;
-            };
-            if let Some((value, ttl)) = fill.filter(|_| current) {
-                slot.entry = Some((value, now_s.saturating_add(ttl)));
-            }
-            slot.lead_until = None;
-            std::mem::take(&mut slot.followers)
-        };
+        let followers = self
+            .cache
+            .leads(&self.key)
+            .remove(&self.key)
+            .map(|lead| lead.followers)
+            .unwrap_or_default();
+        if let Some((value, ttl)) = (self.cache.fill)(outcome, now_s, &self.cache.policy) {
+            self.cache.store(
+                self.key,
+                self.epoch,
+                value,
+                now_s,
+                now_s.saturating_add(ttl),
+            );
+        }
         for follower in followers {
             // A follower that gave up has dropped its receiver; nothing to tell it.
             let _ = follower.send(Handoff::Outcome(outcome.clone()));
@@ -190,12 +198,9 @@ impl<V, O> Drop for VerdictLead<'_, V, O> {
         if self.settled {
             return;
         }
-        let mut book = self.cache.write(self.key.auth_instance);
-        if let Some(slot) = book
-            .get_mut(&self.key.auth_instance)
-            .and_then(|keys| keys.keys.get_mut(&self.key.credential.0))
-        {
-            hand(slot);
+        let mut leads = self.cache.leads(&self.key);
+        if leads.get_mut(&self.key).map(hand) == Some(false) {
+            leads.remove(&self.key);
         }
     }
 }
@@ -211,17 +216,19 @@ impl<V, O> Drop for VerdictLead<'_, V, O> {
 /// 3. **TTL** = min(F_CACHE_S if stated else `default_ttl_s`, F_EXPIRES_AT_S − now_s if stated (≤ 0: not
 ///    cached), `max_ttl_s`). The plugin states facts (its token's expiry, a suggested lifetime); core picks the TTL.
 /// 4. **Lookup and single-flight** (K8, before `AuthPort::verify` for each eligible instance in the route's
-///    effective chain, in chain order): `begin` answers `Hit` for a fresh entry (read lock only); otherwise, under
-///    the shard's write lock, `Follow` if a lead stands for the key (now < `lead_until`), else `Lead` with
-///    `lead_until` = now + `LEAD_MS`. So a burst of N requests carrying the same cold credential makes one plugin
-///    verify and, for `verify_io`, one set of upstream Needs (JWKS, LDAP bind, GitHub user lookup), not N; the
-///    other N − 1 return the leader's outcome. Round 23's "no single-flight" is withdrawn: under I1 a plugin has
-///    no I/O of its own, so a duplicate miss is a duplicate core-run upstream call, and VerifyBook already
-///    collapses them. A lead that lapses (`LEAD_MS`, a hung leader past its own deadline) passes to the first
-///    follower by the kept `expire` sweep, which K2 runs on the watchdog tick.
-/// 5. **Capacity** (VerifyBook's `room`, kept): at `max_entries` keys for an instance, a new key first drops that
-///    instance's idle expired entries, then its idle entry with the soonest expiry; if every entry is leading or
-///    followed, `begin` answers `Bypass`. Round 23's oldest-inserted rule (auth-oidc's) is replaced by core's.
+///    effective chain, in chain order): `begin` answers `Hit` for a fresh entry (the instance's read lock only;
+///    the hit marks the entry referenced with one atomic store). Otherwise, under the lead table's shard lock
+///    (sharded by credential hash, keyed by auth instance, policy epoch and credential), `Follow` if a lead stands
+///    for the key (now < its lapse), else `Lead` lapsing at now + `LEAD_MS`, or `Bypass` when the shard holds
+///    `MAX_LEADS` / 16 leads. So a burst of N requests carrying the same cold credential makes one plugin verify
+///    and, for `verify_io`, one set of upstream Needs, not N; the other N − 1 return the leader's outcome. A lead
+///    that lapses (`LEAD_MS`, a hung leader past its own deadline) passes to the first follower by the kept
+///    `expire` sweep, which K2 runs on the watchdog tick.
+/// 5. **Capacity** (amended by DES-359 r3, #359 SEC-L12): leads take no room from cached identities; only a
+///    positive fill stores, and only a positive fill evicts. At `max_entries` keys for an instance, the fill takes
+///    the first slot, from where the last sweep stopped, that is stale or not referenced since the sweep last
+///    passed it, clearing the reference of each referenced slot it passes. It looks at no more than
+///    `SWEEP_STEPS` slots; with every one referenced it does not fill. The former soonest-expiry rule is replaced.
 /// 6. **Flush**: every entry of an instance is dropped when its `refresh` completes OK (scheduled or after
 ///    KEYS_STALE), when a verify answers KEYS_STALE, on reconfigure (a new instance id starts empty) and on close.
 ///    Each instance has a flush epoch (one Relaxed counter); a lead carries the epoch read in `begin`, and its
@@ -233,12 +240,21 @@ pub trait VerdictCache: Send + Sync + 'static {
     fn flush_instance(&self, auth_instance: u64);
 }
 
-/// One key of one instance's cache (VerifyBook's `Slot`).
-pub(crate) struct Slot<V, O> {
-    /// The stored value and when it goes stale (seconds, the caller's `now_s` clock).
-    pub(crate) entry: Option<(V, u64)>,
-    /// When the standing lead lapses; `None` = no lead.
-    pub(crate) lead_until: Option<u64>,
+/// One cached identity of one instance (rule 5's ring slot).
+pub(crate) struct Cached<V> {
+    /// The (policy epoch, credential hash) it answers for.
+    pub(crate) key: (u64, [u8; 32]),
+    pub(crate) value: V,
+    /// When it goes stale (seconds, the caller's `now_s` clock).
+    pub(crate) until: u64,
+    /// Set by a hit (read lock, one atomic store); cleared by an eviction sweep passing it.
+    pub(crate) referenced: AtomicBool,
+}
+
+/// One standing lead in the lead table (VerifyBook's `lead_until` and followers).
+pub(crate) struct Lead<O> {
+    /// When the lead lapses.
+    pub(crate) until: u64,
     /// The callers waiting on the lead, in arrival order.
     pub(crate) followers: VecDeque<oneshot::Sender<Handoff<O>>>,
 }
@@ -248,49 +264,51 @@ pub(crate) enum Handoff<O> {
     Lead,
 }
 
-impl<V, O> Default for Slot<V, O> {
-    fn default() -> Self {
-        Slot {
-            entry: None,
-            lead_until: None,
-            followers: VecDeque::new(),
-        }
-    }
-}
-
-impl<V, O> Slot<V, O> {
-    pub(crate) fn fresh(&self, now_s: u64) -> Option<&V> {
-        self.entry
-            .as_ref()
-            .filter(|(_, until)| now_s < *until)
-            .map(|(value, _)| value)
-    }
-
-    pub(crate) fn idle(&self) -> bool {
-        self.lead_until.is_none() && self.followers.is_empty()
-    }
-}
-
-/// One instance's keys and its flush epoch (rule 6).
-pub(crate) struct Keys<V, O> {
+/// One instance's cached identities and its flush epoch (rules 5, 6): a ring the sweep walks, an index into it,
+/// and the position where the last sweep stopped.
+pub(crate) struct Keys<V> {
     pub(crate) epoch: AtomicU64,
-    pub(crate) keys: HashMap<[u8; 32], Slot<V, O>>,
+    pub(crate) index: HashMap<(u64, [u8; 32]), usize>,
+    pub(crate) ring: Vec<Cached<V>>,
+    pub(crate) hand: usize,
 }
 
-impl<V, O> Default for Keys<V, O> {
+impl<V> Default for Keys<V> {
     fn default() -> Self {
         Keys {
             epoch: AtomicU64::new(0),
-            keys: HashMap::default(),
+            index: HashMap::default(),
+            ring: Vec::new(),
+            hand: 0,
         }
     }
 }
 
-/// The verdict cache, every auth instance's: 16 shards by instance id, each a `RwLock`.
+impl<V> Keys<V> {
+    /// Rebuild the index after the ring changed shape (the off-path sweeps).
+    pub(crate) fn reindex(&mut self) {
+        self.index = self
+            .ring
+            .iter()
+            .enumerate()
+            .map(|(at, cached)| (cached.key, at))
+            .collect();
+        if self.hand >= self.ring.len() {
+            self.hand = 0;
+        }
+    }
+}
+
+type LeadShard<O> = Mutex<HashMap<VerdictKey, Lead<O>>>;
+
+/// The verdict cache, every auth instance's: 16 shards by instance id, each a `RwLock`, and the lead table, 16
+/// shards by credential hash, each a `Mutex`. Lock order: a lead shard may be held while an instance shard is
+/// read; never the reverse.
 pub struct Verdicts<V = Identity, O = Outcome> {
     policy: VerdictPolicy,
     fill: Fill<V, O>,
-    pub(crate) shards: [RwLock<HashMap<u64, Keys<V, O>>>; SHARDS],
+    pub(crate) shards: [RwLock<HashMap<u64, Keys<V>>>; SHARDS],
+    pub(crate) lead_shards: [LeadShard<O>; SHARDS],
 }
 
 impl Verdicts {
@@ -306,66 +324,64 @@ impl<V, O> Verdicts<V, O> {
             policy,
             fill,
             shards: std::array::from_fn(|_| RwLock::new(HashMap::default())),
+            lead_shards: std::array::from_fn(|_| Mutex::new(HashMap::default())),
         }
     }
 
-    fn shard(&self, auth_instance: u64) -> &RwLock<HashMap<u64, Keys<V, O>>> {
+    fn shard(&self, auth_instance: u64) -> &RwLock<HashMap<u64, Keys<V>>> {
         let at = usize::try_from(auth_instance % SHARDS as u64).unwrap_or(0);
         &self.shards[at]
     }
 
-    fn read(&self, auth_instance: u64) -> RwLockReadGuard<'_, HashMap<u64, Keys<V, O>>> {
+    fn read(&self, auth_instance: u64) -> RwLockReadGuard<'_, HashMap<u64, Keys<V>>> {
         self.shard(auth_instance)
             .read()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn write(
-        &self,
-        auth_instance: u64,
-    ) -> RwLockWriteGuard<'_, HashMap<u64, Keys<V, O>>> {
+    pub(crate) fn write(&self, auth_instance: u64) -> RwLockWriteGuard<'_, HashMap<u64, Keys<V>>> {
         self.shard(auth_instance)
             .write()
             .unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// The lead-table shard of `key`: by credential hash (SHA-256, so its first byte is uniform).
+    pub(crate) fn leads(&self, key: &VerdictKey) -> MutexGuard<'_, HashMap<VerdictKey, Lead<O>>> {
+        self.lead_shards[usize::from(key.credential.0[0]) % SHARDS]
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn max_entries(&self) -> usize {
+        usize::try_from(self.policy.max_entries).unwrap_or(usize::MAX)
+    }
 }
 
 impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdicts<V, O> {
-    /// Rule 4 (`VerdictCache::begin`): `Hit` under the read lock; otherwise, under the write lock, `Follow` a
-    /// standing lead or take a new one. Rule 5's `room` decides whether a new key fits.
+    /// Rule 4 (`VerdictCache::begin`): `Hit` under the instance's read lock; otherwise, under the lead shard's
+    /// lock, `Follow` a standing lead or take a new one. A lead never takes room from a cached identity (rule 5).
     pub fn start(&self, key: VerdictKey, now_s: u64) -> VerdictGet<'_, V, O> {
-        let max = usize::try_from(self.policy.max_entries).unwrap_or(usize::MAX);
-        if max == 0 {
+        if self.max_entries() == 0 {
             return VerdictGet::Bypass;
         }
-        {
-            let book = self.read(key.auth_instance);
-            let hit = book
-                .get(&key.auth_instance)
-                .and_then(|keys| keys.keys.get(&key.credential.0))
-                .and_then(|slot| slot.fresh(now_s));
-            if let Some(value) = hit {
-                return VerdictGet::Hit(value.clone());
-            }
+        if let Some(value) = self.cached(&key, now_s) {
+            return VerdictGet::Hit(value);
         }
-        let mut book = self.write(key.auth_instance);
-        let keys = book.entry(key.auth_instance).or_default();
-        if !keys.keys.contains_key(&key.credential.0) && !room(&mut keys.keys, now_s, max) {
-            return VerdictGet::Bypass;
+        let epoch = self.instance_epoch(key.auth_instance);
+        let mut leads = self.leads(&key);
+        let full = leads.len() >= LEADS_PER_SHARD;
+        // A lead may have settled and filled between the miss and this lock.
+        if let Some(value) = self.cached(&key, now_s) {
+            return VerdictGet::Hit(value);
         }
-        let epoch = keys.epoch.load(Ordering::Relaxed);
-        let slot = keys.keys.entry(key.credential.0).or_default();
-        if let Some(value) = slot.fresh(now_s) {
-            return VerdictGet::Hit(value.clone());
-        }
-        match slot.lead_until {
-            Some(until) if now_s < until => {
-                if slot.followers.len() >= MAX_FOLLOWERS {
+        match leads.get_mut(&key) {
+            Some(lead) if now_s < lead.until => {
+                if lead.followers.len() >= MAX_FOLLOWERS {
                     return VerdictGet::Bypass;
                 }
                 let (tell, told) = oneshot::channel();
-                slot.followers.push_back(tell);
-                drop(book);
+                lead.followers.push_back(tell);
+                drop(leads);
                 VerdictGet::Follow(Box::pin(async move {
                     match told.await {
                         Ok(Handoff::Outcome(outcome)) => Ok(outcome),
@@ -373,11 +389,85 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
                     }
                 }))
             }
-            _ => {
-                slot.lead_until = Some(now_s.saturating_add(LEAD_S));
+            Some(lead) => {
+                lead.until = now_s.saturating_add(LEAD_S);
+                VerdictGet::Lead(self.lead(key, epoch))
+            }
+            None if full => VerdictGet::Bypass,
+            None => {
+                leads.insert(
+                    key,
+                    Lead {
+                        until: now_s.saturating_add(LEAD_S),
+                        followers: VecDeque::new(),
+                    },
+                );
                 VerdictGet::Lead(self.lead(key, epoch))
             }
         }
+    }
+
+    /// A fresh cached identity for `key`, marked referenced (the instance's read lock only).
+    fn cached(&self, key: &VerdictKey, now_s: u64) -> Option<V> {
+        let book = self.read(key.auth_instance);
+        let keys = book.get(&key.auth_instance)?;
+        let at = *keys.index.get(&(key.policy_epoch, key.credential.0))?;
+        let cached = keys.ring.get(at).filter(|cached| now_s < cached.until)?;
+        cached.referenced.store(true, Ordering::Relaxed);
+        Some(cached.value.clone())
+    }
+
+    /// The instance's flush epoch, its record made on first use so a later flush always moves it.
+    fn instance_epoch(&self, auth_instance: u64) -> u64 {
+        let known = self
+            .read(auth_instance)
+            .get(&auth_instance)
+            .map(|keys| keys.epoch.load(Ordering::Relaxed));
+        match known {
+            Some(epoch) => epoch,
+            None => self
+                .write(auth_instance)
+                .entry(auth_instance)
+                .or_default()
+                .epoch
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    /// Rule 5: a positive fill. Replaces the key's own slot, takes a free slot, or evicts the sweep's victim;
+    /// with none found within `SWEEP_STEPS`, it does not fill. Discarded if the instance's epoch moved (rule 6).
+    fn store(&self, key: VerdictKey, epoch: u64, value: V, now_s: u64, until: u64) {
+        let max = self.max_entries();
+        let mut book = self.write(key.auth_instance);
+        let Some(keys) = book.get_mut(&key.auth_instance) else {
+            return;
+        };
+        if keys.epoch.load(Ordering::Relaxed) != epoch {
+            return;
+        }
+        let id = (key.policy_epoch, key.credential.0);
+        let cached = Cached {
+            key: id,
+            value,
+            until,
+            referenced: AtomicBool::new(false),
+        };
+        if let Some(&at) = keys.index.get(&id) {
+            keys.ring[at] = cached;
+            return;
+        }
+        if keys.ring.len() < max {
+            keys.index.insert(id, keys.ring.len());
+            keys.ring.push(cached);
+            return;
+        }
+        let Some(at) = victim(keys, now_s) else {
+            return;
+        };
+        let evicted = keys.ring[at].key;
+        keys.index.remove(&evicted);
+        keys.index.insert(id, at);
+        keys.ring[at] = cached;
     }
 
     fn lead(&self, key: VerdictKey, epoch: u64) -> VerdictLead<'_, V, O> {
@@ -396,11 +486,11 @@ impl<V: Clone + Send + Sync + 'static, O: Clone + Send + Sync + 'static> Verdict
             .map_or(0, |keys| keys.epoch.load(Ordering::Relaxed))
     }
 
-    /// How many keys the instance holds (VerifyBook's `keys`).
+    /// How many identities the instance holds cached (VerifyBook's `keys`; standing leads are not counted).
     pub fn keys(&self, auth_instance: u64) -> usize {
         self.read(auth_instance)
             .get(&auth_instance)
-            .map_or(0, |keys| keys.keys.len())
+            .map_or(0, |keys| keys.ring.len())
     }
 }
 
@@ -418,39 +508,32 @@ impl VerdictCache for Verdicts {
     }
 }
 
-/// Pass a slot's lead to its first follower still waiting; with none left, the lead ends.
-pub(crate) fn hand<V, O>(slot: &mut Slot<V, O>) -> bool {
-    while let Some(next) = slot.followers.pop_front() {
+/// Pass a lead to its first follower still waiting; false when none is left (the caller ends the lead).
+pub(crate) fn hand<O>(lead: &mut Lead<O>) -> bool {
+    while let Some(next) = lead.followers.pop_front() {
         if next.send(Handoff::Lead).is_ok() {
             return true;
         }
     }
-    slot.lead_until = None;
     false
 }
 
-/// Rule 5 (VerifyBook's `room`, kept): at `max` keys, drop the idle stale keys, then the idle key with the soonest
-/// expiry; false when every key is leading or followed.
-fn room<V, O>(keys: &mut HashMap<[u8; 32], Slot<V, O>>, now_s: u64, max: usize) -> bool {
-    if keys.len() < max {
-        return true;
+/// Rule 5's sweep: from where the last sweep stopped, the first slot that is stale or unreferenced, clearing the
+/// reference of each referenced slot passed. At most `SWEEP_STEPS` slots; None when all of them were referenced.
+fn victim<V>(keys: &mut Keys<V>, now_s: u64) -> Option<usize> {
+    let len = keys.ring.len();
+    if len == 0 {
+        return None;
     }
-    keys.retain(|_, slot| !(slot.idle() && slot.fresh(now_s).is_none()));
-    if keys.len() < max {
-        return true;
-    }
-    let soonest = keys
-        .iter()
-        .filter(|(_, slot)| slot.idle())
-        .min_by_key(|(_, slot)| slot.entry.as_ref().map_or(0, |(_, until)| *until))
-        .map(|(key, _)| *key);
-    match soonest {
-        Some(key) => {
-            keys.remove(&key);
-            true
+    for _ in 0..SWEEP_STEPS {
+        let at = keys.hand % len;
+        keys.hand = (at + 1) % len;
+        let cached = &keys.ring[at];
+        if now_s >= cached.until || !cached.referenced.swap(false, Ordering::Relaxed) {
+            return Some(at);
         }
-        None => false,
     }
+    None
 }
 
 #[cfg(test)]
@@ -475,6 +558,7 @@ mod tests {
     fn key(instance: u64, byte: u8) -> VerdictKey {
         VerdictKey {
             auth_instance: instance,
+            policy_epoch: 0,
             credential: CredentialHash([byte; 32]),
         }
     }
@@ -600,10 +684,12 @@ mod tests {
         assert_eq!(cache.keys(1), 2, "the soonest expiry went");
         drop(third);
 
+        // DES-359 r3 rule 5: standing leads take no cache room, so a third key still leads.
         let busy = book(2);
         let _a = lead(busy.start(key(1, 1), 0));
         let _b = lead(busy.start(key(1, 2), 0));
-        assert!(matches!(busy.start(key(1, 3), 0), VerdictGet::Bypass));
+        assert!(matches!(busy.start(key(1, 3), 0), VerdictGet::Lead(_)));
+        assert_eq!(busy.keys(1), 0, "leads are not cached identities");
     }
 
     #[test]
@@ -628,6 +714,19 @@ mod tests {
         lead(cache.start(key(1, 9), 0)).settle(&Ok((Who(1), Some(60))), 0);
         let _other = lead(cache.start(key(2, 9), 0));
         assert_eq!(cache.keys(1), 1);
+    }
+
+    #[test]
+    fn policy_epochs_never_share_a_cached_identity() {
+        let cache = book(4_096);
+        let old = key(1, 9);
+        lead(cache.start(old, 0)).settle(&Ok((Who(1), Some(60))), 0);
+        let current = VerdictKey {
+            policy_epoch: 1,
+            ..old
+        };
+        assert!(matches!(cache.start(current, 1), VerdictGet::Lead(_)));
+        assert_eq!(hit(cache.start(old, 1)), Some(Who(1)));
     }
 
     #[test]
@@ -670,5 +769,115 @@ mod tests {
         }
         .checked()
         .is_err());
+    }
+
+    /// #359 SEC-L12 (DES-359 r3): a lookup still in flight never takes room from a cached identity. A
+    /// flood of unknown credentials leaves every cached identity answering from the cache.
+    #[test]
+    fn unknown_credential_leads_never_evict_a_cached_identity() {
+        let cache = book(2);
+        lead(cache.start(key(1, 1), 0)).settle(&Ok((Who(1), Some(600))), 0);
+        lead(cache.start(key(1, 2), 0)).settle(&Ok((Who(2), Some(600))), 0);
+        let flood: Vec<_> = (10..110u8)
+            .map(|byte| cache.start(key(1, byte), 1))
+            .collect();
+        assert!(flood.iter().all(|get| !matches!(get, VerdictGet::Hit(_))));
+        assert_eq!(hit(cache.start(key(1, 1), 2)), Some(Who(1)), "still cached");
+        assert_eq!(hit(cache.start(key(1, 2), 2)), Some(Who(2)), "still cached");
+        drop(flood);
+    }
+
+    /// #359 SEC-L12: the lead table is bounded per shard; a full shard verifies unshared, never refuses.
+    #[test]
+    fn a_full_lead_shard_verifies_unshared() {
+        let cache = book(4_096);
+        let held: Vec<_> = (0..LEADS_PER_SHARD as u64)
+            .map(|instance| lead(cache.start(key(instance, 0), 0)))
+            .collect();
+        assert!(matches!(
+            cache.start(key(LEADS_PER_SHARD as u64, 0), 0),
+            VerdictGet::Bypass
+        ));
+        assert!(
+            matches!(cache.start(key(0, 1), 0), VerdictGet::Lead(_)),
+            "another shard still leads"
+        );
+        drop(held);
+        assert!(matches!(
+            cache.start(key(LEADS_PER_SHARD as u64, 0), 1),
+            VerdictGet::Lead(_)
+        ));
+    }
+
+    /// #359 SEC-L12 B-R1: a lead is keyed by (auth instance, policy epoch, credential): the same credential
+    /// on two instances leads twice, never follows the other instance.
+    #[test]
+    fn the_same_credential_on_two_instances_leads_on_each() {
+        let cache = book(4_096);
+        let _first = lead(cache.start(key(1, 5), 0));
+        let _second = lead(cache.start(key(2, 5), 0));
+        let _other_epoch = lead(cache.start(
+            VerdictKey {
+                policy_epoch: 1,
+                ..key(1, 5)
+            },
+            0,
+        ));
+    }
+
+    /// #359 SEC-L12: at capacity a positive fill evicts the least recently referenced identity, not the
+    /// one with the soonest expiry: a referenced identity survives.
+    #[test]
+    fn a_positive_fill_at_capacity_evicts_the_least_recently_referenced() {
+        let cache = book(2);
+        lead(cache.start(key(1, 1), 0)).settle(&Ok((Who(1), Some(50))), 0);
+        lead(cache.start(key(1, 2), 0)).settle(&Ok((Who(2), Some(100))), 0);
+        assert_eq!(hit(cache.start(key(1, 1), 1)), Some(Who(1)));
+        lead(cache.start(key(1, 3), 2)).settle(&Ok((Who(3), Some(100))), 2);
+        assert_eq!(
+            hit(cache.start(key(1, 1), 3)),
+            Some(Who(1)),
+            "referenced: kept"
+        );
+        assert_eq!(hit(cache.start(key(1, 3), 3)), Some(Who(3)), "filled");
+        assert!(
+            hit(cache.start(key(1, 2), 3)).is_none(),
+            "unreferenced: evicted"
+        );
+        assert_eq!(cache.keys(1), 2);
+    }
+
+    /// #359 SEC-L12: the eviction sweep is bounded. With every identity recently referenced, a fill looks
+    /// at no more than 16 slots and then does not fill; the sweep resumes where it stopped.
+    #[test]
+    fn the_eviction_sweep_stops_after_sixteen_steps_and_resumes_where_it_stopped() {
+        let cache = book(32);
+        for byte in 0..32u8 {
+            lead(cache.start(key(1, byte), 0)).settle(&Ok((Who(u32::from(byte)), Some(600))), 0);
+        }
+        for byte in 0..32u8 {
+            assert!(hit(cache.start(key(1, byte), 1)).is_some());
+        }
+        lead(cache.start(key(1, 100), 2)).settle(&Ok((Who(100), Some(600))), 2);
+        assert!(
+            hit(cache.start(key(1, 100), 3)).is_none(),
+            "16 referenced slots: no fill"
+        );
+        assert_eq!(cache.keys(1), 32);
+        lead(cache.start(key(1, 101), 3)).settle(&Ok((Who(101), Some(600))), 3);
+        assert!(
+            hit(cache.start(key(1, 101), 4)).is_none(),
+            "the next 16: no fill"
+        );
+        lead(cache.start(key(1, 102), 4)).settle(&Ok((Who(102), Some(600))), 4);
+        assert_eq!(
+            hit(cache.start(key(1, 102), 5)),
+            Some(Who(102)),
+            "the sweep wrapped to a cleared slot"
+        );
+        assert!(
+            hit(cache.start(key(1, 0), 5)).is_none(),
+            "slot 0 was the victim"
+        );
     }
 }

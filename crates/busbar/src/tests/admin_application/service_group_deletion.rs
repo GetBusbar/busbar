@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
@@ -9,14 +10,13 @@ use std::sync::Arc;
 
 fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount: cents,
         per: Some(per),
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -41,18 +41,12 @@ async fn build_without_group_removes_leaf() {
     ]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-delete-{}",
@@ -79,7 +73,7 @@ async fn build_without_group_removes_leaf() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -175,18 +169,12 @@ async fn build_without_group_conflict_when_still_a_parent() {
     ]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-delete-{}",
@@ -213,7 +201,7 @@ async fn build_without_group_conflict_when_still_a_parent() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -281,7 +269,7 @@ async fn build_without_group_conflict_when_still_a_parent() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
     assert!(
         error["error"]["message"].as_str().unwrap().contains("team"),
@@ -306,18 +294,12 @@ async fn build_without_group_not_found() {
     )]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-delete-{}",
@@ -344,7 +326,7 @@ async fn build_without_group_not_found() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -412,7 +394,7 @@ async fn build_without_group_not_found() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         error["error"]["message"]
@@ -440,18 +422,12 @@ async fn build_without_group_conflict_when_keys_still_bound() {
     )]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-delete-{}",
@@ -478,7 +454,7 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -570,7 +546,7 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 409);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "conflict");
     assert!(
         error["error"]["message"].as_str().unwrap().contains("team"),

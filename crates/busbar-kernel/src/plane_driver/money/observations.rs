@@ -43,7 +43,7 @@ impl From<crate::persistence::observations::Error> for ObservationRuntimeError {
 /// Stable, collision-free identity for a dated enforcement cell.
 pub(crate) fn budget_id(bucket: &str, window: u64) -> String {
     // JSON array framing distinguishes arbitrary bucket strings and window boundaries.
-    serde_json::to_string(&(bucket, window)).expect("strings and integers serialize")
+    busbar_contract::json::to_string(&(bucket, window)).expect("strings and integers serialize")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,18 @@ pub(super) struct PendingObservation {
     kind: PendingKind,
     operation: crate::persistence::facade::PendingId,
     scope: ScopeId,
+}
+
+fn attempt_owned(open: &Open, class: &str) -> Result<bool, ObservationRuntimeError> {
+    let Some(native) = &open.native else {
+        return Ok(false);
+    };
+    let parts = native
+        .checkpoint()
+        .partitions
+        .as_ref()
+        .ok_or(ObservationRuntimeError::Unauthorized)?;
+    Ok(parts.attempt_classes.contains(class))
 }
 
 impl PlaneMoney {
@@ -128,7 +140,8 @@ impl PlaneMoney {
             return;
         };
         for budget in binding.budgets {
-            let Ok((id, window)) = serde_json::from_str::<(String, u64)>(&budget.id) else {
+            let Ok((id, window)) = busbar_contract::json::parse_str::<(String, u64)>(&budget.id)
+            else {
                 continue;
             };
             let total = store.budget(&budget.id).await.unwrap_or_else(|_| {
@@ -167,6 +180,18 @@ impl PlaneMoney {
             || policy.accounting_namespace.is_empty()
         {
             return Err(ObservationRuntimeError::Unauthorized);
+        }
+        // Ownership is frozen before effects become available. Refuse before create/resume/
+        // attach can acquire an observation liability, even when no usage has been reported.
+        for &class in &policy.classes {
+            let name = open
+                .money
+                .classes
+                .get(class as usize)
+                .ok_or(ObservationRuntimeError::Unpriced)?;
+            if attempt_owned(open, name)? {
+                return Err(ObservationRuntimeError::LegacyOverlap);
+            }
         }
         let money = open.money.clone();
         let identity = PrincipalBinding {
@@ -353,6 +378,10 @@ impl PlaneMoney {
             if open.money.classes.get(class as usize) != Some(name) || open.money.fee.is_fee(class)
             {
                 return Err(ObservationRuntimeError::Unpriced);
+            }
+            // Stored scope classes, not an attach caller's policy list, decide what is bound.
+            if attempt_owned(open, name)? {
+                return Err(ObservationRuntimeError::LegacyOverlap);
             }
             if open
                 .last

@@ -12,7 +12,7 @@ A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`
 
 ## How to fix it
 
-Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); the core trust store for private CAs arrives after 1.6.0.
+Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); for a server with a private CA, list that CA under `advanced.tls.trust_anchors` (or the server under `advanced.tls.destinations`).
 
 ---
 

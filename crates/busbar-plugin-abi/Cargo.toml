@@ -19,6 +19,8 @@ host = ["busbar-ffi/host", "dep:busbar-crypto", "dep:crossbeam-queue", "dep:aho-
 memio = ["dep:hyper"]
 
 [dependencies]
+# SDK-SECRET-BUFFER: one shared byte owner, exposed only through the producer facades.
+busbar-secure = { path = "../busbar-secure" }
 zerocopy = { version = "0.8", features = ["derive"] }
 # The plugin boundary (UNSAFE-MIN r3.1): the views, Host table, Out sink, Plugin header, chain bytes and the 7 layouts live there; this crate re-exports them. `host` forwards its loader side.
 busbar-ffi = { path = "../busbar-ffi" }

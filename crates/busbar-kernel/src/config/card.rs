@@ -19,7 +19,9 @@ pub struct CardFields {
     pub plane_rate_cards: PlaneRateCards,
     /// Each other plane's own fees.
     pub plane_fees: PlaneFeesMap,
-    /// Common measurement rates, independently owned by each configured plugin instance.
+    /// Common plugin measurement rates, by kind, configured namespace and class. No configuration
+    /// key sets them: only a signed rate-history amendment of a measurement lane does, and the
+    /// stored card keeps what it set. Absent, measurement counts stay recorded and unpriced.
     pub plugin_rate_cards: super::PluginRateCards,
 }
 
@@ -85,7 +87,7 @@ impl CardFields {
             per_request_fee: deploy.per_request_fee,
             plane_rate_cards: deploy.plane_rate_cards.clone(),
             plane_fees: deploy.plane_fees.clone(),
-            plugin_rate_cards: deploy.plugin_rate_cards.clone(),
+            plugin_rate_cards: super::PluginRateCards::new(),
         }
     }
 
@@ -94,9 +96,6 @@ impl CardFields {
         if let Some(root) = root {
             if let Some(card) = root.rate_card.as_ref() {
                 self.rate_card = Some(card.clone());
-            }
-            if let Some(cards) = root.plugin_rate_cards.as_ref() {
-                self.plugin_rate_cards = cards.clone();
             }
             if let Some(fee) = root.per_request_fee {
                 self.per_request_fee = fee;
@@ -110,20 +109,17 @@ impl CardFields {
             self.rate_card.as_ref(),
             &self.plane_rate_cards,
         );
-        cfg.plugin_rate_cards = self.plugin_rate_cards.clone();
         cfg.per_request_fee = self.per_request_fee;
         cfg.plane_fees = self.plane_fees.clone();
     }
 
     #[must_use]
     pub fn of_root(cfg: &RootCfg) -> Self {
-        let mut card = Self::from_composed(
+        Self::from_composed(
             cfg.rate_card.as_ref(),
             cfg.per_request_fee,
             cfg.plane_fees.clone(),
-        );
-        card.plugin_rate_cards = cfg.plugin_rate_cards.clone();
-        card
+        )
     }
 
     #[must_use]
@@ -250,12 +246,12 @@ impl CardFields {
             planes,
             plugin_rate_cards: self.plugin_rate_cards.clone(),
         };
-        serde_json::to_vec(&stored).unwrap_or_default()
+        busbar_contract::json::to_vec(&stored).unwrap_or_default()
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let stored: StoredCard =
-            serde_json::from_slice(bytes).map_err(|e| format!("not a stored rate card: {e}"))?;
+        let stored: StoredCard = busbar_contract::json::parse_foreign(bytes)
+            .map_err(|e| format!("not a stored rate card: {e}"))?;
         let mut card = CardFields {
             rate_card: stored.rate_card,
             per_request_fee: stored.per_request_fee,

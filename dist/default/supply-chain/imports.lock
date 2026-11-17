@@ -8,6 +8,20 @@ user-id = 696
 user-login = "fitzgen"
 user-name = "Nick Fitzgerald"
 
+[[publisher.encoding_rs]]
+version = "0.8.44"
+when = "2026-10-30"
+user-id = 4484
+user-login = "hsivonen"
+user-name = "Henri Sivonen"
+
+[[publisher.multiversion_no_op]]
+version = "1.0.0"
+when = "2026-07-30"
+user-id = 4484
+user-login = "hsivonen"
+user-name = "Henri Sivonen"
+
 [[publisher.unicode-normalization]]
 version = "0.1.25"
 when = "2025-10-30"
@@ -33,6 +47,57 @@ user-name = "Alex Crichton"
 version = "0.57.1"
 when = "2026-04-17"
 trusted-publisher = "github:bytecodealliance/wit-bindgen"
+
+[[audits.aranya.audits.asn1-rs-derive]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "0.6.0"
+notes = "Derive macros for asn1-rs. No unsafe, networking, or file I/O code."
+
+[[audits.aranya.audits.asn1-rs-impl]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "0.2.0"
+notes = "Proc macro code. No networking, file I/O, or unsafe code."
+
+[[audits.aranya.audits.cpufeatures]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+delta = "0.2.16 -> 0.2.17"
+
+[[audits.aranya.audits.der-parser]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "10.0.0"
+notes = "Parser/encoder for ASN.1 BER/DER. Not currently used by certgen tool which only supports PEM. Unsafe code is forbidden. No networking or file I/O code."
+
+[[audits.aranya.audits.num-bigint]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+delta = "0.4.5 -> 0.4.6"
+notes = "Fixes compilation on x86_64-unknown-linux-gnux32 target. No file I/O or networking code. Limited use of unsafe is well-documented."
+
+[[audits.aranya.audits.oid-registry]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "0.8.1"
+notes = "OID database for TLS cert extensions. No unsafe code allowed. No networking code. File I/O for loading OIDs from a formatted file."
+
+[[audits.aranya.audits.rusticata-macros]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "4.1.0"
+notes = "Helper macros for rusticata. No unsafe code allowed. No unstable features allowed. No networking or file I/O code."
+
+[[audits.aranya.audits.winapi-i686-pc-windows-gnu]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "0.4.0"
+
+[[audits.aranya.audits.winapi-x86_64-pc-windows-gnu]]
+who = "gknopf <gknopf@spideroak.com>"
+criteria = "safe-to-deploy"
+version = "0.4.0"
 
 [[audits.bytecode-alliance.wildcard-audits.bumpalo]]
 who = "Nick Fitzgerald <fitzgen@gmail.com>"
@@ -131,11 +196,27 @@ criteria = "safe-to-deploy"
 version = "1.0.0"
 notes = "I am the author of this crate."
 
+[[audits.bytecode-alliance.audits.ciborium-io]]
+who = "Pat Hickey <phickey@fastly.com>"
+criteria = "safe-to-deploy"
+version = "0.2.0"
+
+[[audits.bytecode-alliance.audits.ciborium-ll]]
+who = "Pat Hickey <phickey@fastly.com>"
+criteria = "safe-to-deploy"
+version = "0.2.0"
+
 [[audits.bytecode-alliance.audits.cipher]]
 who = "Andrew Brown <andrew.brown@intel.com>"
 criteria = "safe-to-deploy"
 version = "0.4.4"
 notes = "Most unsafe is hidden by `inout` dependency; only remaining unsafe is raw-splitting a slice and an unreachable hint. Older versions of this regularly reach ~150k daily downloads."
+
+[[audits.bytecode-alliance.audits.cpufeatures]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.2.8 -> 0.2.14"
+notes = "Minor updates, nothing awry. Mostly portability updates."
 
 [[audits.bytecode-alliance.audits.errno]]
 who = "Dan Gohman <dev@sunfishcode.online>"
@@ -308,6 +389,26 @@ a few `unsafe` blocks related to utf-8 validation which are locally verifiable
 as correct and otherwise this crate is good to go.
 """
 
+[[audits.bytecode-alliance.audits.pkg-config]]
+who = "Pat Hickey <phickey@fastly.com>"
+criteria = "safe-to-deploy"
+version = "0.3.25"
+notes = "This crate shells out to the pkg-config executable, but it appears to sanitize inputs reasonably."
+
+[[audits.bytecode-alliance.audits.pkg-config]]
+who = "Alex Crichton <alex@alexcrichton.com>"
+criteria = "safe-to-deploy"
+delta = "0.3.26 -> 0.3.29"
+notes = """
+No `unsafe` additions or anything outside of the purview of the crate in this
+change.
+"""
+
+[[audits.bytecode-alliance.audits.pkg-config]]
+who = "Chris Fallin <chris@cfallin.org>"
+criteria = "safe-to-deploy"
+delta = "0.3.29 -> 0.3.32"
+
 [[audits.bytecode-alliance.audits.rustc_version]]
 who = "Alex Crichton <alex@alexcrichton.com>"
 criteria = "safe-to-deploy"
@@ -419,6 +520,12 @@ aggregated-from = "https://chromium.googlesource.com/chromiumos/third_party/rust
 who = "Hsin-chen Chuang <chharry@chromium.org>"
 criteria = "safe-to-run"
 delta = "0.1.1 -> 0.2.1"
+aggregated-from = "https://chromium.googlesource.com/chromiumos/third_party/rust_crates/+/refs/heads/main/cargo-vet/audits.toml?format=TEXT"
+
+[[audits.google.audits.cpufeatures]]
+who = "George Burgess IV <gbiv@google.com>"
+criteria = "safe-to-run"
+version = "0.2.8"
 aggregated-from = "https://chromium.googlesource.com/chromiumos/third_party/rust_crates/+/refs/heads/main/cargo-vet/audits.toml?format=TEXT"
 
 [[audits.google.audits.either]]
@@ -896,6 +1003,16 @@ version = "0.10.0"
 [[audits.isrg.audits.cpufeatures]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
+delta = "0.2.14 -> 0.2.15"
+
+[[audits.isrg.audits.cpufeatures]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.2.15 -> 0.2.16"
+
+[[audits.isrg.audits.cpufeatures]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
 delta = "0.2.17 -> 0.3.0"
 
 [[audits.isrg.audits.fiat-crypto]]
@@ -978,12 +1095,6 @@ criteria = "safe-to-deploy"
 delta = "0.2.8 -> 0.2.9"
 notes = "No changes to Rust code between 0.2.8 and 0.2.9"
 
-[[audits.isrg.audits.fiat-crypto]]
-who = "Tim Geoghegan <timg@divviup.org>"
-criteria = "safe-to-deploy"
-delta = "0.2.9 -> 0.3.0"
-notes = "The diff is huge, but that's because it introduces a wrapper around indexing into arrays which is used in many many places. There is no new unsafe code and no change to build scripts I can detect."
-
 [[audits.isrg.audits.getrandom]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
@@ -993,6 +1104,11 @@ delta = "0.3.4 -> 0.4.0"
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 delta = "0.4.0 -> 0.4.1"
+
+[[audits.isrg.audits.num-bigint]]
+who = "David Cook <dcook@divviup.org>"
+criteria = "safe-to-deploy"
+delta = "0.4.3 -> 0.4.4"
 
 [[audits.isrg.audits.rand_chacha]]
 who = "David Cook <dcook@divviup.org>"
@@ -1014,16 +1130,6 @@ who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 delta = "0.9.5 -> 0.10.0"
 
-[[audits.isrg.audits.sha2]]
-who = "David Cook <dcook@divviup.org>"
-criteria = "safe-to-deploy"
-version = "0.10.2"
-
-[[audits.isrg.audits.sha2]]
-who = "David Cook <dcook@divviup.org>"
-criteria = "safe-to-deploy"
-delta = "0.10.8 -> 0.10.9"
-
 [[audits.isrg.audits.subtle]]
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
@@ -1033,6 +1139,24 @@ delta = "2.5.0 -> 2.6.1"
 who = "David Cook <dcook@divviup.org>"
 criteria = "safe-to-deploy"
 version = "0.7.1"
+
+[[audits.mozilla.wildcard-audits.encoding_rs]]
+who = "Henri Sivonen <hsivonen@hsivonen.fi>"
+criteria = "safe-to-deploy"
+user-id = 4484 # Henri Sivonen (hsivonen)
+start = "2019-02-26"
+end = "2027-09-07"
+notes = "I, Henri Sivonen, wrote encoding_rs for Gecko and have reviewed contributions by others."
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.wildcard-audits.multiversion_no_op]]
+who = "Henri Sivonen <hsivonen@hsivonen.fi>"
+criteria = "safe-to-deploy"
+user-id = 4484 # Henri Sivonen (hsivonen)
+start = "2026-07-30"
+end = "2027-08-06"
+notes = "I, Henri Sivonen, am the sole author of multiversion_no_op (which is a trivial crate)."
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.wildcard-audits.unicode-normalization]]
 who = "Manish Goregaokar <manishsmail@gmail.com>"
@@ -1068,6 +1192,12 @@ aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/mai
 who = "Mike Hommey <mh+mozilla@glandium.org>"
 criteria = "safe-to-deploy"
 delta = "0.2.20 -> 0.2.21"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.arraydeque]]
+who = "Lars Eggert <lars@eggert.org>"
+criteria = "safe-to-deploy"
+version = "0.5.1"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.bit-set]]
@@ -1178,6 +1308,18 @@ who = "Alex Franchuk <afranchuk@mozilla.com>"
 criteria = "safe-to-deploy"
 delta = "0.10.0 -> 0.10.2"
 aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.core_detect]]
+who = "Henri Sivonen <hsivonen@hsivonen.fi>"
+criteria = "safe-to-deploy"
+version = "1.0.0"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.crunchy]]
+who = "Erich Gubler <erichdongubler@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.2.3"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.deranged]]
 who = "Alex Franchuk <afranchuk@mozilla.com>"
@@ -1361,6 +1503,18 @@ criteria = "safe-to-deploy"
 delta = "2.3.1 -> 2.3.2"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.pkg-config]]
+who = "Mike Hommey <mh+mozilla@glandium.org>"
+criteria = "safe-to-deploy"
+delta = "0.3.25 -> 0.3.26"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
+[[audits.mozilla.audits.pkg-config]]
+who = "Max Inden <mail@max-inden.de>"
+criteria = "safe-to-deploy"
+delta = "0.3.32 -> 0.3.34"
+aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.powerfmt]]
 who = "Alex Franchuk <afranchuk@mozilla.com>"
 criteria = "safe-to-deploy"
@@ -1426,6 +1580,12 @@ criteria = "safe-to-deploy"
 delta = "0.5.12 -> 0.5.13"
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
+[[audits.mozilla.audits.quinn-udp]]
+who = "Alex Franchuk <afranchuk@mozilla.com>"
+criteria = "safe-to-deploy"
+delta = "0.5.13 -> 0.5.16"
+aggregated-from = "https://raw.githubusercontent.com/mozilla/cargo-vet/main/supply-chain/audits.toml"
+
 [[audits.mozilla.audits.quote]]
 who = "Jan-Erik Rediger <jrediger@mozilla.com>"
 criteria = "safe-to-deploy"
@@ -1466,23 +1626,6 @@ aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/mai
 who = "Bobby Holley <bobbyholley@gmail.com>"
 criteria = "safe-to-deploy"
 delta = "1.0.17 -> 1.0.16"
-aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
-
-[[audits.mozilla.audits.sha2]]
-who = "Mike Hommey <mh+mozilla@glandium.org>"
-criteria = "safe-to-deploy"
-delta = "0.10.2 -> 0.10.6"
-aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
-
-[[audits.mozilla.audits.sha2]]
-who = "Jeff Muizelaar <jmuizelaar@mozilla.com>"
-criteria = "safe-to-deploy"
-delta = "0.10.6 -> 0.10.8"
-notes = """
-The bulk of this is https://github.com/RustCrypto/hashes/pull/490 which adds aarch64 support along with another PR adding longson.
-I didn't check the implementation thoroughly but there wasn't anything obviously nefarious. 0.10.8 has been out for more than a year
-which suggests no one else has found anything either.
-"""
 aggregated-from = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/supply-chain/audits.toml"
 
 [[audits.mozilla.audits.sharded-slab]]
@@ -1637,6 +1780,28 @@ delta = "0.10.3 -> 0.10.4"
 notes = "Adds panics to prevent a block size of zero from causing unsoundness."
 aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
 
+[[audits.zcash.audits.ciborium-io]]
+who = "Jack Grigg <jack@electriccoin.co>"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.2.2"
+aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
+
+[[audits.zcash.audits.ciborium-ll]]
+who = "Jack Grigg <jack@electriccoin.co>"
+criteria = "safe-to-deploy"
+delta = "0.2.0 -> 0.2.2"
+aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
+
+[[audits.zcash.audits.crunchy]]
+who = "Jack Grigg <jack@electriccoin.co>"
+criteria = "safe-to-deploy"
+delta = "0.2.3 -> 0.2.4"
+notes = """
+Build script change is to fix a bug where a path separator for an included file
+was being selected by the target OS instead of the host OS.
+"""
+aggregated-from = "https://raw.githubusercontent.com/zcash/zcash/master/qa/supply-chain/audits.toml"
+
 [[audits.zcash.audits.errno]]
 who = "Jack Grigg <jack@electriccoin.co>"
 criteria = "safe-to-deploy"
@@ -1687,12 +1852,6 @@ criteria = "safe-to-deploy"
 delta = "0.2.1 -> 0.2.2"
 notes = "No changes to unsafe code, straightforward refactoring and cleanup."
 aggregated-from = "https://raw.githubusercontent.com/zcash/librustzcash/main/supply-chain/audits.toml"
-
-[[audits.zcash.audits.quinn-udp]]
-who = "Jack Grigg <jack@electriccoin.co>"
-criteria = "safe-to-deploy"
-delta = "0.5.13 -> 0.5.14"
-aggregated-from = "https://raw.githubusercontent.com/zcash/wallet/main/supply-chain/audits.toml"
 
 [[audits.zcash.audits.rustversion]]
 who = "Jack Grigg <jack@electriccoin.co>"

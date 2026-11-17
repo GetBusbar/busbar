@@ -5,6 +5,64 @@ use super::*;
 use crate::sign::{sign, SigningKey};
 
 #[test]
+fn native_archives_are_not_legacy_supersession_candidates() {
+    use busbar_plugin_abi::stamp::{emit, Spec};
+    let bytes = emit(&Spec {
+        kind: busbar_plugin_abi::types::KindCode::Store,
+        kind_abi: busbar_plugin_abi::versions::STORE,
+        layout: busbar_plugin_abi::store::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name: "busbar-store-alpha",
+        version: "1.6.0",
+        build_id: None,
+        crypto: "host",
+    })
+    .0
+    .to_vec();
+    let release = key(1);
+    let mut native = manifest("busbar-store-alpha", "alpha", "busbar");
+    native.version = "1.6.0".into();
+    native.abi_version = busbar_plugin_abi::versions::STORE;
+    native.former_names = vec!["alpha".into()];
+    let native = crate::sign::seal_test_artifact(&release, native, &bytes);
+    let mut legacy = manifest("busbar-store-alpha", "alpha", "busbar");
+    legacy.version = "1.6.0".into();
+    let legacy = stating(legacy, Some("1.6.0"));
+    let legacy_bytes = b"legacy store artifact";
+    let legacy = crate::sign::seal_test_artifact(&release, legacy, legacy_bytes);
+    for (native_file, legacy_file) in [("a.tar.gz", "z.tar.gz"), ("z.tar.gz", "a.tar.gz")] {
+        let dir = tmpdir("native-no-supersession");
+        write_tarball(&dir, native_file, &native, &bytes);
+        write_tarball(&dir, legacy_file, &legacy, legacy_bytes);
+        let rows = inventory(&dir, &policy(&release));
+        assert!(rows.iter().all(|r| r.signature != "superseded"));
+        assert!(
+            rows.iter()
+                .any(|r| r.file == native_file && r.status.starts_with("CONFLICT:")),
+            "native archive reaches duplicate conflict handling"
+        );
+        assert!(scan_and_validate(&dir, &policy(&release)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    let dir = tmpdir("native-invalid-is-not-outdated");
+    let mut invalid = native;
+    invalid.abi_version += 1;
+    let invalid = crate::sign::seal_test_artifact(&release, invalid, &bytes);
+    write_tarball(&dir, "native.tar.gz", &invalid, &bytes);
+    write_tarball(&dir, "legacy.tar.gz", &legacy, legacy_bytes);
+    assert!(matches!(
+        examine(&dir.join("native.tar.gz"), &policy(&release)),
+        FileOutcome::Invalid { .. }
+    ));
+    assert!(inventory(&dir, &policy(&release))
+        .iter()
+        .all(|row| row.signature != "superseded"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn two_linked_rows_cannot_claim_one_canonical_name() {
     let first = renamed("hook", "acme-one", "one", &[]);
     for mut second in [
@@ -117,7 +175,7 @@ fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
         let mut m = manifest(&format!("busbar-{kind}-published"), "published", "busbar");
         m.kind = kind.into();
         m.abi_version = v155;
-        let m = sign(&release, m, b"published lib");
+        let m = crate::sign::seal_test_artifact(&release, m, b"published lib");
         write_tarball(&dir, "published.tar.gz", &m, b"published lib");
 
         let errs = scan_and_validate(&dir, &policy(&release))
@@ -153,7 +211,7 @@ fn an_export_with_preencoded_metric_semantics_is_refused() {
     // The generation before the current export ABI: its metric semantics are pre-encoded.
     let prior = busbar_contract::abi::export::ABI_VERSION - 1;
     m.abi_version = prior;
-    let m = sign(&release, m, b"prior export image");
+    let m = crate::sign::seal_test_artifact(&release, m, b"prior export image");
     write_tarball(&dir, "prior.tar.gz", &m, b"prior export image");
     let errors = scan_and_validate(&dir, &policy(&release))
         .expect_err("unchanged layout cannot admit incompatible metric semantics");
@@ -175,7 +233,7 @@ fn a_store_newer_than_the_host_is_refused() {
     let dir = tmpdir("newer");
     let mut m = manifest("busbar-store-edge", "edge", "busbar");
     m.abi_version = busbar_contract::abi::store::ABI_VERSION + 1;
-    let m = sign(&release, m, b"edge lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"edge lib");
     write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
 
     let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
@@ -223,8 +281,7 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),
         publishers: Default::default(),
-        allow_unsigned: false,
-        allow_third_party: false,
+        allow_untrusted: false,
         min_versions: Default::default(),
         ..Default::default()
     }
@@ -287,10 +344,10 @@ fn only_the_exact_verified_release_seal_contributes_a_registry_keys_version() {
     assert_eq!(image.lib_bytes.as_slice(), lib);
 
     p.first_party_keys.clear();
-    p.allow_unsigned = true;
+    p.allow_untrusted = true;
     let allowed = scan_and_validate(&dir, &p).unwrap();
     assert_eq!(
-        allowed.resolve(&m.name).unwrap().release_keys_version(),
+        allowed.resolve(&m.name).map(|p| p.release_keys_version()),
         None
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -300,12 +357,12 @@ fn only_the_exact_verified_release_seal_contributes_a_registry_keys_version() {
 fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
     let release = key(1);
     let dir = tmpdir("happy");
-    let gamma = sign(
+    let gamma = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"gamma lib",
     );
-    let pg = sign(
+    let pg = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-alpha", "alpha", "busbar"),
         b"pg lib",
@@ -336,7 +393,7 @@ fn an_archive_digest_stays_bound_to_the_verified_image_after_its_path_is_replace
     let release = key(31);
     let dir = tmpdir("retained-archive-digest");
     let first_lib = b"first verified library bytes";
-    let first = sign(
+    let first = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-anchor", "anchor", "busbar"),
         first_lib,
@@ -347,7 +404,7 @@ fn an_archive_digest_stays_bound_to_the_verified_image_after_its_path_is_replace
     let expected = crate::sign::sha256_hex(&archive);
     assert_eq!(registry.archive_sha256("anchor"), Some(expected.clone()));
     let replaced_lib = b"different genuinely signed library bytes";
-    let replacement = sign(
+    let replacement = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-anchor", "anchor", "busbar"),
         replaced_lib,
@@ -372,7 +429,7 @@ fn an_archive_digest_stays_bound_to_the_verified_image_after_its_path_is_replace
 fn one_invalid_tarball_fails_the_whole_scan() {
     let release = key(1);
     let dir = tmpdir("invalid");
-    let good = sign(
+    let good = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
@@ -421,7 +478,7 @@ fn signed_but_malformed_manifest_is_invalid() {
     let dir = tmpdir("malformed");
     let mut m = manifest("busbar-store-x", "x", "busbar");
     m.kind = "widget".into();
-    let m = sign(&release, m, b"lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"lib");
     write_tarball(&dir, "x.tar.gz", &m, b"lib");
     let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
     assert!(errs[0].contains("kind"), "got {}", errs[0]);
@@ -447,9 +504,12 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
         reg.resolve("dynamo").is_none(),
         "a skipped plugin never resolves"
     );
-    let err = reg.store_door("dynamo").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "dynamo");
     assert!(err.contains("was not loaded"), "got {err}");
-    assert!(err.contains("allowlist"), "carries the trust reason: {err}");
+    assert!(
+        err.contains("allow_untrusted"),
+        "carries the trust reason: {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -458,7 +518,7 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     let release = key(1);
     let acme = key(2);
     let dir = tmpdir("conflict");
-    let first = sign(
+    let first = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib1",
@@ -472,7 +532,7 @@ fn alias_conflict_is_a_hard_error_naming_both() {
     write_tarball(&dir, "third.tar.gz", &third, b"lib2");
 
     let mut pol = policy(&release);
-    pol.allow_third_party = true;
+    pol.allow_untrusted = true;
     let errs = scan_and_validate(&dir, &pol).unwrap_err();
     assert_eq!(errs.len(), 1, "got {errs:?}");
     assert!(errs[0].contains("alias conflict"), "got {}", errs[0]);
@@ -493,12 +553,12 @@ fn alias_conflict_is_a_hard_error_naming_both() {
 fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let release = key(1);
     let dir = tmpdir("nameconflict");
-    let a = sign(
+    let a = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"a",
     );
-    let b = sign(
+    let b = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma-secondary", "busbar"),
         b"b",
@@ -523,12 +583,12 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 
     let dir = tmpdir("aliasvsname");
-    let a = sign(
+    let a = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"a",
     );
-    let b = sign(
+    let b = crate::sign::seal_test_artifact(
         &release,
         manifest("acme-store-x", "busbar-store-gamma-plugin", "busbar"),
         b"b",
@@ -558,10 +618,10 @@ fn open_store_refuses_non_store_kind() {
     m.kind = "hook".into();
 
     m.abi_version = busbar_contract::abi::hook::ABI_VERSION;
-    let m = sign(&release, m, b"hook lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.store_door("ranker").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "ranker");
     assert!(err.contains("kind 'hook'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -574,10 +634,10 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let mut m = manifest("busbar-secret-delta", "delta", "busbar");
     m.kind = "secret".into();
     m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
-    let m = sign(&release, m, b"secret lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"secret lib");
     write_tarball(&dir, "delta.tar.gz", &m, b"secret lib");
 
-    let st = sign(
+    let st = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
@@ -589,7 +649,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
 
-    let err = reg.store_door("delta").map(|_| ()).unwrap_err();
+    let err = reg.kind_refusal("store", "back the governance store", "delta");
     assert!(err.contains("kind 'secret'"), "got {err}");
 
     let err = reg.secret_refusal("nope");
@@ -607,7 +667,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
 fn open_auth_refuses_non_auth_kind() {
     let release = key(1);
     let dir = tmpdir("authkind");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
@@ -629,9 +689,9 @@ fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
     let mut m = manifest("busbar-auth-idp-plugin", "idp", "busbar");
     m.kind = "auth".into();
     m.abi_version = busbar_contract::abi::auth::ABI_VERSION;
-    let m = sign(&release, m, b"auth lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"auth lib");
     write_tarball(&dir, "idp.tar.gz", &m, b"auth lib");
-    let st = sign(
+    let st = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
@@ -668,7 +728,7 @@ fn the_hook_axis_refuses_a_non_hook_kind() {
     use busbar_contract::hook_calls::HookAxis;
     let release = key(1);
     let dir = tmpdir("hookkind");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"store lib",
@@ -701,10 +761,10 @@ fn the_hook_axis_refuses_a_non_hook_kind() {
 fn a_conflict_marks_only_the_rows_it_names() {
     let release = key(1);
     let dir = tmpdir("conflictjoin");
-    let a = sign(&release, manifest("dup", "alias-a", "busbar"), b"a");
-    let b = sign(&release, manifest("dup", "alias-b", "busbar"), b"b");
+    let a = crate::sign::seal_test_artifact(&release, manifest("dup", "alias-a", "busbar"), b"a");
+    let b = crate::sign::seal_test_artifact(&release, manifest("dup", "alias-b", "busbar"), b"b");
 
-    let c = sign(&release, manifest("innocent", "vk", "busbar"), b"c");
+    let c = crate::sign::seal_test_artifact(&release, manifest("innocent", "vk", "busbar"), b"c");
     write_tarball(&dir, "a.tar.gz", &a, b"a");
 
     write_tarball(&dir, "spells-'vk'-in-its-name.tar.gz", &b, b"b");
@@ -737,7 +797,7 @@ fn inventory_reports_every_row_class_without_loading() {
     let release = key(1);
     let acme = key(2);
     let dir = tmpdir("inventory");
-    let good = sign(
+    let good = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"g",
@@ -765,7 +825,7 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
     let dir = tmpdir("downgrade");
     let mut m = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.version = "1.0.0".into();
-    let m = sign(&release, m, b"old lib");
+    let m = crate::sign::seal_test_artifact(&release, m, b"old lib");
     write_tarball(&dir, "old.tar.gz", &m, b"old lib");
 
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -794,7 +854,7 @@ fn first_party_downgrade_is_rejected_in_pipeline() {
 fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
     let release = key(1);
     let dir = tmpdir("malformed-floor");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
@@ -830,7 +890,7 @@ fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
 fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
     let release = key(1);
     let dir = tmpdir("malformed-floor-referenced");
-    let m = sign(
+    let m = crate::sign::seal_test_artifact(
         &release,
         manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
         b"lib",
@@ -921,7 +981,7 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
 
     let mut current = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     current.version = "1.2.0".into();
-    let current = sign(&release, current, b"1.2.0 lib");
+    let current = crate::sign::seal_test_artifact(&release, current, b"1.2.0 lib");
     write_tarball(&dir, "store.tar.gz", &current, b"1.2.0 lib");
 
     let mut marks = crate::HighWaterMarks::load(None).0;
@@ -938,7 +998,7 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
 
     let mut old = manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     old.version = "1.0.0".into();
-    let old = sign(&release, old, b"1.0.0 lib");
+    let old = crate::sign::seal_test_artifact(&release, old, b"1.0.0 lib");
     write_tarball(&dir, "store.tar.gz", &old, b"1.0.0 lib");
 
     let mut pol = policy(&release);
@@ -1017,7 +1077,7 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
     write_tarball(
         &dir,
         "plugin.tar.gz",
-        &sign(&release, m, lib.as_bytes()),
+        &crate::sign::seal_test_artifact(&release, m, lib.as_bytes()),
         lib.as_bytes(),
     );
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -1082,9 +1142,11 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
         "alpha",
         &["busbar-store-alpha-plugin"],
     ));
-    let refusal = reg
-        .store_door("busbar-store-alpha-plugin")
-        .expect_err("a door row of a store is not the store kind's linked row");
+    let refusal = reg.kind_refusal(
+        "store",
+        "back the governance store",
+        "busbar-store-alpha-plugin",
+    );
     assert!(
         refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
         "the former name resolved to the plugin: {refusal}"
@@ -1095,7 +1157,7 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
 fn two_plugins_claiming_one_former_name_are_refused() {
     let release = key(1);
     let mut pol = policy(&release);
-    pol.allow_third_party = true;
+    pol.allow_untrusted = true;
     let acme = key(2);
     for (second, contested) in [
         (
@@ -1116,7 +1178,7 @@ fn two_plugins_claiming_one_former_name_are_refused() {
         ),
     ] {
         let dir = tmpdir("former-conflict");
-        let first = sign(
+        let first = crate::sign::seal_test_artifact(
             &release,
             renamed(
                 "hook",
@@ -1392,11 +1454,9 @@ fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
         let p = reg.resolve(word).expect("resolves");
         assert_eq!(p.key(), key, "{word}");
     }
-    assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
-
     assert_eq!(
-        reg.store_door("busbar-auth-tok").err().as_deref(),
-        Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
+        reg.kind_refusal("store", "back the governance store", "busbar-auth-tok"),
+        "plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store"
     );
     assert_eq!(
         reg.secret_refusal("tok"),
@@ -1485,12 +1545,12 @@ fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
         let mut m = manifest("busbar-store-alpha-plugin", "alpha", "busbar");
         m.abi_version = busbar_contract::abi::store::ABI_VERSION - 1;
         m.version = "1.0.6".into();
-        sign(&release, m, old_lib)
+        crate::sign::seal_test_artifact(&release, m, old_lib)
     };
     let new = |former: &[&str]| {
         let mut m = renamed("store", "busbar-store-alpha", "alpha", former);
         m.version = "1.6.0".into();
-        sign(&release, m, new_lib)
+        crate::sign::seal_test_artifact(&release, m, new_lib)
     };
 
     let dir = tmpdir("supersede");
@@ -1571,8 +1631,8 @@ fn a_linked_row_with_an_unreadable_statement_does_not_claim_it_states_no_version
 fn an_inventory_row_lists_every_conflict_it_is_in() {
     let release = key(1);
     let dir = tmpdir("conflictboth");
-    let a = sign(&release, manifest("dupx", "alias-x", "busbar"), b"a");
-    let b = sign(&release, manifest("dupx", "alias-x", "busbar"), b"b");
+    let a = crate::sign::seal_test_artifact(&release, manifest("dupx", "alias-x", "busbar"), b"a");
+    let b = crate::sign::seal_test_artifact(&release, manifest("dupx", "alias-x", "busbar"), b"b");
     write_tarball(&dir, "a.tar.gz", &a, b"a");
     write_tarball(&dir, "b.tar.gz", &b, b"b");
 
@@ -1608,14 +1668,11 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
         skipped(
             "plane",
             "busbar-plane-decisions.tar.gz",
-            RejectKind::EgressGrant
+            RejectKind::Tampered
         )
         .skip_line()
         .as_deref(),
-        Some(
-            "\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: provider egress \
-             refused: not first-party"
-        )
+        Some("\"busbar-plane-decisions.tar.gz\" (kind plane) was not admitted: tampered")
     );
     let line = skipped("secret", "s.tar.gz", RejectKind::Unsigned)
         .skip_line()
@@ -1664,7 +1721,7 @@ fn a_dropped_in_plane_is_the_module_its_statement_names() {
         crate::dispatch::rendering_of(crate::neutral_plane::door)
             .expect("the witness door renders its Statement"),
     ));
-    let m = sign(&release, m, lib);
+    let m = crate::sign::seal_test_artifact(&release, m, lib);
     write_tarball(&dir, "busbar-plane-witness-x86_64.tar.gz", &m, lib);
     let p = TrustPolicy {
         binary_version: "1.6.0".into(),
@@ -1686,4 +1743,66 @@ fn a_dropped_in_plane_is_the_module_its_statement_names() {
     assert_eq!(reg.dropped_image("auth", crate::neutral_plane::NAME), None);
     assert_eq!(reg.dropped_image("plane", "no-such-plane"), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Publisher trust decides admission, never which egress intent an admitted image may state.
+#[test]
+fn provider_intent_has_no_publisher_specific_admission_gate() {
+    use busbar_contract::abi::host::conn::connector::{Need, EGRESS_PROVIDER};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::sdk::door::abi_str;
+    use std::sync::atomic::AtomicPtr;
+
+    extern "C" fn provider_door() -> *const Door {
+        static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+        const NEEDS: [Need; 1] = [Need {
+            egress_class: EGRESS_PROVIDER,
+            ..crate::needs_restated::need(abi_str("tcp"))
+        }];
+        crate::needs_restated::restate(&SLOT, crate::neutral_store::door, &NEEDS)
+    }
+    let rendering = crate::dispatch::load::rendering_of_raw(provider_door).unwrap();
+    let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
+    assert_eq!(facts.needs[0].egress_class, EGRESS_PROVIDER);
+    let signer = key(62);
+    for trusted in [false, true] {
+        let dir = tmpdir(if trusted {
+            "provider-trusted"
+        } else {
+            "provider-allowed"
+        });
+        let lib = b"provider intent fixture; never loaded";
+        let mut m = manifest(&facts.name, "provider-intent", "operator-publisher");
+        m.version = facts.version.clone();
+        m.statement = Some(hex::encode(&rendering));
+        let m = sign(&signer, m, lib);
+        write_tarball(&dir, "provider.tar.gz", &m, lib);
+        let mut p = TrustPolicy::default();
+        if trusted {
+            p.publishers.insert(
+                "operator-publisher".into(),
+                crate::sign::PublisherTrust {
+                    plugins: [facts.name.clone()].into_iter().collect(),
+                    keys: vec![crate::sign::PublisherKey {
+                        key: signer.verifying_key(),
+                        revoked: false,
+                    }],
+                },
+            );
+        } else {
+            p.allow_untrusted = true;
+        }
+        let reg =
+            scan_and_validate(&dir, &p).expect("admitted packages share egress intent syntax");
+        let admitted = reg
+            .resolve(&facts.name)
+            .expect("the provider intent is retained");
+        assert!(!admitted.first_party());
+        assert_eq!(
+            admitted.manifest.stated().unwrap().unwrap().needs[0].egress_class,
+            EGRESS_PROVIDER
+        );
+        assert_eq!(reg.loadable().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

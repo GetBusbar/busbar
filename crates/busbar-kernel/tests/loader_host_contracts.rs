@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 // Actual KernelServices controls relocated from the deleted conformance Host simulator.
+// Futures over the serving App's credential custody graph prove Send through more than the
+// default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
+#![recursion_limit = "256"]
 use busbar_contract::abi::host::service::MAX_RANDOM_FILL;
 use busbar_contract::abi::mechanism::{call::Outcome, KindCode};
 use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
@@ -21,11 +24,11 @@ async fn admitted() -> Host {
     admitted_over(real_store::core().await).await
 }
 async fn admitted_over(store: Arc<persistence::facade::CoreStore>) -> Host {
-    let h = Host::new().with_pool(Arc::new(BlockingPool::new(
+    let mut h = Host::new().with_pool(Arc::new(BlockingPool::new(
         tokio::runtime::Handle::current(),
         1024,
     )));
-    assert!(h.attach_persistence(store));
+    h = h.with_persistence(store);
     h.admit(
         "plane",
         InstanceFacts {
@@ -409,7 +412,12 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
         },
         approved: std::collections::BTreeMap::from([("tool".into(), "one".into())]),
     };
-    let h = Host::new();
+    // Trust custody, as production has (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(real_store::core().await)
+        .expect("a fresh record attaches");
+    let h = Host::new().with_demotions(record, "");
     h.admit(
         "plane",
         InstanceFacts {
@@ -419,12 +427,26 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     )
     .await
     .unwrap();
-    h.trust_rule("plane/agent", Ruling::Approve)
-        .await
-        .expect("actual authority approves declared fingerprint");
-    h.trust_rule("plane/agent/tool", Ruling::Revoke)
-        .await
-        .expect("actual authority revokes declared item");
+    h.trust_rule_by(
+        "plane/agent",
+        Ruling::Approve,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority approves declared fingerprint");
+    h.trust_rule_by(
+        "plane/agent/tool",
+        Ruling::Revoke,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority revokes declared item");
     let c = caller("plane");
     let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
     assert_eq!(verdict("agent", None), DISTRUST_NONE);

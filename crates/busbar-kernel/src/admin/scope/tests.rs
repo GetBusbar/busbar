@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 #[test]
 fn required_scope_matrix() {
@@ -118,16 +120,13 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
 fn operations_1_5_5() -> Vec<(String, String, Scope)> {
     const OPENAPI_1_5_5: &str =
         include_str!("../../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
-    let doc: serde_json::Value =
-        serde_json::from_str(OPENAPI_1_5_5).expect("the 1.5.5 admin document is JSON");
+    let doc: json::Value =
+        json::parse_value(OPENAPI_1_5_5.as_bytes()).expect("the 1.5.5 admin document is JSON");
     let paths = doc["paths"].as_object().expect("the document has paths");
     let mut ops = Vec::new();
     for (path, item) in paths {
         for (method, op) in item.as_object().expect("a path item is an object") {
-            if !matches!(
-                method.as_str(),
-                "get" | "head" | "post" | "put" | "patch" | "delete"
-            ) {
+            if !matches!(method, "get" | "head" | "post" | "put" | "patch" | "delete") {
                 continue;
             }
             let scope = match op["x-busbar-required-scope"].as_str() {
@@ -135,7 +134,7 @@ fn operations_1_5_5() -> Vec<(String, String, Scope)> {
                 Some("full") => Scope::Full,
                 other => panic!("{method} {path}: 1.5.5 states no known scope ({other:?})"),
             };
-            ops.push((method.to_ascii_uppercase(), path.clone(), scope));
+            ops.push((method.to_ascii_uppercase(), path.to_owned(), scope));
         }
     }
     ops

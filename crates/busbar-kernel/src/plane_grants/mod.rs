@@ -8,7 +8,7 @@
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::types::Pair;
-use busbar_plugin_loader::ports::auth::Identity;
+use busbar_ports::auth::Identity;
 
 use crate::plugin_records::RecordsDenied;
 
@@ -43,7 +43,7 @@ pub(crate) fn core_caller<'a>(who: &Caller<'a>, name: &'a str) -> Caller<'a> {
 mod tests;
 
 /// ENTITLE. The grant set of the verified principal (or ticket) is resolved once per request by the existing
-/// entitlement code (today's `entitlement.check` service) and cached on the request; `check` is a lookup.
+/// entitlement code (today's core principal grant resolver) and cached on the request; `check` is a lookup.
 pub trait Entitlements: Send + Sync + 'static {
     fn check(&self, who: &Caller<'_>, identity: &[u8], grant: &str) -> bool;
 }
@@ -144,6 +144,13 @@ pub trait IngressVerifier: Send + Sync + 'static {
 /// sighting (admit); Ok(false) = replay (refuse R_REPLAYED, audit `auth_replay`). Unavailable => refuse
 /// (fail closed). Owner K10.
 pub trait ReplayGuard: Send + Sync + 'static {
+    /// The original replay window's absolute cutoff, unchanged by store waits or retries.
+    fn claim_until<'a>(
+        &'a self,
+        who: &'a Caller<'_>,
+        key: &'a [u8],
+        expires_at_s: u64,
+    ) -> BoxFut<'a, Result<bool, RecordsDenied>>;
     fn claim<'a>(
         &'a self,
         who: &'a Caller<'_>,

@@ -99,7 +99,7 @@ fn without_handle(
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             [(axum::http::header::CACHE_CONTROL, "no-store")],
-            axum::response::Html(PAGE_NO_REQUEST),
+            crate::page::Page(PAGE_NO_REQUEST),
         )
             .into_response());
     };
@@ -179,7 +179,7 @@ fn error_page(response: oauth_as::http::Response) -> Response {
     (
         parts.status,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(page),
+        crate::page::Page(page),
     )
         .into_response()
 }
@@ -189,7 +189,7 @@ pub(super) fn unresolved_grant(error: &oauth_as::store::StorageError) -> Respons
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(PAGE_UNRESOLVED_GRANT),
+        crate::page::Page(PAGE_UNRESOLVED_GRANT),
     )
         .into_response()
 }
@@ -320,7 +320,7 @@ fn form_decoded(s: &str) -> String {
 pub(super) fn no_entropy() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        axum::response::Html(PAGE_NO_SESSION),
+        crate::page::Page(PAGE_NO_SESSION),
     )
         .into_response()
 }
@@ -328,7 +328,7 @@ pub(super) fn no_entropy() -> Response {
 pub(super) fn not_representable() -> Response {
     (
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        axum::response::Html(PAGE_NO_SESSION),
+        crate::page::Page(PAGE_NO_SESSION),
     )
         .into_response()
 }

@@ -270,6 +270,36 @@ fn fences_are_the_absent_root_for_initialize_and_root_plus_epoch_row_otherwise()
 }
 
 #[test]
+fn initialization_requires_exactly_the_registrars_initial_epoch() {
+    let valid = || super::tests::initial();
+    assert_eq!(admitted(valid()), Ok(()));
+    let mut missing = valid();
+    missing.predicates.pop();
+    missing.mutations.pop();
+    assert_eq!(admitted(missing), Err(Failure::Refused));
+
+    for epoch in [epoch_row(TARGET, 1), epoch_row(REGISTRAR, 2)] {
+        let mut wrong = valid();
+        wrong.predicates[2].address = epoch.clone();
+        wrong.mutations[2] = Mutation::Put {
+            address: epoch,
+            value: Secret::new(EPOCH_VALUE.to_vec()),
+        };
+        assert_eq!(admitted(wrong), Err(Failure::Refused));
+    }
+    let mut wrong_value = valid();
+    wrong_value.mutations[2] = Mutation::Put {
+        address: epoch_row(REGISTRAR, 1),
+        value: Secret::new(b"invalid epoch".to_vec()),
+    };
+    assert_eq!(admitted(wrong_value), Err(Failure::Refused));
+
+    let mut unguarded = valid();
+    unguarded.predicates.pop();
+    assert_eq!(admitted(unguarded), Err(Failure::Refused));
+}
+
+#[test]
 fn admit_accepts_one_golden_candidate_per_writer_put_site() {
     let cold = [6; 16];
     let bootstrap = [7; 16];
@@ -335,8 +365,7 @@ fn admit_accepts_one_golden_candidate_per_writer_put_site() {
                 &[step(TARGET, Some(writer(0, 2)), writer(MAX, MAX))],
             ),
         ),
-        // busbar-migrations: cold-writer bootstrap, retire, reopen; stamped by the caller and the
-        // cold writer.
+        // Cold-writer bootstrap, retire, reopen; stamped by the caller and the cold writer.
         (
             "cold bootstrap",
             golden(bootstrap, 1, &[step(cold, None, writer(0, 1))]),

@@ -37,12 +37,12 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::{commit, tag, RecDelRec, RecPredRec, RecPutRec, Records, Reply};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::encode::plane::{
+use busbar_ports::codec::plane::{
     encode_chain_state, encode_chan_attach, encode_committed, encode_connect_answers,
     encode_entitle_answers, encode_judged, encode_lookup_hits, encode_minted, encode_observed,
     encode_refusal, encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
 };
-use busbar_plugin_loader::ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
+use busbar_ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
 use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
@@ -285,6 +285,13 @@ pub trait IntentHost: Send + Sync {
     fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
     /// SIGNAL: every session of this instance detached under `key` (only `subject`'s when it is Some).
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>);
+    /// A command signal cannot fall back to instance or subject-wide delivery.
+    fn signal_command(
+        &self,
+        _authority: &crate::channels::authority::ChannelAuthority,
+        _key: &[u8],
+    ) {
+    }
     /// ENTITLE: does the verified principal (its ID_* `identity` records) hold `grant`? The default is no.
     fn entitle(&self, _identity: &[u8], _grant: &str) -> bool {
         false
@@ -319,8 +326,8 @@ pub trait IntentHost: Send + Sync {
         DISTRUST_UNKNOWN
     }
     /// TRUST_STATE: the counterparty verdict and the per-item state. The default refuses as unknown.
-    fn trust_state(&self, _party: &str) -> (u32, Vec<TrustItemOwned>) {
-        (DISTRUST_UNKNOWN, Vec::new())
+    fn trust_state(&self, _party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
+        (DISTRUST_UNKNOWN, None, Vec::new())
     }
     /// TRUST_VERIFY: the `SIGNED_*` verdict and, for `SIGNED_ALGORITHM` and `SIGNED_CRITICAL`, the named member.
     /// The default has no root: `SIGNED_MALFORMED_ROOT`.
@@ -381,12 +388,35 @@ pub struct Piece {
 }
 
 /// Resolves intents against a host for one request: `subject` is the verified principal's scope, if any.
+fn signal_admitted(
+    host: &dyn IntentHost,
+    request: &super::request_admission::AdmittedRequest,
+    flags: u32,
+    key: &[u8],
+    subject: Option<[u8; 32]>,
+) {
+    if !request.is_live() {
+        return;
+    }
+    if request.registered_command().is_some() {
+        if let Ok(authority) = crate::channels::authority::ChannelAuthority::new(request.clone()) {
+            host.signal_command(&authority, key);
+        }
+    } else if flags & LK_CALLER == 0 {
+        host.signal(key, None);
+    } else if let Some(subject) = subject {
+        host.signal(key, Some(subject));
+    }
+}
+
+/// Resolves intents against the same admitted request throughout the session.
 pub struct Resolver<'h> {
     host: &'h dyn IntentHost,
     subject: Option<[u8; 32]>,
     channels: Option<&'h dyn ChannelHost>,
     principal: Option<Principal<'h>>,
     route: u32,
+    pending: Option<&'h super::port_admission::Pending>,
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -405,6 +435,7 @@ impl<'h> Resolver<'h> {
             channels: None,
             principal: None,
             route: 0,
+            pending: None,
         }
     }
 
@@ -418,6 +449,11 @@ impl<'h> Resolver<'h> {
     #[must_use]
     pub fn with_route(mut self, route: u32) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_admission(mut self, pending: Option<&'h super::port_admission::Pending>) -> Self {
+        self.pending = pending;
         self
     }
 
@@ -487,7 +523,17 @@ impl<'h> Resolver<'h> {
                     }
                 }
                 Intent::Signal { flags, key } => {
-                    if flags & LK_CALLER == 0 {
+                    if let Some(pending) = self.pending {
+                        if let Some(admitted) = pending.admitted() {
+                            signal_admitted(
+                                self.host,
+                                &admitted.request,
+                                *flags,
+                                key,
+                                self.subject,
+                            );
+                        }
+                    } else if flags & LK_CALLER == 0 {
                         self.host.signal(key, None);
                     } else if let Some(subject) = self.subject {
                         self.host.signal(key, Some(subject));
@@ -953,14 +999,14 @@ impl<'h> Resolver<'h> {
     /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
     fn trusts(&self, intents: &[Intent]) -> Option<Vec<u8>> {
         // (check, verdict, item states of a STATE, the named member of a VERIFY)
-        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String)> = Vec::new();
+        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String, Option<[u8; 32]>)> = Vec::new();
         for intent in intents {
             match intent {
                 Intent::Trust {
                     check, op, party, ..
                 } if *op == TRUST_STATE => {
-                    let (verdict, items) = self.host.trust_state(party);
-                    rows.push((*check, verdict, items, String::new()));
+                    let (verdict, catalog, items) = self.host.trust_state(party);
+                    rows.push((*check, verdict, items, String::new(), catalog));
                 }
                 Intent::Trust {
                     check,
@@ -970,11 +1016,11 @@ impl<'h> Resolver<'h> {
                 } if *op == TRUST_SERVES => {
                     let item = item.as_ref().map(|(name, digest)| (name.as_str(), *digest));
                     let verdict = self.host.trust_serves(party, item);
-                    rows.push((*check, verdict, Vec::new(), String::new()));
+                    rows.push((*check, verdict, Vec::new(), String::new(), None));
                 }
                 Intent::Trust { check, .. } => {
                     // The adapter admits only SERVES and STATE; anything else does not serve.
-                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new()));
+                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new(), None));
                 }
                 Intent::TrustVerify {
                     check,
@@ -983,7 +1029,7 @@ impl<'h> Resolver<'h> {
                     signatures,
                 } => {
                     let (verdict, named) = self.host.trust_verify(party, payload, signatures);
-                    rows.push((*check, verdict, Vec::new(), named));
+                    rows.push((*check, verdict, Vec::new(), named, None));
                 }
                 _ => {}
             }
@@ -993,7 +1039,7 @@ impl<'h> Resolver<'h> {
         }
         let views: Vec<Vec<TrustItem<'_>>> = rows
             .iter()
-            .map(|(_, _, items, _)| {
+            .map(|(_, _, items, _, _)| {
                 items
                     .iter()
                     .map(|i| TrustItem {
@@ -1008,9 +1054,10 @@ impl<'h> Resolver<'h> {
         let answers: Vec<TrustAnswer<'_>> = rows
             .iter()
             .zip(&views)
-            .map(|((check, verdict, _, named), items)| TrustAnswer {
+            .map(|((check, verdict, _, named, catalog), items)| TrustAnswer {
                 check: *check,
                 verdict: *verdict,
+                catalog: *catalog,
                 items,
                 named,
             })
@@ -1240,6 +1287,16 @@ fn denied_status(denied: &RecordsDenied) -> u32 {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
+    /// Resolve only prerequisites whose results are needed to bind the enforcement stage.
+    pub fn resolve_before_hooks(
+        &mut self,
+        first: Answer,
+        resolver: &Resolver<'_>,
+        effects: &dyn Effects,
+    ) -> Result<Vec<Answer>, SessionError> {
+        self.resolve_stage(first, resolver, effects, true)
+    }
+
     /// Resolves the intents of `first` and of every answer their results provoke. Answers come back in delivery
     /// order, `first` first, each with its intents taken (resolved), so the caller applies their client items,
     /// forward and facts as it would any answer.
@@ -1249,11 +1306,47 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         resolver: &Resolver<'_>,
         effects: &dyn Effects,
     ) -> Result<Vec<Answer>, SessionError> {
+        self.resolve_stage(first, resolver, effects, false)
+    }
+
+    fn resolve_stage(
+        &mut self,
+        first: Answer,
+        resolver: &Resolver<'_>,
+        effects: &dyn Effects,
+        screening: bool,
+    ) -> Result<Vec<Answer>, SessionError> {
         let mut out = Vec::new();
         let mut queue = VecDeque::from([first]);
         let mut rounds = 0u32;
+        let mut held_effects = false;
         while let Some(mut answer) = queue.pop_front() {
+            if !screening
+                && self.is_command()
+                && !answer.command_channel
+                && answer
+                    .intents
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::Channel { .. }))
+            {
+                return Err(SessionError::Violation(Violation::BadRecords));
+            }
             let intents = std::mem::take(&mut answer.intents);
+            if screening && !intents.is_empty() {
+                let reads = intents.iter().any(prerequisite);
+                let writes = intents.iter().any(|intent| !prerequisite(intent));
+                if (reads && (writes || held_effects))
+                    || (writes && answer.forward.is_none() && answer.client.is_empty())
+                {
+                    return Err(SessionError::HookPrerequisite);
+                }
+                if writes {
+                    held_effects = true;
+                    answer.intents = intents;
+                    out.push(answer);
+                    continue;
+                }
+            }
             out.push(answer);
             if intents.is_empty() {
                 continue;
@@ -1275,6 +1368,17 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         }
         Ok(out)
     }
+}
+
+/// These operations can discover a deferred route without opening a wire or changing state.
+fn prerequisite(intent: &Intent) -> bool {
+    matches!(
+        intent,
+        Intent::Lookup { .. }
+            | Intent::Entitle { .. }
+            | Intent::Judge { .. }
+            | Intent::Work { op: WORK_FIND, .. }
+    )
 }
 
 /// Who a plane instance is to the store: its record namespace (IF §12.5).
@@ -1593,6 +1697,11 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
             .signal(self.who.instance, key, subject, P_SIGNAL, key);
     }
 
+    fn signal_command(&self, authority: &crate::channels::authority::ChannelAuthority, key: &[u8]) {
+        self.signals
+            .signal_command(self.who.instance, authority, key, P_SIGNAL, key);
+    }
+
     fn entitle(&self, identity: &[u8], grant: &str) -> bool {
         self.services
             .entitlements
@@ -1649,12 +1758,12 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         }
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
         let Some(book) = &self.services.trust else {
-            return (DISTRUST_UNKNOWN, Vec::new());
+            return (DISTRUST_UNKNOWN, None, Vec::new());
         };
         let mut items = Vec::new();
-        let verdict = book.state(&self.who.caller(), party, &mut |item| {
+        let (verdict, catalog) = book.state(&self.who.caller(), party, &mut |item| {
             items.push(TrustItemOwned {
                 name: item.name.to_owned(),
                 verdict: item.verdict,
@@ -1662,7 +1771,7 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
                 sighted: item.sighted,
             });
         });
-        (verdict, items)
+        (verdict, catalog, items)
     }
 
     fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {

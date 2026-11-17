@@ -58,7 +58,7 @@ use crate::diagnostics::{
 };
 use crate::hooks::taps::{fire_stage_taps_where, spawn_bounded_tap, StageShape};
 use crate::hooks::{
-    content_capped, failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
+    failed_call_refuses, FallbackHook, RequestedSignals, ResolvedPolicy, TapEntry,
     REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS,
 };
 use crate::snapshot::{
@@ -109,6 +109,19 @@ pub struct HooksRan {
 
 pub trait HookJournal: Send + Sync {
     fn hooks_ran(&self, record: &HooksRan);
+
+    /// Whether the node keeps the end user on its unit records (`records.user`, ADMIN-API-1.6
+    /// §3.5). `false` (the default) leaves the driver no work for it.
+    fn keeps_end_user(&self) -> bool {
+        false
+    }
+
+    /// The end user the plane projected for `unit`, once, from the unit's first projection.
+    fn end_user(&self, _unit: busbar_contract::UnitKey, _user: &str) {}
+
+    /// The unit's request header fields at Decode, for the record's allow-listed labels
+    /// (`records.labels`, ADMIN-API-1.6 §3.5). A node keeping none returns at once.
+    fn decoded_fields(&self, _unit: busbar_contract::UnitKey, _fields: &[(Vec<u8>, Vec<u8>)]) {}
 }
 
 thread_local! {
@@ -238,6 +251,20 @@ pub struct UnitHooks {
     pub reads: HookRead,
 
     pub dialect: String,
+}
+
+struct RewriteReads<'a> {
+    reads: &'a HookRead,
+    dialect: &'a str,
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::ReadRecorder for RewriteReads<'_> {
+    async fn record(&self, hook: &str, identity: bool) -> bool {
+        (self.reads)(&[hook], None, self.dialect, identity)
+            .await
+            .is_ok()
+    }
 }
 
 impl std::fmt::Debug for UnitHooks {
@@ -725,14 +752,14 @@ impl<'a> Projection<'a> {
     }
 
     fn prompt(&self) -> PromptProjection<'_> {
-        content_capped(PromptProjection {
+        PromptProjection {
             system: self.system.as_deref().map(Cow::Borrowed),
             messages: self
                 .turns
                 .iter()
                 .map(|(r, t)| (Cow::Borrowed(&**r), Cow::Borrowed(&**t)))
                 .collect(),
-        })
+        }
     }
 
     fn request<'s>(
@@ -1612,6 +1639,14 @@ impl Projected {
         self.at.view(&self.arena)
     }
 
+    /// The end user the plane stated, read alone: the turns are not projected.
+    fn end_user(&self) -> Option<Cow<'_, str>> {
+        self.at
+            .end_user
+            .as_ref()
+            .map(|cut| text_at(&self.arena, cut))
+    }
+
     /// Take a re-projection's answer as current, and hand back the superseded arena wiped, as
     /// the next re-projection's spare.
     fn accept(&mut self, mut arena: ProjectArena, at: ProjectAt) -> ProjectArena {
@@ -1917,13 +1952,61 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         S: super::DriverSteps,
     {
         let mut ran = ran_buffer();
-        let scope =
-            crate::hook_child::Scope::new(Arc::clone(&self.driver.services), self.lock().unit);
-        let stage = crate::hook_child::SCOPE
-            .scope(scope, self.run_request_stage(token, &mut ran))
-            .await;
+        let unit = self.lock().unit;
+        let context = self.steps.invocation(unit);
+        let stage = match context {
+            Some(context) => {
+                crate::hook_child::SCOPE
+                    .scope(
+                        crate::hook_child::Scope::new(context),
+                        self.run_request_stage(token, &mut ran),
+                    )
+                    .await
+            }
+            None => self.run_request_stage(token, &mut ran).await,
+        };
         self.report_hooks(ran);
+        if stage.is_ok() {
+            self.note_unprojected_end_user();
+        }
         stage
+    }
+
+    /// `records.user` (ADMIN-API-1.6 §3.5): the journal to tell the unit's end user to, when the
+    /// node keeps it and has not been told yet. Off, this is the one check a unit pays.
+    fn end_user_wanted(&self) -> Option<&Arc<dyn HookJournal>> {
+        let journal = self.driver.hook_journal.as_ref()?;
+        (journal.keeps_end_user() && !self.lock().end_user_noted).then_some(journal)
+    }
+
+    /// Tell the node the end user the unit's first projection stated; a projection that states
+    /// none keeps none. Once per unit.
+    fn note_end_user(&self, journal: &dyn HookJournal, user: Option<&str>) {
+        let unit = {
+            let mut st = self.lock();
+            if std::mem::replace(&mut st.end_user_noted, true) {
+                return;
+            }
+            st.unit
+        };
+        if let Some(user) = user.filter(|user| !user.is_empty()) {
+            journal.end_user(busbar_contract::UnitKey::new(unit), user);
+        }
+    }
+
+    /// A unit whose request stage projected nothing (no hook bound): project it once for its end
+    /// user alone, when the node keeps it. A projection that fails keeps no user.
+    fn note_unprojected_end_user(&self) {
+        let Some(journal) = self.end_user_wanted() else {
+            return;
+        };
+        if self.arrival.claim == CLAIM_PROBE {
+            return;
+        }
+        let (arena, at) = self.project(self.fresh_arena(), None, false, true);
+        let projected = at.ok().map(|at| Projected { arena, at });
+        let user = projected.as_ref().and_then(Projected::end_user);
+        self.note_end_user(&**journal, user.as_deref());
     }
 
     /// Journal the hooks that ran for the unit, then hand the buffer back as the thread's spare.
@@ -2005,6 +2088,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 return Err(stopped);
             }
         };
+        if let (Some(journal), StageView::Projected(projected)) = (self.end_user_wanted(), &cur) {
+            self.note_end_user(&**journal, projected.end_user().as_deref());
+        }
         let mut spare: Option<ProjectArena> = None;
         let pool: Cow<'_, str> = if walk_pool.is_empty() {
             Cow::Owned(cur.pool().into_owned())
@@ -2025,7 +2111,16 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     .await
                     .map_err(|_| fault_veto())?;
             }
-            let outcome = hook.transform(&req, *timeout).await;
+            let outcome = hook
+                .transform_recording(
+                    &req,
+                    *timeout,
+                    &RewriteReads {
+                        reads: &hooks.reads,
+                        dialect: &view.dialect,
+                    },
+                )
+                .await;
             drop(req);
             drop(view);
             ran.push(rewrite_applied(hook.name(), &outcome));
@@ -2062,6 +2157,33 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
                         Ok(_) | Err(_) => {
                             drop(arena);
+                            let view = cur.view();
+                            let req =
+                                view.request(hooks.request_id, &pool, true, None, &hooks.requested);
+                            let fallback = hook
+                                .fallback_rewrite_recording(
+                                    &req,
+                                    &RewriteReads {
+                                        reads: &hooks.reads,
+                                        dialect: &view.dialect,
+                                    },
+                                )
+                                .await;
+                            drop(req);
+                            drop(view);
+                            if matches!(
+                                fallback,
+                                Some(TransformOutcome::Failed { .. } | TransformOutcome::Abstain)
+                            ) {
+                                continue;
+                            }
+                            if let Some(TransformOutcome::Reject { status, message }) = fallback {
+                                let shape = ShapeFacts::of(&cur.view());
+                                drop(cur);
+                                self.lock().hooked = Some((hooks, shape));
+                                let (status, message) = gated::rewrite_refusal(status, &message);
+                                return Err(veto(status, message));
+                            }
                             let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
                             let shape = ShapeFacts::of(&cur.view());
                             drop(cur);
@@ -2779,7 +2901,17 @@ impl SessionStage {
                     words: crate::cold::hooks_audit_unconfirmed(),
                 };
             }
-            match hook.transform(&req, *timeout).await {
+            match hook
+                .transform_recording(
+                    &req,
+                    *timeout,
+                    &RewriteReads {
+                        reads: &hooks.reads,
+                        dialect: &view.dialect,
+                    },
+                )
+                .await
+            {
                 TransformOutcome::Rewrite(rw) => {
                     return StageAnswer::Rewrote {
                         index: u32::try_from(i).unwrap_or(u32::MAX),

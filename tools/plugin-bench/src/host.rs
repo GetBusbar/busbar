@@ -153,9 +153,6 @@ impl HostServices for BenchHost {
     fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
         self.unserved()
     }
-    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
-        self.unserved()
-    }
     fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
         self.unserved()
     }

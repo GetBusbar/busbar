@@ -60,6 +60,18 @@ pub const SYMBOL: &[u8] = b"busbar_plugin\0";
 pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
 /// Byte offset of `Plugin::kind_vt`.
 pub const PLUGIN_KIND_VT_AT: usize = core::mem::offset_of!(Plugin, kind_vt);
+/// Byte offset of `Plugin::describe`.
+pub const PLUGIN_DESCRIBE_AT: usize = core::mem::offset_of!(Plugin, describe);
+/// Byte offset of `Plugin::open`.
+pub const PLUGIN_OPEN_AT: usize = core::mem::offset_of!(Plugin, open);
+/// Byte offset of `Plugin::resume`.
+pub const PLUGIN_RESUME_AT: usize = core::mem::offset_of!(Plugin, resume);
+/// Byte offset of `Plugin::cancel`.
+pub const PLUGIN_CANCEL_AT: usize = core::mem::offset_of!(Plugin, cancel);
+/// Byte offset of `Plugin::close`.
+pub const PLUGIN_CLOSE_AT: usize = core::mem::offset_of!(Plugin, close);
+/// Byte offset of `Plugin::former_names`.
+pub const PLUGIN_FORMER_NAMES_AT: usize = core::mem::offset_of!(Plugin, former_names);
 
 // `Plugin` is `Sync` structurally: its two raw pointers are `Shared`, pointing at immutable statics of the
 // image (`STAMP`, the kind table) that live as long as the image, which is never unloaded once admitted
@@ -170,6 +182,9 @@ impl Plugin {
 
 /// Emits the one exported symbol of a dropped-in plugin: `busbar_plugin`, returning `$p`'s header.
 /// `$p` must be a `LinkedPlugin` (`busbar_ffi::plugin(..)`); `$p` and `$crate` sit only in the safe body.
+/// The plugin image emits this export exactly once and reserves the `busbar_plugin` symbol for this
+/// signature. `$p` names its static header; the header, stamp and kind table remain live while the
+/// image is mapped. The loader borrows them while opened and retains the mapping after admission.
 ///
 /// ```text
 /// busbar_ffi::export!(my_logic_crate::PLUGIN);
@@ -178,6 +193,9 @@ impl Plugin {
 macro_rules! export {
     ($p:path) => {
         const _: () = {
+            // SAFETY: this is the image's reserved plugin entry symbol with the loader's exact C
+            // signature. One export per image prevents symbol ambiguity; LinkedPlugin ties the
+            // returned static header to its image's table and shims. The caller never frees it.
             #[unsafe(no_mangle)]
             pub extern "C" fn busbar_plugin() -> *const $crate::Plugin {
                 $crate::LinkedPlugin::as_ptr(&$p)

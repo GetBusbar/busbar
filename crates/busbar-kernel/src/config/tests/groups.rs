@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 
 const FROZEN_METRIC_WORDS: [&str; 4] = ["requests", "tokens", "budget", "concurrent"];
-
-const ADDITIVE_METRIC_WORDS: [&str; 4] = [
-    "tokens_input",
-    "tokens_output",
-    "tokens_cache_read",
-    "tokens_cache_write",
-];
 
 fn refusal(yaml: &str) -> String {
     match busbar_contract::yaml::from_str::<LimitCfg>(yaml) {
@@ -17,85 +13,107 @@ fn refusal(yaml: &str) -> String {
 }
 
 #[test]
-fn the_unknown_field_list_grows_1_5_5s() {
+fn selected_limit_roundtrip_keeps_complete_scope_and_maximum_amount() {
+    for metric in ["requests", "tokens"] {
+        let source = format!("{{id: Rule, upstream_resource: plane/a/b, per_key: true, enforcement: process, {metric}: 18446744073709551615, per: minute}}");
+        let row: LimitCfg = busbar_contract::yaml::from_str(&source).unwrap();
+        assert_eq!(row.amount, u64::MAX);
+        assert!(row.scope.is_none());
+        let encoded = busbar_contract::yaml::to_string(&row).unwrap();
+        for word in ["Rule", "plane/a/b", "per_key", "enforcement", "process"] {
+            assert!(encoded.contains(word), "missing {word}: {encoded}");
+        }
+        assert_eq!(
+            busbar_contract::yaml::from_str::<LimitCfg>(&encoded).unwrap(),
+            row
+        );
+    }
+}
+
+#[test]
+fn selected_limit_scope_cannot_fall_back_to_ordinary_limit() {
+    for suffix in [
+        "",
+        ", per_key: false, enforcement: process",
+        ", per_key: true",
+        ", per_key: true, enforcement: hard",
+        ", per_key: true, enforcement: global",
+        ", per_key: true, enforcement: process, pool: p",
+        ", per_key: true, enforcement: process, on_exhaust: block",
+        ", per_key: true, enforcement: process, downgrade_to: p",
+    ] {
+        let source =
+            format!("{{id: r, upstream_resource: plane/r, requests: 1, per: minute{suffix}}}");
+        assert!(
+            busbar_contract::yaml::from_str::<LimitCfg>(&source).is_err(),
+            "{source}"
+        );
+    }
+    for source in [
+        "{id: r, requests: 1, per: minute}",
+        "{upstream_resource: plane/r, per_key: true, enforcement: process, requests: 1, per: minute}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, budget: 1, per: minute}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, concurrent: 1}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, tokens: 1, per: hour}",
+        "{id: r, upstream_resource: plane/r, per_key: true, enforcement: process, requests: -1, per: minute}",
+        "{id: r, id: s, upstream_resource: plane/r, per_key: true, enforcement: process, requests: 1, per: minute}",
+    ] {
+        assert!(busbar_contract::yaml::from_str::<LimitCfg>(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn selected_rule_ids_are_unique_across_metrics_in_each_group() {
+    let groups = busbar_contract::yaml::from_str("team:\n  limits:\n    - {id: same, upstream_resource: p/r, per_key: true, enforcement: process, requests: 1, per: minute}\n    - {id: same, upstream_resource: p/r, per_key: true, enforcement: process, tokens: 2, per: minute}").unwrap();
+    let mut errors = Vec::new();
+    validate_groups(&groups, &|_| true, &mut errors);
+    assert!(
+        errors.iter().any(|error| error.contains("same")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn the_unknown_field_list_is_1_5_5s() {
     let got = refusal("{ requests: 1, per: day, bogus: 1 }");
     assert!(
         got.contains(
             "unknown field `bogus`, expected one of `requests`, `tokens`, `budget`, \
              `concurrent`, `per`, `pool`, `on_exhaust`, `downgrade_to`"
         ),
-        "BOOT-P29 refusal does not keep 1.5.5's list as its prefix: {got}"
+        "BOOT-P29 refusal does not keep 1.5.5's list: {got}"
     );
     assert!(
-        got.contains(
-            "`downgrade_to`, `tokens_input`, `tokens_output`, `tokens_cache_read`, \
-             `tokens_cache_write`, `admission`, `on_exhaustion`"
-        ),
-        "BOOT-P29 refusal does not append the 1.6.0 keys after 1.5.5's: {got}"
+        !got.contains("tokens_input")
+            && !got.contains("admission")
+            && !got.contains("on_exhaustion"),
+        "BOOT-P29 lists a removed 1.6.0 key: {got}"
     );
-    for word in ADDITIVE_METRIC_WORDS {
-        assert!(
-            got.contains(word),
-            "BOOT-P29 omits the 1.6.0 metric `{word}`: {got}"
-        );
-    }
 }
 
 #[test]
-fn the_no_metric_key_refusal_grows_1_5_5s() {
+fn the_no_metric_key_refusal_is_1_5_5s() {
     let got = refusal("{ per: day }");
     assert!(
         got.contains(
-            "a limit needs exactly one metric key (requests | tokens | budget | concurrent | \
-             tokens_input | tokens_output | tokens_cache_read | tokens_cache_write)"
+            "a limit needs exactly one metric key (requests | tokens | budget | concurrent)"
         ),
-        "BOOT-P20 refusal does not list every metric after 1.5.5's four: {got}"
+        "BOOT-P20 refusal does not list 1.5.5's four metrics: {got}"
     );
-    for word in ADDITIVE_METRIC_WORDS {
-        assert!(
-            got.contains(word),
-            "BOOT-P20 omits the 1.6.0 metric `{word}`: {got}"
-        );
-    }
 }
 
 #[test]
-fn the_expecting_line_grows_1_5_5s() {
+fn the_expecting_line_is_1_5_5s() {
     let got = refusal("requests");
     assert!(
         got.contains(
             "expected a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-             <metric> is one of requests|tokens|budget|concurrent|tokens_input|tokens_output|\
-             tokens_cache_read|tokens_cache_write and <window> one of \
+             <metric> is one of requests|tokens|budget|concurrent and <window> one of \
              minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional and \
              scopes the limit to one pool's traffic)"
         ),
-        "BOOT-P30 refusal does not list every metric after 1.5.5's four: {got}"
+        "BOOT-P30 refusal does not list 1.5.5's four metrics: {got}"
     );
-    for word in ADDITIVE_METRIC_WORDS {
-        assert!(
-            got.contains(word),
-            "BOOT-P30 omits the 1.6.0 metric `{word}`: {got}"
-        );
-    }
-}
-
-#[test]
-fn the_four_additive_metrics_still_parse() {
-    let expected = [
-        LimitMetric::TokensInput,
-        LimitMetric::TokensOutput,
-        LimitMetric::TokensCacheRead,
-        LimitMetric::TokensCacheWrite,
-    ];
-    for (word, metric) in ADDITIVE_METRIC_WORDS.iter().zip(expected) {
-        let parsed: LimitCfg =
-            busbar_contract::yaml::from_str(&format!("{{ {word}: 7, per: day }}"))
-                .unwrap_or_else(|e| panic!("`{word}` no longer parses: {e}"));
-        assert_eq!(parsed.metric, metric);
-        assert_eq!(parsed.amount, 7);
-        assert_eq!(parsed.per, Some(LimitWindow::Day));
-    }
 }
 
 #[test]
@@ -119,8 +137,10 @@ fn minimal_value(key: &str) -> &'static str {
         "per" => "day",
         "pool" | "downgrade_to" => "p",
         "on_exhaust" => "block",
-        "admission" => "exact",
-        "on_exhaustion" => "finish-unit",
+        "id" => "r",
+        "upstream_resource" => "p/r",
+        "per_key" => "true",
+        "enforcement" => "process",
         k if LimitMetric::from_key(k).is_some() => "1",
         other => panic!("no minimal value for limit key `{other}`; add one"),
     }
@@ -165,13 +185,9 @@ fn every_metric_is_in_all() {
             LimitMetric::Tokens => 1,
             LimitMetric::Budget => 2,
             LimitMetric::Concurrent => 3,
-            LimitMetric::TokensInput => 4,
-            LimitMetric::TokensOutput => 5,
-            LimitMetric::TokensCacheRead => 6,
-            LimitMetric::TokensCacheWrite => 7,
         }
     }
-    assert_eq!(LimitMetric::ALL.len(), 8);
+    assert_eq!(LimitMetric::ALL.len(), 4);
     for m in LimitMetric::ALL {
         assert_eq!(LimitMetric::ALL[idx(m)], m);
         assert_eq!(LimitMetric::from_key(m.as_str()), Some(m));

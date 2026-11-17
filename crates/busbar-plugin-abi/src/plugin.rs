@@ -16,17 +16,23 @@
 use crate::bridge::{self, Inbox};
 use crate::fail::{Fail, failed, refused};
 use crate::host::Host;
+use crate::need::Destination;
 use crate::need::{ChainBytes, need_flag, op};
+use crate::records::put_parts_iter;
 use crate::records::{
     EndpointRec, Full, InstanceRec, MaskRec, MetricDecl, Nested, Out, Reply, U64Rec, Writer, tag,
 };
 use crate::slots::{ChainBox, Slots};
 use crate::types::{Bytes, Status};
+use zerocopy::IntoBytes;
 
 /// The plugin header, `OPEN_DRY_RUN` and the exported symbol name are busbar-ffi's (UNSAFE-MIN r3.1): the header
 /// holds `unsafe extern "C"` entries and raw table pointers, and only `plugin()` builds one. Re-exported here
 /// under their frozen paths; their `mechanism!` block is busbar-ffi's, folded into `CORE_FP` after this crate's.
-pub use busbar_ffi::header::{OPEN_DRY_RUN, PLUGIN_KIND_VT_AT, PLUGIN_STAMP_AT, Plugin, SYMBOL};
+pub use busbar_ffi::header::{
+    OPEN_DRY_RUN, PLUGIN_CANCEL_AT, PLUGIN_CLOSE_AT, PLUGIN_DESCRIBE_AT, PLUGIN_FORMER_NAMES_AT,
+    PLUGIN_KIND_VT_AT, PLUGIN_OPEN_AT, PLUGIN_RESUME_AT, PLUGIN_STAMP_AT, Plugin, SYMBOL,
+};
 
 /// The type of the one exported symbol, `busbar_plugin` (IF §7.1). UNSAFE-MIN r3.1: `export!` emits it as a
 /// safe `extern "C" fn` (it only returns the address of a `'static` header), so the pointer type is safe too.
@@ -122,7 +128,14 @@ impl Endpoints<'_> {
     /// One endpoint this config will OPEN: dest and TLS mode exactly as the OPEN states them.
     pub fn open(&mut self, dest: &str, tls: u32, egress: u32) -> &mut Self {
         match flags_of(tls, egress) {
-            Some(flags) => self.put(op::OPEN, flags, dest),
+            Some(flags) => self.put_destination(op::OPEN, flags, Destination::One(dest)),
+            None => self.refuse("an endpoint states a TLS mode or an egress class out of range"),
+        }
+    }
+    /// One OPEN endpoint from borrowed destination segments, under the same check-time limits.
+    pub fn open_parts(&mut self, dest: &[&str], tls: u32, egress: u32) -> &mut Self {
+        match flags_of(tls, egress) {
+            Some(flags) => self.put_destination(op::OPEN, flags, Destination::Parts(dest)),
             None => self.refuse("an endpoint states a TLS mode or an egress class out of range"),
         }
     }
@@ -141,20 +154,28 @@ impl Endpoints<'_> {
         }
     }
     fn put(&mut self, op: u32, flags: u32, dest: &str) -> &mut Self {
+        self.put_destination(op, flags, Destination::One(dest))
+    }
+    fn put_destination(&mut self, op: u32, flags: u32, dest: Destination<'_>) -> &mut Self {
         if self.bad.is_some() {
             return self;
         }
         if self.count == ENDPOINTS_MAX {
             return self.refuse("check stated more than 16 endpoints");
         }
-        if dest.len() > ENDPOINT_DEST_MAX {
+        if !dest
+            .checked_len()
+            .is_some_and(|len| len <= ENDPOINT_DEST_MAX)
+        {
             return self.refuse("an endpoint is over 2,048 bytes");
         }
         let rec = EndpointRec { op, flags };
-        if self
-            .out
-            .put_pod_tail(tag::ENDPOINT, &rec, dest.as_bytes())
-            .is_err()
+        if put_parts_iter(
+            &mut self.out,
+            tag::ENDPOINT,
+            std::iter::once(rec.as_bytes()).chain(dest.parts()),
+        )
+        .is_err()
         {
             return self.refuse("the endpoints do not fit the answer");
         }
@@ -218,7 +239,12 @@ impl Describe<'_> {
         let rec = crate::records::CeilingRec { method, micros };
         self.write(|w| w.put_pod(tag::D_CEILING, &rec))
     }
-    /// A config position that holds a secret reference (D_SECRET_PATH, JSON Pointer, `*` = any array index).
+    /// Plane registration map (D_UPSTREAM_PATH): RFC 6901 pointer ending in an object-member `*`.
+    /// Core strips its upstream fields from each registration before schema/check/open.
+    pub fn upstream_path(&mut self, pointer: &'static str) -> &mut Self {
+        self.write(|w| w.put_text(tag::D_UPSTREAM_PATH, pointer))
+    }
+    /// A config position that holds a secret reference.
     pub fn secret_path(&mut self, pointer: &'static str) -> &mut Self {
         self.write(|w| w.put_text(tag::D_SECRET_PATH, pointer))
     }
@@ -280,6 +306,19 @@ impl Describe<'_> {
     /// A kind describe item (tag 0x0180..=0x01FF, declared in that kind's `tags {}`).
     pub fn item(&mut self, tag: u16, body: &[u8]) -> &mut Self {
         self.write(|w| w.put(tag, body))
+    }
+    /// A kind item written directly from borrowed body pieces; host tag validation is unchanged.
+    pub fn item_parts(&mut self, tag: u16, parts: &[&[u8]]) -> &mut Self {
+        self.write(|w| w.put_parts(tag, parts))
+    }
+    /// A fixed POD prefix followed by terminal nested records, with whole-record rollback on Full.
+    pub fn item_pod_nested<T: crate::records::Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> &mut Self {
+        self.write(|w| w.put_pod_nested(tag, prefix, fill))
     }
     pub fn item_text(&mut self, tag: u16, text: &str) -> &mut Self {
         self.write(|w| w.put_text(tag, text))
@@ -571,3 +610,7 @@ macro_rules! plugin {
     (@if [] $yes:tt $no:tt) => { $no };
     (@if [$flag:ident] $yes:tt $no:tt) => { $yes };
 }
+
+#[cfg(all(test, feature = "host"))]
+#[path = "plugin_parts_tests.rs"]
+mod parts_tests;

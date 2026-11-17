@@ -841,9 +841,12 @@ fn unknown_fields_in_keys_signatures_and_target_details_are_refused() {
         } else {
             key["extra"] = json::json!("unsupported");
         }
-        assert!(wire::read_key_object(&key)
-            .unwrap_err()
-            .contains("unknown field 'extra'"));
+        assert!(
+            wire::read_key_object(&crate::verification::Verifier::unrestricted(), &key)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field 'extra'")
+        );
     }
 
     let keys = seal_keys(&keys_doc(&[&signer]), &[&signer]);

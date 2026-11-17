@@ -146,7 +146,33 @@ pub fn spawn_probers<T: ProbeTarget>(
     schedule: &Arc<ProbeSchedule>,
     members: &[ProbeMember],
 ) -> u64 {
+    let (generation, work) = prepare_probers(target, schedule, members);
+    for worker in work {
+        tokio::spawn(worker);
+    }
+    generation
+}
+
+/// A generation-owned probe loop. It prepares the schedule only when first polled;
+/// dropping it cancels all of its members rather than leaving detached probe tasks.
+pub async fn run_probers<T: ProbeTarget>(
+    target: Arc<T>,
+    schedule: Arc<ProbeSchedule>,
+    members: Vec<ProbeMember>,
+) {
+    let (_, work) = prepare_probers(&target, &schedule, &members);
+    futures::future::join_all(work).await;
+}
+
+type ProbeWork = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+
+fn prepare_probers<T: ProbeTarget>(
+    target: &Arc<T>,
+    schedule: &Arc<ProbeSchedule>,
+    members: &[ProbeMember],
+) -> (u64, Vec<ProbeWork>) {
     let my_gen = schedule.begin();
+    let mut work: Vec<ProbeWork> = Vec::new();
     for m in members.iter().filter(|m| m.cfg.probes()) {
         let deadline_ms = schedule.claim_first(m.index, m.cfg.interval);
 
@@ -161,7 +187,7 @@ pub fn spawn_probers<T: ProbeTarget>(
         let weak: Weak<T> = Arc::downgrade(target);
         let schedule = schedule.clone();
         let m = m.clone();
-        tokio::spawn(async move {
+        work.push(Box::pin(async move {
             let start = schedule.origin + Duration::from_millis(deadline_ms);
             let mut ticker = tokio::time::interval_at(start, m.cfg.interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -181,9 +207,9 @@ pub fn spawn_probers<T: ProbeTarget>(
                     target.probe(m.index, m.cfg.timeout).await;
                 }
             }
-        });
+        }));
     }
-    my_gen
+    (my_gen, work)
 }
 
 #[must_use]

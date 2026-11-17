@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
 
 use crate::appbuild::{
@@ -10,6 +13,7 @@ use crate::router::{
     server_timing_dur_ms, AXUM_BODY_LIMIT_413_MARKER, HEADER_SERVER_TIMING, NO_UPSTREAM_RTT,
 };
 use axum::Router;
+use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::HashMap;
 
 use crate::config::{PoolCfg, PoolMember};
@@ -287,7 +291,6 @@ async fn test_memory_store_cannot_reach_inert_with_keys() {
 
     let store = crate::tests::real_store::core().await;
     let gov = GovState::new_with_core(store, None, None).await.unwrap();
-    assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
     let key_count = gov
         .all_keys_async()
         .await
@@ -296,12 +299,6 @@ async fn test_memory_store_cannot_reach_inert_with_keys() {
     assert_eq!(key_count, 0, "a fresh RAM store holds no keys");
 
     assert!(inert_durable_keys_banner(false, key_count, false).is_none());
-
-    let store2 = crate::tests::real_store::core().await;
-    let gov2 = GovState::new_with_core(store2, Some("admintok".to_string()), None)
-        .await
-        .unwrap();
-    assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 
 fn residual_planes() -> crate::plane_driver::dispatch::PlaneDispatch {
@@ -326,7 +323,7 @@ async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
 
     use http_body_util::BodyExt as _;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let v: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(
         v["error"]["type"],
         "not_found_error", // golden wire-contract literal (kept bare on purpose)
@@ -442,8 +439,7 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     );
     let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
 
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
+    let v: json::Value = json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(
         v.get("error").is_some(),
         "a chat-completions-path 413 must carry an `error` envelope; got {v}"
@@ -483,7 +479,7 @@ async fn native_api_oversized_body_keeps_413_and_the_code_envelope() {
         "application/json"
     );
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let value: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(
         value["error"]["code"],
         busbar_contract::protocol::KIND_REQUEST_TOO_LARGE
@@ -522,7 +518,7 @@ async fn test_reshape_oversized_413_passthrough() {
     let passed =
         reshape_oversized_413(&residual_planes(), "/v1/chat/completions", already_json).await;
     let bytes = passed.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let v: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(
         v["error"]["message"], "native",
         "an already-JSON 413 must be passed through, not re-wrapped"
@@ -590,8 +586,7 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
         "axum's own body-limit 413 (sentinel body) must be reshaped to JSON"
     );
     let bytes = reshaped.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
+    let v: json::Value = json::parse_value(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(v.get("error").is_some());
 }
 
@@ -627,7 +622,7 @@ pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::p
         abi_version: 1,
         trust: Trust::Allowed {
             reason: "unsigned metadata".into(),
-            setting: "allow_unsigned",
+            setting: "allow_untrusted",
         },
         ephemeral: false,
         in_process: false,
@@ -654,7 +649,7 @@ pub(crate) fn skipped_in(
 }
 
 pub(crate) const UNSIGNED_SKIPPED: &str = "manifest carries no signature; refusing to load an \
-     unsigned plugin. Set plugins.trust.allow_unsigned=true to permit unsigned plugins.";
+     unsigned plugin. Set plugins.trust.allow_untrusted=true to permit unsigned plugins.";
 
 #[test]
 fn the_preflight_warns_about_a_malformed_floor() {
@@ -711,7 +706,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
         module: module.to_string(),
         max_admin_scope: cap.map(str::to_string),
         token: None,
-        settings: serde_json::Map::new().into(),
+        settings: busbar_contract::plugin_settings::Settings::default(),
     };
     let mut auth = AuthCfg::default_none();
 
@@ -774,7 +769,7 @@ async fn a_500_on_the_native_api_root_is_the_frozen_internal_envelope() {
     assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     use http_body_util::BodyExt as _;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let v: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(v["error"]["code"], "internal", "got {v}");
 }
 
@@ -822,7 +817,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     );
     use http_body_util::BodyExt as _;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON envelope");
+    let v: json::Value = json::parse_value(&bytes).expect("valid JSON envelope");
     assert_eq!(
         v["error"]["type"],
         busbar_contract::protocol::KIND_OVERLOADED,

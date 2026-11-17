@@ -6,7 +6,6 @@ use busbar_contract::{
     conn::InstanceId,
     services::Caller,
 };
-use busbar_kernel_ledger::cost::UnitRate;
 
 fn binding(kind: KindCode) -> Binding {
     Binding {
@@ -22,29 +21,10 @@ fn binding(kind: KindCode) -> Binding {
 }
 
 #[test]
-fn measurement_root_checks_declared_classes_for_every_kind() {
+fn measurement_root_admits_declared_classes_unpriced_for_every_kind() {
     for kind in KindCode::ALL {
         let authority = RootAuthority::default();
-        let binding = binding(kind);
-        assert!(authority.admit(&binding).is_ok()); // Missing price warns; measurement remains legal.
-        authority.0.write().unwrap().rates.insert(
-            kind.word().into(),
-            [(
-                "primary".into(),
-                [("tokens".into(), UnitRate::from_nanos(0))].into(),
-            )]
-            .into(),
-        );
-        assert_eq!(authority.admit(&binding), Err(Refusal::Malformed));
-        authority.0.write().unwrap().rates.insert(
-            kind.word().into(),
-            [(
-                "primary".into(),
-                [("images".into(), UnitRate::from_nanos(0))].into(),
-            )]
-            .into(),
-        );
-        assert!(authority.admit(&binding).is_ok());
+        assert!(authority.admit(&binding(kind)).is_ok());
     }
 }
 

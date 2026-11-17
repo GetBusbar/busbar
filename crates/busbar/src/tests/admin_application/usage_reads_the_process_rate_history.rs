@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::records::MeteringDelta;
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 
@@ -74,7 +75,7 @@ pub(super) fn complete_usage_fixture(
         .map(|(_, provider)| {
             (
                 (*provider).to_string(),
-                serde_json::from_value(serde_json::json!({
+                json::from_value(&json::json!({
                     "protocol": "openai", "base_url": "http://127.0.0.1:1",
                 }))
                 .expect("the usage provider's actual catalog definition parses"),
@@ -95,18 +96,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     );
 
     let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&store_library).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch("admin-dated-usage-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
@@ -129,7 +124,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
             LANE,
             busbar_kernel::config::RateEntryCfg { input_utok: 10.0, ..Default::default() },
         )]),
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let provider_defs = complete_usage_fixture(&mut document, &directory, &[(LANE, PROVIDER)]);
     let mut current_document = document.clone();
@@ -151,13 +146,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -226,6 +220,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .expect("the actual Store remains admitted")
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             usage_units: Default::default(),
             key_id: "vk_dated_read".into(),
@@ -255,16 +250,17 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .await
         .expect("the surface answers");
     assert_eq!(response.status().as_u16(), 200, "the usage read answers");
-    let body: serde_json::Value = response.json().await.expect("a JSON body");
+    let body =
+        json::parse_value(&response.bytes().await.expect("a JSON body")).expect("a JSON body");
     assert_eq!(
         body["total"]["spend_micros"],
-        serde_json::json!(10 * TOKENS),
+        json::json!(10 * TOKENS),
         "the row prices at the card the kernel's dated history holds for its instant (10 a \
          token), not the current card (1 a token): {body}"
     );
     assert_eq!(
         body["rate_card_version"],
-        serde_json::json!(dated_key.hex()),
+        json::json!(dated_key.hex()),
         "the response names the history entry that priced it: {body}"
     );
     let key = dated_key.hex();
@@ -274,7 +270,8 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     .await
     .expect("the keyed usage replay answers");
     assert_eq!(replay.status().as_u16(), 200);
-    let replay: serde_json::Value = replay.json().await.expect("a JSON replay");
+    let replay =
+        json::parse_value(&replay.bytes().await.expect("a JSON replay")).expect("a JSON replay");
     assert_eq!(replay["total"], body["total"]);
     assert_eq!(replay["rate_card_version"], body["rate_card_version"]);
     assert!(

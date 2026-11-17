@@ -6,9 +6,22 @@
 //! file belongs to the task its ignore reasons name; that task fills and un-ignores its arms. Deleted or replaced
 //! cases have no file: C-TLS-UNVERIFIED, C-CANCEL-NOHOP, C-COLD-NONBLOCK, C-TLS-REFUSED (now C-TRANSPORT) and
 //! C-CARRIER-FOLD (now C-RETIRE); C-FIPS runs only in the private FIPS build, C-CONTENT-NOTEXT arrives with its
-//! 1.6.x producer, and C-FIPS-GATE is an arm of C-UNAVAILABLE.
+//! 1.6.x producer, and C-FIPS-GATE is an arm of C-UNAVAILABLE. X1's CI-job cases are busbar-ci-checks tests, not
+//! arms here: C-DEV-EDGES (plugin_rules, rule 1b), C-NO-HOST-LINK (host_link), C-ALIAS's manifest job (fleet,
+//! c-alias), C-NO-LICENCE (a) (core_src, no-licence) and C-TRANSPORT test 11 (core_src, c-transport; plugin_rules,
+//! the fleet loopback lint).
 //! Rule 15: no `unsafe` in any case file.
 #![forbid(unsafe_code)]
+
+/// Custom conformance registries share process-owned sinks, watchdog and instance IDs.
+/// Like the suite harness, these cases run one test per process under nextest.
+fn process_resources() -> &'static busbar_plugin_loader::process::ProcessResources {
+    static PROCESS: std::sync::OnceLock<busbar_plugin_loader::process::ProcessResources> =
+        std::sync::OnceLock::new();
+    PROCESS.get_or_init(|| {
+        busbar_plugin_loader::process::ProcessResources::new().expect("test process resources")
+    })
+}
 
 #[path = "bridge_fixture.rs"]
 mod bridge_fixture;
@@ -80,8 +93,6 @@ mod c_crypto_await;
 mod c_crypto_selftest;
 #[path = "c_deployment_id.rs"]
 mod c_deployment_id;
-#[path = "c_dev_edges.rs"]
-mod c_dev_edges;
 #[path = "c_dialect_auth.rs"]
 mod c_dialect_auth;
 #[path = "c_dtls_fp.rs"]
@@ -152,6 +163,8 @@ mod c_metric;
 mod c_migrate;
 #[path = "c_migrate_admit.rs"]
 mod c_migrate_admit;
+#[path = "c_migrated_marker.rs"]
+mod c_migrated_marker;
 #[path = "c_mint.rs"]
 mod c_mint;
 #[path = "c_msg_flags.rs"]
@@ -166,8 +179,6 @@ mod c_needfut_late;
 mod c_needfut_shared;
 #[path = "c_nested.rs"]
 mod c_nested;
-#[path = "c_no_host_link.rs"]
-mod c_no_host_link;
 #[path = "c_no_licence.rs"]
 mod c_no_licence;
 #[path = "c_null_empty.rs"]
@@ -286,6 +297,8 @@ mod c_sugar;
 mod c_suite_export;
 #[path = "c_suite_secret.rs"]
 mod c_suite_secret;
+#[path = "c_suite_transport.rs"]
+mod c_suite_transport;
 #[path = "c_ticket_either.rs"]
 mod c_ticket_either;
 #[path = "c_tls_key.rs"]
@@ -340,10 +353,22 @@ mod c_zeroize_grow;
 mod c_zeroize_sync;
 #[path = "fu3-check-crypto-failed.rs"]
 mod fu3_check_crypto_failed;
+#[path = "fixtures/min3_endpoints.rs"]
+mod min3_endpoints;
 #[path = "fixtures/min3_export.rs"]
 mod min3_export;
+#[path = "fixtures/min3_export_fail.rs"]
+mod min3_export_fail;
+#[path = "fixtures/min3_export_metrics.rs"]
+mod min3_export_metrics;
+#[path = "fixtures/min3_second.rs"]
+mod min3_second;
 #[path = "fixtures/min3_secret.rs"]
 mod min3_secret;
+#[path = "fixtures/min3_store.rs"]
+mod min3_store;
+#[path = "fixtures/min3_transport.rs"]
+mod min3_transport;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

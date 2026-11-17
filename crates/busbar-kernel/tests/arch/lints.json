@@ -45,9 +45,9 @@
       "crates/busbar-kernel/src/durable.rs": ["DurableFs"],
       "crates/busbar-kernel/src/governance/mod.rs": ["IntoStoreResult"],
       "crates/busbar-kernel/src/governance/recovery.rs": ["RecoverySink"],
-      "crates/busbar-kernel/src/governance/unit_checkpoint_store.rs": ["UnitCheckpointAudit"],
       "crates/busbar-kernel/src/host_records.rs": ["RecordRows"],
       "crates/busbar-kernel/src/host_services.rs": ["NestRoute", "Offload", "SignKey", "TicketPress"],
+      "crates/busbar-kernel/src/off_path/governance/unit_checkpoint_store.rs": ["UnitCheckpointAudit"],
       "crates/busbar-kernel/src/host_units.rs": ["UnitHookStage"],
       "crates/busbar-kernel/src/inflight.rs": ["ArrivalDoor"],
       "crates/busbar-kernel/src/ingress/signed_ingress.rs": ["RouteSecrets"],
@@ -71,7 +71,6 @@
       "crates/busbar-kernel/src/plane_driver/route_tables.rs": ["EngineTablesView"],
       "crates/busbar-kernel/src/plane_driver/slots.rs": ["ContainerGateSink"],
       "crates/busbar-kernel/src/plane_grants/mod.rs": ["Entitlements", "HostSigner", "IngressVerifier", "ReplayGuard"],
-      "crates/busbar-kernel/src/plugin_config/binder.rs": ["RefSource"],
       "crates/busbar-kernel/src/plugin_routes.rs": ["StatusResponseExt"],
       "crates/busbar-kernel/src/refresh.rs": ["Report"],
       "crates/busbar-kernel/src/refusal.rs": ["RefusalMap"],
@@ -79,30 +78,22 @@
       "crates/busbar-kernel/src/store/vocab.rs": ["LaneRuntime"],
       "crates/busbar-kernel/src/teller.rs": ["UnitEnds", "UnitTaps", "Units"],
       "crates/busbar-kernel/src/tick.rs": ["ClockWork"],
-      "crates/busbar-migrations/src/coordinator.rs": ["Activation", "IntentStore", "SourceReader", "Transform", "Verifier"],
-      "crates/busbar-migrations/src/legacy/projection.rs": ["ProjectionSource"],
-      "crates/busbar-migrations/src/legacy/transform.rs": ["NativeProofs"],
-      "crates/busbar-migrations/src/native_source.rs": ["ReadSeek", "SourceSpool", "SpoolFactory"],
-      "crates/busbar-migrations/src/startup.rs": ["FrozenBindingResolver"],
-      "crates/busbar-migrations/src/verification.rs": ["NativeReadback", "TargetRecoveryProbe"],
       "crates/busbar-plugin-abi/src/host.rs": ["HostExt"],
       "crates/busbar/src/root/serve_neutral.rs": ["Output"],
-      "crates/busbar/src/root/startup_upgrade/document_commit.rs": ["Checkpoints"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
       "crates/plugin-loader/src/cold/dispatch/services.rs": ["Sweep"],
       "crates/plugin-loader/src/dispatch/auth_handle.rs": ["AuthHandleHost"],
       "crates/plugin-loader/src/dispatch/measurement.rs": ["Authority"],
       "crates/plugin-loader/src/dispatch/ticket.rs": ["WakeRoute"],
       "crates/plugin-loader/src/dispatch/worker.rs": ["Job", "Settle"],
-      "crates/plugin-loader/src/export_door/port.rs": ["DestAppend"],
       "crates/plugin-loader/src/hook_door/port.rs": ["HookOpener"],
       "crates/plugin-loader/src/observe.rs": ["PluginObserver"],
-      "crates/plugin-loader/src/ports/auth.rs": ["AuthPort"],
-      "crates/plugin-loader/src/ports/export.rs": ["ExportPort"],
-      "crates/plugin-loader/src/ports/hook.rs": ["HookPort"],
-      "crates/plugin-loader/src/ports/plane.rs": ["PlanePort"],
-      "crates/plugin-loader/src/ports/secret.rs": ["SecretPort"],
-      "crates/plugin-loader/src/ports/transport.rs": ["TransportPort"]
+      "crates/busbar-ports/src/auth.rs": ["AuthPort"],
+      "crates/busbar-ports/src/export.rs": ["ExportPort"],
+      "crates/busbar-ports/src/hook.rs": ["HookPort"],
+      "crates/busbar-ports/src/plane.rs": ["PlanePort"],
+      "crates/busbar-ports/src/secret.rs": ["SecretPort"],
+      "crates/busbar-ports/src/transport.rs": ["TransportPort"]
     },
     "macro_implemented": {
       "crates/busbar-contract/src/caps/capability.rs": ["Capability", "Sealed"],
@@ -124,11 +115,9 @@
     "crates/busbar-kernel/src/admin/seam.rs": {"once_dyn": 1, "by": "W3.11 (judgement: once W3.7 folds admin in, the slot names its concrete type)"},
     "crates/busbar-kernel/src/governance/recovery.rs": {"once_dyn": 1, "attach": 1, "by": "W3.11"},
     "crates/busbar-kernel/src/governance/unit_checkpoint.rs": {"once_dyn": 1, "attach": 1, "by": "W3.11"},
-    "crates/busbar-kernel/src/host_services.rs": {"once_dyn": 4, "attach": 8, "by": "W3.11"},
     "crates/busbar-kernel/src/plane_driver/money/observations.rs": {"attach": 1, "by": "W6.6 (judgement: a domain re-bind of a unit's observation scope, not a seam; the unit rewrite folds it)"},
     "crates/busbar-kernel/src/state.rs": {"attach": 1, "by": "W3.11"},
     "crates/plugin-loader/src/dispatch/measurement.rs": {"once_dyn": 1, "by": "W4.3 (the plugin-loader crate is deleted)"},
-    "crates/plugin-loader/src/dispatch/services.rs": {"once_dyn": 1, "by": "W4.3 (the plugin-loader crate is deleted)"},
     "crates/plugin-loader/src/dispatch/ticket.rs": {"once_dyn": 1, "by": "W4.3 (the plugin-loader crate is deleted)"},
     "crates/plugin-loader/src/dispatch/worker.rs": {"once_dyn": 3, "by": "W4.3 (the plugin-loader crate is deleted)"}
   },
@@ -141,8 +130,5 @@
       "crates/busbar-kernel/src/trust/validate.rs": "trust::validate::Grant is one scope or egress grant a visibility check needs (Copy by design), not the capability token"
     }
   },
-  "admitted": {
-    "crates/busbar-kernel/src/channels/stdio.rs HeldHttp": "K9: a real dynamic boundary. The kernel opens no socket and names no connector crate (Cargo.toml), so the held HTTP request of a CARRIER_HTTP channel is the composition root's (root/plane_seats.rs UpstreamHttp over the connection table); kernel tests fake it.",
-    "crates/busbar-kernel/src/channels/stdio.rs SpawnSecrets": "K9: a real dynamic boundary. Child env references resolve through the process's custody (root/plane_seats.rs SpawnCustody over BootSecrets), which the kernel cannot name; kernel tests fake it."
-  }
+  "admitted": {}
 }

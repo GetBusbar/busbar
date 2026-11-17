@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
 /// Field-for-field today's busbar-contract `IssuedShape`; it lives in plugin-loader (IF §12.8).
-pub use busbar_plugin_loader::ports::auth::IssuedShape;
+pub use busbar_ports::auth::IssuedShape;
 
 /// Core-issued credentials (today's records.secret, e.g. kind "sigv4"), looked up for auth ISSUED_WANTED.
 /// Only for an auth instance the operator config grants `kind`; otherwise behaves as unknown. Unknown ids
@@ -24,6 +24,48 @@ pub trait IssuedCredentials: Send + Sync + 'static {
         kind: &'a str,
         id: &'a str,
     ) -> BoxFut<'a, busbar_contract::secure::SecureVec>;
+}
+
+/// Issued lookup over the generation's existing credential custody and its operator grants.
+/// The grants use reserved runtime instance IDs; plugin describe alone grants no access.
+pub struct CredentialIssued {
+    reader: std::sync::Arc<dyn busbar_contract::services::CredentialRead>,
+    grants: BTreeMap<u64, std::collections::BTreeSet<Box<str>>>,
+}
+
+impl CredentialIssued {
+    pub fn new(
+        reader: std::sync::Arc<dyn busbar_contract::services::CredentialRead>,
+        grants: BTreeMap<u64, std::collections::BTreeSet<Box<str>>>,
+    ) -> Self {
+        Self { reader, grants }
+    }
+}
+
+impl IssuedCredentials for CredentialIssued {
+    fn lookup<'a>(
+        &'a self,
+        auth_instance: u64,
+        kind: &'a str,
+        id: &'a str,
+    ) -> BoxFut<'a, busbar_contract::secure::SecureVec> {
+        Box::pin(async move {
+            // Always use the current custody read, including unknown and ungranted requests.
+            // Its live result includes expiry and revocation; never cache plaintext here.
+            let (secret, live) = self.reader.read(kind, id);
+            let granted = self
+                .grants
+                .get(&auth_instance)
+                .is_some_and(|kinds| kinds.contains(kind));
+            if live && granted && self.reader.installed() {
+                busbar_contract::secure::SecureVec::from(
+                    secret.expose(&crate::seal::lend()).as_bytes(),
+                )
+            } else {
+                busbar_contract::secure::SecureVec::new()
+            }
+        })
+    }
 }
 
 /// Built once by K6 from `Registry::issued_shapes()` after every `add`, before core-admin starts.

@@ -65,9 +65,12 @@ fn source(dir: &Path, resolved: &Value, facts: &Facts) -> (PathBuf, Selected) {
     }
 }
 
-/// The catalog 1.5.5 read, as its resolved tree: the catalog half of `allow_dest`'s candidate walk.
-/// [`plan`] has read the same file already, so a refusal here is the same refusal.
-pub(crate) fn effective(config: &Path, resolved: &Value, facts: &Facts) -> Result<Value, Refusal> {
+/// The resolved catalog 1.5.5 read (the same source as [`plan`]), for the passes that read its
+/// entries (the jwt-bearer binding, LEGACY-KEYFILE-MARKER r2 §7).
+///
+/// # Errors
+/// The source's read or template refusal, as [`plan`] gives it.
+pub(crate) fn resolved(config: &Path, resolved: &Value, facts: &Facts) -> Result<Value, Refusal> {
     let dir = match config.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => PathBuf::from("."),
@@ -179,6 +182,18 @@ fn strip(catalog: &mut Value, keys: &[String], shown: &str) -> Result<Vec<String
                      again"
                 )));
             }
+            if key == "allow_metadata_hosts" {
+                // The retired cloud-metadata carve-out (BUSBAR-3136): removed with a warning that
+                // names the path and never a value (#293).
+                let code = busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+                changes.push(format!(
+                    "{code}: {shown}: removed the retired cloud-metadata carve-out key {}.allow_metadata_hosts; \
+                     1.6.0 refuses cloud metadata for every outbound connection and no configuration \
+                     admits it",
+                    crate::migrate_1_6::escape_control(name)
+                ));
+                continue;
+            }
             changes.push(format!(
                 "{shown}: {name}.{key}: removed (1.5.5 ignored this catalog key; removing it \
                  preserves the legacy behavior)"
@@ -212,8 +227,17 @@ fn read(source: &Path) -> Result<String, Refusal> {
 /// then rename it into place. A file already there with the same bytes (an interrupted upgrade's)
 /// is kept; one with other bytes is refused, nothing written.
 pub(crate) fn write(planned: &Planned) -> Result<(), Refusal> {
+    if check_destination(planned)? {
+        return Ok(());
+    }
+    let fresh = files::create_like_at(&planned.source, &planned.path, planned.text.as_bytes())?;
+    files::replace(&fresh, &planned.path)
+}
+
+/// Read-only preflight, repeated at write: true means an identical destination exists.
+pub(crate) fn check_destination(planned: &Planned) -> Result<bool, Refusal> {
     match fs::read(&planned.path) {
-        Ok(bytes) if bytes == planned.text.as_bytes() => return Ok(()),
+        Ok(bytes) if bytes == planned.text.as_bytes() => return Ok(true),
         Ok(_) => {
             return Err(Refusal::Config(format!(
                 "{} is present and holds other bytes than the catalog this upgrade plans; move it \
@@ -229,8 +253,7 @@ pub(crate) fn write(planned: &Planned) -> Result<(), Refusal> {
             )))
         }
     }
-    let fresh = files::create_like_at(&planned.source, &planned.path, planned.text.as_bytes())?;
-    files::replace(&fresh, &planned.path)
+    Ok(false)
 }
 
 #[cfg(test)]

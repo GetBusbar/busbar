@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SECRET-SHORTHAND-BOOT MR-B (§3.3, §3.4): every configuration read computes its grammar through
-//! the root's phase 1 (`RootInstall.grammar`) from that read's own `plugins:` block, and the typed
+//! the root's phase 1 (`RootRules::grammar`) from that read's own `plugins:` block, and the typed
 //! document carries it. This binary installs a phase 1 double: a module declaring `fixture-word`
 //! is admissible exactly when the block enables `plugins.dir` = `fixture-plugins`.
 
@@ -34,14 +34,14 @@ fn phase_one(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
     ))
 }
 
-fn publish() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
-            grammar: Some(phase_one),
-            ..Default::default()
-        });
-    });
+struct Reader;
+impl busbar_kernel::appbuild::RootRules for Reader {
+    fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+    fn grammar(&self, input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
+        phase_one(input)
+    }
 }
 
 fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
@@ -62,13 +62,18 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
 /// its resolved configuration carry that read's grammar.
 #[test]
 fn a_read_parses_under_the_grammar_its_own_block_admits() {
-    publish();
     let config = scratch(
         "admits",
         &format!("plugins:\n  enabled: true\n  dir: {DIR}\n"),
     );
-    let loaded = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .expect("the read's own block admits the word's module");
+    let loaded = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .expect("the read's own block admits the word's module");
     let grammar = loaded
         .deploy
         .grammar
@@ -89,11 +94,16 @@ fn a_read_parses_under_the_grammar_its_own_block_admits() {
 /// report: the file its module would have come from and why it was not admitted.
 #[test]
 fn a_refused_word_names_what_the_read_did_not_admit() {
-    publish();
     let config = scratch("refuses", "");
-    let refused = busbar_kernel::load_config_from_disk(&config, None, false, EnvSubst::Lenient)
-        .map(|_| ())
-        .expect_err("no block admits the word's module");
+    let refused = busbar_kernel::appbuild::load_config_from_disk_judged(
+        &config,
+        None,
+        false,
+        EnvSubst::Lenient,
+        &Reader,
+    )
+    .map(|_| ())
+    .expect_err("no block admits the word's module");
     assert!(
         refused.contains(UNDECLARED_MARKER) && refused.contains(SKIP),
         "the refusal names the word and carries the read's report: {refused}"
