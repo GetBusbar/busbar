@@ -237,8 +237,6 @@ plane-decisions = "busbar-plane-decisions"
 transport-tcp = "busbar-transport-tcp"
 transport-ws = "busbar-transport-ws"
 transport-webrtc = "busbar-transport-webrtc"
-hooks-ranking = "busbar-hook-ranking"
-hooks-complexity = "busbar-hook-complexity"
 auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
@@ -279,14 +277,9 @@ auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 auth-webhook-signature = "busbar-auth-webhook-signature"
-# THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
-# it) and the ranking hooks (always-on rows).
+# THE COLD-KIND AXIS's in-process row: the default store (a required dependency: every build links
+# it). Hooks and secret sources are native images (WP3), not linked rows.
 store-memory = "busbar-store-memory"
-hooks-ranking = "busbar-hook-ranking"
-# THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
-# names the row). Each is loaded only when a reference names it.
-secret-env = "busbar-secret-env"
-secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
@@ -304,7 +297,6 @@ plane-llm-door = "busbar-plane-llm"
 plane-mcp-door = "busbar-plane-mcp"
 plane-streaming = "busbar-plane-streaming"
 plane-a2a-door = "busbar-plane-a2a"
-hooks-complexity = "busbar-hook-complexity"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `protocol-seams`, `diagnostics`,
@@ -331,7 +323,6 @@ auth-sigv4 = "auths"
 auth-oauth = "auths"
 auth-webhook-signature = "auths"
 store-memory = "stores"
-hooks-ranking = "hooks"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
 # its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
@@ -348,13 +339,10 @@ plane-llm-door = "min3-images"
 plane-mcp-door = "min3-images"
 plane-streaming = "min3-images"
 plane-a2a-door = "min3-images"
-hooks-complexity = "hooks"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
 # Every entry names a crate's public door.
-busbar-secret-env = "busbar_secret_env"
-busbar-secret-file = "busbar_secret_file"
 # Auth follows the same `<entry>::door` boundary as every other kind.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 busbar-auth-header = "busbar_auth_header"
@@ -380,13 +368,11 @@ plane-streaming = "busbar_plane_streaming"
 # Each linked door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
-secret-env = "busbar_secret_env::DECLARES"
 plane-llm-door = "busbar_plane_llm::DECLARES"
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
 # disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
-secret-file = "busbar_secret_file::DECLARES"
 
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
 # build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane
@@ -412,9 +398,7 @@ auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "oauth"
-hooks-ranking = "ranking"
 auth-webhook-signature = "busbar-auth-webhook-signature"
-hooks-complexity = "complexity"
 
 # The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
 # tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by
