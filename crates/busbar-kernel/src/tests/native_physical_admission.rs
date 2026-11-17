@@ -242,6 +242,35 @@ pub(crate) fn accepted() -> AcceptedConnection {
         peer_certificate: SecureVec::new(),
     }
 }
+
+#[test]
+fn accepted_metadata_credit_follows_the_last_real_request_binding() {
+    let f = fixture();
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 64, 8);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let facts = AcceptedConnection::capture(&source, "p", "l", "h", b"cert").unwrap();
+    assert_eq!(budget.used(), (7, 7));
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_ok(),
+        "connection storage takes no request count"
+    );
+    let conn = f.listener.connect(facts);
+    let (request, owner) = arrive(&f, &conn, 1);
+    let binding = request.binding().clone();
+    drop((request, owner, conn));
+    assert_eq!(binding.connection().peer_certificate(), b"cert");
+    assert_eq!(budget.used(), (7, 7));
+    drop(binding);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn accepted_metadata_denial_precedes_copy_and_leaves_no_credit() {
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 8, 2);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    assert!(AcceptedConnection::capture(&source, "p", "l", "h", b"cert").is_err());
+    assert_eq!(budget.used(), (0, 0));
+}
 fn arrive(f: &Fixture, conn: &PhysicalConnection, stream: u64) -> (PhysicalRequest, StreamOwner) {
     conn.head(
         stream,
