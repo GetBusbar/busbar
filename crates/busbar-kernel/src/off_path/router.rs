@@ -248,6 +248,9 @@ pub(crate) fn admin_routes(
             RouteAuth::None,
             endpoints::readyz,
         );
+    // The authorization server's operator approval pages (#140, OAUTH-APPROVAL-LISTENER r2): admin pages,
+    // mounted on every admin listener whether or not `oauth_as:` is on (each answers 404 while it is off).
+    let admin = crate::oauth_as::seam::mount_operator(admin);
     let (admin, routes) = crate::admin::seam::mount_admin(admin).into_parts();
     (
         crate::plugin_routes::mount_plugin_routes(admin, plugins, true),
