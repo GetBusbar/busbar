@@ -348,7 +348,10 @@ pub fn register_planes() {
 fn plane_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     let rows = door_rows()?;
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
-    busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
+    busbar_contract::plane::check_metric_families(
+        &declared,
+        busbar_kernel::snapshot::catalogue::plane_carried_series(),
+    )?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
 }
@@ -421,34 +424,6 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
         .collect()
 }
 
-pub(crate) const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
-    (
-        "busbar_requests_total",
-        &["ingress_protocol", "pool", "outcome"],
-    ),
-    ("busbar_upstream_attempts_total", &["pool", "lane"]),
-    (
-        "busbar_upstream_failures_total",
-        &["pool", "lane", "disposition"],
-    ),
-    ("busbar_breaker_trips_total", &["pool", "lane"]),
-    ("busbar_failovers_total", &["pool", "reason"]),
-    ("busbar_translations_total", &["from", "to"]),
-    ("busbar_route_policy_selections_total", &["policy", "pool"]),
-    (
-        "busbar_route_policy_rejections_total",
-        &["policy", "pool", "status"],
-    ),
-    ("busbar_billing_truncated_total", &[]),
-    ("busbar_tap_notifications_dropped_total", &[]),
-    ("busbar_webhook_logs_dropped_total", &[]),
-    ("busbar_file_logs_dropped_total", &[]),
-    (
-        "busbar_billing_tap_decode_fail_total",
-        &["protocol", "reason"],
-    ),
-];
-
 pub(crate) fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     let _ = crate::root::dispatch::dispatcher()
         .observing()
@@ -516,64 +491,15 @@ pub(crate) fn door_breaker(
     Ok(None)
 }
 
-pub(crate) const HOST_SERIES: &[&str] = &[
-    busbar_kernel::snapshot::EXPORT_DROPPED_TOTAL,
-    busbar_kernel::export::delivery::EXPORT_CUSTODY_TOTAL,
-    busbar_kernel::snapshot::EXPORT_CAPTURE_REFUSALS_TOTAL,
-    busbar_kernel::snapshot::EXPORT_INTEGRITY_FAILURES_TOTAL,
-    busbar_kernel::snapshot::EXPORT_HELD_LINES,
-    busbar_kernel::snapshot::AUDIT_STAGE_FAILURES_TOTAL,
-    busbar_kernel::snapshot::ROUTE_POLICY_SELECTIONS_TOTAL,
-    busbar_kernel::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL,
-    busbar_kernel::snapshot::HOOK_PROJECT_OVER_CAP_TOTAL,
-    busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS,
-    busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
-    busbar_kernel::snapshot::STORE_SLOTS,
-    busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,
-    busbar_kernel::snapshot::GOVERNED_ADMISSIONS_LIVE,
-    busbar_kernel::snapshot::REQUESTS_TOTAL,
-    busbar_kernel::snapshot::BREAKER_TRIPS_TOTAL,
-    busbar_kernel::snapshot::FAILOVERS_TOTAL,
-    busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
-    busbar_kernel::snapshot::TRANSLATIONS_TOTAL,
-    busbar_kernel::snapshot::INSECURE_TRANSPORT_ADMITTED_TOTAL,
-    busbar_kernel::snapshot::PLANE_REQUESTS_TOTAL,
-    busbar_kernel::snapshot::PLANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::snapshot::LANE_REQUEST_DURATION_SECONDS,
-    busbar_kernel::snapshot::UNIT_REFUSALS_TOTAL,
-    busbar_kernel::snapshot::BUILD_INFO,
-    busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL,
-    busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
-    busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL,
-    busbar_kernel::snapshot::TELEMETRY_OVERFLOW_REPLAYS_TOTAL,
-    busbar_kernel::snapshot::KEY_SPEND_CENTS,
-    busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
-    busbar_kernel::snapshot::BUCKET_TOKENS,
-    busbar_kernel::snapshot::BUCKET_SPEND_CENTS,
-    busbar_kernel::snapshot::BUCKET_BUDGET_REMAINING_CENTS,
-    busbar_kernel::snapshot::LANE_STATE,
-    busbar_kernel::snapshot::LANE_AVAILABLE,
-    busbar_kernel::snapshot::LANE_RECOVERY_HINT_MS,
-    busbar_kernel::snapshot::LANE_INFLIGHT,
-    busbar_kernel::snapshot::LANE_AVAILABLE_PERMITS,
-    busbar_kernel::snapshot::POOL_QUEUED,
-    busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
-    busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
-    busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
-    "busbar_tap_notifications_dropped_total",
-];
-
+/// The plugin series reservation: a host metric family (DES-337 catalogue) or a series a host
+/// histogram derives from one (`_sum`, `_count`, `_bucket`). Plugin describe time only.
 pub(crate) fn host_series(name: &str) -> bool {
     let base = ["_sum", "_count", "_bucket"]
         .iter()
         .find_map(|suffix| name.strip_suffix(suffix));
-    HOST_SERIES.iter().any(|s| *s == name || Some(*s) == base)
+    busbar_kernel::snapshot::catalogue::HOST_METRICS
+        .iter()
+        .any(|d| d.name == name || Some(d.name) == base)
 }
 
 static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
