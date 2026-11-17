@@ -125,6 +125,33 @@ fn pending_registration_does_not_replace_an_existing_unit() {
     assert!(!context.effects_allowed());
 }
 
+#[test]
+fn retiring_old_context_preserves_a_reused_numeric_allocation() {
+    let (old, _lease) = context(17);
+    let core = old.generation().core();
+    core.units().ended(old.unit());
+    let caller = Caller::for_test(Arc::from("seat"), KindCode::Plane);
+    let _new_lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        old.unit(),
+        &caller,
+        UnitRecord {
+            principal: Some(Arc::new(VirtualKey {
+                id: "new-payer".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let new = InvocationContext::new(old.generation().clone(), caller, old.unit()).unwrap();
+    old.retire();
+    assert!(new.is_live());
+    assert_eq!(new.principal().unwrap().id, "new-payer");
+    new.retire();
+    assert!(!new.is_live());
+}
+
 fn catalog_routes() -> RequestRoutes {
     use crate::config::{self, providers, Grammar};
     use crate::plane_driver::provider_catalog::ProviderPlane;
