@@ -97,6 +97,10 @@ pub struct SessionFacts {
 /// The production seam of `PortDriver::serve`: runs one session's walk. `run` gets the members and the carrier of
 /// the walk and runs on the calling (blocking) thread.
 pub trait PortUpstream: Send + Sync {
+    /// Read the immutable current target projection; this does not select or admit a dispatch.
+    fn target(&self, _pool: &str, _qualified_member: &str) -> Option<MemberTarget> {
+        None
+    }
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend));
 }
 
@@ -805,6 +809,10 @@ impl PortEgress {
 }
 
 impl PortUpstream for PortEgress {
+    fn target(&self, pool: &str, qualified_member: &str) -> Option<MemberTarget> {
+        (self.targets)(pool, qualified_member)
+    }
+
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend)) {
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
         let make = |wants: &Wants, receipt: Option<&RequestPoolReceipt>| {
