@@ -1572,7 +1572,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 fn a_ledger_request(path: &str) -> AdminRequest {
@@ -1886,9 +1885,6 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
         body("/api/v1/admin/ledger/migration").await,
         json::json!({"migrated": false, "marker": null})
     );
-
-    let document = body("/api/v1/admin/ledger/openapi.json").await;
-    assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 async fn real_admin_dispatch() -> RouterDispatch {
@@ -2641,21 +2637,14 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[tokio::test]
-async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer =
-        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
-    assert_eq!(answer.status, 200);
-    let served = String::from_utf8(answer.body).expect("the document is text");
-    assert_eq!(
-        served,
-        busbar_core_admin::v1::json::openapi_document(),
-        "the ledger's document path must serve the one generated document, byte for byte"
-    );
+async fn the_one_document_describes_the_ledger_views() {
+    // The ledger no longer has a document path of its own (#304): the one document is `GET /openapi.json`.
+    let served = busbar_core_admin::v1::json::openapi_document();
     let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
         paths.contains_key(&"/api/v1/admin/usage"),
-        "the ledger path serves a document that is not the administrative one"
+        "the one document is the administrative one"
     );
 
     for path in LEDGER_PATHS {

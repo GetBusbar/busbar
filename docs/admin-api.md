@@ -219,7 +219,7 @@ Plugin artifact preconditions are independent of the config generation: an insta
 GET /api/v1/admin/openapi.json
 ```
 
-The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it filtered to the planes it configured — see below); its known error-code enum covers the envelope above (clients tolerate future strings); every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
+The OpenAPI 3.1 schema of the whole surface: generate a client, or point tooling at it. Every path it lists resolves (a node serves it unfiltered — see below); its known error-code enum covers the envelope above (clients tolerate future strings); every operation is annotated with `x-busbar-required-scope` from the same matrix the middleware enforces (all three are test-locked). Browse it rendered, endpoint by endpoint, in the [API reference](https://getbusbar.com/docs/api/).
 
 ### Configuration form schemas
 
@@ -267,22 +267,16 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 
 There is one administrative OpenAPI document. It is generated from the code and describes every
 operation the build can serve — the 1.6.0 additions included. A node serves it at
-`GET /api/v1/admin/openapi.json` filtered to the planes that node configured, so a node whose config has no `tools:` or `agents:` block describes no `tools`/`agents` operation; the release asset is the full document. The
-shipped document lists 82 operations (44 `read-only`, 38 `full`). Each plane that declares admin
+`GET /api/v1/admin/openapi.json`, unfiltered; the release asset is the same document. The
+shipped document lists 81 operations (43 `read-only`, 38 `full`). Each plane that declares admin
 operations adds its own at runtime on top of that, so the total a given build serves depends on the
-planes it carries. Two marks say what a reader cannot tell from the path alone (the document
-explains them itself, under `info.x-busbar-marks`):
+planes it carries. One mark says what a reader cannot tell from the path alone (the document
+explains it itself, under `info.x-busbar-marks`):
 
-- **`x-busbar-plane: <section>`** — the operation belongs to a plane (`tools`, `agents`) and is
-  mounted only on a node whose config carries that `<section>:` block. On any other node its path
-  answers `404 not_found`, exactly as a path the surface has never had, and the document that node
-  serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 30 operations in the shipped document that 1.6.0 adds. They
+- **`x-busbar-since: 1.6.0`** — one of the 29 operations in the shipped document that 1.6.0 adds. They
   are answered by the node's administrative loop or by the reads added alongside it: the kernel
   verbs and trust verbs below, the ledger views, the audit-chain reads, the `kinds` reads, `GET /whoami`,
   `GET /records` and `plane-record-write`.
-
-`GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
 
 The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the CRUD rate budget):
 
@@ -344,7 +338,6 @@ The ledger views and audit-chain reads:
 | `GetLedgerCheckpoints` | `GET /api/v1/admin/ledger/checkpoints` | `read-only` |
 | `GetLedgerReconciliation` | `GET /api/v1/admin/ledger/reconciliation` | `read-only` |
 | `GetLedgerMigration` | `GET /api/v1/admin/ledger/migration` | `read-only` |
-| `GetLedgerOpenapiJson` | `GET /api/v1/admin/ledger/openapi.json` | `read-only` |
 | `GetAuditHead` | `GET /api/v1/admin/audit/head` | `read-only` |
 | `GetAuditRange` | `GET /api/v1/admin/audit/range?from=&to=` | `read-only` |
 | `GetAuditKeys` | `GET /api/v1/admin/audit/keys` | `read-only` |
