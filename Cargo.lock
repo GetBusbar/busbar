@@ -539,8 +539,10 @@ dependencies = [
  "busbar-contract",
  "busbar-crypto-backend",
  "dimpl",
+ "quote",
  "rustls",
  "rustls-pki-types",
+ "syn 2.0.117",
  "tracing",
  "zeroize",
 ]

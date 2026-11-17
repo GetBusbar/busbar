@@ -214,7 +214,7 @@ path = '{lib}'
 api1 = []
 api2 = []
 silent = []
-unvalidated = []
+missing = []
 "#,
                 lib = crates
                     .join("busbar-crypto/fixtures/fips_gate/backend.rs")

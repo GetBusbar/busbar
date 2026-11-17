@@ -19,7 +19,7 @@
 use busbar_crypto_backend as b;
 use core::fmt;
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "conformance")]
 pub mod conformance;
 mod contract;
 #[cfg(feature = "tls")]
