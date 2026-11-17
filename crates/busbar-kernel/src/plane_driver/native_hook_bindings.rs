@@ -147,6 +147,125 @@ fn default_hook(hooks: &HookRegistry) -> Result<Option<&str>, String> {
     Ok(defaults.first().map(|(name, _)| name.as_str()))
 }
 
+/// Root-projected authority from one instance's admitted registration and catalog plans.
+/// A direct model deliberately has no pool policy to inherit or named-pool gates to execute.
+pub enum WalkBinding {
+    Registration {
+        pool: String,
+        config: crate::config::PoolCfg,
+    },
+    NamedPool {
+        name: String,
+        config: crate::config::PoolCfg,
+    },
+    DirectModel {
+        name: String,
+    },
+}
+
+impl WalkBinding {
+    fn scope(&self) -> (&str, &str) {
+        match self {
+            Self::Registration { pool, .. } => (pool, ""),
+            Self::NamedPool { name, .. } => (name, name),
+            Self::DirectModel { name } => ("", name),
+        }
+    }
+
+    fn pool(&self) -> Option<&crate::config::PoolCfg> {
+        match self {
+            Self::Registration { config, .. } | Self::NamedPool { config, .. } => Some(config),
+            Self::DirectModel { .. } => None,
+        }
+    }
+}
+
+/// Frozen attachment inputs shared by pre-open strategy planning and post-open table binding.
+/// This pure plan does not authorize dispatch or construct an admitted monetary observation.
+pub struct WalkPlan {
+    global: Vec<String>,
+    section: Vec<String>,
+    walks: Vec<WalkBinding>,
+}
+
+impl WalkPlan {
+    pub fn new(
+        global: Vec<String>,
+        section: Vec<String>,
+        walks: Vec<WalkBinding>,
+    ) -> Result<Self, String> {
+        let mut scopes = BTreeSet::new();
+        for walk in &walks {
+            let (pool, container) = walk.scope();
+            if pool.is_empty() && container.is_empty() {
+                return Err("native hook walk requires a nonempty configured name".into());
+            }
+            if !scopes.insert((pool, container)) {
+                return Err(format!(
+                    "duplicate native hook walk pool `{pool}` container `{container}`"
+                ));
+            }
+        }
+        Ok(Self {
+            global,
+            section,
+            walks,
+        })
+    }
+
+    pub fn implicit_strategies(
+        &self,
+        hooks: &HookRegistry,
+        configured: &BTreeMap<String, String>,
+        words: &BTreeMap<String, Vec<Box<str>>>,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let attachments = self
+            .global
+            .iter()
+            .chain(&self.section)
+            .cloned()
+            .collect::<Vec<_>>();
+        let pools = self
+            .walks
+            .iter()
+            .filter_map(WalkBinding::pool)
+            .collect::<Vec<_>>();
+        implicit_strategies(hooks, &attachments, &pools, configured, words)
+    }
+
+    /// Freeze only attachment policy. Expanded runtime use additionally requires the sealed
+    /// admitted-request observer; these tables never reconstruct its key, charge chain or scope.
+    pub fn bind(
+        &self,
+        hooks: &HookRegistry,
+        opened: &BTreeMap<String, OpenedHook>,
+        words: &BTreeMap<String, Vec<Box<str>>>,
+    ) -> Result<WalkTables, String> {
+        let calls = Calls {
+            hooks,
+            opened,
+            words,
+        };
+        let default = default_hook(hooks)?;
+        let mut walks: BTreeMap<String, BTreeMap<String, PoolTable>> = BTreeMap::new();
+        for walk in &self.walks {
+            let (pool, container) = walk.scope();
+            let table = PoolTable::build(&calls, walk.pool(), default).map_err(|why| {
+                format!("native hook walk pool `{pool}` container `{container}`: {why}")
+            })?;
+            walks
+                .entry(pool.to_owned())
+                .or_default()
+                .insert(container.to_owned(), table);
+        }
+        Ok(WalkTables {
+            global: Attached::build(&calls, &self.global)?,
+            section: Attached::build(&calls, &self.section)?,
+            walks,
+        })
+    }
+}
+
 /// The configured native seat and the one pool its actual egress walk can inspect and constrain.
 /// Routes are the exact admitted PlanePort route ids. Native seats currently have no container
 /// authority; a container attachment therefore refuses construction rather than disappearing.
@@ -160,7 +279,7 @@ pub struct SeatScope {
 pub struct Bindings {
     scope: SeatScope,
     billing_pool: String,
-    tables: Tables,
+    tables: WalkTables,
     groups: BTreeMap<String, crate::config::groups::GroupCfg>,
     governance: Arc<GovState>,
     cost: Arc<CostModel>,
@@ -195,20 +314,20 @@ impl Bindings {
                 ));
             }
         }
-        let calls = Calls {
-            hooks: &cfg.hooks,
-            opened,
-            words,
-        };
         let section_names = section
             .as_ref()
             .map_or(&[][..], |s| s.section_hooks.as_slice());
-        let default_pool = crate::config::PoolCfg::default();
-        let pool = scope
+        let walks = scope
             .pool
             .as_ref()
-            .map(|p| cfg.pools.get(p).unwrap_or(&default_pool));
-        let tables = Tables::build(&calls, &cfg.global_hooks, section_names, pool)
+            .map(|pool| WalkBinding::Registration {
+                pool: pool.clone(),
+                config: cfg.pools.get(pool).cloned().unwrap_or_default(),
+            })
+            .into_iter()
+            .collect();
+        let tables = WalkPlan::new(cfg.global_hooks.clone(), section_names.to_vec(), walks)?
+            .bind(&cfg.hooks, opened, words)
             .map_err(|why| format!("native seat `{}`: {why}", scope.section))?;
         if tables.active() && scope.routes.is_empty() {
             return Err(format!(
@@ -261,9 +380,9 @@ impl Binder for Bindings {
         // External identities can have synthesized keys that are not in GovState's cache.
         let key = input.key;
         let group = key.and_then(|k| k.group.as_deref());
-        let selected = self
-            .tables
-            .select(group, &self.groups, !input.pool.is_empty());
+        let selected =
+            self.tables
+                .select_scope(group, &self.groups, input.pool, input.container)?;
         let mut budget = key.map_or_else(Vec::new, |key| {
             self.governance.budget_state(&self.cost, key, input.now_s)
         });
@@ -575,10 +694,15 @@ impl Attached {
     }
 }
 
-struct Tables {
+/// Pure immutable attachment tables; this is not an expanded runtime Binder constructor.
+pub struct WalkTables {
     global: Attached,
     section: Attached,
-    pool: Attached,
+    walks: BTreeMap<String, BTreeMap<String, PoolTable>>,
+}
+
+struct PoolTable {
+    attached: Attached,
     policy: Option<Bound>,
 }
 struct Chosen {
@@ -588,14 +712,12 @@ struct Chosen {
     taps: Taps,
 }
 
-impl Tables {
+impl PoolTable {
     fn build(
         calls: &Calls<'_>,
-        global: &[String],
-        section: &[String],
         pool: Option<&crate::config::PoolCfg>,
+        default: Option<&str>,
     ) -> Result<Self, String> {
-        let default = default_hook(calls.hooks)?;
         let policy = if let Some(pool) = pool {
             if let Some((name, hook)) = inherited_ordering(pool, calls.hooks, default) {
                 Some(Bound::new(
@@ -612,33 +734,62 @@ impl Tables {
             None
         };
         Ok(Self {
-            global: Attached::build(calls, global)?,
-            section: Attached::build(calls, section)?,
-            pool: Attached::build(calls, pool.map_or(&[][..], |p| p.gates.as_slice()))?,
+            attached: Attached::build(calls, pool.map_or(&[][..], |p| p.gates.as_slice()))?,
             policy,
         })
     }
     fn active(&self) -> bool {
-        self.global.active() || self.section.active() || self.pool.active() || self.policy.is_some()
+        self.attached.active() || self.policy.is_some()
     }
     fn enforcing(&self) -> bool {
+        self.attached.enforcing() || self.policy.is_some()
+    }
+}
+
+impl WalkTables {
+    pub fn active(&self) -> bool {
+        self.global.active()
+            || self.section.active()
+            || self
+                .walks
+                .values()
+                .flat_map(BTreeMap::values)
+                .any(PoolTable::active)
+    }
+
+    pub fn enforcing(&self) -> bool {
         self.global.enforcing()
             || self.section.enforcing()
-            || self.pool.enforcing()
-            || self.policy.is_some()
+            || self
+                .walks
+                .values()
+                .flat_map(BTreeMap::values)
+                .any(PoolTable::enforcing)
     }
-    fn select(
+
+    fn select_scope(
         &self,
         group: Option<&str>,
         tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
-        with_pool: bool,
-    ) -> Chosen {
+        pool: &str,
+        container: &str,
+    ) -> Result<Chosen, &'static str> {
+        let selected = if pool.is_empty() && container.is_empty() {
+            None
+        } else {
+            Some(
+                self.walks
+                    .get(pool)
+                    .and_then(|walks| walks.get(container))
+                    .ok_or("native hook scope is outside the configured walk")?,
+            )
+        };
         let mut rewrites = Vec::new();
         let mut gates = Vec::new();
         let mut taps = Taps::default();
         for attached in [&self.global, &self.section]
             .into_iter()
-            .chain(with_pool.then_some(&self.pool))
+            .chain(selected.map(|pool| &pool.attached))
         {
             rewrites.extend(
                 attached
@@ -666,16 +817,14 @@ impl Tables {
             }
         }
         gates.sort_by_key(|(priority, _)| *priority);
-        Chosen {
+        Ok(Chosen {
             rewrites,
             gates: gates.into_iter().map(|(_, c)| c).collect(),
             taps,
-            policy: self
-                .policy
-                .as_ref()
-                .filter(|_| with_pool)
+            policy: selected
+                .and_then(|pool| pool.policy.as_ref())
                 .and_then(|b| b.select(group, tree)),
-        }
+        })
     }
 }
 
