@@ -126,9 +126,9 @@ impl ChargedRequestSnapshot {
         input: SnapshotInput<'a, &'a http::HeaderMap>,
         request: &RequestLease,
     ) -> Result<Arc<Self>, SnapshotError> {
-        fn field<'a>(
-            (name, value): (&'a http::HeaderName, &'a http::HeaderValue),
-        ) -> (&'a str, &'a [u8]) {
+        fn field<'h>(
+            (name, value): (&'h http::HeaderName, &'h http::HeaderValue),
+        ) -> (&'h str, &'h [u8]) {
             (name.as_str(), value.as_bytes())
         }
         let count = input.headers.len();
