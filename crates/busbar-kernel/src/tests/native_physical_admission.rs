@@ -249,12 +249,41 @@ fn fixture_for(class: AdmissionClass, auth: RouteAuth) -> Fixture {
     }
 }
 pub(crate) fn accepted() -> AcceptedConnection {
-    AcceptedConnection {
-        peer: "192.0.2.1".into(),
-        local: "192.0.2.2".into(),
-        alpn: "h2".into(),
-        peer_certificate: SecureVec::new(),
-    }
+    accepted_with_certificate(&[])
+}
+fn accepted_with_certificate(certificate: &[u8]) -> AcceptedConnection {
+    let source = crate::limits::process_admission::ProcessAdmission::new(1)
+        .connection_storage(AdmissionClass::Data);
+    AcceptedConnection::capture(&source, "192.0.2.1", "192.0.2.2", "h2", certificate).unwrap()
+}
+
+#[test]
+fn accepted_metadata_credit_follows_the_last_real_request_binding() {
+    let f = fixture();
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 64, 8);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let facts = AcceptedConnection::capture(&source, "p", "l", "h", b"cert").unwrap();
+    assert_eq!(budget.used(), (7, 7));
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_ok(),
+        "connection storage takes no request count"
+    );
+    let conn = f.listener.connect(facts);
+    let (request, owner) = arrive(&f, &conn, 1);
+    let binding = request.binding().clone();
+    drop((request, owner, conn));
+    assert_eq!(binding.connection().peer_certificate(), b"cert");
+    assert_eq!(budget.used(), (7, 7));
+    drop(binding);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn accepted_metadata_denial_precedes_copy_and_leaves_no_credit() {
+    let budget = crate::limits::process_admission::ProcessAdmission::with_limits(1, 8, 2);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    assert!(AcceptedConnection::capture(&source, "p", "l", "h", b"cert").is_err());
+    assert_eq!(budget.used(), (0, 0));
 }
 fn arrive(f: &Fixture, conn: &PhysicalConnection, stream: u64) -> (PhysicalRequest, StreamOwner) {
     conn.head(
@@ -305,7 +334,7 @@ fn native_physical_head_captures_actual_snapshot_route_and_budget() {
     assert!(Arc::ptr_eq(binding.prepared(), &f.prepared));
     assert_eq!(binding.head().target, "/one");
     assert_eq!(binding.route().line().route.path, "/one");
-    assert_eq!(binding.connection().peer.as_ref(), "192.0.2.1");
+    assert_eq!(binding.connection().peer(), "192.0.2.1");
     assert_eq!(binding.request().class(), AdmissionClass::Data);
     assert_eq!(f.budget.used(), (8, 8));
 }
@@ -511,8 +540,7 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
 fn native_physical_snapshot_captures_original_fields_once() {
     let mut f = fixture();
     f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
-    let mut facts = accepted();
-    facts.peer_certificate = SecureVec::from(&b"certificate"[..]);
+    let facts = accepted_with_certificate(b"certificate");
     let conn = f.listener.connect(facts);
     let mut original = head("/one");
     original.query = Some(String::new());
