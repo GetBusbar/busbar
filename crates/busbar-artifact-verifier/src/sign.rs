@@ -875,44 +875,6 @@ pub fn kind_restart_default(kind: &str) -> bool {
     !matches!(kind, "hook" | "auth")
 }
 
-#[cfg(test)]
-/// The EFFECTIVE restart-required verdict for one settings field: the kind-derived default
-/// ([`kind_restart_default`]), with a per-field `x-busbar-restart-required` override honored
-/// ASYMMETRICALLY:
-///   * an override to `true` against a kind default of `false` is ALWAYS honored — claiming a field
-///     needs a restart when the kind default says it doesn't is the safe direction to be wrong in
-///     (worst case: one unnecessary restart);
-///   * an override to `false` against a kind default of `true` is honored ONLY when the manifest
-///     verifiably came from a TRUSTED, first-party (`publisher == "busbar"`) artifact — the same
-///     trust+publisher gate `schema_derived`'s load-bearing rule uses, for the identical reason:
-///     a third-party claim in the direction that could
-///     cause a setting to silently fail to apply is not trusted; a claim in the fail-safe direction
-///     is. `publisher` ALONE is never sufficient proof — `Verdict::Trusted { first_party: true, .. }`
-///     is what `evaluate()` only ever returns for a manifest that verified against the EMBEDDED
-///     release key, never a self-declared string (see `crates/plugin-loader/src/registry.rs`'s
-///     existing refusal to trust `manifest.publisher` alone for the identical reason).
-pub fn effective_restart_required(
-    kind: &str,
-    field_override: Option<bool>,
-    verdict: &Verdict,
-) -> bool {
-    let default = kind_restart_default(kind);
-    match field_override {
-        None => default,
-        Some(true) => true,
-        Some(false) => {
-            default
-                && !matches!(
-                    verdict,
-                    Verdict::Trusted {
-                        first_party: true,
-                        ..
-                    }
-                )
-        }
-    }
-}
-
 /// WHY a plugin was rejected — a STRUCTURED discriminant, so consumers (e.g. the `--list-plugins`
 /// signature column) can label the outcome WITHOUT substring-matching the human-readable `reason`.
 /// The former text match was itself a defect: the reason string embeds plugin-author-controlled bytes
@@ -2052,3 +2014,7 @@ pub mod test_support {
         super::evaluate_against(bytes, manifest, policy, retired)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/sign_tests.rs"]
+mod tests;
