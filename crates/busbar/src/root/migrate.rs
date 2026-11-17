@@ -576,9 +576,9 @@ fn text_of(refusal: Refusal) -> String {
 }
 
 /// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
-/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
-/// removed paths and never a value; it is written only for a write this process made, never for a
-/// peer's stamp (#293, via the #291 settled write path).
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411; the ungoverned binding,
+/// BUSBAR-3408). The record names paths and never a value; it is written only for a write this
+/// process made, never for a peer's stamp (#293, via the #291 settled write path).
 pub(crate) fn record_completed_changes(written: &Written) {
     if !matches!(written, Written::Stamped) {
         return;
@@ -597,7 +597,8 @@ pub(crate) fn record_completed_changes(written: &Written) {
 }
 
 /// A report line that carries a BUSBAR code is one the operator must act on or know about (the
-/// retired cloud-metadata carve-outs, BUSBAR-3411): it is logged as a warning, not information.
+/// retired cloud-metadata carve-outs, BUSBAR-3411; the binding written to keep 1.5.5's ungoverned
+/// access, BUSBAR-3408): it is logged as a warning, not information.
 fn warns(line: &str) -> bool {
     line.starts_with("BUSBAR-")
 }
@@ -609,9 +610,20 @@ fn audit_rows(report: &[String]) -> Vec<(&'static str, String)> {
     report
         .iter()
         .filter_map(|line| {
-            line.strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            let removed = line
+                .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
                 .and_then(|rest| rest.split_once(';'))
-                .map(|(paths, _)| ("migrate.metadata_carve_out_removed", paths.to_owned()))
+                .map(|(paths, _)| ("migrate.metadata_carve_out_removed", paths));
+            // The binding written to keep 1.5.5's ungoverned access: a grant of every pool with
+            // no budget, audited by its path.
+            let granted = || {
+                line.strip_prefix("BUSBAR-3408: ")
+                    .and_then(|rest| rest.split_once(" was written by the migration"))
+                    .map(|(path, _)| ("migrate.ungoverned_binding_added", path))
+            };
+            removed
+                .or_else(granted)
+                .map(|(action, subject)| (action, subject.to_owned()))
         })
         .collect()
 }
