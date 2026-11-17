@@ -1159,6 +1159,35 @@ struct Rig {
     wiring: Wiring,
 }
 
+#[test]
+fn attributed_output_is_retained_without_becoming_unattributed_write() {
+    use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
+    let mut answers = Answers::new(None, Instant::now());
+    answers.start(Called::Timer, Instant::now());
+    answers.take(TransportOut::WirePart {
+        stream: 3,
+        class: WireClass::Payload,
+        bytes: b"body",
+    });
+    answers.take(TransportOut::WireEnd {
+        stream: 3,
+        requirement: CompletionRequirement::Flush,
+    });
+    answers.take(TransportOut::ResponseQuiescent(3));
+    let acts = answers.finish().expect("attributed native answer");
+    assert!(
+        matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")
+    );
+    assert!(matches!(
+        &acts[1],
+        Act::WireEnd {
+            stream: 3,
+            requirement: CompletionRequirement::Flush
+        }
+    ));
+    assert!(matches!(&acts[2], Act::Quiescent(3)));
+}
+
 fn rig() -> Rig {
     let (feeds, feed_rx) = mpsc::channel(8);
     let (inbound_tx, inbound) = mpsc::channel(8);
