@@ -36,6 +36,7 @@ impl Drop for Completion {
 #[derive(Clone)]
 pub struct Context {
     pub(crate) native: Option<Arc<super::native_admin::ExecutionAdmission>>,
+    pub(crate) physical: Option<Arc<crate::inbound::native::PhysicalAdminExecution>>,
     pub(crate) method: String,
     pub(crate) target: String,
     pub(crate) headers: HeaderMap,
@@ -80,6 +81,25 @@ impl Context {
         crate::off_path::auth::keys::effect::context(method, target, headers, admitted)
     }
 
+    pub fn attach_physical(
+        &mut self,
+        physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+    ) -> Result<(), TxnError> {
+        physical
+            .check_executing()
+            .map_err(|_| TxnError::Forbidden)?;
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|native| !Arc::ptr_eq(native, physical.admission()))
+        {
+            return Err(TxnError::Forbidden);
+        }
+        self.attach_execution(physical.admission().clone())?;
+        self.physical = Some(physical);
+        Ok(())
+    }
+
     /// Bind successful native custody to this same method, target and projected principal. A
     /// context cannot borrow another invocation's authority merely because it knows its subject.
     pub fn attach_execution(
@@ -114,6 +134,11 @@ impl Context {
     }
 
     pub async fn revalidate(&self, app: &App) -> Result<Authority, TxnError> {
+        if let Some(physical) = &self.physical {
+            physical
+                .check_executing()
+                .map_err(|_| TxnError::Forbidden)?;
+        }
         if let Some(execution) = &self.native {
             let generation = self.retained_generation().ok_or(TxnError::Forbidden)?;
             let door = execution.door_for(generation).ok_or(TxnError::Forbidden)?;
@@ -139,6 +164,13 @@ impl Context {
     }
 
     pub(crate) fn survives(&self, app: &App) -> bool {
+        if self
+            .physical
+            .as_ref()
+            .is_some_and(|physical| physical.check_executing().is_err())
+        {
+            return false;
+        }
         if let Some(execution) = &self.native {
             let Some(prior) = self.retained_generation() else {
                 return false;

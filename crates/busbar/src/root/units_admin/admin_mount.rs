@@ -3,6 +3,11 @@
 
 use super::*;
 
+type RetainedAnswer = (
+    AdminAnswer,
+    Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+);
+
 pub(crate) struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
@@ -23,42 +28,45 @@ impl AdminNode {
 
     #[cfg(test)]
     pub(crate) async fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        self.answer_with_admission(request, None).await
+        self.answer_with_admission(request, None, None).await.0
     }
 
     async fn answer_with_admission(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
-        let (answer, publication) = busbar_kernel::audit::auditlog::confirmed_request(
-            self.answer_confirmed(request, admission),
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> RetainedAnswer {
+        let ((answer, retained), publication) = busbar_kernel::audit::auditlog::confirmed_request(
+            self.answer_confirmed(request, admission, physical),
         )
         .await;
         if publication.is_err() {
-            return bound::journal_unavailable(
+            return (bound::journal_unavailable(
                 "the administrative result's audit publication is unconfirmed; do not re-submit",
-            );
+            ), retained);
         }
-        answer
+        (answer, retained)
     }
 
     async fn answer_confirmed(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> RetainedAnswer {
         if admission
             .as_ref()
             .is_some_and(|admission| !admission.begin_execution())
         {
-            return unavailable_answer();
+            return (unavailable_answer(), None);
         }
         let key = UnitKey::new(request.unit);
 
         let arrived_at = request.at();
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
+        walk.physical_pending = physical;
         let ended = decide(&self.units, &mut walk).await;
         let facts = audit(&walk, &ended);
         let answer = walk
@@ -66,7 +74,8 @@ impl AdminNode {
             .take()
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
-        if self
+        let retained = walk.request.physical.clone();
+        let answer = if self
             .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
             .await
         {
@@ -75,7 +84,8 @@ impl AdminNode {
             bound::journal_unavailable(
                 "the administrative result's audit publication is unconfirmed; do not re-submit",
             )
-        }
+        };
+        (answer, retained)
     }
 
     async fn seal(
@@ -388,9 +398,22 @@ async fn call(
     if let Some(admission) = admission {
         builder = builder.extension(admission);
     }
+    if let Some(physical) = &request.physical {
+        if physical.check_executing().is_err() {
+            return door_answer();
+        }
+        if !execution
+            .as_ref()
+            .is_some_and(|execution| Arc::ptr_eq(execution, physical.admission()))
+        {
+            return door_answer();
+        }
+        builder = builder.extension(physical.clone());
+    }
     if let Some(execution) = execution {
         if let Some((lease, prepared)) = execution.native() {
-            if lease.invocation().request_id().get() != request.unit
+            if request.physical.is_none()
+                || lease.invocation().request_id().get() != request.unit
                 || !Arc::ptr_eq(prepared.request(), request.snapshot())
             {
                 return door_answer();
@@ -600,11 +623,26 @@ pub(crate) fn mount(
                     .get(axum::http::header::CONTENT_LENGTH)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.parse::<usize>().ok());
-                if declared.is_some_and(|len| len > request_body_max_bytes) {
+                if declared.is_some_and(|len| len > request_body_max_bytes)
+                    && req
+                        .extensions()
+                        .get::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
+                        .is_none()
+                {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
-                let (parts, body) = req.into_parts();
+                let (mut parts, body) = req.into_parts();
+                let physical = match parts
+                    .extensions
+                    .remove::<busbar_kernel::inbound::native::AdminPhysicalRequest>(
+                ) {
+                    Some(carrier) => match carrier.take() {
+                        Ok(pending) => Some(pending),
+                        Err(_) => return http_response(door_answer()),
+                    },
+                    None => None,
+                };
                 let admission = parts
                     .extensions
                     .get::<busbar_kernel::inbound::RequestAdmission>()
@@ -624,7 +662,16 @@ pub(crate) fn mount(
                 else {
                     return http_response(unavailable_answer());
                 };
-                if !snapshot.request().same_request(&lease) {
+                if !snapshot.request().same_request(&lease)
+                    || physical.as_ref().is_some_and(|pending| {
+                        admission.is_some()
+                            || !pending.binding().request().same_request(&lease)
+                            || !pending
+                                .binding()
+                                .snapshot()
+                                .is_ok_and(|original| Arc::ptr_eq(&original, &snapshot))
+                    })
+                {
                     return http_response(unavailable_answer());
                 }
                 let bytes = match input_body::gather(body, &lease, request_body_max_bytes).await {
@@ -658,22 +705,39 @@ pub(crate) fn mount(
                     return http_response(error_answer(400, "invalid_request"));
                 }
                 drop(bytes);
-                let unit = admission
-                    .as_ref()
-                    .map_or_else(|| node.next_unit(), |admission| admission.unit_key().get());
-                let request = AdminRequest::from_snapshot(snapshot, unit);
+                let request = match physical.as_ref() {
+                    Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
+                        Ok(request) => request,
+                        Err(()) => return http_response(unavailable_answer()),
+                    },
+                    None => {
+                        let unit = admission.as_ref().map_or_else(
+                            || node.next_unit(),
+                            |admission| admission.unit_key().get(),
+                        );
+                        AdminRequest::from_snapshot(snapshot, unit)
+                    }
+                };
+                let unit = request.unit;
 
                 let exit = ExitPath { unit };
                 // The operation keeps custody through client cancellation, including
                 // publishing its durable replay receipt after a native write.
-                let answer =
-                    tokio::spawn(
-                        async move { node.answer_with_admission(request, admission).await },
-                    )
-                    .await
-                    .unwrap_or_else(|_| unavailable_answer());
+                let answer = tokio::spawn(async move {
+                    node.answer_with_admission(request, admission, physical)
+                        .await
+                })
+                .await
+                .unwrap_or_else(|_| (unavailable_answer(), None));
 
+                let (answer, physical) = answer;
                 let response = http_response(answer);
+                let response = match physical {
+                    Some(physical) => busbar_kernel::auth::native_admin::retain_physical_response(
+                        response, physical,
+                    ),
+                    None => response,
+                };
 
                 drop(exit);
                 response

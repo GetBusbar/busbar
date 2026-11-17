@@ -207,3 +207,19 @@ pub fn snapshot_matches_http(
                     .map(axum::http::HeaderValue::as_bytes))
         })
 }
+
+/// Keep the exact physical owner both in the transport handoff and in the body lifetime.
+/// The native bridge moves the extension into delivery custody alongside its StreamOwner.
+pub fn retain_physical_response(
+    mut response: axum::response::Response,
+    physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+) -> axum::response::Response {
+    use http_body_util::BodyExt;
+    response.extensions_mut().insert(physical.clone());
+    let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+    *response.body_mut() = axum::body::Body::new(body.map_frame(move |frame| {
+        let _retain_until_body_drop = &physical;
+        frame
+    }));
+    response
+}
