@@ -91,6 +91,22 @@ enum Phase {
 struct Inner {
     phase: Phase,
     audited: Option<&'static Diagnostic>,
+    /// Why the last send answered [`SubmitResult::NoEffect`].
+    no_effect: Option<NoEffectCause>,
+}
+
+/// Why a send with no earlier uncertainty applied nothing (#319 r4 §7.1). [`SubmitResult::NoEffect`]
+/// carries `Failure::Refused` for a slotted send the store fenced or found stale as well as for a
+/// backend refusal; the native decision is kept here so a fence or a slot invariant is never taken
+/// for a refusal a smaller candidate could pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoEffectCause {
+    /// The backend answered this failure.
+    Backend(Failure),
+    /// The store fenced the stamping writer (its dataset epoch or execution epoch moved).
+    Fenced,
+    /// The slot row is newer than this send: a slot invariant, not a refusal.
+    Stale,
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +166,7 @@ impl Attempt {
             inner: Mutex::new(Inner {
                 phase: Phase::Prepared,
                 audited: None,
+                no_effect: None,
             }),
         })
     }
@@ -244,6 +261,12 @@ impl Attempt {
         }
     }
 
+    /// Why the last send answered [`SubmitResult::NoEffect`], if one did (#319 r4 §7.1).
+    #[must_use]
+    pub fn no_effect_cause(&self) -> Option<NoEffectCause> {
+        self.lock().no_effect
+    }
+
     /// The last audited diagnostic this attempt emitted, if any.
     #[must_use]
     pub fn audited(&self) -> Option<&'static Diagnostic> {
@@ -312,7 +335,7 @@ impl Attempt {
             Ok(Decision::Fenced) => match (fence, uncertain) {
                 (Some(proof), true) => Step::Readback(proof, NotApplied::Fenced),
                 (Some(_), false) => Step::Resolved(Decision::Fenced),
-                (None, false) => Step::NoEffect(Failure::Refused),
+                (None, false) => Step::NoEffect(Failure::Refused, NoEffectCause::Fenced),
                 (None, true) => {
                     self.audit(
                         &crate::diagnostics::STORE_COMMIT_FENCED_IN_DOUBT,
@@ -326,12 +349,12 @@ impl Attempt {
                 if uncertain || fence.is_some() {
                     Step::Reconcile
                 } else {
-                    Step::NoEffect(Failure::Refused)
+                    Step::NoEffect(Failure::Refused, NoEffectCause::Stale)
                 }
             }
             Ok(Decision::OpIdConflict) => Step::Resolved(Decision::OpIdConflict),
             Err(failure @ (Failure::Refused | Failure::Overloaded)) if !uncertain => {
-                Step::NoEffect(failure)
+                Step::NoEffect(failure, NoEffectCause::Backend(failure))
             }
             Err(Failure::Refused) => match fence {
                 Some(proof) => Step::Readback(proof, NotApplied::Refused),
@@ -351,7 +374,10 @@ impl Attempt {
                     SubmitResult::Decided(decision),
                 )
             }
-            Step::NoEffect(failure) => (Phase::Prepared, SubmitResult::NoEffect(failure)),
+            Step::NoEffect(failure, cause) => {
+                self.lock().no_effect = Some(cause);
+                (Phase::Prepared, SubmitResult::NoEffect(failure))
+            }
             Step::Uncertain | Step::Readback(..) => (Phase::Uncertain, SubmitResult::Uncertain),
             Step::Reconcile => (Phase::Reconcile, SubmitResult::Reconcile),
         };
@@ -498,7 +524,7 @@ impl Attempt {
 
 enum Step {
     Resolved(Decision),
-    NoEffect(Failure),
+    NoEffect(Failure, NoEffectCause),
     Uncertain,
     Reconcile,
     Readback(SelfFenced, NotApplied),

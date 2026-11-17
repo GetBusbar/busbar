@@ -29,7 +29,8 @@ pub mod self_keys;
 
 pub use convert::{scale6, MAX_WHOLE_UNITS};
 pub use evolve::{
-    evolve, evolve_with, has_step, Manifest, RecordStep, CURSOR_KEY, RECORD_FORMAT, RECORD_STEPS,
+    evolve_with, has_step, initial_cursor, Manifest, RecordStep, CURSOR_KEY, RECORD_FORMAT,
+    RECORD_STEPS,
 };
 
 /// The most rows one page (one commit) carries.
@@ -53,6 +54,24 @@ pub enum Committed {
     /// A predicate failed (a row changed, a native record exists, another owner moved first);
     /// nothing applied.
     Conflict,
+    /// The store fenced this writer: another owner advanced the dataset epoch. Nothing applied,
+    /// and nothing this writer sends will.
+    Fenced,
+    /// The store refused this commit, which had no earlier uncertain send: nothing applied, and a
+    /// smaller candidate may pass (#319 r4 §7.2).
+    Refused,
+}
+
+impl Committed {
+    /// The refusal for an outcome that applied nothing and is not a predicate conflict.
+    pub(crate) fn unapplied(self, what: &str) -> Refusal {
+        match self {
+            Self::Fenced => Refusal::Verify(format!(
+                "{what} was fenced: another busbar owns this store now; nothing was written"
+            )),
+            _ => Refusal::Store(format!("the store refused {what}; nothing was written")),
+        }
+    }
 }
 
 /// One commit, built by the records step and executed by the seam.
@@ -103,11 +122,24 @@ pub trait RecordStore {
     /// # Errors
     /// The store's failure (the outcome is then unknown; the next boot resumes).
     fn commit(&self, c: Candidate) -> Result<Committed, StoreFail>;
-    /// Register a new writer authority, fencing every earlier writer at its next commit.
+    /// Prove this boot's writer authority still holds (the records step's pages commit under
+    /// it). It fences nobody: an ordinary registration keeps the dataset epoch.
     ///
     /// # Errors
-    /// The store's failure.
+    /// The store's failure, or an authority no longer admitted.
     fn register(&self) -> Result<(), StoreFail>;
+}
+
+/// THE STORE, as the record-format chain reaches it (#319 r4 §7, §9): a [`RecordStore`] under
+/// the migration owner's authority, which the kernel's opening or claim installed.
+pub trait FormatStore: RecordStore {
+    /// THE FINAL PUBLICATION: apply `c` (the last step's zero-payload completion: exact on the
+    /// manifest and the cursor, the cursor deleted, its evidence) atomically with the manifest at
+    /// `(format, 0)` under a fresh registrar and the dataset epoch advanced past this owner.
+    ///
+    /// # Errors
+    /// The store's failure (the outcome is then unknown; the next boot reinspects).
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail>;
 }
 
 /// The counters of one R0 row: request counts whole, token counts in scale 6 (whole units ×
@@ -603,6 +635,7 @@ fn commit(store: &dyn RecordStore, c: Candidate) -> Result<(), Refusal> {
              written"
                 .to_owned(),
         )),
+        other => Err(other.unapplied("a page of the records step")),
     }
 }
 
