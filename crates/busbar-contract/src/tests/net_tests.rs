@@ -767,3 +767,31 @@ fn host_percent_decoding_pins_every_escape_shape() {
         assert_eq!(normalize_host(raw), normalized, "{raw:?}");
     }
 }
+
+/// #359 SEC-L14: the reserved 240.0.0.0/4 block is internal, and an SIIT IPv4-translated address
+/// (`::ffff:0:a.b.c.d`, RFC 6052 §2.1/RFC 7915) carries the IPv4 address it translates, so it is
+/// judged as that address.
+#[test]
+fn reserved_v4_and_siit_translated_v6_are_judged_internal() {
+    for v4 in ["240.0.0.1", "250.1.2.3", "255.255.255.254"] {
+        let addr: Ipv4Addr = v4.parse().unwrap();
+        assert!(ipv4_is_internal(&addr), "{v4} is reserved (240.0.0.0/4)");
+    }
+    assert!(
+        !ipv4_is_internal(&Ipv4Addr::new(223, 1, 2, 3)),
+        "the last unicast block below 224/4 stays public"
+    );
+
+    let siit: std::net::Ipv6Addr = "::ffff:0:a00:5".parse().unwrap();
+    assert_eq!(embedded_ipv4(&siit), Some(Ipv4Addr::new(10, 0, 0, 5)));
+    assert!(
+        ip_is_internal(&IpAddr::V6(siit)),
+        "SIIT ::ffff:0:10.0.0.5 is 10.0.0.5"
+    );
+    let public: std::net::Ipv6Addr = "::ffff:0:808:808".parse().unwrap();
+    assert_eq!(embedded_ipv4(&public), Some(Ipv4Addr::new(8, 8, 8, 8)));
+    assert!(
+        !ip_is_internal(&IpAddr::V6(public)),
+        "SIIT ::ffff:0:8.8.8.8 is public"
+    );
+}

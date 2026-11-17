@@ -46,11 +46,10 @@ impl Resolve for Table {
     }
 }
 
-/// The deployment's judge over `allow` (block on), resolving `names`.
-fn guard_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<GuardJudge> {
+/// The deployment's default private-address policy, resolving `names`.
+fn guard_judge(names: Vec<(&'static str, IpAddr)>) -> Arc<GuardJudge> {
     let d = Destinations {
         block_private_addresses: true,
-        allow: allow.iter().map(|s| (*s).to_owned()).collect(),
         ..Destinations::default()
     };
     Arc::new(GuardJudge::new(
@@ -59,8 +58,8 @@ fn guard_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<GuardJ
     ))
 }
 
-fn process_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<dyn DialJudge> {
-    judge(guard_judge(allow, names), &[OWN])
+fn process_judge(names: Vec<(&'static str, IpAddr)>) -> Arc<dyn DialJudge> {
+    judge(guard_judge(names), &[OWN])
 }
 
 /// Judge `dest` under `class`, answering at once (a literal, or a refusal the name decides).
@@ -109,7 +108,7 @@ fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, 
 /// Every egress class a need may declare is judged by the one guard: a public address is judged
 #[test]
 fn every_egress_class_is_judged_by_the_one_guard() {
-    let j = process_judge(&[], vec![]);
+    let j = process_judge(vec![]);
     for class in CLASSES {
         assert_eq!(
             now(&j, "93.184.216.34:443", class),
@@ -121,9 +120,8 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 
 /// RED: under the default, the provider class and a request-data class (the default class,
 #[test]
-fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
-    let strict = process_judge(&[], vec![]);
-    let allowed = process_judge(&["\x310.0.0.0/8", "127.0.0.1"], vec![]);
+fn a_private_address_is_refused_for_providers_and_request_data_without_route_authority() {
+    let strict = process_judge(vec![]);
     for class in crate::guard::PRIVATE_REFUSED_IN.iter().copied() {
         assert_eq!(
             now(&strict, "\x310.0.0.5:5432", class),
@@ -140,15 +138,13 @@ fn a_private_address_is_refused_for_providers_and_request_data_unless_allowliste
             Err(DEST_INTERNAL),
             "{class}"
         );
-        assert!(now(&allowed, "\x310.0.0.5:5432", class).is_ok(), "{class}");
-        assert!(now(&allowed, "127.0.0.1:6379", class).is_ok(), "{class}");
     }
     let class = EGRESS_OPERATOR_INFRASTRUCTURE;
     assert!(now(&strict, "\x310.0.0.5:5432", class).is_ok(), "{class}");
     assert!(now(&strict, "127.0.0.1:6379", class).is_ok(), "{class}");
     for class in CLASSES {
         assert_eq!(
-            now(&allowed, "169.254.169.254:80", class),
+            now(&strict, "169.254.169.254:80", class),
             Err(DEST_METADATA),
             "{class}"
         );
@@ -157,17 +153,12 @@ fn a_private_address_is_refused_for_providers_and_request_data_unless_allowliste
 
 /// RED: a name resolving to loopback is refused after its one resolution, before any socket; the
 #[test]
-fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
+fn a_name_resolving_to_loopback_is_refused_without_route_authority() {
     let names = || vec![("db.internal", IpAddr::from([127, 0, 0, 1]))];
-    let strict = process_judge(&[], names());
+    let strict = process_judge(names());
     assert_eq!(
         pended(&strict, "db.internal:5432", EGRESS_DEFAULT),
         Err(DEST_INTERNAL)
-    );
-    let allowed = process_judge(&["db.internal"], names());
-    assert_eq!(
-        pended(&allowed, "db.internal:5432", EGRESS_DEFAULT),
-        Ok("127.0.0.1:5432".parse().unwrap())
     );
     assert_eq!(
         pended(&strict, "nowhere.test:1", EGRESS_PROVIDER),
@@ -175,11 +166,11 @@ fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
     );
 }
 
-/// Loopback-allowed (its loopback allowlisted) dials loopback, but never the node's own ports,
+/// Loopback-allowed dials loopback, but never the node's own ports,
 #[test]
 fn loopback_allowed_refuses_the_nodes_own_ports() {
     let names = vec![("localhost", IpAddr::from([127, 0, 0, 1]))];
-    let j = process_judge(&["127.0.0.1", "::1", "localhost"], names);
+    let j = process_judge(names);
     let c = EGRESS_LOOPBACK_ALLOWED;
     assert!(now(&j, "127.0.0.1:4318", c).is_ok());
     assert_eq!(now(&j, &format!("127.0.0.1:{OWN}"), c), Err(DEST_INTERNAL));
@@ -200,7 +191,7 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
 /// `dest.judge`'s arms through the same judge: a URL's scheme by class (open-web secure only,
 #[test]
 fn the_kernel_asks_the_same_judge() {
-    let j = guard_judge(&["127.0.0.1", "\x310.1.2.3"], vec![]);
+    let j = guard_judge(vec![]);
     assert_eq!(
         j.judge_name("http://93.184.216.34/x", EGRESS_OPEN_WEB, false),
         Err(DEST_PLAINTEXT)
@@ -209,9 +200,16 @@ fn the_kernel_asks_the_same_judge() {
         j.judge_name("http://93.184.216.34/x", EGRESS_DEFAULT, false),
         Ok(())
     );
+    // Plaintext in the loopback class reaches loopback only. The address is public: no global
+    // allowlist admits a private one any more (UPSTREAMS-DECLARED r3 §2.4), and a private
+    // address is refused before its scheme is read (asserted below as DEST_INTERNAL).
+    assert_eq!(
+        j.judge_name("http://93.184.216.34/x", EGRESS_LOOPBACK_ALLOWED, false),
+        Err(DEST_PLAINTEXT)
+    );
     assert_eq!(
         j.judge_name("http://\x310.1.2.3/x", EGRESS_LOOPBACK_ALLOWED, false),
-        Err(DEST_PLAINTEXT)
+        Err(DEST_INTERNAL)
     );
     assert_eq!(
         j.judge_name("http://127.0.0.1:9/x", EGRESS_LOOPBACK_ALLOWED, false),
@@ -237,7 +235,7 @@ fn the_kernel_asks_the_same_judge() {
         )
         .unwrap_err();
     assert_eq!(r.verdict, DEST_INTERNAL);
-    assert!(r.reason.contains("advanced.allow_destinations"), "{r}");
+    assert!(r.reason.contains("allow_private"), "{r}");
 }
 
 #[test]
@@ -250,7 +248,7 @@ fn the_nodes_own_ports_are_read_off_its_listen_addresses() {
 
 #[test]
 fn recovered_listener_ports_replace_the_base_ports_for_immediate_judgements() {
-    let j = process_judge(&["127.0.0.1", "::1"], vec![]);
+    let j = process_judge(vec![]);
     let class = EGRESS_LOOPBACK_ALLOWED;
     j.own_ports_applied(&own_ports(&["0.0.0.0:19080", "[::1]:19081"]));
     assert!(now(&j, &format!("127.0.0.1:{OWN}"), class).is_ok());
@@ -273,7 +271,6 @@ fn a_resolution_already_pending_uses_recovered_ports_and_calls_back_without_the_
     for (port, refused) in [(OWN, false), (19080, true), (19081, true)] {
         let resolver = Arc::new(HeldResolution::default());
         let destinations = Destinations {
-            allow: vec!["localhost".into()],
             ..Destinations::default()
         };
         let j = judge(
@@ -369,7 +366,7 @@ fn an_idn_name_is_resolved_as_its_punycode_name() {
 
 #[test]
 fn bare_user_authority_never_supplies_a_security_fact() {
-    let guard = guard_judge(&[], vec![]);
+    let guard = guard_judge(vec![]);
     assert_eq!(
         guard.judge_name("93.184.216.34:443", EGRESS_OPEN_WEB, false),
         Err(DEST_PLAINTEXT)

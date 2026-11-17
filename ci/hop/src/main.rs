@@ -30,11 +30,10 @@ use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, ExprCall, ExprMethodCall, ImplItemFn, ItemFn, ItemImpl, ItemMod, Meta};
 
 /// The MIN-3 entry machinery, relative to the repository root.
-const SCOPE: [&str; 9] = [
+const SCOPE: [&str; 8] = [
     "crates/busbar-plugin-abi/src/host_side",
     "crates/plugin-loader/src/adapters",
-    "crates/plugin-loader/src/encode",
-    "crates/plugin-loader/src/ports",
+    "crates/busbar-ports/src",
     "crates/plugin-loader/src/admit.rs",
     "crates/plugin-loader/src/instance.rs",
     "crates/plugin-loader/src/refusal.rs",

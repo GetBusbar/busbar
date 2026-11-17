@@ -59,6 +59,69 @@ pub fn generate() -> String {
     );
     layout!("bb_status" = Status {});
     layout!("bb_token" = Token {});
+    layout!("bb_pair" = abi::types::Pair<'static> { name=name, value=value });
+    layout!("bb_pairs" = abi::types::Slice<'static,abi::types::Pair<'static>> {});
+    layout!("bb_plane_req" = abi::plane::PlaneReq<'static> {
+        route=route, flags=flags, auth=auth, _r=_r, method=method, path=path, query=query,
+        headers=headers, identity=identity, request_id=request_id, carrier=carrier, work=work,
+        ticket_record=ticket_record
+    });
+    layout!("bb_target" = abi::plane::Target<'static> {
+        attempt=attempt, flags=flags, dialect=dialect, model=model, base_path=base_path,
+        upstream=upstream, provider=provider, params=params, admission=admission
+    });
+    layout!("bb_resource_echo_rec" = abi::plane::ResourceEchoRec {
+        invocation=invocation, generation=generation, route=route, descriptor=descriptor
+    });
+    layout!("bb_plane_vt" = busbar_ffi::vt::plane::Vt {
+        request=request, upstream=upstream, piece=piece, end=end, rewrite=rewrite,
+        render=render, admin=admin, probe=probe, demux=demux, select_resources=select_resources,
+        channel=channel
+    });
+    eq(
+        "BB_PLANE_FB_RESOURCE_ADMISSION",
+        abi::plane::FB_RESOURCE_ADMISSION,
+    );
+    eq(
+        "BB_PLANE_M_SELECT_RESOURCES",
+        abi::plane::M_SELECT_RESOURCES,
+    );
+    eq("BB_PLANE_FB_CHANNEL_OPEN", abi::plane::FB_CHANNEL_OPEN);
+    eq("BB_PLANE_M_CHANNEL", abi::plane::M_CHANNEL);
+    eq(
+        "BB_RESOURCE_INVENTORY",
+        abi::plane::RESOURCE_INVENTORY.into(),
+    );
+    eq("BB_RESOURCE_SELECT", abi::plane::RESOURCE_SELECT.into());
+    for (name, tag) in [
+        ("BB_TAG_RESOURCE_ENTRY", abi::plane::tag::RESOURCE_ENTRY),
+        (
+            "BB_TAG_RESOURCE_DESCRIPTOR",
+            abi::plane::tag::RESOURCE_DESCRIPTOR,
+        ),
+        ("BB_TAG_RESOURCE_KIND", abi::plane::tag::RESOURCE_KIND),
+        ("BB_TAG_RESOURCE_VALUE", abi::plane::tag::RESOURCE_VALUE),
+        ("BB_TAG_RESOURCE_FORWARD", abi::plane::tag::RESOURCE_FORWARD),
+        (
+            "BB_TAG_RESOURCE_UPSTREAM",
+            abi::plane::tag::RESOURCE_UPSTREAM,
+        ),
+        ("BB_TAG_RESOURCE_DIALECT", abi::plane::tag::RESOURCE_DIALECT),
+        ("BB_TAG_RESOURCE_MODEL", abi::plane::tag::RESOURCE_MODEL),
+        (
+            "BB_TAG_RESOURCE_SELECTED",
+            abi::plane::tag::RESOURCE_SELECTED,
+        ),
+        ("BB_TAG_RESOURCE_ECHO", abi::plane::tag::RESOURCE_ECHO),
+        ("BB_TAG_RESOURCE_POOL", abi::plane::tag::RESOURCE_POOL),
+        ("BB_TAG_RESOURCE_MEMBER", abi::plane::tag::RESOURCE_MEMBER),
+        (
+            "BB_TAG_D_ROUTE_RESOURCES",
+            abi::plane::tag::D_ROUTE_RESOURCES,
+        ),
+    ] {
+        eq(name, tag.into());
+    }
     layout!("bb_crypto_req" = CryptoReq<'static> {
         alg = alg, key_form = key_form, param = param, key = key, data = data, aux = aux, aad = aad
     });

@@ -136,7 +136,7 @@ pub enum Delivered {
     /// Queued for the instance's next coalesced batch.
     Queued,
     /// Shed: the instance's bounded queue is full, or the instance is faulted or closed. Never
-    /// queued; the caller counts it.
+    /// queued; the adapter reports the exact refusal or drop once. The caller must not recount it.
     Shed,
 }
 
@@ -173,6 +173,16 @@ pub trait ExportCalls: Send + Sync {
         &[]
     }
 
+    /// The immutable MIN-3 snapshot scope served at this exact declared path, if any.
+    fn scope(&self, _path: &str) -> Option<u32> {
+        None
+    }
+
+    /// Render a declared MIN-3 scope from a snapshot collected by the owning kernel.
+    fn render_scope(&self, _scope: u32, _families: &[Family]) -> Result<Served, String> {
+        Err("this export instance declares no snapshot scopes".into())
+    }
+
     /// Hand one already-projected JSON line for `stream` to the instance, OFF the request path:
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered;
 
@@ -206,8 +216,9 @@ pub trait ExportCalls: Send + Sync {
         Ok(())
     }
 
-    /// The host shed a line for this instance before handing it over: an instance that declared a
-    fn shed(&self) {}
+    /// Report one host-side capture refusal or integrity failure with its exact classification.
+    /// Delivery adapters own their own terminal drops; callers never recount `Delivered::Shed`.
+    fn shed(&self, _kind: ExportLossKind) {}
 }
 
 /// Config probe result: declared streams, validation problems, and the explicit
@@ -275,14 +286,6 @@ pub trait ExportAxis: Send + Sync {
         instances: &[(String, &crate::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>>;
 
-    /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &PreparedExport,
-    ) -> Result<std::sync::Arc<dyn ExportCalls>, String>;
-
     /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
     fn linked(&self, module: &str) -> bool;
 
@@ -337,3 +340,121 @@ mod tests;
 
 mod opening;
 pub use opening::{ExportOpening, PreparedExport};
+
+/// Why bytes already in export custody were terminally discarded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportDropReason {
+    /// The bounded export queue discarded the bytes when its capacity was exhausted.
+    QueueFull,
+    /// The exporter discarded the bytes while stopping.
+    Stopped,
+    /// Delivery exhausted its permitted attempts.
+    AttemptsExhausted,
+    /// The destination refused delivery terminally.
+    Refused,
+    /// The retained bytes named a destination outside this exporter.
+    ForeignDestination,
+    /// The retained bytes exceeded their delivery lifetime.
+    Expired,
+    /// Only discarded bytes: retained ciphertext with an unavailable key is not a loss.
+    KeyUnavailable,
+}
+
+impl ExportDropReason {
+    #[must_use]
+    /// Stable host-owned reason used in loss records.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueueFull => "queue_full",
+            Self::Stopped => "stopped",
+            Self::AttemptsExhausted => "attempts_exhausted",
+            Self::Refused => "refused",
+            Self::ForeignDestination => "foreign_destination",
+            Self::Expired => "expired",
+            Self::KeyUnavailable => "key_unavailable",
+        }
+    }
+}
+
+/// Delivery loss, pre-custody refusal and audit integrity are distinct facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportLossKind {
+    /// Bytes already accepted into export custody were discarded.
+    Dropped(ExportDropReason),
+    /// Capture was refused before export custody accepted the bytes.
+    CaptureRefused,
+    /// An integrity check failed, independently of a delivery-loss count.
+    IntegrityFailed,
+}
+
+/// First-loss facts retained by the host observer before transfer into native audit custody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportLossFacts {
+    /// Configured exporter instance that observed the event.
+    pub instance: String,
+    /// Wall-clock seconds when loss was first observed, not the eventual retry time.
+    pub observed_at: u64,
+    /// Dropped line count, or occurrence count for capture/integrity failures.
+    pub count: u64,
+    /// Whether the event records delivery loss, capture refusal or integrity failure.
+    pub kind: ExportLossKind,
+}
+
+/// A checked positive custody acknowledgement; NONE and unknown wire values are not levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportCustodyLevel {
+    /// The destination accepted the prefix into its custody.
+    Accepted,
+    /// The destination durably retained the prefix.
+    Durable,
+    /// The destination indexed the prefix.
+    Indexed,
+}
+
+impl ExportCustodyLevel {
+    /// Stable metric label for this checked positive custody level.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Durable => "durable",
+            Self::Indexed => "indexed",
+        }
+    }
+}
+
+/// Host-owned observation vocabulary. Instance identity is bound by the constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportObservation {
+    /// Bytes already in custody were terminally discarded.
+    Dropped {
+        /// Closed host-owned terminal-loss reason.
+        reason: ExportDropReason,
+        /// Number of discarded lines; zero is ignored.
+        lines: u64,
+    },
+    /// The destination acknowledged an accepted prefix.
+    Custody {
+        /// Existing stream vocabulary.
+        stream: crate::export_stream::ExportStream,
+        /// Checked positive acknowledgement level.
+        level: ExportCustodyLevel,
+        /// Accepted prefix length; zero is ignored.
+        lines: u64,
+    },
+    /// The sole capture-refusal reason is admission_rejected, counted per occurrence.
+    CaptureRefused,
+    /// One audit-integrity failure, independent of whether queued bytes deliver.
+    IntegrityFailed,
+    /// Absolute retained ciphertext line count while its key is unavailable; never a loss.
+    Held {
+        /// Absolute current retained lines, including zero to clear the gauge.
+        lines: u64,
+    },
+}
+
+/// One logical instance's observer, shared with every generation and capture producer.
+pub trait ExportObserver: Send + Sync + 'static {
+    /// Record bounded typed facts against this constructor-bound logical instance.
+    fn observe(&self, observation: ExportObservation);
+}

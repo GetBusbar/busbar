@@ -219,14 +219,59 @@ fn an_error_record_out_of_place_faults_and_the_accepted_forms_pass() {
     );
 }
 
+/// The raw-`log` half of the arm below, over the probe image: two lines through the raw log entry numbered
+/// 65,607 (= 65,536 + 71, so a host that truncated to `u16` would show 71) render no code, and the registry
+/// writes the undeclared WARN once for the instance, carrying the whole number.
 #[test]
-#[ignore = "owner: W1-L2"]
+fn a_raw_log_over_9999_renders_no_code_and_warns_once() {
+    use std::time::{Duration, Instant};
+
+    use busbar_plugin_abi::host_side::caller::CallStack;
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_plugin_test::suites::harness::Harness;
+    use busbar_ports::CallCx;
+
+    use crate::min3_second as fx;
+
+    let h = Harness::admit(fx::probe::PLUGIN.plugin(), FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let port = h
+        .open_secret("raw-log", br#"{"tag":"raw-log"}"#)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let cx = CallCx {
+        deadline: Instant::now() + Duration::from_secs(10),
+        request_id: 1,
+        stack: CallStack::default(),
+    };
+    assert!(h
+        .block_on(port.resolve(cx, br#"{"name":"raw-log"}"#))
+        .is_ok());
+
+    let lines: Vec<_> = h
+        .logs()
+        .into_iter()
+        .filter(|line| line.message == "a raw log line numbered over 9999")
+        .collect();
+    assert_eq!(lines.len(), 2, "both raw lines were logged: {lines:?}");
+    for line in &lines {
+        assert_eq!(line.code, "", "no code renders for {}", fx::RAW_LOG_ERROR);
+        assert_eq!(line.level, level::WARN);
+    }
+    assert_eq!(
+        h.undeclared(),
+        vec![u64::from(fx::RAW_LOG_ERROR)],
+        "one undeclared WARN for the instance, with the whole number (never 71)"
+    );
+}
+
+#[test]
+#[ignore = "owner: W1-L2; blocked (re-checked on dev 2026-11-16): the ERROR-record half needs a plugin that writes an ERROR record numbered 65,607 (over u16), and the SDK's `Fail::with_error` takes a u16 and the shim writes only what the SDK builds, so no safe fixture can emit it; the raw `log` half runs as a_raw_log_over_9999_renders_no_code_and_warns_once"]
 fn a_raw_log_and_an_error_over_9999_render_no_code_and_warn_once() {
     todo!("owner: W1-L2 (C-ERROR-RECORDS)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8D"]
+#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): the kernel admission path that reads error_codes_refused and the crypto self-test row is not on dev (OUTSTANDING row 5)"]
 fn a_bad_d_errors_admits_without_codes_and_a_store_and_gate_hook_still_serve() {
     todo!("owner: W1-K8D (C-ERROR-RECORDS)")
 }

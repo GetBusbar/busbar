@@ -18,6 +18,11 @@ path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+busbar-json = { path = "../busbar-json" }
+busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
+busbar-count = { path = "../busbar-count" }
+# SDK-SECRET-BUFFER: one shared byte owner, exposed only through the producer facades.
+busbar-secure = { path = "../busbar-secure" }
 # The crypto facade, re-exported whole as `busbar_contract::crypto`.
 busbar-crypto = { path = "../busbar-crypto" }
 # Calendar dates and RFC 3339 (`civil`).
@@ -27,9 +32,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 # The JSON facade (`json`): sonic-rs, numbers exact (`arbitrary_precision`, workspace row).
 sonic-rs = { workspace = true }
 # `schema` only: `json::SchemaCheck` (tooling and tests; the engine's normal graph keeps none).
-jsonschema = { workspace = true, optional = true }
 # `axum` only: `json::Body`, the JSON responder.
-axum-core = { workspace = true, optional = true }
 serde-saphyr = { workspace = true }
 ciborium = { workspace = true }
 serde_path_to_error = { workspace = true }
@@ -53,6 +56,7 @@ tracing-core = { workspace = true }
 tracing-log = { workspace = true }
 
 [dev-dependencies]
+busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
 libc = { workspace = true }
 stats_alloc = { workspace = true }
 serde_json = { workspace = true }
@@ -64,10 +68,10 @@ syn = { workspace = true }
 
 [features]
 # `json::SchemaCheck`: JSON Schema over bytes. Tooling (plugin-loader `pack`) and dev edges only.
-schema = ["dep:jsonschema"]
+schema = ["busbar-json/schema"]
 
 # `json::Body`: a JSON answer over axum (axum's own `Json` is serde_json's; its `json` stays off).
-axum = ["dep:axum-core"]
+axum = ["busbar-json/axum"]
 
 # Test-only; named only in [dev-dependencies], absent from release builds.
 test-seal = ["test-support"]
@@ -75,7 +79,7 @@ test-seal = ["test-support"]
 # Ordinary ABI test support (`abi::sdk::test_support`): the all-zero value of a reviewed ABI
 # struct, `Default` on it, and the lending pairs. It forges nothing; sealed credentials stay
 # behind the dev-dependency-only `test-seal` feature.
-test-support = ["busbar-crypto/test-support"]
+test-support = ["busbar-crypto/test-support", "busbar-secure/test-support"]
 
 # R131 `test-unsafe-outside-boundary` (`abi_scan`): test-reachable files, scanned as tokens. Test-only
 # (it rides `test-support`); called from core's tests and the plugin template's `tests/abi_scan.rs`.
@@ -94,6 +98,10 @@ visit-count = []
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+# json_scanner's thread CPU clock, without `unsafe` (UNSAFE-MIN r3.1 §4.4).
+rustix = { version = "1.1", default-features = false, features = ["std", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

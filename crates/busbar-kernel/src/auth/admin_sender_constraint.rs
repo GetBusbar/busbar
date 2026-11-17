@@ -26,7 +26,7 @@ pub(super) fn downgraded(app: &App, provider: &str, headers: &HeaderMap) -> bool
     downgraded_in(headers, carriers)
 }
 
-fn downgraded_in<S: AsRef<str>>(
+pub(super) fn downgraded_in<S: AsRef<str>>(
     headers: &HeaderMap,
     carriers: impl IntoIterator<Item = S>,
 ) -> bool {

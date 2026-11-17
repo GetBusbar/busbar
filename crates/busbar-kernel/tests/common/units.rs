@@ -44,6 +44,9 @@ pub struct TestUnits {
 
     pub challenge: bool,
 
+    /// Authenticate settles on the kernel's anonymous principal (an open claim's caller with no key).
+    pub anonymous: bool,
+
     pub approved_lanes: Mutex<Vec<busbar_contract::caps::LaneId>>,
 
     pub seated_principals: Mutex<Vec<PrincipalId>>,
@@ -69,6 +72,7 @@ impl Default for TestUnits {
             spend: 0,
             meter: Arc::new(AccrualMeter::new()),
             challenge: false,
+            anonymous: false,
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
@@ -191,7 +195,11 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
                 rounds_left: 2,
             })
         } else {
-            busbar_contract::caps::Authenticated::Principal(principal())
+            busbar_contract::caps::Authenticated::Principal(if self.anonymous {
+                PrincipalId::anonymous()
+            } else {
+                principal()
+            })
         };
         step!(self, StepName::Authenticate, facts)
     }

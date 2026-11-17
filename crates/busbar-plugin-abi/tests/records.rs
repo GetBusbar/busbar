@@ -489,3 +489,59 @@ fn the_generic_codes_and_projection_keys_are_frozen() {
     );
     assert!(recs.next_rec().is_none());
 }
+
+#[test]
+fn borrowed_parts_and_pod_nested_match_existing_wire_bytes() {
+    let mut direct = Reply::new();
+    direct.put_parts(tag::TEXT, &[b"one", b"", b"two"]).unwrap();
+    let prefix = abi::auth::IssuedShapeRec {
+        id_len: 20,
+        secret_len: 40,
+    };
+    direct
+        .put_pod_nested(abi::auth::tag::D_ISSUED_SHAPE, &prefix, |nested| {
+            for value in ["AKIA", "ABC", "XYZ"] {
+                nested.put_text(tag::TEXT, value)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut expected = Reply::new();
+    expected.put_text(tag::TEXT, "onetwo").unwrap();
+    let mut tail = Reply::new();
+    for value in ["AKIA", "ABC", "XYZ"] {
+        tail.put_text(tag::TEXT, value).unwrap();
+    }
+    expected
+        .put_pod_tail(abi::auth::tag::D_ISSUED_SHAPE, &prefix, tail.as_bytes())
+        .unwrap();
+    assert_eq!(direct.as_bytes(), expected.as_bytes());
+}
+
+#[test]
+fn formatted_refusal_keeps_full_dynamic_text_and_metadata() {
+    let long = "é".repeat(4000);
+    let fail = Fail::refused_format(refused::R_CONFIG, format_args!("settings: {long}; end"))
+        .with_error(7071);
+    assert_eq!(fail.text(), format!("settings: {long}; end"));
+    assert_eq!(fail.code(), refused::R_CONFIG);
+    assert_eq!(fail.error(), 7071);
+    assert!(fail.facts().next().is_none());
+}
+
+#[test]
+fn a_failed_display_cannot_return_a_partial_formatted_refusal() {
+    struct Broken;
+    impl std::fmt::Display for Broken {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("partial")?;
+            Err(std::fmt::Error)
+        }
+    }
+    assert!(
+        std::panic::catch_unwind(|| {
+            Fail::refused_format(refused::R_CONFIG, format_args!("{Broken}"))
+        })
+        .is_err()
+    );
+}

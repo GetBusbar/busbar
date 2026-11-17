@@ -28,12 +28,69 @@ pub(crate) fn run(
     facts: &Facts,
     report: &mut Vec<String>,
 ) -> Result<(), Refusal> {
+    // The carve-out check is first, after the overlay fold (`steps::v0`): its warning leads the
+    // 1d lines and sees the document as the operator wrote it.
+    retire_metadata_carve_outs(root, report);
+    migrate_plugin_trust(root, resolved, report)?;
     drop_overlay_selector(root, report);
     unfold_zero_cache_write(root, resolved, report);
     drop_hostless_metadata_entries(root, resolved, report);
-    retire_metadata_carve_outs(root, resolved, report);
     price_open_units(root, facts, report)?;
     bind_ungoverned_principals(root, report);
+    Ok(())
+}
+
+/// Replace old opt-ins only when both grant the same permission. Validate before any mutation,
+/// so an ambiguous trust decision or unscoped publisher leaves the input intact.
+fn migrate_plugin_trust(
+    root: &mut Pairs,
+    resolved: &Value,
+    report: &mut Vec<String>,
+) -> Result<(), Refusal> {
+    let trust = resolved.at("plugins").at("trust");
+    let Some(policy) = trust.as_mapping() else {
+        return Ok(());
+    };
+    if let Some(publishers) = trust.at("publishers").as_sequence() {
+        for publisher in publishers {
+            if publisher.get("public_key").is_some()
+                || publisher.get("plugins").is_none()
+                || publisher.get("keys").is_none()
+            {
+                return Err(Refusal::Config(
+                    "plugins.trust.publishers requires explicit plugin scope: use {name: vendor, plugins: [exact-plugin-name], keys: [{public_key: <existing-hex-key>, revoked: false}]}; no wildcard scope is inferred".into(),
+                ));
+            }
+        }
+    }
+    let has_old = policy.contains_key("allow_unsigned") || policy.contains_key("allow_third_party");
+    if !has_old {
+        return Ok(());
+    }
+    if policy.contains_key("allow_untrusted") {
+        return Err(Refusal::Config("plugins.trust mixes obsolete allow_unsigned/allow_third_party with allow_untrusted; remove the old fields and explicitly decide allow_untrusted".into()));
+    }
+    let read_flag = |name: &str| -> Result<bool, Refusal> {
+        match policy.get_key(name) {
+            None => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| Refusal::Config(format!("plugins.trust.{name} must resolve to a boolean; explicitly decide allow_untrusted"))),
+        }
+    };
+    let unsigned = read_flag("allow_unsigned")?;
+    let third_party = read_flag("allow_third_party")?;
+    if unsigned != third_party {
+        return Err(Refusal::Config("plugins.trust has exactly one old opt-in enabled; the combined permission would broaden intent. Replace both old fields with an explicit allow_untrusted decision".into()));
+    }
+    let Some(plugins) = mapping_mut(root, "plugins") else {
+        return Ok(());
+    };
+    let Some(policy) = mapping_mut(plugins, "trust") else {
+        return Ok(());
+    };
+    remove_kept(policy, "allow_unsigned");
+    remove_kept(policy, "allow_third_party");
+    policy.insert_key("allow_untrusted", Value::from(unsigned));
+    report.push(format!("plugins.trust.allow_unsigned/allow_third_party replaced with allow_untrusted: {unsigned}; invalid known-publisher signatures, revoked keys and integrity failures always refuse"));
     Ok(())
 }
 
@@ -136,39 +193,18 @@ fn drop_hostless_metadata_entries(root: &mut Pairs, resolved: &Value, report: &m
 
 /// The 1.5.5 cloud-metadata carve-outs, retired in 1.6.0 (BUSBAR-3136): `security.allow_metadata_hosts`,
 /// `security.allow_all_metadata` and each provider's `allow_metadata_hosts` are removed, whatever
-/// they hold, and each entry that admitted something is named in a BUSBAR-3411 line: cloud
-/// metadata is refused for every outbound connection, so a destination it reached is now refused.
-fn retire_metadata_carve_outs(root: &mut Pairs, resolved: &Value, report: &mut Vec<String>) {
-    fn retire(path: &str, value: &Value, read: &Value, report: &mut Vec<String>) {
-        const CODE: busbar_contract::diagnostic::Banner =
-            busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
-        let entries: Vec<String> = match value {
-            Value::Array(list) => list
-                .iter()
-                .map(|e| e.as_str().map_or_else(|| format!("{e:?}"), str::to_owned))
-                .collect(),
-            _ if read.as_bool() == Some(true) => vec!["true".to_owned()],
-            _ => Vec::new(),
-        };
-        if entries.is_empty() {
-            report.push(format!(
-                "{CODE}: {path}: removed (it admitted nothing; 1.6.0 refuses the key: cloud \
-                 metadata is refused for every outbound connection)"
-            ));
-        }
-        for entry in entries {
-            report.push(format!(
-                "{CODE}: {path}: removed entry '{entry}'; 1.6.0 refuses cloud metadata for every \
-                 outbound connection and no configuration admits it, so a destination it reached \
-                 is now refused (use workload-identity federation for instance credentials)"
-            ));
-        }
-    }
+/// they hold (owner-signed: removal plus a warning, not a refusal). ONE BUSBAR-3411 line names every
+/// removed path, built from the template tree with control characters escaped, and never an entry's
+/// value: cloud metadata is refused for every outbound connection, so a destination one reached is
+/// now refused.
+fn retire_metadata_carve_outs(root: &mut Pairs, report: &mut Vec<String>) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+    let mut paths: Vec<String> = Vec::new();
     if let Some(security) = mapping_mut(root, "security") {
         for key in ["allow_metadata_hosts", "allow_all_metadata"] {
-            if let Some(value) = remove_kept(security, key) {
-                let read = resolved.at("security").at(key);
-                retire(&format!("security.{key}"), &value, read, report);
+            if remove_kept(security, key).is_some() {
+                paths.push(format!("security.{key}"));
             }
         }
     }
@@ -177,17 +213,36 @@ fn retire_metadata_carve_outs(root: &mut Pairs, resolved: &Value, report: &mut V
             let (Some(name), Value::Map(provider)) = (name.as_str(), provider) else {
                 continue;
             };
-            if let Some(value) = remove_kept(provider, "allow_metadata_hosts") {
-                let read = resolved.at("providers").at(name).at("allow_metadata_hosts");
-                retire(
-                    &format!("providers.{name}.allow_metadata_hosts"),
-                    &value,
-                    read,
-                    report,
-                );
+            if remove_kept(provider, "allow_metadata_hosts").is_some() {
+                paths.push(format!(
+                    "providers.{}.allow_metadata_hosts",
+                    escape_control(name)
+                ));
             }
         }
     }
+    if paths.is_empty() {
+        return;
+    }
+    report.push(format!(
+        "{CODE}: removed the retired cloud-metadata carve-out key(s) {}; 1.6.0 refuses cloud \
+         metadata for every outbound connection and no configuration admits it, so a destination \
+         they reached is now refused (use workload-identity federation for instance credentials)",
+        paths.join(", ")
+    ));
+}
+
+/// Operator text for a log line: control characters shown as escapes.
+pub(crate) fn escape_control(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// A write tier's rate key and, when exact, the rate value and its rendering.
@@ -196,7 +251,7 @@ type WriteRate = (&'static str, Option<(Value, String)>);
 /// The entry's cache-write rate as an exact `UnitRate` value and its rendering: `cache_write_utok`
 /// when present (never falling back), else `input_utok`. `Ok(None)`: not an exact rate (the units
 /// stay unpriced). A template slot refuses by 1t: the rate would be computed from it.
-fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
+fn write_unit_rate(lane: &str, entry: &Pairs, missing: &[&str]) -> Result<WriteRate, Refusal> {
     let key = if entry.contains_key("cache_write_utok") {
         "cache_write_utok"
     } else {
@@ -206,7 +261,21 @@ fn write_unit_rate(lane: &str, entry: &Pairs) -> Result<WriteRate, Refusal> {
         return Ok((key, None));
     };
     if is_template(source) {
-        return Err(computed(&format!("rate_card.{lane}.{key}")));
+        let source_path = format!("rate_card.{lane}.{key}");
+        let destinations = missing
+            .iter()
+            .map(|unit| format!("`rate_card.{lane}.units.{unit}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut refusal = computed(&source_path);
+        if let Refusal::Config(reason) = &mut refusal {
+            reason.push_str(&format!(
+                "; add {destinations}, each at the same rate as `{source_path}` in \
+             micro-units per unit, keeping the template as a quoted decimal reference \
+             (open-unit rates require an exact decimal string, not a bare float)"
+            ));
+        }
+        return Err(refusal);
     }
     let rate = source
         .as_f64()
@@ -265,7 +334,7 @@ fn price_open_units(
         let write_rate = if written.is_empty() {
             None
         } else {
-            Some(write_unit_rate(lane, entry)?)
+            Some(write_unit_rate(lane, entry, &written)?)
         };
         let units = entry.entry_or_insert_with("units", || Value::Map(Pairs::new()));
         let Value::Map(units) = units else {

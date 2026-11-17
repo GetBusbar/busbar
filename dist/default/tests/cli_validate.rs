@@ -43,7 +43,7 @@ fn the_production_pgo_trainer_configuration_validates() {
     let validated = std::process::Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("PGO_MOCK_KEY", "pgo-test-upstream")
         .env("PGO_BEDROCK_KEY", "AKIAPGOTRAINERTEST:pgo-test-secret")
         .env("PGO_ADMIN_TOKEN", "pgo-test-admin")
@@ -150,7 +150,7 @@ fn command(dir: &Path) -> Command {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"));
+        .env_remove("BUSBAR_PROVIDERS");
     command
 }
 
@@ -286,9 +286,9 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
     std::fs::write(dir.join("plugins").join(file), plugins::seal(m, lib)).unwrap();
 }
 
-fn plugins_block(dir: &Path, enabled: bool, allow_unsigned: bool) -> String {
+fn plugins_block(dir: &Path, enabled: bool, allow_untrusted: bool) -> String {
     format!(
-        "plugins:\n  enabled: {enabled}\n  dir: '{}'\n  trust:\n    allow_unsigned: {allow_unsigned}\n",
+        "plugins:\n  enabled: {enabled}\n  dir: '{}'\n  trust:\n    allow_untrusted: {allow_untrusted}\n",
         dir.join("plugins").display()
     )
 }
@@ -492,7 +492,7 @@ fn validate_trust_gate_matches_boot() {
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1);
     assert!(
-        stderr.contains("allow_unsigned"),
+        stderr.contains("allow_untrusted"),
         "names the opt-in: {stderr}"
     );
 
@@ -605,7 +605,7 @@ fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias
             assert!(
                 out.contains("was not loaded")
                     && (out.contains("manifest carries no signature")
-                        || out.contains("allow_unsigned")),
+                        || out.contains("allow_untrusted")),
                 "the refusal is the trust verdict on the tarball: {out}"
             );
         }
@@ -930,7 +930,7 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .output()
         .expect("run busbar");
     (
@@ -1105,7 +1105,7 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
         .env("MOCK_KEY", "test-key-value")
         .env("BUSBAR_ADMIN_TOKEN", "test-admin-token")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .output()
         .expect("run busbar");
     let code = out.status.code().unwrap_or(-1);
@@ -1315,7 +1315,7 @@ fn providers_flag_overrides_providers_file_and_default() {
 
 #[cfg(linked_section_pools)]
 #[test]
-fn retired_busbar_providers_env_does_not_override_the_config_catalog() {
+fn retired_busbar_providers_env_refuses_before_selecting_a_catalog() {
     let dir = fixture_dir("provenvdep");
     write_configs(&dir, "");
     let config = dir.join("config.yaml");
@@ -1325,21 +1325,17 @@ fn retired_busbar_providers_env_does_not_override_the_config_catalog() {
         &["--validate"],
         &[("BUSBAR_PROVIDERS", bogus.to_str().unwrap())],
     );
-    assert_eq!(code, 0, "the retired selector is ignored: {stderr}");
-    assert!(stdout.contains("ok: config valid"), "{stdout}");
-    assert!(
-        stdout.contains(dir.join("providers.yaml").to_str().unwrap()),
-        "{stdout}"
-    );
+    assert_eq!(code, 1, "the retired selector must refuse: {stderr}");
+    assert!(!stdout.contains("ok: config valid"), "{stdout}");
     assert!(!stdout.contains(bogus.to_str().unwrap()), "{stdout}");
     assert_eq!(
         stderr
             .lines()
-            .filter(|line| line.starts_with(&ignored_notice("BUSBAR_PROVIDERS"))
+            .filter(|line| line.contains(&refusal_notice("BUSBAR_PROVIDERS"))
                 && line.contains("providers_file"))
             .count(),
         1,
-        "decision 160: retired runtime input is ignored and reported, never honoured: {stderr}"
+        "retired runtime input refuses with replacement guidance: {stderr}"
     );
     assert!(
         !stderr.contains(bogus.to_str().unwrap()),
@@ -1353,9 +1349,9 @@ fn retired_busbar_providers_env_does_not_override_the_config_catalog() {
 /// The leading text of the BUSBAR-3029 notice for one retired launch variable. The code comes
 /// from the catalog, never a literal.
 #[cfg(linked_section_pools)]
-fn ignored_notice(name: &str) -> String {
+fn refusal_notice(name: &str) -> String {
     format!(
-        "[warn] {}: {name} is set but ignored",
+        "{}: startup refused because {name} is set",
         busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
     )
 }
@@ -1380,7 +1376,7 @@ fn line_has_in_order(line: &str, needles: &[&str]) -> bool {
 
 #[cfg(linked_section_pools)]
 #[test]
-fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
+fn boot_refuses_a_set_retired_worker_threads_variable_before_config_migration() {
     let dir = fixture_dir("retired-workers-boot");
     write_configs(&dir, "goovernance: {}\n");
     let out = command(&dir)
@@ -1393,31 +1389,26 @@ fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
         Some(1),
         "boot refuses the bad key: {stderr}"
     );
-    let lines: Vec<&str> = stderr.lines().collect();
-    let notice = lines
-        .iter()
-        .position(|line| {
-            line.starts_with(&ignored_notice("BUSBAR_WORKER_THREADS"))
-                && line.contains("advanced.worker_threads")
-        })
-        .unwrap_or_else(|| panic!("boot must report the ignored BUSBAR_WORKER_THREADS: {stderr}"));
-    let refusal_code = busbar_kernel::diagnostics::BOOT_FATAL_ERROR
-        .banner()
-        .to_string();
-    let refusal = lines
-        .iter()
-        .position(|line| line.contains(&refusal_code))
-        .unwrap_or_else(|| panic!("boot must refuse with {refusal_code}: {stderr}"));
     assert!(
-        notice < refusal,
-        "the notice prints before a config refusal, so it is never lost: {stderr}"
+        stderr.lines().any(|line| {
+            line.contains(&refusal_notice("BUSBAR_WORKER_THREADS"))
+                && line.contains("advanced.worker_threads")
+        }),
+        "the retired setting must explain the refusal: {stderr}"
+    );
+    assert!(std::fs::read_to_string(dir.join("config.yaml"))
+        .unwrap()
+        .contains("goovernance"));
+    assert!(
+        !dir.join("config.yaml.1.5.5").exists(),
+        "no migration backup before refusal"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_reports_each_retired_launch_variable_as_ignored() {
+fn validate_refuses_each_retired_launch_variable_with_replacement_guidance() {
     const RETIRED: [(&str, &str, &str); 4] = [
         (
             "BUSBAR_PROVIDERS",
@@ -1455,7 +1446,7 @@ fn validate_reports_each_retired_launch_variable_as_ignored() {
 
     let all: Vec<(&str, &str)> = RETIRED.iter().map(|(n, v, _)| (*n, *v)).collect();
     let (code, stderr) = run(&all);
-    assert_eq!(code, 0, "a retired variable never refuses: {stderr}");
+    assert_eq!(code, 1, "retired variables must refuse: {stderr}");
     let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED
         .banner()
         .to_string();
@@ -1467,15 +1458,14 @@ fn validate_reports_each_retired_launch_variable_as_ignored() {
     );
     for (line, (name, _, key)) in notices.iter().zip(RETIRED) {
         assert!(
-            line.starts_with(&ignored_notice(name)) && line.contains(key),
+            line.contains(&refusal_notice(name)) && line.contains(key),
             "table order, each naming its config key; expected {name} -> {key}, got: {line}"
         );
     }
     assert!(
-        notices.iter().any(|line| line_has_in_order(
-            line,
-            &["BUSBAR_PROVIDERS", "ignored", "providers.yaml"]
-        )),
+        notices
+            .iter()
+            .any(|line| line_has_in_order(line, &["BUSBAR_PROVIDERS", "providers.yaml"])),
         "the busbar-release FIX cell's match must hold: {stderr}"
     );
 
@@ -1588,7 +1578,7 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
         });
     let decisions_yaml = if let Some(aliases) = aliases {
         let catalog: std::collections::BTreeMap<_, _> = aliases.into_iter().map(|alias| {
-            (alias, serde_json::json!({
+            (alias, busbar_contract::json::json!({
                 "description": "Busbar Decisions CLI validation fixture (not a provider model)",
                 "release_date": "2026-11-09",
             }))
@@ -2118,7 +2108,7 @@ fn validate_and_boot_refuse_a_reference_at_an_undeclared_plugin_field() {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -2230,7 +2220,6 @@ fn the_retired_migrate_flags_are_unknown_options() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
 /// QE: a pinned publisher key with no point on edwards25519 (`y = 2`: canonical, not small-order) is
 /// refused by `--validate` and by boot, with the INVALID text it had before Q9b, not first at the
 /// first verify of a plugin signed under it.
@@ -2241,7 +2230,7 @@ fn validate_and_boot_refuse_an_off_curve_publisher_key() {
         &dir,
         &format!(
             "plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    publishers:\n      - name: \
-             offcurve\n        public_key: \
+             offcurve\n        plugins: [offcurve-store]\n        keys:\n          - public_key: \
              \"0200000000000000000000000000000000000000000000000000000000000000\"\n",
             dir.join("plugins").display()
         ),

@@ -124,7 +124,7 @@ impl Request {
     /// Encode the complete immutable request within the existing ABI byte bound.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
         self.validate()?;
-        let bytes = serde_json::to_vec(self).map_err(|_| "invalid usage correction encoding")?;
+        let bytes = crate::json::to_vec(self).map_err(|_| "invalid usage correction encoding")?;
         if crate::abi::mechanism::extensions::entry_len(INTENT, &bytes) as u64
             > crate::abi::mechanism::check::HARD_MAX_BYTES
         {
@@ -139,7 +139,7 @@ impl Request {
             return Err("usage correction exceeds ABI byte bound");
         }
         let request: Self =
-            serde_json::from_slice(bytes).map_err(|_| "invalid usage correction encoding")?;
+            crate::json::parse(bytes).map_err(|_| "invalid usage correction encoding")?;
         request.validate()?;
         Ok(request)
     }
@@ -147,7 +147,7 @@ impl Request {
     /// Fingerprint binding the complete canonical request, including operation identity.
     #[must_use]
     pub fn fingerprint(&self) -> [u8; 32] {
-        let bytes = serde_json::to_vec(self).expect("usage correction contains only JSON values");
+        let bytes = crate::json::to_vec(self).expect("usage correction contains only JSON values");
         crate::crypto::sha256(&bytes)
     }
 }
@@ -191,7 +191,17 @@ fn validate_ledger(row: &UsageLedger) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn metering_identity(row: &MeteringRow) -> (&str, &str, &str, &str, &str, u64) {
+fn metering_identity(
+    row: &MeteringRow,
+) -> (
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    u64,
+    Option<super::MeteringRole>,
+) {
     (
         &row.key_id,
         &row.model,
@@ -199,6 +209,7 @@ fn metering_identity(row: &MeteringRow) -> (&str, &str, &str, &str, &str, u64) {
         &row.key_group_at_use,
         &row.pricing_version,
         row.priced_from_ms,
+        row.pricing.as_ref().map(|pricing| pricing.identity()),
     )
 }
 
@@ -246,6 +257,7 @@ mod exact_count_validation_tests {
             key_id: "key".into(),
             day_start: 0,
             metering: vec![MeteringRow {
+                pricing: None,
                 scale,
                 key_id: "key".into(),
                 model: "model".into(),
@@ -276,7 +288,7 @@ mod exact_count_validation_tests {
     fn exact_count_validation_preserves_legacy_and_scaled_wire_fingerprints() {
         for (scale, quantity) in [(0, 2), (6, 123_456), (6, i128::MAX)] {
             let original = request(scale, quantity);
-            let bytes = serde_json::to_vec(&original).unwrap();
+            let bytes = crate::json::to_vec(&original).unwrap();
             let fingerprint = original.fingerprint();
             original.validate().unwrap();
             assert_eq!(original.encode().unwrap(), bytes);
@@ -324,7 +336,7 @@ mod exact_count_validation_tests {
                     invalid.validate().is_err(),
                     "field={field}, scale={scale}, quantity={quantity}"
                 );
-                let bytes = serde_json::to_vec(&invalid).unwrap();
+                let bytes = crate::json::to_vec(&invalid).unwrap();
                 assert!(Request::decode(&bytes).is_err());
                 assert!(invalid.encode().is_err());
             }

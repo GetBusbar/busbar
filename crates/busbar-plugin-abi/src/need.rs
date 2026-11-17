@@ -7,6 +7,33 @@
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+/// A borrowed destination, with no heap-owned descriptor array for the legacy one-piece case.
+#[derive(Clone, Copy)]
+pub(crate) enum Destination<'a> {
+    One(&'a str),
+    Parts(&'a [&'a str]),
+}
+
+impl Destination<'_> {
+    pub(crate) fn parts(&self) -> impl Iterator<Item = &[u8]> + Clone {
+        let (one, many) = match *self {
+            Self::One(text) => (Some(text), &[][..]),
+            Self::Parts(parts) => (None, parts),
+        };
+        one.into_iter()
+            .chain(many.iter().copied())
+            .map(str::as_bytes)
+    }
+
+    pub(crate) fn checked_len(&self) -> Option<usize> {
+        sum_lengths(self.parts().map(<[u8]>::len))
+    }
+}
+
+fn sum_lengths(mut lengths: impl Iterator<Item = usize>) -> Option<usize> {
+    lengths.try_fold(0usize, usize::checked_add)
+}
+
 // ---- §6.1 Wire (inside `mechanism!`) ----
 mechanism! {
 
@@ -209,8 +236,8 @@ pub mod need {
     use core::pin::Pin;
     use core::task::{Context, Poll};
 
+    use crate::secure::SecureVec;
     use zerocopy::{FromBytes, IntoBytes};
-    use zeroize::{Zeroize, Zeroizing};
 
     use super::{
         DirFacts, NeedRec, NeedResRec, SecretHandle, TrustHandle, dir, need_flag, need_status, op,
@@ -278,8 +305,8 @@ pub mod need {
     }
     pub struct Fetched {
         pub status: u16,
-        pub headers: Vec<(String, Vec<u8>)>,
-        pub body: Vec<u8>,
+        pub headers: Vec<(String, SecureVec)>,
+        pub body: SecureVec,
     }
     #[derive(Clone, Copy)]
     pub enum Record<'a> {
@@ -380,8 +407,60 @@ pub mod need {
     /// secret service, LOOPBACK_ALLOWED for a local collector, and so on. Out of range => INVALID. Round 24:
     /// `dest` = `host:port`, or `unix:/abs/path` with `Tls::None` and OPERATOR_INFRASTRUCTURE (§12.1).
     pub fn open<'a>(dest: &'a str, tls: Tls<'a>, egress: u32) -> NeedFut<'a, Opened> {
-        NeedFut::new(Req::Open { dest, tls, egress }, opened)
+        NeedFut::new(
+            Req::Open {
+                dest: super::Destination::One(dest),
+                tls,
+                egress,
+            },
+            opened,
+        )
     }
+    /// OPEN from borrowed destination segments. Both the segment storage and descriptor slice
+    /// must live through await; dropping the future releases those borrows.
+    ///
+    /// ```
+    /// use busbar_plugin_abi::need::{Tls, need};
+    /// use std::future::Future;
+    /// fn legacy(dest: &str) -> impl Future<Output = Result<need::Opened, need::NeedErr>> + '_ {
+    ///     need::open(dest, Tls::None, 2)
+    /// }
+    /// async fn local() {
+    ///     let port = [b'8', b'0'];
+    ///     let port = std::str::from_utf8(&port).unwrap();
+    ///     let parts = ["example.test", ":", port];
+    ///     let _ = need::open_parts(&parts, Tls::None, 2).await;
+    /// }
+    /// ```
+    /// ```compile_fail
+    /// use busbar_plugin_abi::need::{Tls, need};
+    /// let future = {
+    ///     let parts = ["example.test", ":80"];
+    ///     need::open_parts(&parts, Tls::None, 2)
+    /// };
+    /// drop(future);
+    /// ```
+    /// ```compile_fail
+    /// use busbar_plugin_abi::need::{Tls, need};
+    /// let mut parts = ["example.test", ""];
+    /// let future = {
+    ///     let port = [b'8', b'0'];
+    ///     parts[1] = std::str::from_utf8(&port).unwrap();
+    ///     need::open_parts(&parts, Tls::None, 2)
+    /// };
+    /// drop(future);
+    /// ```
+    pub fn open_parts<'a>(dest: &'a [&'a str], tls: Tls<'a>, egress: u32) -> NeedFut<'a, Opened> {
+        NeedFut::new(
+            Req::Open {
+                dest: super::Destination::Parts(dest),
+                tls,
+                egress,
+            },
+            opened,
+        )
+    }
+
     pub fn starttls<'a>(c: &'a Conn, tls: Tls<'a>) -> NeedFut<'a, ()> {
         NeedFut::new(
             Req::StartTls {
@@ -403,7 +482,7 @@ pub mod need {
         )
     }
     /// Ok(empty) = EOF.
-    pub fn read(c: &Conn, max: u32) -> NeedFut<'_, Vec<u8>> {
+    pub fn read(c: &Conn, max: u32) -> NeedFut<'_, SecureVec> {
         NeedFut::new(
             Req::Read {
                 conn: c.id,
@@ -415,7 +494,7 @@ pub mod need {
     }
     /// Appends to `buf` (reuse it across reads: no allocation once it has capacity). Ok(true) = EOF.
     /// When `buf` lacks capacity, abi grows it by allocate, copy, zero the old block, free (I11), never `reserve`.
-    pub fn read_into<'a>(c: &'a Conn, max: u32, buf: &'a mut Vec<u8>) -> NeedFut<'a, bool> {
+    pub fn read_into<'a>(c: &'a Conn, max: u32, buf: &'a mut SecureVec) -> NeedFut<'a, bool> {
         NeedFut::new(
             Req::ReadInto {
                 conn: c.id,
@@ -439,7 +518,7 @@ pub mod need {
     pub fn fetch<'a>(req: &'a Fetch<'a>) -> NeedFut<'a, Fetched> {
         NeedFut::new(Req::Fetch(req), fetched)
     }
-    pub fn secret(handle: SecretHandle) -> NeedFut<'static, Zeroizing<Vec<u8>>> {
+    pub fn secret(handle: SecretHandle) -> NeedFut<'static, SecureVec> {
         NeedFut::new(Req::Secret(handle), secret_value)
     }
     pub fn record(op: Record<'_>) -> NeedFut<'_, RecordOut> {
@@ -522,9 +601,9 @@ pub mod need {
     pub enum Done {
         Opened(Opened),
         Unit,
-        Read(Vec<u8>),
+        Read(SecureVec),
         Fetched(Fetched),
-        Secret(Zeroizing<Vec<u8>>),
+        Secret(SecureVec),
         Record(RecordOut),
     }
     impl<'a> Batch<'a> {
@@ -578,7 +657,7 @@ pub mod need {
     /// One request, with what its answer needs to decode.
     enum Req<'a> {
         Open {
-            dest: &'a str,
+            dest: super::Destination<'a>,
             tls: Tls<'a>,
             egress: u32,
         },
@@ -601,7 +680,7 @@ pub mod need {
             conn: u64,
             chain: u64,
             max: u32,
-            buf: &'a mut Vec<u8>,
+            buf: &'a mut SecureVec,
         },
         Close {
             conn: u64,
@@ -798,6 +877,7 @@ pub mod need {
     /// One argument of a NEED, as it goes on the wire.
     #[derive(Clone, Copy)]
     enum Arg<'x> {
+        Destination(super::Destination<'x>),
         Bytes(&'x [u8]),
         /// ALPN ids, comma-separated.
         Alpn(&'x [&'x str]),
@@ -825,8 +905,16 @@ pub mod need {
     }
 
     impl Arg<'_> {
+        fn checked_len(self) -> Result<usize, Full> {
+            if let Self::Destination(dest) = self {
+                return dest.checked_len().ok_or(Full);
+            }
+            Ok(self.len())
+        }
+
         fn len(self) -> usize {
             match self {
+                Arg::Destination(_) => unreachable!("destination length must be checked"),
                 Arg::Bytes(bytes) => bytes.len(),
                 Arg::Alpn(ids) => {
                     ids.iter().map(|id| id.len()).sum::<usize>() + ids.len().saturating_sub(1)
@@ -873,6 +961,11 @@ pub mod need {
         /// Appends the argument; the caller made room for `len()` bytes.
         fn write(self, w: &mut Reply) {
             match self {
+                Arg::Destination(dest) => {
+                    for part in dest.parts() {
+                        w.append(part);
+                    }
+                }
                 Arg::Bytes(bytes) => w.append(bytes),
                 Arg::Alpn(ids) => {
                     for (i, id) in ids.iter().enumerate() {
@@ -964,7 +1057,7 @@ pub mod need {
     fn put_need(w: &mut Reply, mut rec: NeedRec, args: [Arg<'_>; 4]) -> Result<(), Full> {
         let mut body = size_of::<NeedRec>();
         for (len, arg) in rec.lens.iter_mut().zip(args) {
-            let n = arg.len();
+            let n = arg.checked_len()?;
             *len = u32::try_from(n).map_err(|_| Full)?;
             body = body.checked_add(n).ok_or(Full)?;
         }
@@ -973,7 +1066,11 @@ pub mod need {
             _r: 0,
             len: u32::try_from(body).map_err(|_| Full)?,
         };
-        w.room(record_size(body))?;
+        let size = size_of::<RecHead>()
+            .checked_add(body)
+            .and_then(|n| n.checked_add(pad(body)))
+            .ok_or(Full)?;
+        w.room(size)?;
         w.append(head.as_bytes());
         w.append(rec.as_bytes());
         for arg in args {
@@ -1076,7 +1173,7 @@ pub mod need {
                         t.trust,
                     ),
                     [
-                        Arg::Bytes(dest.as_bytes()),
+                        Arg::Destination(*dest),
                         Arg::Bytes(t.sni.as_bytes()),
                         Arg::Alpn(t.alpn),
                         EMPTY,
@@ -1410,8 +1507,8 @@ pub mod need {
         })
     }
 
-    fn read_bytes(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<Vec<u8>, NeedErr> {
-        results.next(req.op()).map(|res| res.data0.to_vec())
+    fn read_bytes(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<SecureVec, NeedErr> {
+        results.next(req.op()).map(|res| SecureVec::from(res.data0))
     }
 
     fn read_appended(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<bool, NeedErr> {
@@ -1419,21 +1516,8 @@ pub mod need {
         let Req::ReadInto { buf, .. } = req else {
             bad()
         };
-        append_wiping(buf, res.data0);
+        buf.extend_from_slice(res.data0);
         Ok(res.b == 1)
-    }
-
-    /// Appends `data`; when `buf` lacks capacity, a fresh block is allocated, the bytes copied, and the old
-    /// block zeroed before it is freed (I11), never `reserve`.
-    fn append_wiping(buf: &mut Vec<u8>, data: &[u8]) {
-        let want = buf.len().saturating_add(data.len());
-        if want > buf.capacity() {
-            let mut grown = Vec::with_capacity(want.max(buf.capacity().saturating_mul(2)));
-            grown.extend_from_slice(&buf[..]);
-            let mut old = core::mem::replace(buf, grown);
-            old.zeroize();
-        }
-        buf.extend_from_slice(data);
     }
 
     fn fetched_answer(results: &mut Results<'_>) -> Result<Fetched, NeedErr> {
@@ -1443,8 +1527,10 @@ pub mod need {
         };
         Ok(Fetched {
             status,
-            headers: text_pairs(res.data1),
-            body: res.data0.to_vec(),
+            headers: pairs(res.data1)
+                .map(|(name, value)| (text(name), SecureVec::from(value)))
+                .collect(),
+            body: SecureVec::from(res.data0),
         })
     }
 
@@ -1453,13 +1539,8 @@ pub mod need {
         fetched_answer(results)
     }
 
-    fn secret_value(
-        req: &mut Req<'_>,
-        results: &mut Results<'_>,
-    ) -> Result<Zeroizing<Vec<u8>>, NeedErr> {
-        results
-            .next(req.op())
-            .map(|res| Zeroizing::new(res.data0.to_vec()))
+    fn secret_value(req: &mut Req<'_>, results: &mut Results<'_>) -> Result<SecureVec, NeedErr> {
+        results.next(req.op()).map(|res| SecureVec::from(res.data0))
     }
 
     fn record_out(record: Record<'_>, results: &mut Results<'_>) -> Result<RecordOut, NeedErr> {
@@ -1559,11 +1640,11 @@ pub mod need {
             Req::Write { .. } => results.next(op::WRITE).map(|_| Done::Unit),
             Req::Read { .. } => results
                 .next(op::READ)
-                .map(|res| Done::Read(res.data0.to_vec())),
+                .map(|res| Done::Read(SecureVec::from(res.data0))),
             Req::Fetch(_) => fetched_answer(results).map(Done::Fetched),
             Req::Secret(_) => results
                 .next(op::SECRET)
-                .map(|res| Done::Secret(Zeroizing::new(res.data0.to_vec()))),
+                .map(|res| Done::Secret(SecureVec::from(res.data0))),
             Req::Record(record) => record_out(*record, results).map(Done::Record),
             _ => bad(),
         }
@@ -1629,6 +1710,126 @@ pub mod need {
             all.remove(0)
         }
 
+        #[test]
+        fn open_parts_and_single_destination_have_identical_runtime_encoding() {
+            use super::super::Destination;
+            for text in [
+                "",
+                "db.test:0",
+                "[::1]:65535",
+                "unix:/path",
+                &"a".repeat(2049),
+            ] {
+                let (first, rest) = text.split_at(text.len() / 2);
+                let parts = [first, "", rest];
+                let one = written(&Req::Open {
+                    dest: Destination::One(text),
+                    tls: Tls::None,
+                    egress: 2,
+                });
+                let many = written(&Req::Open {
+                    dest: Destination::Parts(&parts),
+                    tls: Tls::None,
+                    egress: 2,
+                });
+                assert_eq!(one.0.as_bytes(), many.0.as_bytes());
+                assert_eq!(one.1, many.1);
+            }
+            let alpn = ["h2", "http/1.1"];
+            let parts = ["db.", "test", ":443"];
+            for tls in [
+                Tls::None,
+                Tls::Required {
+                    sni: "db.test",
+                    alpn: &alpn,
+                    trust: TrustHandle(3),
+                },
+                Tls::Mutual {
+                    sni: "db.test",
+                    alpn: &alpn,
+                    trust: TrustHandle(3),
+                    cert: SecretHandle(4),
+                },
+                Tls::Inband {
+                    sni: "db.test",
+                    alpn: &alpn,
+                    trust: TrustHandle(3),
+                    cert: Some(SecretHandle(4)),
+                },
+            ] {
+                let one = written(&Req::Open {
+                    dest: Destination::One("db.test:443"),
+                    tls,
+                    egress: 2,
+                });
+                let many = written(&Req::Open {
+                    dest: Destination::Parts(&parts),
+                    tls,
+                    egress: 2,
+                });
+                assert_eq!(one.0.as_bytes(), many.0.as_bytes());
+                assert_eq!(one.1, many.1);
+            }
+        }
+
+        #[test]
+        fn a_parts_need_over_the_output_limit_leaves_existing_records_unchanged() {
+            let text = "x".repeat(16 * 1024 * 1024);
+            let parts = [text.as_str(), ":80"];
+            let request = Req::Open {
+                dest: super::super::Destination::Parts(&parts),
+                tls: Tls::None,
+                egress: 2,
+            };
+            let Wire::Need(rec, args) = wire(&request, 9) else {
+                panic!("wire")
+            };
+            let mut out = Reply::new();
+            out.put_text(tag::TEXT, "retained").unwrap();
+            let before = out.as_bytes().to_vec();
+            assert!(put_need(&mut out, rec, args).is_err());
+            assert_eq!(out.as_bytes(), before);
+        }
+
+        #[test]
+        fn failed_parts_sends_preserve_prior_mail_and_count_for_single_and_batch() {
+            let text = "x".repeat(16 * 1024 * 1024);
+            let parts = [text.as_str(), ":80"];
+            for batch in [false, true] {
+                let mut mail = Mail {
+                    key: bridge::ChainKey {
+                        thread: 1,
+                        serial: 9,
+                    },
+                    step: 0,
+                    results: None,
+                    needs: Reply::new(),
+                    count: 3,
+                };
+                mail.needs.put_text(tag::TEXT, "retained").unwrap();
+                let before = mail.needs.as_bytes().to_vec();
+                let large = Req::Open {
+                    dest: super::super::Destination::Parts(&parts),
+                    tls: Tls::None,
+                    egress: 2,
+                };
+                let mut request = if batch {
+                    Req::Batch {
+                        items: vec![Req::Secret(SecretHandle(1)), large],
+                        sent: 0,
+                    }
+                } else {
+                    large
+                };
+                assert!(matches!(
+                    send(&mut request, &mut mail),
+                    Wrote::Local(NeedErr::Limit)
+                ));
+                assert_eq!(mail.count, 3);
+                assert_eq!(mail.needs.as_bytes(), before);
+            }
+        }
+
         /// The §6.1 table, request side: op, flags, a/b, handles and every argument as core decodes them.
         #[test]
         fn requests_go_on_the_wire_as_the_table_says() {
@@ -1640,7 +1841,7 @@ pub mod need {
                 cert: SecretHandle(4),
             };
             let (rec, args) = written(&Req::Open {
-                dest: "db.test:5432",
+                dest: super::super::Destination::One("db.test:5432"),
                 tls,
                 egress: super::super::egress::OPERATOR_INFRASTRUCTURE,
             });
@@ -1651,7 +1852,7 @@ pub mod need {
             assert_eq!(args[2], b"h2,http/1.1");
 
             let (rec, _) = written(&Req::Open {
-                dest: "x:1",
+                dest: super::super::Destination::One("x:1"),
                 tls: Tls::None,
                 egress: 99,
             });
@@ -1787,7 +1988,7 @@ pub mod need {
             let bytes = w.as_bytes();
 
             let mut req = Req::Open {
-                dest: "x:1",
+                dest: super::super::Destination::One("x:1"),
                 tls: Tls::None,
                 egress: 0,
             };
@@ -1830,10 +2031,10 @@ pub mod need {
 
         #[test]
         fn read_into_grows_by_copy_and_reports_eof() {
-            let mut buf = Vec::with_capacity(2);
+            let mut buf = SecureVec::with_capacity(2).expect("allocation");
             buf.extend_from_slice(b"ab");
-            append_wiping(&mut buf, b"cdef");
-            assert_eq!(buf, b"abcdef");
+            buf.extend_from_slice(b"cdef");
+            assert_eq!(buf.as_slice(), b"abcdef");
             let mut w = Reply::new();
             result(&mut w, op::READ, 0, 1, 1, b"g", b"");
             let mut req = Req::ReadInto {
@@ -1846,7 +2047,7 @@ pub mod need {
                 read_appended(&mut req, &mut Results::at(w.as_bytes(), 0, 9)),
                 Ok(true)
             );
-            assert_eq!(buf, b"abcdefg");
+            assert_eq!(buf.as_slice(), b"abcdefg");
         }
 
         #[test]
@@ -1864,7 +2065,7 @@ pub mod need {
             let bytes = w.as_bytes().to_vec();
             let short_pooled = std::panic::catch_unwind(move || {
                 let mut req = Req::Open {
-                    dest: "x:1",
+                    dest: super::super::Destination::One("x:1"),
                     tls: Tls::None,
                     egress: 0,
                 };
@@ -1883,5 +2084,20 @@ pub mod need {
             });
             assert!(polled.is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::{Destination, sum_lengths};
+
+    #[test]
+    fn destination_length_checks_overflow_without_fake_slices() {
+        assert_eq!(sum_lengths([usize::MAX, 1].into_iter()), None);
+        assert_eq!(
+            sum_lengths([usize::MAX - 1, 1].into_iter()),
+            Some(usize::MAX)
+        );
+        assert_eq!(Destination::Parts(&["a", "", "bc"]).checked_len(), Some(3));
     }
 }

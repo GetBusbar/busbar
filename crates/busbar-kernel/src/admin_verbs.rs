@@ -6,7 +6,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::http::HeaderMap;
 use busbar_contract::abi::mechanism::route::RouteMethod;
 
 use crate::plane_driver::EngineHost;
@@ -94,7 +93,7 @@ pub struct AdminReqCtx {
 
     pub body: Bytes,
 
-    pub headers: HeaderMap,
+    pub headers: crate::inbound::http_projection::AdminHeaders,
 
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
 
@@ -103,6 +102,10 @@ pub struct AdminReqCtx {
     pub query: Option<String>,
 
     pub serve: crate::plane_driver::serve::ServeTables,
+
+    /// The trust decision authority the admin gate built from its admission verdict and the caller's
+    /// verb grant; `None` = the plane may not decide trust (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2a).
+    pub trust_authority: Option<crate::host_services::TrustDecisionAuthority>,
 }
 
 pub enum AdminReply {
@@ -124,7 +127,7 @@ pub async fn connect_reply<P: PlaneTrust>(ctx: AdminReqCtx) -> AdminReply {
         Err(e) => return AdminReply::Refused(e),
     };
     match P::look(subject, ctx.host, ctx.name).await {
-        Ok(view) => match serde_json::to_string(&view) {
+        Ok(view) => match busbar_contract::json::to_string(&view) {
             Ok(body) => AdminReply::Applied(body),
             Err(e) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
                 "the {} view did not serialize: {e}",

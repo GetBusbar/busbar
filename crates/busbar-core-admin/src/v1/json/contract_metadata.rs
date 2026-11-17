@@ -72,21 +72,10 @@ pub(super) fn root_settings_schema() -> Value {
                 "anyOf":[{"type":"object","additionalProperties":true},{"type":"array","items":{}}],
                 "description":"RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. An omitted or null cache_write_utok is priced at input_utok. Normal rate validation applies."
             }},
-            "plugin_rate_cards": {
-                "type":["object","null"],
-                "description":"Exact common measurement rates by plugin kind, actual configured namespace, and declared class. Integer or decimal-string micro-units per quantity; missing rates remain unpriced. The whole map is replaced when supplied, including an empty map to clear it.",
-                "propertyNames":{"enum":["plane","transport","auth","store","secret","hook","export"]},
-                "additionalProperties":{"type":"object","additionalProperties":{
-                    "type":"object","maxProperties":busbar_contract::abi::measurement::MAX_MEASUREMENT_CLASSES,"additionalProperties":{
-                        "oneOf":[{"type":"integer","minimum":0},{"type":"string","pattern":"^[0-9]+(\\.[0-9]{1,3})?$"}],
-                        "description":"Exact non-negative micro-units; the resolved nano-unit rate must fit uint64."
-                    }
-                }}
-            },
             "per_request_fee": {"type":["integer","null"],"format":"int64","minimum":i64::MIN,"maximum":i64::MAX},
             "store": section("Store selection: module and module-owned settings; requires restart."),
             "security": section("Per-field SecurityPatch; omitted or null members preserve their value."),
-            "limits": section("Per-field LimitsPatch; omitted members preserve their value. Null datagram_line_memory_bytes explicitly disables that limit."),
+            "limits": section("Per-field LimitsPatch; omitted or null members preserve their value."),
             "advanced": section("Per-field AdvancedPatch; omitted or null members preserve their value."),
             "health": section("Per-field HealthPatch; omitted or null members preserve their value."),
             "routing": section("Per-field RoutingPatch; omitted or null members preserve their value.")
@@ -111,15 +100,11 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
                         .iter()
                         .any(|parameter| matches!(parameter["in"].as_str(), Some("path" | "query")))
                 });
-            let plane_operation = op.get("x-busbar-plane").is_some();
             let responses = op[RESPONSES_KEY]
                 .as_object_mut()
                 .expect("operation responses");
             if extracts_request {
                 responses.entry("400").or_insert_with(|| json!({"description":"Malformed admin request path, query or body (invalid_request). Request values and parser diagnostics are not echoed.","content":error}));
-            }
-            if plane_operation {
-                responses.entry("503").or_insert_with(|| json!({"description":"A plane dependency is temporarily unavailable (unavailable); no backend diagnostic detail is returned.","content":error}));
             }
             responses.entry("413").or_insert_with(||json!({"description":"Admin request exceeds the listener body limit (request_too_large)","content":error}));
             // Ordinary admin write admission is shared by core and kernel verbs.
@@ -177,10 +162,6 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             "Omitted preserves binding; null explicitly unbinds; a string rebinds to an existing group."
         );
     }
-    if let Some(schema) = schemas.get_mut("LimitView") {
-        schema["properties"]["admission"]["enum"] = json!(["exact", "estimate"]);
-        schema["properties"]["on_exhaustion"]["enum"] = json!(["finish-unit", "cut-stream"]);
-    }
     for methods in paths.values_mut() {
         if let Some(operation) = methods.get_mut("patch") {
             if let Some(schema) =
@@ -227,6 +208,10 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             {
                 for response in responses.values_mut() {
                     response["headers"]["Cache-Control"] = json!({"description":"Administrative responses, including credential issuance and replay, must not be stored.","schema":{"type":"string","const":"no-store"}});
+                    // ADMIN-API-1.6-ONE-MODEL section 7: the correlation every answer carries.
+                    response["headers"]["X-Request-Id"] = json!({"description":"The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.","schema":{"type":"string"}});
+                    response["headers"]["X-Client-Request-Id"] = json!({"description":"The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.","schema":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}});
+                    response["headers"]["traceparent"] = json!({"description":"W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.","schema":{"type":"string","pattern":"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"}});
                 }
             }
         }
@@ -242,7 +227,7 @@ fn etag_responses(paths: &mut Map<String, Value>) {
     let prefix = crate::v1::contract::ADMIN_PREFIX;
     let config = json!({
         "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
-        "schema": {"type": "string", "pattern": "^\"[0-9]+\"$"}
+        "schema": {"type": "string", "pattern": "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$"}
     });
     fn add(paths: &mut Map<String, Value>, path: &str, methods: &[&str], header: &Value) {
         for method in methods {
@@ -409,7 +394,10 @@ mod tests {
             let header = &doc["paths"][format!("/api/v1/admin{path}")][method][RESPONSES_KEY]
                 [status]["headers"]["ETag"];
             assert_eq!(header["schema"]["type"], "string", "{method} {path}");
-            assert_eq!(header["schema"]["pattern"], "^\"[0-9]+\"$");
+            assert_eq!(
+                header["schema"]["pattern"],
+                "^\"dep_[0-9a-f]{32}\\.[0-9]+\"$"
+            );
         }
         let key = &doc["paths"]["/api/v1/admin/keys/{id}"];
         assert_eq!(

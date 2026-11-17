@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
@@ -68,14 +69,13 @@ impl busbar_contract::persistence::PersistenceBackend for RecordReads {
 
 fn usage_group_cfg() -> GroupCfg {
     let limit = |metric, amount, per, pool: Option<&str>| LimitCfg {
+        selected: None,
         metric,
         amount,
         per: Some(per),
         scope: pool.map(busbar_contract::records::ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     GroupCfg {
         limits: vec![
@@ -116,18 +116,12 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let groups = BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -157,7 +151,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -176,13 +170,12 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {
@@ -257,18 +250,12 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let groups = BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -298,7 +285,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -317,13 +304,12 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {
@@ -394,7 +380,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 500);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     let messages = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
     assert!(

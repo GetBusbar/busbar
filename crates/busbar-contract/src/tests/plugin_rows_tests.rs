@@ -13,8 +13,8 @@ fn the_need_ladder_reads_the_manifests_words() {
         ("\"ro\"", NeedLevel::Ro),
         ("\"rw\"", NeedLevel::Rw),
     ] {
-        assert_eq!(serde_json::from_str::<NeedLevel>(word).unwrap(), level);
-        assert_eq!(serde_json::to_string(&level).unwrap(), word);
+        assert_eq!(crate::json::parse_str::<NeedLevel>(word).unwrap(), level);
+        assert_eq!(crate::json::to_string(&level).unwrap(), word);
     }
     assert_eq!(NeedLevel::default(), NeedLevel::No);
 }

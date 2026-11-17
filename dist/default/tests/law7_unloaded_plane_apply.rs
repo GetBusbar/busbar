@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json;
+
 const ADMIN_TOKEN: &str = "law7-unloaded-plane-admin";
 
 const MOCK_PROVIDER: &str = include_str!("fixtures/mock_provider.yaml");
@@ -134,8 +136,6 @@ fn base_config(dir: &Path, data: u16, admin: u16) -> String {
     format!(
         r#"listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 public_url: "http://127.0.0.1:{data}"
 identity-providers:
@@ -283,8 +283,8 @@ fn is_plane_door(b: &Booted, plane: &Plane, response: &(u16, String, Option<Stri
     let expected = plane_challenge(b, plane);
     response.0 == 401
         && response.2.as_deref() == Some(expected.as_str())
-        && serde_json::from_str::<serde_json::Value>(&response.1)
-            .is_ok_and(|body| body == serde_json::json!({"error": "unauthorized"}))
+        && json::parse_value(response.1.as_bytes())
+            .is_ok_and(|body| body == json::json!({"error": "unauthorized"}))
 }
 
 #[test]
@@ -333,9 +333,9 @@ fn a_first_section_of_an_unloaded_plane_is_refused_whole_and_served_after_a_rest
     let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&with_plane).unwrap();
     let providers: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str(MOCK_PROVIDER).unwrap();
-    let apply = serde_json::json!({
-        "config": serde_json::to_value(&doc).unwrap(),
-        "providers": serde_json::to_value(&providers).unwrap(),
+    let apply = json::json!({
+        "config": json::to_value(&doc).unwrap(),
+        "providers": json::to_value(&providers).unwrap(),
     });
     let (status, body) = admin(&b, "POST", "/config/apply", Some(&apply.to_string()));
     assert_eq!(status, 400, "the apply is refused: {body}");

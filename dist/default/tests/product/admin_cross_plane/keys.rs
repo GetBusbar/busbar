@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::serve::ServeTables;
 
@@ -146,7 +147,7 @@ async fn spin_up(
     (addr, handle, reqwest::Client::new())
 }
 
-async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
+async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
     if isolated_fixture("BUSBAR_ADMIN_FIXTURE_DRIVER", "unpriced_usage_reads") {
         return Vec::new();
     }
@@ -173,8 +174,6 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -200,15 +199,12 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -229,7 +225,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -321,7 +317,12 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             .await
             .unwrap();
         let status = resp.status().as_u16();
-        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        let body = resp
+            .bytes()
+            .await
+            .ok()
+            .and_then(|b| json::parse_value(&b).ok())
+            .unwrap_or_default();
         out.push((path, status, body));
     }
     handle.abort();
@@ -367,15 +368,12 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -396,7 +394,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -449,11 +447,11 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         |h: &busbar_kernel::state::AppHandle| h.load().cost.card().plane_lane(&fee_lane).0.fee();
     assert_eq!(fee(&handle), 0, "the test App configures no plane fee");
 
-    let apply = |config: serde_json::Value| {
+    let apply = |config: json::Value| {
         let handle = handle.clone();
         async move {
             let body = axum::body::Bytes::from(
-                serde_json::json!({ "config": config, "providers": {} }).to_string(),
+                json::json!({ "config": config, "providers": {} }).to_string(),
             );
             let resp = busbar_core_admin::test_support::apply_config(
                 axum::extract::State(handle),
@@ -468,7 +466,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         }
     };
     let base = || {
-        serde_json::json!({
+        json::json!({
             "providers": {},
             "models": {},
             "store": {"module": "memory"}
@@ -476,7 +474,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     };
 
     let mut with_plane = base();
-    with_plane[section] = serde_json::json!({ "fees": { "per_request": 7 } });
+    with_plane[section] = json::json!({ "fees": { "per_request": 7 } });
     let (status, body) = apply(with_plane).await;
     assert_eq!(
         status, 200,
@@ -489,7 +487,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     );
 
     let mut unknown = base();
-    unknown["no_plane_declares_this"] = serde_json::json!({});
+    unknown["no_plane_declares_this"] = json::json!({});
     let (status, body) = apply(unknown).await;
     assert_eq!(
         status, 400,
@@ -514,15 +512,12 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -543,7 +538,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -661,8 +656,6 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -716,15 +709,12 @@ async fn drive_key_cap_and_delegation_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -745,7 +735,7 @@ async fn drive_key_cap_and_delegation_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -804,16 +794,16 @@ async fn drive_key_cap_and_delegation_errors() {
             let r = c
                 .post(&u)
                 .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name, "group": group}))
+                .json(&json::json!({"name": name, "group": group}))
                 .send()
                 .await
                 .unwrap();
             assert_eq!(r.status().as_u16(), 201, "mint {name}/{group}");
-            let b: serde_json::Value = r.json().await.unwrap();
+            let b = json::parse_value(&r.bytes().await.unwrap()).unwrap();
             b["id"].as_str().unwrap().to_string()
         }
     };
-    let patch = |id: String, body: serde_json::Value| {
+    let patch = |id: String, body: json::Value| {
         let (c, u) = (client.clone(), keys_url.clone());
         async move {
             c.patch(format!("{u}/{id}"))
@@ -829,9 +819,9 @@ async fn drive_key_cap_and_delegation_errors() {
     let _cap_b = mint("b", "capped").await;
     let roamer = mint("roamer", "roomy").await;
 
-    let r = patch(roamer.clone(), serde_json::json!({"group": "capped"})).await;
+    let r = patch(roamer.clone(), json::json!({"group": "capped"})).await;
     assert_eq!(r.status().as_u16(), 409, "rebind into an at-cap group");
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]
@@ -842,7 +832,7 @@ async fn drive_key_cap_and_delegation_errors() {
     );
 
     assert_eq!(
-        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
+        patch(cap_a.clone(), json::json!({"enabled": false}))
             .await
             .status()
             .as_u16(),
@@ -851,13 +841,13 @@ async fn drive_key_cap_and_delegation_errors() {
     );
     let _cap_c = mint("c", "capped").await;
 
-    let r = patch(cap_a.clone(), serde_json::json!({"enabled": true})).await;
+    let r = patch(cap_a.clone(), json::json!({"enabled": true})).await;
     assert_eq!(
         r.status().as_u16(),
         409,
         "re-enabling past the cap is the same admission as a rebind past the cap"
     );
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]
@@ -868,7 +858,7 @@ async fn drive_key_cap_and_delegation_errors() {
     );
 
     assert_eq!(
-        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
+        patch(cap_a.clone(), json::json!({"enabled": false}))
             .await
             .status()
             .as_u16(),
@@ -879,7 +869,7 @@ async fn drive_key_cap_and_delegation_errors() {
     let r = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "unbound-by-operator"}))
+        .json(&json::json!({"name": "unbound-by-operator"}))
         .send()
         .await
         .unwrap();
@@ -904,7 +894,7 @@ async fn drive_key_cap_and_delegation_errors() {
                 200,
                 "the key's audit rows are readable"
             );
-            let b: serde_json::Value = r.json().await.unwrap();
+            let b = json::parse_value(&r.bytes().await.unwrap()).unwrap();
             b["items"]
                 .as_array()
                 .expect("the audit response has items")
@@ -943,15 +933,12 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -981,7 +968,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -1039,7 +1026,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 400);
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
 
     assert_eq!(
@@ -1067,18 +1054,12 @@ async fn serve_keys_fixture(
                     busbar_kernel::door::op_id().counter()
                 ));
                 let library_path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                    .expect("the actual Store statement reads")
-                    .expect("the actual Store states itself");
-                let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual Store statement parses");
-                let mut manifest = super::plugins::manifest(
+                let facts = crate::root::test_plugins::native_image(&library_path);
+                let manifest = crate::root::test_plugins::native_manifest(
                     "store",
-                    &facts.name,
+                    &library_path,
                     super::plugins::FIXTURE_PUBLISHER,
                 );
-                manifest.version = facts.version;
-                manifest.statement = Some(hex::encode(statement));
                 let archive = super::plugins::signed(
                     &crate::dist_root_install::release_key(),
                     manifest,
@@ -1099,7 +1080,7 @@ async fn serve_keys_fixture(
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+                document["advanced"] = serde_json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
                     document,
                     &crate::root::boot::axis_test_grammar(),
@@ -1155,18 +1136,12 @@ async fn serve_keys_fixture(
                     busbar_kernel::door::op_id().counter()
                 ));
                 let library_path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                    .expect("the actual Store statement reads")
-                    .expect("the actual Store states itself");
-                let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual Store statement parses");
-                let mut manifest = super::plugins::manifest(
+                let facts = crate::root::test_plugins::native_image(&library_path);
+                let manifest = crate::root::test_plugins::native_manifest(
                     "store",
-                    &facts.name,
+                    &library_path,
                     super::plugins::FIXTURE_PUBLISHER,
                 );
-                manifest.version = facts.version;
-                manifest.statement = Some(hex::encode(statement));
                 let archive = super::plugins::signed(
                     &crate::dist_root_install::release_key(),
                     manifest,
@@ -1187,7 +1162,7 @@ async fn serve_keys_fixture(
                 document["identity-providers"] = serde_json::json!({"admin-tokens": {
                     "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
                 }});
-                document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+                document["advanced"] = serde_json::json!({});
                 let deploy = busbar_kernel::config::deploy_from_deserializer(
                     document,
                     &crate::root::boot::axis_test_grammar(),
@@ -1238,15 +1213,12 @@ async fn serve_keys_fixture(
                 busbar_kernel::door::op_id().counter()
             ));
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual Store statement reads")
-                .expect("the actual Store states itself");
-            let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual Store statement parses");
-            let mut manifest =
-                super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-            manifest.version = facts.version;
-            manifest.statement = Some(hex::encode(statement));
+            let facts = crate::root::test_plugins::native_image(&library_path);
+            let manifest = crate::root::test_plugins::native_manifest(
+                "store",
+                &library_path,
+                super::plugins::FIXTURE_PUBLISHER,
+            );
             let archive = super::plugins::signed(
                 &crate::dist_root_install::release_key(),
                 manifest,
@@ -1267,7 +1239,7 @@ async fn serve_keys_fixture(
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,
                 &crate::root::boot::axis_test_grammar(),
@@ -1679,7 +1651,7 @@ async fn drive_keys_error_surface() {
     ];
 
     let client = reqwest::Client::new();
-    let mut observed = serde_json::Map::new();
+    let mut observed = json::Map::new();
     if let Ok(selected) = std::env::var("BUSBAR_KEYS_FIXTURE_CASE") {
         eprintln!("BUSBAR_FIXTURE_SELECTED:BUSBAR_KEYS_FIXTURE_CASE={selected}");
         for fixture in [
@@ -1727,9 +1699,9 @@ async fn drive_keys_error_surface() {
                     case.name
                 );
                 observed.insert(
-                case.name.to_string(),
-                serde_json::json!({"status": status, "content_type": content_type, "body": body}),
-            );
+                    case.name,
+                    json::json!({"status": status, "content_type": content_type, "body": body}),
+                );
             }
             server.abort();
         }
@@ -1739,7 +1711,7 @@ async fn drive_keys_error_surface() {
             !observed.is_empty(),
             "selected governance fixture executed its cases"
         );
-        std::fs::write(output, serde_json::to_vec(&observed).unwrap()).unwrap();
+        std::fs::write(output, json::to_vec(&observed).unwrap()).unwrap();
         return;
     }
     let outputs = super::plugins::scratch("isolated-key-wire");
@@ -1751,16 +1723,14 @@ async fn drive_keys_error_surface() {
             &index.to_string(),
             &[("BUSBAR_KEYS_FIXTURE_OUTPUT", path_text)],
         );
-        let part: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        observed.extend(part);
+        let mut part: json::Map = json::parse(&std::fs::read(path).unwrap()).unwrap();
+        observed.append(&mut part);
     }
     std::fs::remove_dir_all(outputs).unwrap();
 
     let fresh = format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::Value::Object(observed))
-            .expect("serialize keys error wire")
+        json::to_string_pretty(&observed).expect("serialize keys error wire")
     );
     if std::env::var("UPDATE_KEYS_ERROR_GOLDEN").is_ok_and(|v| v == "1") {
         std::fs::write(KEYS_ERROR_GOLDEN, &fresh)
@@ -1771,10 +1741,9 @@ async fn drive_keys_error_surface() {
         .unwrap_or_else(|e| panic!("read {KEYS_ERROR_GOLDEN}: {e}"));
     // The outer object is fixture bookkeeping, not HTTP bytes. Keep each response
     // body as an exact string while ignoring only that wrapper's member order.
-    let committed: serde_json::Value =
-        serde_json::from_str(&committed).expect("parse committed wire fixture wrapper");
-    let fresh: serde_json::Value =
-        serde_json::from_str(&fresh).expect("parse observed wire fixture wrapper");
+    let committed =
+        json::parse_value(committed.as_bytes()).expect("parse committed wire fixture wrapper");
+    let fresh = json::parse_value(fresh.as_bytes()).expect("parse observed wire fixture wrapper");
     assert_eq!(
         committed, fresh,
         "the keys error WIRE changed — status/content-type/body bytes on a FROZEN surface. If this \
@@ -1784,11 +1753,11 @@ async fn drive_keys_error_surface() {
     let body = fresh["list_bad_cursor"]["body"].as_str().unwrap();
     let changed = format!("{body} ");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(body).unwrap(),
-        serde_json::from_str::<serde_json::Value>(&changed).unwrap(),
+        json::parse_value(body.as_bytes()).unwrap(),
+        json::parse_value(changed.as_bytes()).unwrap(),
         "the negative control changes bytes without changing JSON meaning"
     );
-    changed_body["list_bad_cursor"]["body"] = serde_json::Value::String(changed);
+    changed_body["list_bad_cursor"]["body"] = json::Value::from(changed.as_str());
     assert_ne!(
         committed, changed_body,
         "fixture comparison must detect even one extra byte in an HTTP body"
@@ -1829,15 +1798,12 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -1903,7 +1869,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             "settings": crate::test_common::credentials::settings("admin-lockout-witness"),
             "max_admin_scope": "full",
         });
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -2747,7 +2713,7 @@ async fn drive_admin_error_surface() {
 
             let resp = req.send().await.unwrap();
             let status = resp.status().as_u16();
-            let parsed: serde_json::Value = resp.json().await.unwrap();
+            let parsed = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
             assert_eq!(
                 status, *want_status,
                 "{label}: expected {want_status}, got {status} ({parsed})"
@@ -2796,15 +2762,12 @@ async fn drive_plugin_reload_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -2825,7 +2788,7 @@ async fn drive_plugin_reload_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -2882,7 +2845,7 @@ async fn drive_plugin_reload_errors() {
         .await
         .unwrap();
     let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(status, 400, "an unrebuildable disk config: {body}");
     assert_eq!(body["error"]["code"], "invalid_request");
 
@@ -2922,15 +2885,12 @@ async fn drive_plugin_rollback_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -2951,7 +2911,7 @@ async fn drive_plugin_rollback_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -3013,7 +2973,7 @@ async fn drive_plugin_rollback_errors() {
         .await
         .unwrap();
     let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(
         status, 404,
         "a target that is not in the plugins dir: {body}"
@@ -3028,13 +2988,13 @@ async fn drive_plugin_rollback_errors() {
     .unwrap();
     assert_eq!(guarded.status().as_u16(), 409);
     assert_eq!(
-        guarded.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        json::parse_value(&guarded.bytes().await.unwrap()).unwrap()["error"]["code"],
         "conflict"
     );
 
     let r = rollback(format!(r#"{{"file":"{file}"}}"#)).await.unwrap();
     let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(
         status, 409,
         "an untrusted target is a terminal conflict, not a validation error: {body}"
@@ -3132,7 +3092,7 @@ async fn drive_plugin_rollback_errors() {
         }
         let r = req.send().await.unwrap();
         let status = r.status().as_u16();
-        let parsed: serde_json::Value = r.json().await.unwrap();
+        let parsed = json::parse_value(&r.bytes().await.unwrap()).unwrap();
         assert_eq!(status, want_status, "{label}: {parsed}");
         assert_eq!(parsed["error"]["code"], want_code, "{label}");
     }
@@ -3166,15 +3126,12 @@ async fn drive_plugin_inspect_errors() {
             busbar_kernel::door::op_id().counter()
         ));
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
+        let facts = crate::root::test_plugins::native_image(&library_path);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            super::plugins::FIXTURE_PUBLISHER,
+        );
         let archive = super::plugins::signed(
             &crate::dist_root_install::release_key(),
             manifest,
@@ -3195,7 +3152,7 @@ async fn drive_plugin_inspect_errors() {
         document["identity-providers"] = serde_json::json!({"admin-tokens": {
             "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
         }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        document["advanced"] = serde_json::json!({});
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             document,
             &crate::root::boot::axis_test_grammar(),
@@ -3254,7 +3211,7 @@ async fn drive_plugin_inspect_errors() {
         .await
         .unwrap();
     let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(status, 400, "invalid base64 tarball_b64: {body}");
     assert_eq!(body["error"]["code"], "invalid_request");
 
@@ -3298,9 +3255,8 @@ async fn every_admin_error_surface_answers_its_declared_status() {
 
 fn documented_operations() -> Vec<(String, busbar_core_admin::v1::contract::taxonomy::MethodTag)> {
     use busbar_core_admin::v1::contract::taxonomy::MethodTag;
-    let doc: serde_json::Value =
-        serde_json::from_str(&busbar_core_admin::test_support::openapi_json())
-            .expect("the committed openapi.json parses");
+    let doc = json::parse_value(busbar_core_admin::test_support::openapi_json().as_bytes())
+        .expect("the committed openapi.json parses");
     let paths = doc["paths"]
         .as_object()
         .expect("openapi.json has a paths object");
@@ -3591,15 +3547,12 @@ async fn named_map_app_opts(
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store states itself");
-    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement parses");
-    let mut manifest =
-        super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-    manifest.version = facts.version;
-    manifest.statement = Some(hex::encode(statement));
+    let facts = crate::root::test_plugins::native_image(&library_path);
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        super::plugins::FIXTURE_PUBLISHER,
+    );
     let archive = super::plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -3691,19 +3644,16 @@ async fn try_publish_door(
 
     let store = crate::root::real_store::core().await;
     let gov = gov_with_signer(store.clone(), None).await;
-    let services = crate::root::serve::LateServices::new();
     let kernel = Arc::new(
         busbar_kernel::host_services::KernelServices::new()
             .with_signer(gov.clone())
+            .with_persistence(store)
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
             ))),
     );
-    assert!(kernel.attach_persistence(store));
-    services
-        .install_kernel(kernel.clone(), kernel.clone())
-        .unwrap();
+    let services = crate::root::serve::Services::serving(kernel.clone());
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
@@ -3847,14 +3797,18 @@ async fn drive_door_verb_errors() {
     ] {
         let r = send(method.clone(), path).await.unwrap();
         assert_eq!(r.status(), 404, "{method} {path}");
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+        let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            json::pointer(&body, "/error/code").unwrap(),
+            "not_found",
+            "{body}"
+        );
     }
     let r = send(reqwest::Method::GET, "/tools/base-tools/changes")
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
     assert!(body.get("error").is_none(), "{body}");
     handle.abort();
@@ -3892,7 +3846,7 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
             .await
             .unwrap();
         let status = response.status().as_u16();
-        let body: serde_json::Value = response.json().await.unwrap();
+        let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(status, 200, "the lent generation serves the door: {body}");
         assert_eq!(body.get("name").unwrap(), "base-tools", "{body}");
         assert!(body.get("error").is_none(), "{body}");
@@ -3909,12 +3863,16 @@ async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
             .await
             .unwrap();
         let status = response.status().as_u16();
-        let body: serde_json::Value = response.json().await.unwrap();
+        let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(
             status, 404,
             "a generation lent no table serves no door: {body}"
         );
-        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+        assert_eq!(
+            json::pointer(&body, "/error/code").unwrap(),
+            "not_found",
+            "{body}"
+        );
         fixture
     };
     handle.abort();
@@ -3936,7 +3894,7 @@ async fn drive_agent_door_verb_errors() {
     }
     let issuer = busbar_contract::crypto::ed25519::SigningKey::from_seed(&[7; 32])
         .expect("a valid Ed25519 seed");
-    let section = serde_json::json!({
+    let section = json::json!({
         "base-agent": {
             "url": "http://127.0.0.1:1/closed",
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
@@ -3956,8 +3914,12 @@ async fn drive_agent_door_verb_errors() {
     for path in ["/agents/nope/connect", "/agents/nope/approve"] {
         let r = send(path, r#"{"fingerprint": "sha256:aa"}"#).await.unwrap();
         assert_eq!(r.status(), 404, "{path}");
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+        let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            json::pointer(&body, "/error/code").unwrap(),
+            "not_found",
+            "{body}"
+        );
     }
     let r = send(
         "/agents/base-agent/approve",
@@ -3966,9 +3928,9 @@ async fn drive_agent_door_verb_errors() {
     .await
     .unwrap();
     assert_eq!(r.status(), 400, "approve with an unknown body field");
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(
-        body.pointer("/error/code").unwrap(),
+        json::pointer(&body, "/error/code").unwrap(),
         "invalid_request",
         "{body}"
     );
@@ -3983,9 +3945,9 @@ async fn drive_agent_door_verb_errors() {
     .await
     .unwrap();
     assert_eq!(r.status(), 400, "approve of an unverified card");
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(
-        body.pointer("/error/code").unwrap(),
+        json::pointer(&body, "/error/code").unwrap(),
         "invalid_request",
         "{body}"
     );
@@ -3998,9 +3960,9 @@ async fn drive_named_map_errors() {
     }
     linked_export_axis();
     let big_settings = {
-        let mut m = serde_json::Map::new();
-        m.insert("blob".into(), serde_json::json!("x".repeat(70_000)));
-        serde_json::json!({ "settings": m }).to_string()
+        let mut m = json::Map::new();
+        m.insert("blob", json::json!("x".repeat(70_000)));
+        json::json!({ "settings": m }).to_string()
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
@@ -4232,7 +4194,7 @@ async fn drive_named_map_errors() {
             }
             let resp = req.send().await.unwrap();
             let status = resp.status().as_u16();
-            let parsed: serde_json::Value = resp.json().await.unwrap();
+            let parsed = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
             assert_eq!(
                 status, *want_status,
                 "{label}: expected {want_status}, got {status} ({parsed})"
@@ -4257,15 +4219,12 @@ async fn drive_named_map_errors() {
                 busbar_kernel::door::op_id().counter()
             ));
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual Store statement reads")
-                .expect("the actual Store states itself");
-            let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual Store statement parses");
-            let mut manifest =
-                super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-            manifest.version = facts.version;
-            manifest.statement = Some(hex::encode(statement));
+            let facts = crate::root::test_plugins::native_image(&library_path);
+            let manifest = crate::root::test_plugins::native_manifest(
+                "store",
+                &library_path,
+                super::plugins::FIXTURE_PUBLISHER,
+            );
             let archive = super::plugins::signed(
                 &crate::dist_root_install::release_key(),
                 manifest,
@@ -4295,7 +4254,7 @@ async fn drive_named_map_errors() {
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});
-            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,
                 &crate::root::boot::axis_test_grammar(),
@@ -4372,7 +4331,7 @@ async fn drive_named_map_errors() {
                 }
                 let resp = req.send().await.unwrap();
                 let status = resp.status().as_u16();
-                let parsed: serde_json::Value = resp.json().await.unwrap();
+                let parsed = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
                 assert_eq!(status, 400, "{section} {label} (ephemeral): {parsed}");
                 assert_eq!(parsed["error"]["code"], "invalid_request");
             }

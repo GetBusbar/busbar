@@ -57,19 +57,6 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     assert!(Arc::ptr_eq(the(), &built));
 }
 
-#[test]
-fn a_bad_allowlist_entry_refuses_the_guard() {
-    let d = Destinations {
-        allow: vec!["host.test:8080".into()],
-        ..Destinations::default()
-    };
-    let refusal = process::dest_judge(&d).err().expect("refused");
-    assert!(
-        refusal.starts_with("advanced.allow_destinations[0]: `host.test:8080`"),
-        "{refusal}"
-    );
-}
-
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,
@@ -146,8 +133,8 @@ fn a_provider_carve_out_does_not_admit_metadata_for_another_provider_host() {
     let judge = guard_for(&cfg.destinations()).expect("a guard");
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
-        None,
-        "the carving provider's own host"
+        Some(DEST_METADATA),
+        "even the provider's own host cannot carve out metadata"
     );
     for host in ["other-provider.test", "unnamed.test"] {
         assert_eq!(
@@ -183,13 +170,12 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 }
 
 #[tokio::test]
-async fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
+async fn metadata_stays_refused_across_reload() {
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let boot = deployment(
         &[],
-        "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
-         advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
+        "security:\n  blocked_metadata_hosts: [169.254.169.254]\n",
     );
     let judge = dest_judge(&boot);
 
@@ -198,8 +184,8 @@ async fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
-        None,
-        "the boot config carves it out"
+        Some(DEST_METADATA),
+        "the boot configuration cannot admit metadata"
     );
     let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -243,7 +229,7 @@ async fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 }
 
 #[tokio::test]
-async fn a_reload_that_changes_the_allowlist_changes_nothing() {
+async fn provider_configuration_never_grants_global_hostname_authority_across_reload() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
@@ -256,21 +242,21 @@ async fn a_reload_that_changes_the_allowlist_changes_nothing() {
             .map(|r| r.verdict)
     };
 
-    let boot = deployment(&[], "advanced:\n  allow_destinations: [model-a.internal]\n");
+    let boot = deployment(&[("a", "https://model-a.internal", &[])], "");
     let judge = dest_judge(&boot);
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
         crate::root::door_steps::Rules::hearing(judge.clone() as Arc<dyn DestJudge>),
     );
     assert_eq!(
         verdict(judge.as_ref(), "model-a.internal", &private_a),
-        None
+        Some(DEST_INTERNAL)
     );
     assert_eq!(
         verdict(judge.as_ref(), "model-b.internal", &private_b),
         Some(DEST_INTERNAL),
         "the host the boot did not name is refused"
     );
-    let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
+    let reloaded = deployment(&[("b", "https://model-b.internal", &[])], "");
     let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         reloaded,
@@ -307,18 +293,18 @@ async fn a_reload_that_changes_the_allowlist_changes_nothing() {
     }
     assert_eq!(
         verdict(judge.as_ref(), "model-a.internal", &private_a),
-        None,
-        "the entry the reload removed still admits: the allowlist is read at boot"
+        Some(DEST_INTERNAL),
+        "a prior provider route never gives arbitrary requests global reach"
     );
     assert_eq!(
         verdict(judge.as_ref(), "model-b.internal", &private_b),
         Some(DEST_INTERNAL),
-        "the entry the reload added admits nothing until a restart"
+        "the new provider route gives arbitrary same-host requests no reach"
     );
 }
 
 #[test]
-fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
+fn a_provider_host_grants_no_authority_to_generic_destination_judging() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let private = vec!["\x310.0.0.5".parse().unwrap()];
     let bare = deployment(&[("local_model", "http://model.internal:8000", &[])], "");
@@ -336,15 +322,15 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
         Ok(()),
         "operator infrastructure needs no entry"
     );
-    let listed = deployment(
-        &[("local_model", "http://model.internal:8000", &[IMDS])],
-        "advanced:\n  allow_destinations: [model.internal]\n",
-    );
+    let listed = deployment(&[("local_model", "http://model.internal:8000", &[])], "");
     let judge = guard_for(&listed.destinations()).expect("a guard");
     assert_eq!(
-        judge.judge_answer("model.internal", &private, EGRESS_PROVIDER),
-        Ok(()),
-        "the allowlist admits it"
+        judge
+            .judge_answer("model.internal", &private, EGRESS_PROVIDER)
+            .unwrap_err()
+            .verdict,
+        DEST_INTERNAL,
+        "a configured provider host gives generic judging no reach"
     );
     assert_eq!(
         metadata_verdict(
@@ -359,11 +345,11 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 
 #[cfg(linked_every_auth)]
 #[test]
-fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_allowlisted() {
+fn every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_authority() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     let private = vec!["\x310.0.0.5".parse().unwrap()];
     let strict = guard_for(&deployment(&[], "").destinations()).expect("the default guard");
-    let listed = deployment(&[], "advanced:\n  allow_destinations: [token.internal]\n");
+    let listed = deployment(&[], "");
     let listed = guard_for(&listed.destinations()).expect("a guard");
     let mut outbound = 0usize;
     for &(key, _, door) in crate::LINKED.auths {
@@ -391,9 +377,12 @@ fn every_linked_auth_plugins_outbound_need_is_refused_a_private_address_unless_a
                 need.egress_class
             );
             assert_eq!(
-                listed.judge_answer("token.internal", &private, class),
-                Ok(()),
-                "`{key}`'s outbound need {n}: an allow entry admits it"
+                listed
+                    .judge_answer("token.internal", &private, class)
+                    .unwrap_err()
+                    .verdict,
+                DEST_INTERNAL,
+                "`{key}`'s outbound need {n}: no global hostname grant exists"
             );
             assert_eq!(
                 metadata_verdict(strict.as_ref(), "token.internal", class),

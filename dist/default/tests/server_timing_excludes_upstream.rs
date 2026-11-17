@@ -12,6 +12,7 @@
 
 mod common;
 
+use busbar_contract::json;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -184,8 +185,6 @@ fn write_configs(
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
   response_headers:
     server_timing: {server_timing}
 store: {{module: memory}}
@@ -219,7 +218,7 @@ fn spawn_delayed_upstream() -> u16 {
                 common::upstream::respond(
                     &mut stream,
                     200,
-                    &serde_json::json!({
+                    &json::json!({
                         "id": "chatcmpl-test",
                         "object": "chat.completion",
                         "created": 0,

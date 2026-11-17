@@ -12,16 +12,7 @@ fn unsigned() -> Value {
 
 pub(super) fn definitions(defs: &mut Map<String, Value>) {
     let mut branches = Vec::new();
-    for metric in [
-        "requests",
-        "tokens",
-        "tokens_input",
-        "tokens_output",
-        "tokens_cache_read",
-        "tokens_cache_write",
-        "budget",
-        "concurrent",
-    ] {
+    for metric in ["requests", "tokens", "budget", "concurrent"] {
         let mut properties = json!({metric:unsigned()});
         if metric != "concurrent" {
             properties["per"] = json!({"enum":["minute","hour","day","month","total"]});
@@ -30,8 +21,6 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
         if metric == "budget" {
             properties["on_exhaust"] = json!({"enum":["block","downgrade"]});
             properties["downgrade_to"] = json!({"type":"string"});
-            properties["admission"] = json!({"enum":["exact","estimate"],"description":"Omitted means exact; authored presence is retained in readback."});
-            properties["on_exhaustion"] = json!({"enum":["finish-unit","cut-stream"],"description":"In-flight behavior; omitted means finish-unit. Distinct from admission-time on_exhaust."});
         }
         let mut branch = object(properties);
         branch["required"] = if metric == "concurrent" {
@@ -45,6 +34,31 @@ pub(super) fn definitions(defs: &mut Map<String, Value>) {
                 {"if":{"required":["downgrade_to"]},"then":{"required":["on_exhaust"],"properties":{"on_exhaust":{"const":"downgrade"}}}}
             ]);
         }
+        branches.push(branch);
+    }
+    for metric in ["requests", "tokens"] {
+        let mut branch = object(json!({
+            metric:unsigned(),
+            "per":{"const":"minute"},
+            "id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$"},
+            "upstream_resource":{"type":"string","minLength":3,"maxLength":257,"pattern":"^[^/\\u0000-\\u001F\\u007F-\\u009F]+/[^\\u0000-\\u001F\\u007F-\\u009F]+$"},
+            "per_key":{"const":true},
+            "enforcement":{"const":"process"}
+        }));
+        branch["required"] = json!([
+            metric,
+            "per",
+            "id",
+            "upstream_resource",
+            "per_key",
+            "enforcement"
+        ]);
+        branch["x-busbar-runtime-validation"] = json!([
+            "Each id, instance and resource is at most 128 UTF-8 bytes; maxLength counts characters",
+            "Instance/resource exists in this generation's actual configured targets",
+            "Rule ids are unique within each group across metrics; at most 32 applicable ancestor rows",
+            "Selected token rules require admitted attempt accounting and token declarations"
+        ]);
         branches.push(branch);
     }
     defs.insert("Limit".into(), json!({"oneOf":branches,"description":"Exactly one unsigned u64 metric key. Budget is in cents; other units follow the named metric.","x-busbar-runtime-validation":["pool references must exist","downgrade_to must differ from pool","enforcement bucket identities must be unambiguous"]}));
@@ -159,7 +173,7 @@ mod tests {
             json!({"child_default":{}}),
             json!({"enabled":null}),
             json!({"limits":null}),
-            json!({"limits":[{"budget":9007199254740993_u64,"per":"month","admission":"estimate","on_exhaustion":"cut-stream"}]}),
+            json!({"limits":[{"budget":9007199254740993_u64,"per":"month"}]}),
             json!({"child_default":{"limits":[]}}),
             json!({"unknown":true}),
         ] {
@@ -223,6 +237,26 @@ mod tests {
                     .is_ok(),
                 "deploy {case}"
             );
+        }
+    }
+
+    #[test]
+    fn selected_limit_schema_is_reachable_and_preserves_complete_scope() {
+        let validator = compiled("Limit");
+        for metric in ["requests", "tokens"] {
+            let valid = json!({"id":"r","upstream_resource":"p/r","per_key":true,"enforcement":"process",metric:1,"per":"minute"});
+            assert!(validator.is_valid(&valid));
+            assert!(
+                serde_json::from_value::<busbar_kernel::config::LimitCfg>(valid.clone()).is_ok()
+            );
+            for field in ["id", "upstream_resource", "per_key", "enforcement"] {
+                let mut incomplete = valid.clone();
+                incomplete.as_object_mut().unwrap().remove(field);
+                assert!(!validator.is_valid(&incomplete), "{incomplete}");
+                assert!(
+                    serde_json::from_value::<busbar_kernel::config::LimitCfg>(incomplete).is_err()
+                );
+            }
         }
     }
 }

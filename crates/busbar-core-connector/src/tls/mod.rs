@@ -11,8 +11,12 @@ use std::sync::Arc;
 pub mod client;
 pub mod explain;
 pub mod store;
+mod write_progress;
 
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
+#[cfg(test)]
+mod write_progress_tests;
+
+use busbar_contract::transport::wire::{ConnectionSecurity, SecuredIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
 use busbar_kernel::config::SecretRef;
@@ -127,8 +131,8 @@ pub fn build_server_config(
 pub struct Identity;
 
 impl ConnectionSecurity for Identity {
-    fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a> {
-        Box::pin(async move { Ok(io) })
+    fn wrap<'a>(&'a self, io: busbar_contract::transport::ConnectionIo) -> SecuredIoFut<'a> {
+        Box::pin(async move { Ok(SecuredIo::anonymous(io)) })
     }
 }
 
@@ -146,18 +150,55 @@ impl Tls {
 }
 
 impl ConnectionSecurity for Tls {
-    fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a> {
+    fn wrap<'a>(&'a self, io: busbar_contract::transport::ConnectionIo) -> SecuredIoFut<'a> {
         Box::pin(async move {
-            let tokio_io = FuturesAsyncReadCompatExt::compat(io);
+            let plan = busbar_contract::crypto::tls::write_progress::server_plan(&self.config)
+                .map_err(std::io::Error::other)?;
+            let credit = io
+                .storage
+                .try_reserve(plan.requested_bytes())
+                .map_err(std::io::Error::other)?;
+            let storage = io.storage;
+            let tokio_io = FuturesAsyncReadCompatExt::compat(io.io);
             let acceptor = tokio_rustls::TlsAcceptor::from(self.config.clone());
-            let tls_stream = acceptor.accept(tokio_io).await?;
-            let known_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(ALPN_H2);
+            let funded = write_progress::handshake(credit, || acceptor.accept(tokio_io)).await?;
+            let session = funded.stream().get_ref().1;
+            let tls_handshake = Some(
+                busbar_contract::transport::wire::HandshakeInfo::capture(
+                    &storage,
+                    session.alpn_protocol(),
+                    session.server_name(),
+                )
+                .map_err(std::io::Error::other)?,
+            );
+            let peer_certificate = funded
+                .stream()
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|leaf| Box::from(leaf.as_ref()))
+                .unwrap_or_default();
+            let known_h2 = funded.stream().get_ref().1.alpn_protocol() == Some(ALPN_H2);
+            let (tls_stream, progress) = write_progress::TrackedTls::new(funded, plan)?;
             let mut io = TokioAsyncReadCompatExt::compat(tls_stream);
             if !known_h2 {
-                return Ok(Box::new(io) as Box<dyn RawIo>);
+                return Ok(SecuredIo {
+                    io: Box::new(io),
+                    peer_certificate,
+                    progress,
+                    storage,
+                    tls_handshake,
+                });
             }
             expect_h2_preface(&mut io).await?;
-            Ok(Box::new(Preface { io, replayed: 0 }) as Box<dyn RawIo>)
+            Ok(SecuredIo {
+                io: Box::new(Preface { io, replayed: 0 }),
+                peer_certificate,
+                progress,
+                storage,
+                tls_handshake,
+            })
         })
     }
 }
@@ -209,6 +250,18 @@ pub fn prepare(
     transport_capable: bool,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
     crate::off_path::tls::prepare(label, tls_cfg, resolver, transport_capable)
+}
+
+/// Prepare a listener using the selected transport supplier's server ALPN offer.
+/// The supplied order and an empty offer are preserved exactly.
+pub fn prepare_for_alpn(
+    label: &str,
+    tls_cfg: Option<&TlsCfg>,
+    resolver: &SecretResolver,
+    transport_capable: bool,
+    alpn: &[&[u8]],
+) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
+    crate::off_path::tls::prepare_for_alpn(label, tls_cfg, resolver, transport_capable, alpn)
 }
 
 #[cfg(test)]

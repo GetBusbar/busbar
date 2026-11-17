@@ -25,9 +25,9 @@ use busbar_plugin_abi::plane::{
     RENDER_REFUSAL,
 };
 use busbar_plugin_abi::records::{tag as g, Reply, Writer};
-use busbar_plugin_loader::encode::plane::encode_refusal;
-use busbar_plugin_loader::ports::plane::PlaneIn;
-use busbar_plugin_loader::ports::PortError;
+use busbar_ports::codec::plane::encode_refusal;
+use busbar_ports::plane::PlaneIn;
+use busbar_ports::PortError;
 
 use super::port_session::{render, Calls, Effects, SessionError, ToClient};
 use crate::plane_grants::{TicketAdmitted, TicketDenied};
@@ -47,7 +47,7 @@ pub fn effective_classes(mask: u32, configured: Option<u32>) -> Result<u32, Clas
         Some(set) if set != 0 && set & !mask == 0 => Ok(set),
         Some(_) => Err(ClassConfig),
         None => {
-            let lowest = mask & mask.wrapping_neg();
+            let lowest = mask.isolate_lowest_one();
             let both = AUTH_PRINCIPAL | AUTH_TICKET;
             Ok(if mask & both == both {
                 lowest | AUTH_TICKET
@@ -103,7 +103,7 @@ pub fn classify(effective: u32, bearer: Option<&str>, tickets: &dyn TicketDoor) 
             AUTH_PRINCIPAL
         };
     }
-    effective & effective.wrapping_neg()
+    effective.isolate_lowest_one()
 }
 
 /// The `Authorization: Bearer` credential among `headers` (name case-insensitive, scheme case-insensitive).
@@ -331,7 +331,7 @@ pub fn catalog<K: Calls + ?Sized>(
     effects: &dyn Effects,
 ) -> Result<Vec<ToClient>, SessionError> {
     let mut arg = Reply::new();
-    busbar_plugin_loader::encode::plane::encode_catalog(&mut arg, models)
+    busbar_ports::codec::plane::encode_catalog(&mut arg, models)
         .map_err(|_| SessionError::Encode)?;
     render(
         calls,

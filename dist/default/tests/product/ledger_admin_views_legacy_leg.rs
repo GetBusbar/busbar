@@ -4,19 +4,19 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 use crate::root::test_plugins as plugins;
 
 async fn app() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "legacy-ledger-admin-{}",
@@ -36,7 +36,7 @@ async fn app() -> Arc<busbar_kernel::state::App> {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -68,7 +68,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
@@ -153,13 +152,12 @@ async fn the_served_document_describes_the_ledger_views_as_the_loops() {
 
     let served = ask(addr, "/api/v1/admin/openapi.json").await;
     assert_eq!(served.status, 200, "the surface serves its document");
-    let document: serde_json::Value =
-        serde_json::from_str(&served.body).expect("the served document is JSON");
+    let document = json::parse_value(served.body.as_bytes()).expect("the served document is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
 
     for path in LEDGER_PATHS {
         let op = &paths
-            .get(*path)
+            .get(path)
             .unwrap_or_else(|| panic!("{path} is a served verb and in no document"))["get"];
         assert_eq!(
             op["x-busbar-since"], "1.6.0",
@@ -169,7 +167,7 @@ async fn the_served_document_describes_the_ledger_views_as_the_loops() {
     }
 
     assert!(
-        paths.contains_key("/api/v1/admin/usage"),
+        paths.contains_key(&"/api/v1/admin/usage"),
         "the served document is not the administrative document"
     );
 

@@ -16,6 +16,8 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 const ADMIN_TOKEN: &str = "apply-serves-new-providers-admin";
 
 fn far_end(text: &'static str) -> (u16, Receiver<()>) {
@@ -29,7 +31,7 @@ fn far_end(text: &'static str) -> (u16, Receiver<()>) {
             std::thread::spawn(move || {
                 if common::upstream::read_request(&mut conn).is_some() {
                     let _ = heard.send(());
-                    let answer = serde_json::json!({
+                    let answer = json::json!({
                         "id": "msg_apply", "type": "message", "role": "assistant",
                         "model": "m", "content": [{"type": "text", "text": text}],
                         "stop_reason": "end_turn", "stop_sequence": null,
@@ -56,8 +58,6 @@ fn write_configs(dir: &Path, provider: &str, upstream: u16, pool: &str, data: u1
         format!(
             r#"listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 admin_require_mtls: false
 identity-providers:
@@ -178,7 +178,7 @@ fn an_apply_serves_the_new_providers_and_pools_not_the_boot_ones() {
         status, 201,
         "the admin API created the caller's key: {minted}"
     );
-    let minted: serde_json::Value = serde_json::from_str(&minted).expect("the minted key");
+    let minted = json::parse_value(minted.as_bytes()).expect("the minted key");
     let token = minted["token"]
         .as_str()
         .expect("a minted token")

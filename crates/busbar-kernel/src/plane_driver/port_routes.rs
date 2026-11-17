@@ -23,8 +23,8 @@ use busbar_plugin_abi::plane::{
     ADMIN_CATALOG, ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG,
     ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RQ_RECOVERY,
 };
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlanePort, RouteInfo};
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::plane::{PlaneIn, PlanePort, RouteInfo};
+use busbar_ports::{CallCx, PortError};
 
 use super::port_auth::effective_classes;
 
@@ -43,6 +43,7 @@ pub struct Mounted {
     pub pattern: Box<str>,
     /// D_ROUTE_CRED_HEADER, lowercase.
     pub cred_header: Option<Box<str>>,
+    pub resource_kinds: Vec<Box<str>>,
     /// A `ROUTE_CATALOG` route.
     pub catalog: bool,
 }
@@ -70,6 +71,8 @@ pub enum RouteRefused {
     AdminAuth { route: u32 },
     /// A ROUTE_RECOVERY route whose auth mask is not exactly AUTH_PRINCIPAL.
     RecoveryAuth { route: u32 },
+    /// Resource admission requires unambiguous kinds on a principal HTTP data route.
+    Resources { route: u32 },
     /// ROUTE_ADMIN routes and no D_ADMIN_OPENAPI.
     AdminWithoutOpenapi,
     /// More than one ROUTE_LINE route.
@@ -86,6 +89,9 @@ impl std::fmt::Display for RouteRefused {
             Self::AdminAuth { route } => write!(f, "admin route {route} is not operator-only"),
             Self::RecoveryAuth { route } => {
                 write!(f, "recovery route {route} is not principal-only")
+            }
+            Self::Resources { route } => {
+                write!(f, "route {route} has invalid resource admission metadata")
             }
             Self::AdminWithoutOpenapi => f.write_str("admin routes without an OpenAPI fragment"),
             Self::TwoLines => f.write_str("more than one line route"),
@@ -112,6 +118,18 @@ pub fn plan(
     };
     let mut any_admin = false;
     for r in routes {
+        if !r.resource_kinds.is_empty() {
+            let mut kinds = std::collections::BTreeSet::new();
+            if r.flags != 0
+                || r.auth != AUTH_PRINCIPAL
+                || r.resource_kinds.len() > 8
+                || r.resource_kinds.iter().any(|kind| {
+                    !busbar_plugin_abi::resource_admission::valid_kind(kind) || !kinds.insert(kind)
+                })
+            {
+                return Err(RouteRefused::Resources { route: r.route });
+            }
+        }
         let special = r.flags & SPECIAL;
         let alone = special == 0 || (r.flags & ALL == special && special.count_ones() == 1);
         if !alone {
@@ -127,6 +145,7 @@ pub fn plan(
             effective,
             pattern: r.pattern.clone(),
             cred_header: r.cred_header.clone(),
+            resource_kinds: r.resource_kinds.clone(),
             catalog: r.flags & ROUTE_CATALOG != 0,
         };
         match special {

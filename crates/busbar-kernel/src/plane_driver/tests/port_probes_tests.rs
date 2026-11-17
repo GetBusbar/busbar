@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_plugin_abi::plane::{ATT_DECLINE, F_PROBE_OK, P_END, P_HEAD};
-use busbar_plugin_loader::ports::plane::{PlaneIn, PlaneOut, TargetIn};
-use busbar_plugin_loader::ports::{FactRef, PortError};
+use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
+use busbar_ports::{FactRef, PortError};
 
 use super::{PortProbes, ProbeFar};
 use crate::plane_driver::port_session::{Calls, Effects, UpExchange};
@@ -149,6 +149,10 @@ impl ProbeFar for Members {
 
     fn candidate(&self, member: usize) -> Option<Candidate> {
         (member < 2).then(|| Candidate {
+            pool: "pool".into(),
+            qualified_member: "fixture-member".into(),
+            identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+            resource: None,
             upstream: format!("m{member}").into(),
             provider: "{}".into(),
             base_path: "/v1".into(),

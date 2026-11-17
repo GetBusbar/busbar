@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! THE C HEADER GENERATOR, DRIVEN OVER SYNTHETIC SOURCES AND OVER THE REAL TREE.
 
 mod render;
@@ -396,12 +399,27 @@ fn the_committed_header_is_what_the_sources_render() {
         return;
     }
     if let Some(d) = first_difference(&read(render::HEADER), &rendered) {
+        let proposed = emit_proposed(&rendered);
         panic!(
-            "{} drifted at {d}; run `{}`",
+            "{} drifted at {d}; run `{}` (the rendered header was written to {proposed})",
             render::HEADER,
             render::REGENERATE
         );
     }
+}
+
+/// On drift, the rendered header goes to `target/diagnostics-generated/busbar_plugin.h` (CI keeps
+/// that directory as an artifact: it is the exact file to commit). The test still fails.
+fn emit_proposed(rendered: &str) -> String {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+    let dir = target.join("diagnostics-generated");
+    let path = dir.join("busbar_plugin.h");
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, rendered))
+        .map(|()| path.display().to_string())
+        .unwrap_or_else(|e| format!("(could not write {}: {e})", path.display()))
 }
 
 /// Audit contract-include #1: a struct the golden records by its module path

@@ -4,6 +4,8 @@
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
 use crate::store::plane_view::decode;
+use busbar_contract::json;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
     let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);
@@ -65,7 +67,7 @@ async fn native_harness() -> (Arc<NativeAudit>, PlaneAuditLog) {
     let native = install_native(kind, crate::real_store::core().await).unwrap();
     let log = PlaneAuditLog::with_kind_id(kind);
     restore_native(&log, &native).await.unwrap();
-    native.ready.store(true, Ordering::Release);
+    native.storage.ready.store(true, Ordering::Release);
     (native, log)
 }
 async fn native_emit(
@@ -111,11 +113,14 @@ pub(super) async fn native_over(store: Arc<CoreStore>) -> NativeHarness {
 impl NativeHarness {
     pub(super) async fn restore(&self) -> RecordStoreResult<AuditRestored> {
         let result = restore_native(&self.log, &self.native).await;
-        self.native.ready.store(result.is_ok(), Ordering::Release);
+        self.native
+            .storage
+            .ready
+            .store(result.is_ok(), Ordering::Release);
         result
     }
     pub(super) async fn emit(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
-        if !self.native.ready.load(Ordering::Acquire) {
+        if !self.native.storage.ready.load(Ordering::Acquire) {
             self.restore().await.expect("native restore before append");
         }
         let mut operation = [0; 16];
@@ -620,6 +625,7 @@ async fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes(
     assert_eq!(seq, 1);
 
     let rows = native
+        .storage
         .history
         .list(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
         .await
@@ -962,7 +968,7 @@ async fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared
     assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 }
 
-fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
+fn hash_by_the_published_recipe(served: &json::Value) -> String {
     use crate::hashing::Sha256;
     let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
     let num = |k: &str| served[k].as_u64().expect("a served integer field");
@@ -1037,14 +1043,14 @@ async fn every_served_audit_record_recomputes_by_the_published_recipe() {
     flush_pending()
         .await
         .expect("all native audit originals confirmed");
-    let served = serde_json::to_value(AUDIT_LOG.list_filtered(
+    let served = json::to_value(&AUDIT_LOG.list_filtered(
         0,
         crate::audit_ring::MAX_AUDIT_ENTRIES,
         None,
         None,
     ))
     .expect("the served page serializes");
-    let mine: Vec<&serde_json::Value> = served
+    let mine: Vec<&json::Value> = served
         .as_array()
         .expect("a list")
         .iter()
@@ -1065,8 +1071,7 @@ async fn every_served_audit_record_recomputes_by_the_published_recipe() {
             Some(published.as_str()),
             "the served hash is the published recipe's: {e}"
         );
-        let entry: AuditEntry =
-            serde_json::from_value(e.clone()).expect("a served entry reads back");
+        let entry: AuditEntry = json::from_value(e).expect("a served entry reads back");
         assert_eq!(
             digest(&entry),
             published,
@@ -1304,8 +1309,8 @@ async fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_
         let json = format!(
             r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
         );
-        let row: busbar_contract::records::AuditRecord =
-            serde_json::from_str(&json).expect("a 1.5.5 row decodes as this build's record");
+        let row: busbar_contract::records::AuditRecord = busbar_contract::json::parse_str(&json)
+            .expect("a 1.5.5 row decodes as this build's record");
         seed_legacy(&store, &row).await;
         legacy.push(row);
         prev = hash;
@@ -1582,8 +1587,8 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
         recorded_here: true,
         ..Default::default()
     };
-    let parsed = |rendered: crate::export::projection::Rendered| -> serde_json::Value {
-        serde_json::from_slice(&rendered.line).unwrap()
+    let parsed = |rendered: crate::export::projection::Rendered| -> json::Value {
+        json::parse_value(&rendered.line).unwrap()
     };
     let full = parsed(project_audit_event(
         Projection::for_test(
@@ -1622,7 +1627,7 @@ fn accepted_event_projection_preserves_pinned_identity_and_bounds_disclosure() {
     ));
     assert_eq!(
         logs,
-        serde_json::json!({}),
+        json::json!({}),
         "a log-only grant discloses no event fields"
     );
 }
@@ -1830,4 +1835,36 @@ async fn a_request_refuses_an_unconfirmed_enqueue_even_when_the_caller_ignores_i
         "the request retains its enqueue failure: {refused}"
     );
     assert_eq!(queue.len(), 0);
+}
+
+#[tokio::test]
+async fn serving_observers_keep_the_bootstrap_audit_original_on_its_exact_attachment() {
+    let (bootstrap, log) = native_harness().await;
+    let mut pending = pending_audit(
+        ADMIN_LOG,
+        audit_suffix(17, "generation.publish", "root", "applied", "admin"),
+        EventOrigin::Mutation,
+    )
+    .unwrap();
+    let prepared = prepare_native(&pending, bootstrap.clone()).unwrap();
+    let expected = (prepared.entry.seq, prepared.entry.hash.clone());
+    pending.prepared = Some(prepared);
+    let queue = PendingAuditQueue::new(1);
+    queue.enqueue(pending);
+    let serving = Arc::new(NativeAudit {
+        storage: Arc::clone(&bootstrap.storage),
+        exports: Some(Arc::default()),
+    });
+    drain_native(&queue, &log, serving).await.unwrap();
+    assert_eq!(
+        queue.len(),
+        0,
+        "the original remains drainable after S9 assembly"
+    );
+    let actual = log.list_filtered(0, 1, None, None).remove(0);
+    assert_eq!(
+        (actual.seq, actual.hash),
+        expected,
+        "publication cannot reframe a retained original"
+    );
 }

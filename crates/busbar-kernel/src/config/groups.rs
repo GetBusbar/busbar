@@ -16,10 +16,7 @@
 //!   - { concurrent: 5 }              # instantaneous - no `per`
 //! ```
 //!
-//! metrics: `requests` | `tokens` | `tokens_input` | `tokens_output` | `tokens_cache_read` |
-//! `tokens_cache_write` | `budget` | `concurrent`. The four `tokens_*` metrics mirror the cost
-//! tiers (`tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,
-//! `tokens_cache_write` = cache creation) and are windowed exactly like `tokens`. windows (nouns):
+//! metrics: `requests` | `tokens` | `budget` | `concurrent`. windows (nouns):
 //! `minute` | `hour` | `day` | `month` | `total`. `concurrent` is an in-flight gauge and takes NO
 //! `per`; the three windowed metrics REQUIRE one (a windowless cap is ambiguous - fail loudly).
 //!
@@ -46,8 +43,35 @@ pub fn validate_groups(
 ) {
     let mut identities: BTreeMap<String, (&str, &str, Option<&ScopeRef>)> = BTreeMap::new();
     for (name, group) in groups {
+        for (field, limits) in std::iter::once(("limits", group.limits.as_slice())).chain(
+            group
+                .child_default
+                .iter()
+                .map(|template| ("child_default.limits", template.limits.as_slice())),
+        ) {
+            let mut selected_ids = std::collections::BTreeSet::new();
+            for limit in limits {
+                if let Some(selected) = &limit.selected {
+                    if !valid_selected_identifier(name) {
+                        errors.push(coded::config_group_invalid(format!("groups.{name}.{field}: selected-resource group identity must be 1..=128 UTF-8 bytes without controls")).into());
+                    }
+                    if !selected_ids.insert(selected.id()) {
+                        errors.push(
+                            coded::config_group_invalid(format!(
+                                "groups.{name}.{field}: duplicate selected rule id `{}`",
+                                selected.id()
+                            ))
+                            .into(),
+                        );
+                    }
+                    if !limit.valid_selected_shape() {
+                        errors.push(coded::config_group_invalid(format!("groups.{name}.{field}: invalid selected-resource limit combination")).into());
+                    }
+                }
+            }
+        }
         for limit in &group.limits {
-            if limit.metric == LimitMetric::Concurrent {
+            if limit.metric == LimitMetric::Concurrent || limit.selected.is_some() {
                 continue;
             }
             let Some(window) = limit.per else { continue };
@@ -226,15 +250,6 @@ pub enum LimitMetric {
     Requests,
     /// Total tokens (all tiers) per window.
     Tokens,
-    /// UNCACHED-INPUT tokens per window (`TierTokens.input`; cached prompt reads are excluded and
-    /// counted under `tokens_cache_read` instead) — mirrors the cost `input` tier.
-    TokensInput,
-    /// OUTPUT tokens per window — mirrors the cost `output` tier.
-    TokensOutput,
-    /// CACHE-READ tokens per window — mirrors the cost `cache_read` tier.
-    TokensCacheRead,
-    /// CACHE-WRITE (cache creation) tokens per window — mirrors the cost `cache_write` tier.
-    TokensCacheWrite,
     /// Spend (cents, abstract minor units, derived from the ledger x rate_card) per window.
     Budget,
     /// In-flight request gauge - instantaneous, no window.
@@ -242,17 +257,13 @@ pub enum LimitMetric {
 }
 
 impl LimitMetric {
-    /// Every metric, in the order the refusals list them: 1.5.5's four first, then the 1.6.0
-    /// per-class token metrics appended. The parser and every refusal read this one table.
-    pub const ALL: [LimitMetric; 8] = [
+    /// Every metric, in the order the refusals list them. The parser and every refusal read this
+    /// one table.
+    pub const ALL: [LimitMetric; 4] = [
         LimitMetric::Requests,
         LimitMetric::Tokens,
         LimitMetric::Budget,
         LimitMetric::Concurrent,
-        LimitMetric::TokensInput,
-        LimitMetric::TokensOutput,
-        LimitMetric::TokensCacheRead,
-        LimitMetric::TokensCacheWrite,
     ];
 
     /// The metric a limit key names, if it names one.
@@ -264,25 +275,8 @@ impl LimitMetric {
         match self {
             LimitMetric::Requests => "requests",
             LimitMetric::Tokens => "tokens",
-            LimitMetric::TokensInput => "tokens_input",
-            LimitMetric::TokensOutput => "tokens_output",
-            LimitMetric::TokensCacheRead => "tokens_cache_read",
-            LimitMetric::TokensCacheWrite => "tokens_cache_write",
             LimitMetric::Budget => "budget",
             LimitMetric::Concurrent => "concurrent",
-        }
-    }
-
-    pub fn capped_class(&self) -> Option<&'static str> {
-        match self {
-            LimitMetric::Requests
-            | LimitMetric::Tokens
-            | LimitMetric::Budget
-            | LimitMetric::Concurrent => None,
-            LimitMetric::TokensInput
-            | LimitMetric::TokensOutput
-            | LimitMetric::TokensCacheRead
-            | LimitMetric::TokensCacheWrite => self.as_str().strip_prefix("tokens_"),
         }
     }
 }
@@ -344,21 +338,63 @@ pub struct LimitCfg {
     /// The scope a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
     /// Same wire treatment as `scope`: the YAML key stays `downgrade_to: <pool-name>`.
     pub downgrade_to: Option<ScopeRef>,
-    /// How a BUDGET limit admits (`BUSBAR-1.6.0.md` §7, #77(6)): `exact` (the default when
-    /// absent) refuses at admit only a budget already exhausted; `estimate` is one check at admit,
-    /// the plane's expected units priced at the highest price among the allowed destinations,
-    /// against what is left. Budget limits only. New in 1.6.0; a 1.5.5 config never carries it.
-    pub admission: Option<AdmissionMode>,
-    /// What a BUDGET limit does to a unit already in flight when it runs dry (`BUSBAR-1.6.0.md` §7, #77(7)):
-    /// `finish-unit` (the default when absent) finishes it; `cut-stream` cuts it, bills what
-    /// streamed, and tells the client in-stream. Budget limits only. New in 1.6.0.
-    ///
-    /// PRECEDENCE WITH `on_exhaust`: the two act at different moments and both may be set.
-    /// `on_exhaust` (`block` | `downgrade`) decides a unit that ARRIVES at an exhausted budget, at
-    /// admission; `on_exhaustion` decides a unit that is ALREADY RUNNING when the budget dries, at
-    /// its next checkpoint. A downgraded unit is governed mid-stream by the limits of the scope it
-    /// was downgraded into.
-    pub on_exhaustion: Option<ExhaustionMode>,
+    /// Process-local per-key selected-resource policy, separate from monetary buckets.
+    pub selected: Option<SelectedLimitCfg>,
+}
+
+/// The configured identity of a selected-resource rule. Construction validates the wire grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLimitCfg {
+    id: Box<str>,
+    instance: Box<str>,
+    resource: Box<str>,
+}
+
+pub fn valid_selected_identifier(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+}
+
+impl SelectedLimitCfg {
+    fn parse(id: String, selector: String) -> Result<Self, &'static str> {
+        let Some((instance, resource)) = selector.split_once('/') else {
+            return Err("upstream_resource must name instance/resource");
+        };
+        if !valid_selected_identifier(&id)
+            || !valid_selected_identifier(instance)
+            || !valid_selected_identifier(resource)
+        {
+            return Err("selected rule id, instance and resource must each be 1..=128 UTF-8 bytes without controls");
+        }
+        Ok(Self {
+            id: id.into(),
+            instance: instance.into(),
+            resource: resource.into(),
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    pub fn selector(&self) -> String {
+        format!("{}/{}", self.instance, self.resource)
+    }
+}
+
+impl LimitCfg {
+    pub(crate) fn valid_selected_shape(&self) -> bool {
+        self.selected.is_some()
+            && matches!(self.metric, LimitMetric::Requests | LimitMetric::Tokens)
+            && self.per == Some(LimitWindow::Minute)
+            && self.scope.is_none()
+            && self.on_exhaust.is_none()
+            && self.downgrade_to.is_none()
+    }
 }
 
 /// The budget-exhaustion behavior a limit may declare (see [`LimitCfg::on_exhaust`]).
@@ -371,59 +407,20 @@ pub enum OnExhaust {
     Downgrade,
 }
 
-/// A budget limit's admission mode (see [`LimitCfg::admission`]).
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AdmissionMode {
-    /// Refuse at admit only a budget already exhausted — the default.
-    #[default]
-    Exact,
-    /// One check at admit: the plane's expected units at the highest allowed price, against what
-    /// is left.
-    Estimate,
-}
-
-/// A budget limit's in-flight exhaustion mode (see [`LimitCfg::on_exhaustion`]).
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
+/// What a BUDGET limit does to a unit already in flight when it runs dry. Not configurable: every
+/// limit finishes the unit in flight (`FinishUnit`); `CutStream` is the money layer's cut-at-
+/// checkpoint behavior, which no config key selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExhaustionMode {
-    /// Finish the unit in flight — the default. A unit that is not a stream overshoots by at most one
-    /// request.
+    /// Finish the unit in flight. A unit that is not a stream overshoots by at most one request.
     #[default]
     FinishUnit,
     /// Cut the unit at the checkpoint that dries the budget: the client is told in-stream, and one
-    /// Abort line bills what streamed (#62, #77(7)).
+    /// Abort line bills what streamed.
     CutStream,
 }
 
-impl ExhaustionMode {
-    pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
-        if limits
-            .into_iter()
-            .any(|l| l.on_exhaustion == Some(ExhaustionMode::CutStream))
-        {
-            ExhaustionMode::CutStream
-        } else {
-            ExhaustionMode::FinishUnit
-        }
-    }
-}
-
-impl AdmissionMode {
-    pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
-        if limits
-            .into_iter()
-            .any(|l| l.admission == Some(AdmissionMode::Estimate))
-        {
-            AdmissionMode::Estimate
-        } else {
-            AdmissionMode::Exact
-        }
-    }
-}
-
-/// Every key a limit map accepts, as the unknown-key refusal lists them: 1.5.5's eight in 1.5.5's
-/// order, then the 1.6.0 keys appended.
+/// Every key a limit map accepts, as the unknown-key refusal lists them, in 1.5.5's order.
 const LIMIT_KEYS: &[&str] = &[
     "requests",
     "tokens",
@@ -433,12 +430,10 @@ const LIMIT_KEYS: &[&str] = &[
     "pool",
     "on_exhaust",
     "downgrade_to",
-    "tokens_input",
-    "tokens_output",
-    "tokens_cache_read",
-    "tokens_cache_write",
-    "admission",
-    "on_exhaustion",
+    "id",
+    "upstream_resource",
+    "per_key",
+    "enforcement",
 ];
 
 /// Writes every metric name, 1.5.5's four first, joined by `sep`.
@@ -495,8 +490,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 let mut pool: Option<String> = None;
                 let mut on_exhaust: Option<OnExhaust> = None;
                 let mut downgrade_to: Option<String> = None;
-                let mut admission: Option<AdmissionMode> = None;
-                let mut on_exhaustion: Option<ExhaustionMode> = None;
+                let mut id: Option<String> = None;
+                let mut resource: Option<String> = None;
+                let mut per_key: Option<bool> = None;
+                let mut enforcement: Option<String> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     if let Some(m) = LimitMetric::from_key(&key) {
@@ -515,8 +512,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         "pool" => once(&mut map, &mut pool, "pool")?,
                         "on_exhaust" => once(&mut map, &mut on_exhaust, "on_exhaust")?,
                         "downgrade_to" => once(&mut map, &mut downgrade_to, "downgrade_to")?,
-                        "admission" => once(&mut map, &mut admission, "admission")?,
-                        "on_exhaustion" => once(&mut map, &mut on_exhaustion, "on_exhaustion")?,
+                        "id" => once(&mut map, &mut id, "id")?,
+                        "upstream_resource" => once(&mut map, &mut resource, "upstream_resource")?,
+                        "per_key" => once(&mut map, &mut per_key, "per_key")?,
+                        "enforcement" => once(&mut map, &mut enforcement, "enforcement")?,
                         other => return Err(de::Error::unknown_field(other, LIMIT_KEYS)),
                     }
                 }
@@ -527,6 +526,30 @@ impl<'de> Deserialize<'de> for LimitCfg {
                     msg.push(')');
                     return Err(de::Error::custom(msg));
                 };
+
+                if id.is_some() || resource.is_some() || per_key.is_some() || enforcement.is_some()
+                {
+                    let (Some(id), Some(resource), Some(true), Some("process")) =
+                        (id, resource, per_key, enforcement.as_deref())
+                    else {
+                        return Err(de::Error::custom("selected-resource limits require id, upstream_resource, per_key: true and enforcement: process together"));
+                    };
+                    let selected =
+                        SelectedLimitCfg::parse(id, resource).map_err(de::Error::custom)?;
+                    let row = LimitCfg {
+                        metric,
+                        amount,
+                        per,
+                        scope: pool.map(ScopeRef::pool),
+                        on_exhaust,
+                        downgrade_to: downgrade_to.map(ScopeRef::pool),
+                        selected: Some(selected),
+                    };
+                    if !row.valid_selected_shape() {
+                        return Err(de::Error::custom("selected-resource limits require requests or tokens per minute and forbid pool, on_exhaust and downgrade_to"));
+                    }
+                    return Ok(row);
+                }
 
                 if metric == LimitMetric::Concurrent && pool.is_some() {
                     return Err(de::Error::custom(
@@ -553,19 +576,6 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         metric.as_str()
                     )));
                 }
-                if metric != LimitMetric::Budget {
-                    for (key, set) in [
-                        ("admission", admission.is_some()),
-                        ("on_exhaustion", on_exhaustion.is_some()),
-                    ] {
-                        if set {
-                            return Err(de::Error::custom(format!(
-                                "`{key}` is a BUDGET behavior; a `{}` limit does not take it",
-                                metric.as_str()
-                            )));
-                        }
-                    }
-                }
                 if on_exhaust == Some(OnExhaust::Downgrade) && pool.is_none() {
                     return Err(de::Error::custom(
                         "`on_exhaust: downgrade` requires a `pool:` scope on the limit - a \
@@ -590,8 +600,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
-                        admission: None,
-                        on_exhaustion: None,
+                        selected: None,
                     }),
                     (_, None) => Err(de::Error::custom(format!(
                         "a `{}` limit requires a `per:` window \
@@ -605,8 +614,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: pool.map(ScopeRef::pool),
                         on_exhaust,
                         downgrade_to: downgrade_to.map(ScopeRef::pool),
-                        admission,
-                        on_exhaustion,
+                        selected: None,
                     }),
                 }
             }
@@ -628,8 +636,7 @@ impl Serialize for LimitCfg {
             + usize::from(self.scope.is_some())
             + usize::from(self.on_exhaust.is_some())
             + usize::from(self.downgrade_to.is_some())
-            + usize::from(self.admission.is_some())
-            + usize::from(self.on_exhaustion.is_some());
+            + 4 * usize::from(self.selected.is_some());
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry(self.metric.as_str(), &self.amount)?;
         if let Some(window) = self.per {
@@ -645,11 +652,11 @@ impl Serialize for LimitCfg {
         if let Some(to) = &self.downgrade_to {
             map.serialize_entry("downgrade_to", &to.value)?;
         }
-        if let Some(admission) = self.admission {
-            map.serialize_entry("admission", &admission)?;
-        }
-        if let Some(on_exhaustion) = self.on_exhaustion {
-            map.serialize_entry("on_exhaustion", &on_exhaustion)?;
+        if let Some(selected) = &self.selected {
+            map.serialize_entry("id", selected.id())?;
+            map.serialize_entry("upstream_resource", &selected.selector())?;
+            map.serialize_entry("per_key", &true)?;
+            map.serialize_entry("enforcement", "process")?;
         }
         map.end()
     }
@@ -658,3 +665,7 @@ impl Serialize for LimitCfg {
 #[cfg(test)]
 #[path = "tests/groups.rs"]
 mod limit_grammar_tests;
+
+#[cfg(test)]
+#[path = "tests/group_limit_removed_keys.rs"]
+mod group_limit_removed_keys;

@@ -111,13 +111,11 @@ pub struct PatchRefusal {
 const DOCUMENT_PATCH_REMEDY: &str = " (document_patch cannot set the operator credential or \
     the plugin admission set; edit config.yaml and POST /config/reload)";
 
-/// Whether `path` (an encoded pointer) is `/plugins` or below it, other than `/plugins/logs/**`.
+/// Whether `path` (an encoded pointer) is `/plugins` or below it.
 fn admission_path(path: &str) -> bool {
     match path.strip_prefix("/plugins") {
         Some("") => true,
-        Some(rest) => rest
-            .strip_prefix('/')
-            .is_some_and(|tail| tail != "logs" && !tail.starts_with("logs/")),
+        Some(rest) => rest.starts_with('/'),
         None => false,
     }
 }
@@ -134,7 +132,7 @@ pub fn touches_identity_providers(patch: &DocumentPatch) -> bool {
     patch.paths().any(identity_providers_path)
 }
 
-/// RULE (b) (§000.1): the paths of `patch` under `/plugins`, except `/plugins/logs/**`. The plugin
+/// RULE (b) (§000.1): the paths of `patch` under `/plugins`. The plugin
 /// admission set decides the operator credential, so it is config.yaml's on every reader.
 fn plugins_admission_paths(patch: &DocumentPatch) -> Vec<String> {
     patch

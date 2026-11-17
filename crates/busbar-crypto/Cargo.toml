@@ -1,7 +1,7 @@
 [package]
 # The crypto facade (CRYPTO-SEAM §2.1-2.3). Crypto-free: every primitive is the backend's. Reached by
-# every other crate as `busbar_contract::crypto`; no crate but busbar-contract and
-# busbar-plugin-abi[host] names it (abi sits below busbar-contract, IF §16.23).
+# other crates as `busbar_contract::crypto`; busbar-contract, busbar-plugin-abi[host] and
+# busbar-artifact-verifier name it directly (abi sits below busbar-contract, IF §16.23).
 name = "busbar-crypto"
 version = "1.6.0"
 publish = false
@@ -16,7 +16,7 @@ license = "Apache-2.0"
 # build patches its own crate of the same name in. The rev's crates/busbar-crypto-backend tree must equal
 # this commit's (tests/backend_pin.rs): a plugin pinned to this commit builds exactly that backend. A
 # backend change therefore takes two commits: the change, then the bump of this rev to a commit carrying it.
-busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "8446d1291e9288d80619d6874ffb7217845f1c3f" }
+busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "e95b3fc0e283e3aa5826b71ae95947bb05545feb" }
 zeroize = { version = "1", default-features = false }
 # The listener-ticket key-failure warning (tls::ListenerTickets).
 tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }

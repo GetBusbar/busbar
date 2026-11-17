@@ -3,6 +3,7 @@
 
 //! THE ONE JSON DEPTH GUARD (`spans::exceeds_max_depth`) answers exactly as the copies it replaced.
 
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::spans::{exceeds_max_depth, MAX_JSON_DEPTH};
 
 /// The scan as `busbar-kernel/src/json.rs` carried it before the fold, verbatim.
@@ -48,7 +49,7 @@ fn agree(body: &[u8], max: usize) -> bool {
 }
 
 /// One case of the shared fixture, built as the two seams' suites build it.
-fn fixture_body(case: &serde_json::Value) -> String {
+fn fixture_body(case: &json::Value) -> String {
     if let Some(raw) = case["raw"].as_str() {
         return raw.to_string();
     }
@@ -75,9 +76,12 @@ fn the_floor_is_128_and_the_shared_fixture_holds_it() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/json-depth.json"
     );
-    let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
-            .expect("fixture is JSON");
+    let doc: json::Value = json::parse_value(
+        std::fs::read_to_string(path)
+            .expect("fixture readable")
+            .as_bytes(),
+    )
+    .expect("fixture is JSON");
     assert_eq!(MAX_JSON_DEPTH, 128, "the depth floor moved");
     assert_eq!(doc["max_json_depth"], MAX_JSON_DEPTH as u64);
     let cases = doc["cases"].as_array().expect("cases");

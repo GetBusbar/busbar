@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{self, JsonValueTrait};
+
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-scrape-shape-1-5-5-{}-{}",
@@ -52,8 +54,6 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 admin_require_mtls: false
 identity-providers:
@@ -95,7 +95,7 @@ fn plane_series_prefixes() -> Vec<String> {
     let raw = std::fs::read_to_string(&cells_path).unwrap_or_else(|e| {
         panic!("the shadow-oracle cell list must be readable at {cells_path:?}: {e}")
     });
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("cells.json must be valid JSON");
+    let doc = json::parse_value(raw.as_bytes()).expect("cells.json must be valid JSON");
     let cells = doc["cells"]
         .as_array()
         .expect("cells.json must carry a `cells` array");

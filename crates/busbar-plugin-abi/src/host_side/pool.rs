@@ -22,7 +22,7 @@ use zerocopy::IntoBytes;
 
 use crate::records::{
     Full, Nested, Pod, RawWrite, Writer, put_fact_in, put_fact_text_in, put_metric_in,
-    put_nested_in, put_pair_in, put_parts,
+    put_nested_in, put_pair_in, put_parts, put_prefixed_nested_in,
 };
 
 /// The four class sizes (§10.1): 4 KiB, 64 KiB, 1 MiB, 16 MiB.
@@ -273,8 +273,26 @@ impl RawWrite for PooledOut {
 /// record opened, filled and back-patched in this buffer (`put_nested_in`, `put_metric_in`), with no scratch
 /// allocation on the §8.8 encoder path. A nested write that runs out of room is truncated, which zeroes it.
 impl Writer for PooledOut {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
+    }
+    fn put_u32s(
+        &mut self,
+        tag: u16,
+        fill: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        crate::records::put_u32s_in(self, tag, fill)
     }
     fn put_pod<T: Pod>(&mut self, tag: u16, v: &T) -> Result<(), Full> {
         put_parts(self, tag, &[v.as_bytes()])
@@ -345,6 +363,25 @@ pub struct Pool {
 
 static GLOBAL: OnceLock<Pool> = OnceLock::new();
 
+/// C-CANCEL-OPEN (IF §14 round 8: "a pool instrumented to record acquire/release"): one block leaving or coming
+/// back to a pool, as the process's [`observe_pool`] observer sees it, on the thread that moved it.
+#[derive(Clone, Copy, Debug)]
+pub enum PoolEvent<'a> {
+    /// A block left the pool for an acquire or a growth (popped, or allocated zeroed on a miss): its address.
+    Taken { block: usize },
+    /// A block came back: its address and its whole bytes, after the release zeroed what it exposed and before it
+    /// is pushed to its queue or freed.
+    Released { block: usize, bytes: &'a [u8] },
+}
+
+static OBSERVER: OnceLock<for<'a> fn(PoolEvent<'a>)> = OnceLock::new();
+
+/// Installs the process's one pool observer (a conformance probe: production installs none, and every take and
+/// release then costs one load). The first call wins; later ones are ignored.
+pub fn observe_pool(observer: for<'a> fn(PoolEvent<'a>)) {
+    let _ = OBSERVER.set(observer);
+}
+
 impl Pool {
     /// A pool sized by `caps` (tests build their own and leak it; production has the one global).
     pub(crate) fn new(caps: PoolCaps) -> Pool {
@@ -401,25 +438,37 @@ impl Pool {
     /// A block of the smallest class that fits `want` (one pop; a miss allocates it zeroed), or an exact zeroed
     /// block above 16 MiB (never pooled). Every block comes back with `len = high_water = 0`.
     fn take(&self, want: usize, max_out: usize) -> OutBuf {
-        let Some(class) = CLASSES.iter().position(|&size| size >= want) else {
-            return OutBuf::zeroed(want.next_multiple_of(8), max_out);
+        let buf = match CLASSES.iter().position(|&size| size >= want) {
+            None => OutBuf::zeroed(want.next_multiple_of(8), max_out),
+            Some(class) => match self.queues.get(class).and_then(ArrayQueue::pop) {
+                Some(mut buf) => {
+                    buf.max_out = max_out;
+                    buf
+                }
+                None => {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    OutBuf::zeroed(CLASSES[class], max_out)
+                }
+            },
         };
-        match self.queues.get(class).and_then(ArrayQueue::pop) {
-            Some(mut buf) => {
-                buf.max_out = max_out;
-                buf
-            }
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                OutBuf::zeroed(CLASSES[class], max_out)
-            }
+        if let Some(observer) = OBSERVER.get() {
+            observer(PoolEvent::Taken {
+                block: buf.buf.as_ptr().addr(),
+            });
         }
+        buf
     }
 
     /// Zeroes what the block exposed, then one push to its current class; a full queue, or a block of no class,
     /// frees it.
     fn release(&self, mut buf: OutBuf) {
         buf.clear();
+        if let Some(observer) = OBSERVER.get() {
+            observer(PoolEvent::Released {
+                block: buf.buf.as_ptr().addr(),
+                bytes: &buf.buf,
+            });
+        }
         let pushed = match class_of(buf.cap()).and_then(|class| self.queues.get(class)) {
             Some(queue) => queue.push(buf).is_ok(),
             None => false,
@@ -560,6 +609,35 @@ mod tests {
 
     fn all_zero(bytes: &[u8]) -> bool {
         bytes.iter().all(|&b| b == 0)
+    }
+
+    #[test]
+    fn flat_words_rollback_in_the_real_pooled_sink() {
+        let mut out = PooledOut {
+            buf: Some(OutBuf::zeroed(20, 20)),
+            pool: Some(pool(1)),
+        };
+        out.put(tag::TEXT, b"").unwrap();
+        let prefix = out.bytes().to_vec();
+        assert!(
+            out.put_u32s(0x101, |words| {
+                words.push(7)?;
+                assert!(words.push(8).is_err());
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = out.put_u32s(0x101, |words| {
+                words.push(9)?;
+                std::panic::panic_any(())
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
     }
 
     #[test]

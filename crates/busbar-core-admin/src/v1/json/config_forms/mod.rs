@@ -44,9 +44,20 @@ pub(super) fn schema_document() -> Value {
     secret["writeOnly"] = json!(true);
     secret["description"] = json!("Core user-input SecretRef grammar. Plugin-declared shorthand is resolved separately; use explicit module/settings for portable forms. Never an inline credential.");
     definitions.insert("SecretRef".into(), secret);
+    let accept = json!({"enum":["plaintext","unverified_tls"]});
+    let mut insecure = object(json!({
+        "accept":{"oneOf":[accept.clone(),{"type":"array","items":accept}]},
+        "reason":nullable(json!({"type":"string"}))
+    }));
+    insecure["required"] = json!(["accept"]);
+    insecure["description"] = json!("TRANSPORT-SECURITY-POLICY §4: the insecure transports this instance accepts, beside its module. Absent or null: verified TLS only.");
+    insecure["x-busbar-runtime-validation"] =
+        json!(["the accepted list and its reason are judged at load (BUSBAR-3163)"]);
+    definitions.insert("InsecureTransport".into(), insecure);
     let store_object = object(json!({
         "module":{"type":"string","default":""},
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
     let mut store = json!({"oneOf":[store_object,{
         "type":"array","prefixItems":[{"type":"string"},{"type":"object","x-busbar-module-settings":true}],
@@ -60,17 +71,20 @@ pub(super) fn schema_document() -> Value {
         "store changes require a process restart"
     ]);
     definitions.insert("Store".into(), store);
-    let secret_module_object = object(json!({
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+    let mut secret_module_object = object(json!({
+        "module":{"type":"string"},
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
+    secret_module_object["required"] = json!(["module"]);
     let mut secret_module = json!({"oneOf":[secret_module_object,{
-        "type":"array","prefixItems":[{"type":"object","x-busbar-module-settings":true}],
-        "items":{},"minItems":0,"maxItems":1,
-        "description":"Existing positional parser form: [] or [settings]. Omitted settings default to an empty object."
+        "type":"array","prefixItems":[{"type":"string"},{"type":"object","x-busbar-module-settings":true}],
+        "items":{},"minItems":1,"maxItems":2,
+        "description":"Existing positional parser form: [module] or [module, settings]. Omitted settings default to an empty object."
     }]});
-    secret_module["description"] = json!("Module-level initialization settings, keyed by the secret module name or alias under secrets, canonically an object; the parser also accepts a positional array. This is not a named instance and has no inner module field. Per-reference SecretRef settings are a separate input.");
+    secret_module["description"] = json!("One named secret instance under secrets (IF §8.2), keyed by its instance name, canonically an object: module names the admitted secret image (or a declared former name) and settings are its own initialization settings. The parser also accepts a positional array. Per-reference SecretRef settings are a separate input.");
     secret_module["x-busbar-runtime-validation"] = json!([
-        "the map key must resolve to an admitted secret module; built-in env/file modules take no module-level configuration",
+        "module must resolve to an admitted secret image; built-in env/file modules take no module-level configuration",
         "initialization SecretRefs resolve only through the bootstrap env/file resolvers, never another secret plugin",
         "module lifecycle settings after bootstrap secret resolution",
         "secret module initialization changes require a process restart"
@@ -91,7 +105,8 @@ pub(super) fn schema_document() -> Value {
         "module":{"type":"string"}, "max_admin_scope":scope,
         "token":nullable(reference("SecretRef")),
         "browser_login":nullable(reference("BrowserLogin")),
-        "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
+        "settings":{"type":"object","default":{},"x-busbar-module-settings":true},
+        "insecure_transport":nullable(reference("InsecureTransport"))
     }));
     identity["required"] = json!(["module"]);
     identity["x-busbar-runtime-validation"] = json!([
@@ -114,14 +129,13 @@ pub(super) fn schema_document() -> Value {
         "AuthPolicy".into(),
         object(json!({
             "self_mint":nullable(json!({"type":"boolean"})), "binding_modes":modes,
-            "default_ttl":nullable(json!({"type":"string"})),
             "max_ttl":nullable(json!({"type":"string"})),
-            "mint_ceilings":dictionary(reference("MintCeiling")),
-            "max_outstanding_tickets_per_key":nullable(json!({"type":"integer","minimum":1})),
-            "require_if_match":nullable(json!({"type":"boolean"}))
+            "mint_ceilings":dictionary(reference("MintCeiling"))
         })),
     );
-    let verb_names: Vec<_> = crate::verb::admin_rows().map(|row| row.name).collect();
+    let verb_names: Vec<_> = crate::verb::admin_grant_rows()
+        .map(|row| row.name)
+        .collect();
     let mut binding = object(json!({
         "allowed_pools":nullable(strings()),"group":nullable(json!({"type":"string"})),
         "admin_scope":scope,"verbs":{"anyOf":[{"const":"*"},{"type":"array","items":{"enum":verb_names}},{"type":"null"}],
@@ -143,7 +157,8 @@ pub(super) fn schema_document() -> Value {
     let mut auth = object(json!({
         "signing_key":nullable(reference("SecretRef")),"chain":chain,"admin_auth":admin_names,
         "role_bindings":dictionary(dictionary(reference("RoleBinding"))),
-        "key_ttl":nullable(json!({"type":"string"})),"policy":reference("AuthPolicy")
+        "key_ttl":nullable(json!({"type":"string"})),"policy":reference("AuthPolicy"),
+        "require_if_match":nullable(json!({"type":"boolean"}))
     }));
     auth["x-busbar-runtime-validation"] = json!([
         "provider names and signing key requirements",
@@ -248,9 +263,9 @@ pub(super) fn extension() -> Value {
             .collect();
     json!({"version":1,"context":"user_configuration","reference_base":"schema","schema":schema_document(),
         "declared_plane_scope_kinds":scope_kinds,
-        "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
+        "admin_verbs":crate::verb::admin_grant_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{
-            "plugins":"host PluginsCfg loader, trust/fetch/logs policy; runtime-only first_party_floors excluded",
+            "plugins":"host PluginsCfg loader, trust/fetch policy; runtime-only first_party_floors excluded",
             "oauth_as":"installed authorization-server owner input_schema; absence is explicitly unsupported",
             "groups":"host GroupCfg, compact LimitCfg and ChildDefault; runtime validation owns tree and pool references",
             "hooks":"deploy HookDefCfg; admin POST/PUT use distinct HookCfg schema",

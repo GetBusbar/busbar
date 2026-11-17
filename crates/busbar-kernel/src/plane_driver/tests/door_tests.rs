@@ -940,3 +940,31 @@ fn a_filled_segment_escapes_all_but_the_unreserved_bytes() {
     );
     assert_eq!(filled("/{x}", "AZaz09"), "/AZaz09");
 }
+
+/// #123: a door section's undeclared-reference check reads an admitted shorthand as the reference
+/// it is, as every other kind's settings check does, so `{<sugar>: X}` outside the plane's declared
+/// secret paths is refused, and at a declared path is not.
+#[test]
+fn an_admitted_shorthand_outside_the_declared_paths_is_an_undeclared_reference() {
+    let sugars = crate::config::secret::fixture_sources();
+    let value: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("upstream: {api_key: {lookup: DOOR_KEY}}").unwrap();
+
+    let refused = undeclared_in(&value, NAMED, "door-owner", &[], &sugars)
+        .expect("a shorthand at an undeclared path is refused");
+    assert!(
+        refused.starts_with(&format!("{NAMED}.upstream.api_key:")),
+        "the refusal names the path: {refused}"
+    );
+    assert!(
+        !refused.contains("DOOR_KEY"),
+        "the refusal echoes no value: {refused}"
+    );
+
+    let declared = vec!["upstream.api_key".to_string()];
+    assert_eq!(
+        undeclared_in(&value, NAMED, "door-owner", &declared, &sugars),
+        None,
+        "the same shorthand at a declared path is the plane's reference"
+    );
+}

@@ -125,7 +125,8 @@ impl Birth {
         if bytes.len() > 1 << 20 {
             return Err(startup::Error::Corrupt);
         }
-        let value: Self = serde_json::from_slice(bytes).map_err(|_| startup::Error::Corrupt)?;
+        let value: Self =
+            busbar_contract::json::parse(bytes).map_err(|_| startup::Error::Corrupt)?;
         if value.version != 1
             || value.dataset != dataset.0
             || value.owner == Some([0; 16])
@@ -164,7 +165,7 @@ impl Birth {
     }
 
     pub(super) fn encode(&self) -> Result<Vec<u8>, startup::Error> {
-        let bytes = serde_json::to_vec(self).map_err(|_| startup::Error::Corrupt)?;
+        let bytes = busbar_contract::json::to_vec(self).map_err(|_| startup::Error::Corrupt)?;
         if bytes.len() > 1 << 20 {
             return Err(startup::Error::Corrupt);
         }
@@ -294,12 +295,7 @@ impl FirstStart {
                         startup::exact(startup::manifest_address(), manifest_bytes.clone()),
                         startup::exact(startup::writer_address(me), row_bytes.clone()),
                     ],
-                    vec![Mutation::Put {
-                        address: startup::writer_address(me),
-                        value: Secret::new(
-                            retired.encode().ok_or(startup::Error::Corrupt)?.to_vec(),
-                        ),
-                    }],
+                    control::writer_put(me, Some(row), retired).ok_or(startup::Error::Corrupt)?,
                 )?;
                 Attempt::proven(candidate, self.backend.clone())
                     .map_err(|_| startup::Error::Authority)?

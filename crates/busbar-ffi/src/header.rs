@@ -170,6 +170,9 @@ impl Plugin {
 
 /// Emits the one exported symbol of a dropped-in plugin: `busbar_plugin`, returning `$p`'s header.
 /// `$p` must be a `LinkedPlugin` (`busbar_ffi::plugin(..)`); `$p` and `$crate` sit only in the safe body.
+/// The plugin image emits this export exactly once and reserves the `busbar_plugin` symbol for this
+/// signature. `$p` names its static header; the header, stamp and kind table remain live while the
+/// image is mapped. The loader borrows them while opened and retains the mapping after admission.
 ///
 /// ```text
 /// busbar_ffi::export!(my_logic_crate::PLUGIN);
@@ -178,6 +181,9 @@ impl Plugin {
 macro_rules! export {
     ($p:path) => {
         const _: () = {
+            // SAFETY: this is the image's reserved plugin entry symbol with the loader's exact C
+            // signature. One export per image prevents symbol ambiguity; LinkedPlugin ties the
+            // returned static header to its image's table and shims. The caller never frees it.
             #[unsafe(no_mangle)]
             pub extern "C" fn busbar_plugin() -> *const $crate::Plugin {
                 $crate::LinkedPlugin::as_ptr(&$p)

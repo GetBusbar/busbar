@@ -116,14 +116,14 @@ pub(super) fn definitions() -> Map<String, Value> {
     let mut model = object(
         json!({
             "provider":string,
+            "resource":nullable(json!({"type":"string","minLength":1,"maxLength":128,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$","description":"Opaque selected-rate identity; canonical host validation also limits it to 128 UTF-8 bytes."})),
             "max_requests": {"type":"integer","minimum":i64::MIN,"maximum":i64::MAX,"default":-1,"x-busbar-integer-token":"signed"},
             "max_concurrent":nullable(usize_value.clone()),
             "default_max_tokens":nullable(u32_value.clone()),
             "upstream_model":nullable(string.clone()),
             "attempt_timeout_ms":nullable(u64_value.clone()),
             "reasoning":nullable(boolean.clone()),
-            "prompt_caching":nullable(boolean.clone()),
-            "protocol":nullable(string.clone())
+            "prompt_caching":nullable(boolean.clone())
         }),
         &["provider"],
     );

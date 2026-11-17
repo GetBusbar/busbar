@@ -31,6 +31,7 @@ const T_COUNT: u8 = b'C';
 const T_ACTIVE: u8 = b'A';
 const T_MEMBERS: u8 = b'N';
 const T_GUARD: u8 = b'W';
+const T_EPOCH: u8 = b'E';
 
 /// Index name and value caps (dev's contract reference values; `dir` carries the rest).
 pub(super) const MAX_INDEX_NAME: usize = 32;
@@ -218,12 +219,15 @@ pub(super) fn kind_tag(kind: u32) -> Option<u8> {
     }
 }
 
+/// One row a transaction read or writes: its table, its key and its value.
+type TxRow = (&'static str, Vec<u8>, Option<Secret<Vec<u8>>>);
+
 /// One optimistic attempt: every address read is pinned (`Exact` or `Absent`) by the one commit, so a concurrent
 /// writer of any of them turns the commit into a ConditionConflict and the op decides again.
 pub(super) struct Tx<'s> {
     scope: &'s ScopedStore,
-    seen: Vec<(&'static str, Vec<u8>, Option<Secret<Vec<u8>>>)>,
-    writes: Vec<(&'static str, Vec<u8>, Option<Secret<Vec<u8>>>)>,
+    seen: Vec<TxRow>,
+    writes: Vec<TxRow>,
     ranges: Vec<Mutation>,
 }
 
@@ -235,6 +239,29 @@ impl<'s> Tx<'s> {
             writes: Vec::new(),
             ranges: Vec::new(),
         }
+    }
+
+    /// Observe before any operation read or membership scan. The original row
+    /// stays in `seen`, including its absence, so every successful directory
+    /// writer invalidates a concurrent scan-based decision.
+    pub async fn read_epoch(&mut self) -> Result<u64, NeedErr> {
+        self.read(vec![(DIR, vec![T_EPOCH])]).await?;
+        match self.get(DIR, &[T_EPOCH]) {
+            None => Ok(0),
+            Some(raw) => raw
+                .as_slice()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| NeedErr::Unavailable),
+        }
+    }
+
+    /// Only a successful mutating decision advances the observed revision.
+    /// Exhaustion refuses the whole attempt instead of permitting an ABA.
+    pub fn advance_epoch(&mut self, observed: u64) -> Result<(), NeedErr> {
+        let next = observed.checked_add(1).ok_or(NeedErr::Unavailable)?;
+        self.put(DIR, vec![T_EPOCH], Secret::new(next.to_be_bytes().to_vec()));
+        Ok(())
     }
 
     /// Read every address not read yet, in one coherent store read.

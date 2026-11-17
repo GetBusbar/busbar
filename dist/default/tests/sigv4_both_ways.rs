@@ -33,6 +33,7 @@
 
 mod common;
 
+use busbar_contract::json::{self, JsonValueTrait};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -307,7 +308,7 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
             minted.status, minted.text
         ));
     }
-    let body: serde_json::Value = serde_json::from_slice(&minted.body).unwrap_or_else(|e| {
+    let body: json::Value = json::parse_value(&minted.body).unwrap_or_else(|e| {
         node.fail(&format!(
             "the mint answered non-JSON ({e}): {}",
             minted.text
@@ -336,7 +337,7 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
         && body["state"] == "active"
         && body["group_provisioned"] == false
         && body["expires_at"].is_u64()
-        && body["id"].is_string())
+        && body["id"].is_str())
     {
         node.fail(&format!(
             "the mint body is not 1.5.5's CreatedKeyView: {body}"
@@ -350,7 +351,7 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
             plain.status, plain.text
         ));
     }
-    let plain: serde_json::Value = serde_json::from_slice(&plain.body).unwrap_or_else(|e| {
+    let plain: json::Value = json::parse_value(&plain.body).unwrap_or_else(|e| {
         node.fail(&format!(
             "the plain mint answered non-JSON ({e}): {}",
             plain.text
@@ -360,7 +361,7 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
         .as_str()
         .is_some_and(|t| t.starts_with("bbk_"))
         && plain["state"] == "active"
-        && plain["id"].is_string())
+        && plain["id"].is_str())
     {
         node.fail(&format!(
             "the bearer-only mint did not return a created key: {plain}"
@@ -685,7 +686,7 @@ impl Node {
         }
     }
 
-    fn mint_aws_key(&self, admin_port: u16) -> serde_json::Value {
+    fn mint_aws_key(&self, admin_port: u16) -> json::Value {
         let host = format!("127.0.0.1:{admin_port}");
         let body = br#"{"name":"sigv4-both-ways","issue_aws_credential":true}"#;
         let headers = vec![
@@ -696,7 +697,7 @@ impl Node {
         loop {
             let r = send(admin_port, &host, "/api/v1/admin/keys", &headers, body);
             if r.status == 201 || r.status == 200 {
-                return serde_json::from_slice(&r.body).unwrap_or_else(|e| {
+                return json::parse_value(&r.body).unwrap_or_else(|e| {
                     self.fail(&format!("the mint answered non-JSON ({e}): {}", r.text))
                 });
             }
@@ -746,15 +747,12 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
     assert!(signing_key.status.success(), "--generate-signing-key");
     std::fs::write(dir.join("signing.key"), &signing_key.stdout).unwrap();
 
-    std::fs::write(dir.join("at-rest.key"), "5a".repeat(32)).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 store: {{module: memory}}
-advanced:
-  allow_destinations: ["127.0.0.1"]
 limits:
   request_body_max_bytes: {cap}
 admin_require_mtls: false
@@ -767,9 +765,6 @@ auth:
   signing_key: {{ file: "{signing}" }}
   admin_auth:
     - admin-tokens
-credentials:
-  at_rest:
-    key: {{ file: "{at_rest}" }}
 providers:
   bedrock-lane:
     api_key: {{ env: {UPSTREAM_CREDS_ENV} }}
@@ -779,7 +774,6 @@ models:
     upstream_model: "{WIRE_MODEL}"
 "#,
             signing = dir.join("signing.key").display(),
-            at_rest = dir.join("at-rest.key").display(),
             cap = BODY_CAP,
         ),
     )

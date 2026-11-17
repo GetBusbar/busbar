@@ -5,11 +5,14 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
+
+use crate::page::Page;
 use base64::Engine as _;
 
 use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::LoginCallback;
+use busbar_contract::json;
 use busbar_kernel::auth::login::seam::{Answer, FormAnswer, LoginSeam};
 use busbar_kernel::auth::login::{
     issue_self_key, login_method, login_methods, login_step, remember_login_form, LoginStep,
@@ -525,7 +528,7 @@ impl LoginCookie {
     /// `base64url(JSON) "." base64url(HMAC(state key, base64url(JSON)))`: the method, the state,
     /// `refresh` and the issue time are all authenticated.
     fn encode(&self, seal: &CookieSeal) -> String {
-        let payload = B64.encode(serde_json::to_vec(self).expect("serialize login cookie"));
+        let payload = B64.encode(json::to_vec(self).expect("serialize login cookie"));
         let tag = B64.encode(seal.key.sign(payload.as_bytes()));
         format!("{payload}.{tag}")
     }
@@ -534,7 +537,7 @@ impl LoginCookie {
         if !seal.key.verify(payload.as_bytes(), &B64.decode(tag).ok()?) {
             return None;
         }
-        let cookie: Self = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
+        let cookie: Self = json::parse(&B64.decode(payload).ok()?).ok()?;
         let fresh = cookie.iat <= seal.now.saturating_add(LOGIN_COOKIE_SKEW_SECS)
             && seal.now.saturating_sub(cookie.iat) <= u64::from(LOGIN_COOKIE_MAX_AGE);
         fresh.then_some(cookie)
@@ -589,7 +592,7 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
 }
 
 fn html_no_store(body: String) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+    ([(header::CACHE_CONTROL, "no-store")], Page(body)).into_response()
 }
 
 fn security_check_failed() -> Response {
@@ -689,7 +692,7 @@ fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
         heading = esc(heading),
         message = esc(message),
     ));
-    (status, [(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+    (status, [(header::CACHE_CONTROL, "no-store")], Page(body)).into_response()
 }
 
 fn signed_out() -> Response {

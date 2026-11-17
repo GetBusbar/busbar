@@ -12,6 +12,8 @@ pub(crate) mod hooks;
 
 mod source;
 
+pub(crate) use source::request_store;
+
 pub use source::{boot_nonce, process_generation, RequestIdentity, RequestSnapshot};
 
 #[cfg(test)]
@@ -190,8 +192,6 @@ pub const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_
 
 pub const ROUTE_POLICY_REJECTIONS_TOTAL: &str = "busbar_route_policy_rejections_total";
 
-pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
-
 pub const HOOK_PROJECT_OVER_CAP_TOTAL: &str = "busbar_hook_project_over_cap_total";
 
 pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total";
@@ -200,10 +200,23 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
+/// Plugin inspections refused because the process opened its cap of distinct images for inspection (DES-443 r3).
+pub const PLUGIN_INSPECT_CAP_REFUSALS_TOTAL: &str = "busbar_plugin_inspect_cap_refusals_total";
+
+/// How long the one plugin inspection slot has been held, in seconds (0 when free; DES-443 r3).
+pub const PLUGIN_INSPECT_SLOT_HELD_SECONDS: &str = "busbar_plugin_inspect_slot_held_seconds";
+
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
+/// Terminal audit originals refused before native confirmation (no labels).
+pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
+pub const EXPORT_DROPPED_TOTAL: &str = "busbar_export_dropped_total";
+pub const EXPORT_CAPTURE_REFUSALS_TOTAL: &str = "busbar_export_capture_refusals_total";
+pub const EXPORT_INTEGRITY_FAILURES_TOTAL: &str = "busbar_export_audit_integrity_failures_total";
+pub const EXPORT_HELD_LINES: &str = "busbar_export_held_lines";
+
 /// Finished governed units whose spend still awaits settlement in the store (the admission gate's
-/// terminal backlog, SHUTDOWN-HANG F4a); `advanced.governance.max_pending_checkpoints` caps it.
+/// terminal backlog, SHUTDOWN-HANG F4a); `governance::drain::MAX_PENDING_CHECKPOINTS` caps it.
 pub const UNIT_CHECKPOINTS_TERMINAL: &str = "busbar_unit_checkpoints_terminal";
 
 /// Governed admissions alive (an admission grant not yet released after its unit's terminal
@@ -271,6 +284,10 @@ pub fn explicitly_off() -> bool {
 }
 
 pub fn configure(buffer: Option<Duration>) {
+    // Complete off-path arena construction before a phase emitter can see effective retention.
+    if buffer.is_some() {
+        let _ = request_store::process();
+    }
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
         std::thread::spawn(move || init_with(buffer));
@@ -296,6 +313,8 @@ pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total";
 pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total";
 pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds";
 pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total";
+/// Needs admitted under an instance's `insecure_transport.accept` (DES-359 r3 L2).
+pub const INSECURE_TRANSPORT_ADMITTED_TOTAL: &str = "busbar_insecure_transport_admitted_total";
 
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds";
@@ -395,6 +414,11 @@ pub fn init_with(buffer: Duration) {
 }
 
 fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static source::Source> {
+    #[cfg(test)]
+    if let Some((entered, release)) = INSTALL_TEST_GATE.get() {
+        entered.wait();
+        release.wait();
+    }
     match metrics::set_global_recorder(source) {
         Ok(()) => {
             describe();
@@ -414,6 +438,9 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
     }
 }
 
+#[cfg(test)]
+static INSTALL_TEST_GATE: OnceLock<(std::sync::Barrier, std::sync::Barrier)> = OnceLock::new();
+
 const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3) {
     Some(n) => n,
     None => unreachable!(),
@@ -426,6 +453,7 @@ pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn init_for_test(buffer: Duration) {
+    let _ = request_store::process();
     let _ = ENABLED.set(true);
     init_with(buffer);
 }
@@ -496,6 +524,10 @@ fn describe() {
         "Cross-protocol translations, by source and target protocol"
     );
     describe_counter!(
+        INSECURE_TRANSPORT_ADMITTED_TOTAL,
+        "Needs (OPEN, STARTTLS, FETCH) admitted under an instance's insecure_transport acceptance, by kind, instance and accept; pooled reuse included, not TCP dials"
+    );
+    describe_counter!(
         BILLING_TAP_DECODE_FAIL_TOTAL,
         "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
     );
@@ -525,6 +557,30 @@ fn describe() {
     describe_counter!(
         UNIT_REFUSALS_TOTAL,
         "Units that did not complete, by closed reason and plane instance"
+    );
+    describe_counter!(
+        AUDIT_STAGE_FAILURES_TOTAL,
+        "Terminal audit originals refused before native confirmation"
+    );
+    describe_counter!(
+        EXPORT_DROPPED_TOTAL,
+        "Terminally discarded export lines by instance and bounded reason"
+    );
+    describe_counter!(
+        crate::export::delivery::EXPORT_CUSTODY_TOTAL,
+        "Accepted export lines by instance, stream and checked custody level"
+    );
+    describe_counter!(
+        EXPORT_CAPTURE_REFUSALS_TOTAL,
+        "Export capture admission refusals by instance and bounded reason"
+    );
+    describe_counter!(
+        EXPORT_INTEGRITY_FAILURES_TOTAL,
+        "Export audit integrity failure occurrences by instance"
+    );
+    describe_gauge!(
+        EXPORT_HELD_LINES,
+        "Current retained export ciphertext lines with an unavailable key by instance"
     );
 
     describe_gauge!(
@@ -588,7 +644,7 @@ fn describe() {
     describe_gauge!(
         UNIT_CHECKPOINTS_TERMINAL,
         Unit::Count,
-        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped by advanced.governance.max_pending_checkpoints) (scrape-time)"
+        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped at 20,000) (scrape-time)"
     );
     describe_gauge!(
         GOVERNED_ADMISSIONS_LIVE,
@@ -605,17 +661,51 @@ pub fn recorder_installed() -> bool {
 pub fn snapshot() -> Option<Vec<Family>> {
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
-    let source = (*HANDLE.get()?)?;
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return None;
+    };
     crate::telemetry::flush_to_recorder();
-    Some(source.snapshot())
+    source.snapshot()
 }
 
 /// Bounded request-phase telemetry for an authorized internal reader. Missing/failed recorder
 /// initialization is unavailable, never an invented zero snapshot.
 pub fn request_snapshot(limit: usize) -> Option<RequestSnapshot> {
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return None;
+    };
+    source.request_snapshot(limit)
+}
+
+/// Covered projection/serialization storage is separate from recorder maintenance and workspace.
+pub fn snapshot_budgeted(
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<Option<crate::limits::output::Captured<Vec<Family>>>, crate::limits::output::OutputError>
+{
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
-    let source = (*HANDLE.get()?)?;
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
     crate::telemetry::flush_to_recorder();
-    source.request_snapshot(limit)
+    source.snapshot_budgeted(request)
+}
+
+/// The owned exact result keeps output credit after the recorder workspace becomes reusable.
+/// This is an internal producer, not a new Admin endpoint or authorization grant.
+pub fn request_snapshot_budgeted(
+    limit: usize,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    Option<crate::limits::output::Captured<RequestSnapshot>>,
+    crate::limits::output::OutputError,
+> {
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
+    source.request_snapshot_budgeted(limit, request)
 }

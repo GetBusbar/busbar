@@ -2,24 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::sync::Arc;
 
 #[tokio::test]
 async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("test_audience_bound_token_is_rejected_on_the_data_plane");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -50,26 +45,23 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -182,18 +174,12 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory =
         plugins::scratch("test_governance_rejects_empty_token_even_if_empty_secret_key_exists");
@@ -225,22 +211,21 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     anchor
         .identity()
         .put_key(&busbar_kernel::governance::VirtualKey {
@@ -257,8 +242,6 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
         .expect("the actual Store contains the empty-secret-hash row before root cache load");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -316,18 +299,12 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
 async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory =
         plugins::scratch("test_governance_active_with_admin_token_rejects_missing_vkey");
@@ -359,26 +336,23 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -432,18 +406,12 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("test_1_5_2_keys_chain_disabled_vkey_rejected");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -474,26 +442,23 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -572,18 +537,12 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 async fn test_admin_prefix_is_boundary_safe() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-prefix");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -614,26 +573,23 @@ async fn test_admin_prefix_is_boundary_safe() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -688,8 +644,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     .await
     .expect("the actual refusal body is bounded")
     .unwrap();
-    let body: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+    let body: json::Value = json::parse_value(&bytes).expect("actual refusal body is JSON");
     assert_eq!(
         status, 401,
         "an /apix path must be a normal data auth refusal: {body}"
@@ -710,18 +665,12 @@ async fn test_admin_prefix_is_boundary_safe() {
 async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-native-envelope");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -752,26 +701,23 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the actual Store bootstraps its config authority"),
-    )
-    .await;
-    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-        .expect("the actual Store supports conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store bootstraps its config authority");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -795,16 +741,20 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         rotate.await;
     }
     let app = Arc::new(app);
-    fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
-        match value {
-            serde_json::Value::String(s) => out.push(s),
-            serde_json::Value::Array(items) => {
-                for item in items {
+    fn collect_strings<'a>(value: &'a json::Value, out: &mut Vec<&'a str>) {
+        match value.get_type() {
+            json::JsonType::String => out.extend(value.as_str()),
+            json::JsonType::Array => {
+                for item in value.as_array().into_iter().flat_map(|items| items.iter()) {
                     collect_strings(item, out);
                 }
             }
-            serde_json::Value::Object(fields) => {
-                for item in fields.values() {
+            json::JsonType::Object => {
+                for (_, item) in value
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|fields| fields.iter())
+                {
                     collect_strings(item, out);
                 }
             }
@@ -849,8 +799,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         .await
         .expect("the actual refusal body is bounded")
         .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+        let body: json::Value = json::parse_value(&bytes).expect("actual refusal body is JSON");
         assert!(
             status == 401 || status == 403,
             "{path} must be refused by the actual auth gate: {body}"

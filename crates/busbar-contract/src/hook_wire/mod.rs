@@ -258,7 +258,8 @@ pub struct RestrictReply {
 }
 
 /// Parse the untyped `restrict` value fail-closed. A well-formed restrict is `{"tags_any": [non-empty
-pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
+pub fn parse_restrict(value: &crate::json::Value) -> Option<RestrictReply> {
+    use crate::json::{JsonContainerTrait as _, JsonValueTrait as _};
     let tags_any: Vec<String> = value
         .get("tags_any")?
         .as_array()?

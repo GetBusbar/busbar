@@ -190,7 +190,7 @@ impl Work {
         b.extend_from_slice(&u16::try_from(self.record.len()).ok()?.to_be_bytes());
         b.extend_from_slice(&self.record);
         if let Some(binding) = &self.recovery {
-            b.extend_from_slice(&serde_json::to_vec(binding).ok()?);
+            b.extend_from_slice(&busbar_contract::json::to_vec(binding).ok()?);
         }
         RecordBytes::new(b).ok()
     }
@@ -215,7 +215,7 @@ impl Work {
         let bytes = rest.get(2..)?;
         let record = bytes.get(..len)?;
         let recovery = if version == 2 {
-            let binding: RecoveryBinding = serde_json::from_slice(bytes.get(len..)?).ok()?;
+            let binding: RecoveryBinding = busbar_contract::json::parse(bytes.get(len..)?).ok()?;
             if binding.principal.is_empty()
                 || binding.generation.is_empty()
                 || owner_of(Some(&binding.principal)) != owner

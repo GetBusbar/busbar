@@ -30,7 +30,7 @@ fn advance(s: u64) {
     NOW.with(|cell| cell.set(cell.get() + s));
 }
 
-fn caller<'a>(plugin: &'a str, name: &'a str, instance: u64) -> Caller<'a> {
+pub(super) fn caller<'a>(plugin: &'a str, name: &'a str, instance: u64) -> Caller<'a> {
     Caller {
         plugin,
         kind: KindCode::Plane,
@@ -206,4 +206,37 @@ async fn an_oversized_or_empty_push_is_refused() {
     );
     assert_eq!(q.enqueue(&who, 60, b"").await, Err(RecordsDenied::Invalid));
     assert_eq!(q.queued(&who).await.unwrap(), 0);
+}
+
+/// Removal can race an already-started connector attempt. Its failure must not recreate the row.
+struct ForgetDuringDelivery<'q>(&'q StorePushQueue);
+
+impl PushSink for ForgetDuringDelivery<'_> {
+    fn deliver<'a>(
+        &'a self,
+        who: &'a Caller<'_>,
+        _recs: &'a [u8],
+    ) -> BoxFut<'a, Result<(), PortError>> {
+        Box::pin(async move {
+            assert_eq!(self.0.forget(who).await.unwrap(), 1);
+            Err(PortError::Call(CallError::Deadline))
+        })
+    }
+}
+
+#[tokio::test]
+async fn failed_delivery_does_not_resurrect_a_forgotten_push() {
+    let q = queue(8).await;
+    let who = caller("p", "removed-during-delivery", 1);
+    q.enqueue(&who, 600, b"callback").await.unwrap();
+    let round = q
+        .deliver_due(&who, &ForgetDuringDelivery(&q))
+        .await
+        .unwrap();
+    assert_eq!(round.retried, 0, "the removed row was not rescheduled");
+    assert_eq!(q.queued(&who).await.unwrap(), 0);
+    advance(10);
+    let sink = Script::default();
+    assert_eq!(q.deliver_due(&who, &sink).await.unwrap(), Round::default());
+    assert_eq!(sink.calls.load(Ordering::Relaxed), 0);
 }

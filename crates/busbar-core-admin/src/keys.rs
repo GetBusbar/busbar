@@ -899,7 +899,7 @@ pub(crate) async fn create_key(
         std::sync::Arc<busbar_kernel::state::AppHandle>,
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
     minter: Option<axum::Extension<busbar_kernel::auth::AdminWhoSlot>>,
@@ -922,7 +922,7 @@ pub(crate) async fn create_key(
 async fn create_key_owned(
     handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     replays: std::sync::Arc<KeyReplayCache>,
     minter: Option<busbar_kernel::auth::AdminWhoSlot>,
     body: Bytes,
@@ -1437,7 +1437,7 @@ pub(crate) async fn update_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: Bytes,
 ) -> Response {
     complete_key_mutation(
@@ -1451,7 +1451,7 @@ async fn update_key_owned(
     handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1802,7 +1802,7 @@ pub(crate) async fn rotate_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
     body: Bytes,
@@ -1818,7 +1818,7 @@ async fn rotate_key_owned(
     handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     replays: std::sync::Arc<KeyReplayCache>,
     body: Bytes,
 ) -> Response {
@@ -2084,47 +2084,6 @@ async fn revoke_key_owned(
     }
 }
 
-pub(crate) async fn rotate_signing_key(
-    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-
-    let who = KeyAudit::Mutation {
-        verb: "signing_key.report",
-        resource: "signing-key",
-        actor: &actor,
-    };
-    let Some(gov) = &app.governance else {
-        return disabled_write(who);
-    };
-    let Some(kid) = gov.signing_kid() else {
-        return key_err(
-            who,
-            &AdminError::Conflict("no signing key is configured; nothing to rotate".into()),
-            Cond::NothingToRotate,
-        );
-    };
-
-    audit::AUDIT.record_by(
-        "signing_key.report",
-        "signing-key",
-        audit::OUTCOME_APPLIED,
-        &actor,
-    );
-    json_response(
-        StatusCode::OK,
-        json!({
-            "current_kid": kid,
-            "revoke_all": true,
-            "message": "rotating the signing key REVOKES ALL outstanding keys (every token must be \
-                        re-minted). 1.5.0 is single-key: replace auth.signing_key (or the persisted \
-                        signing-key file) with fresh material and restart/reload every node in \
-                        lockstep, then re-mint keys."
-        }),
-    )
-}
-
 pub(crate) async fn get_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,
@@ -2238,7 +2197,7 @@ pub(crate) async fn delete_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     complete_key_mutation(
         "delete_key",
@@ -2251,7 +2210,7 @@ async fn delete_key_owned(
     handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
     principal: busbar_kernel::auth::AuthPrincipal,
     id: String,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let actor = principal.actor_id().to_string();
 

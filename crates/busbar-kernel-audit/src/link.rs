@@ -191,9 +191,14 @@ impl Linked {
 impl AuditChain {
     /// BUILD ONE LINE AND HASH ITS CONTENT, before any lock: pure, it reads no chain. `node` is the
     /// node the line names (the sealing chain's [`AuditChain::node`]), and `inputs.what.incarnation`
-    /// is the caller's, as for [`AuditChain::seal_for_journal`].
+    /// is the caller's (the root copies its boot incarnation in).
     #[must_use]
     pub fn prepare(inputs: AuditInputs, node: u64) -> Prepared {
+        let recipe = if inputs.unit.billing.is_some() {
+            Recipe::V9
+        } else {
+            Recipe::V8
+        };
         let record = AuditRecord {
             subject: inputs.subject,
             what: inputs.what,
@@ -212,7 +217,7 @@ impl AuditChain {
             linked_ms: 0,
             seq: 0,
             prev_hash: String::new(),
-            recipe: Recipe::V8,
+            recipe,
             hash: String::new(),
             signature: None,
             key_id: None,
@@ -240,6 +245,15 @@ impl AuditChain {
         visit_trailer(linked_ms, record.seq, &record.prev_hash, &mut sink);
         let fp = sink.finish();
         record.hash = hex::encode(fp.0);
+        // The legacy-signing chain of test builds (SEALING-FIX §3.2): its fixtures keep a per-line
+        // signature. No production chain holds a key.
+        #[cfg(any(test, feature = "test-support"))]
+        if record.recipe != Recipe::V9 {
+            if let Some(signer) = &self.signer {
+                record.key_id = Some(signer.key_id_shared());
+                record.signature = Some(signer.sign_digest(&record.hash));
+            }
+        }
         Linked { record, fp }
     }
 
@@ -252,5 +266,7 @@ impl AuditChain {
         self.tail_hash.clone_from(&linked.record.hash);
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;
+        // The hourly anchors keep sampling the chain's tip until they move to stamps (§3.5).
+        self.heads.observe(&linked.record);
     }
 }

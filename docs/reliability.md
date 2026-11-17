@@ -13,9 +13,9 @@ Busbar keeps serving through provider failures. That reliability is not one feat
 - **[In-flight failover](/docs/failover/)** - reroute a failing request before the first byte, even on a streaming request, across protocols.
 - **[Health and observability](/docs/observability/)** - `/healthz`, `/stats`, `/metrics`, and the signals to watch.
 
-**Control**: who may spend what ([Governance](/docs/guides/governance/)):
+**Control**: who may spend what ([Governance](configuration.md#virtual-keys-and-enforcement)):
 
-- **[Governance and limits](/docs/guides/governance/)** - signed expiring keys, hierarchical group limits (requests / tokens / budget / concurrency), and pool access control.
+- **[Governance and limits](configuration.md#virtual-keys-and-enforcement)** - signed expiring keys, hierarchical group limits (requests / tokens / budget / concurrency), and pool access control.
 
 The rest of this page ties them together with one production-like configuration.
 
@@ -27,7 +27,7 @@ The following config creates a production-like setup: a weighted primary pool wi
 listen: "0.0.0.0:8080"
 
 identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  operator: { module: <operator-auth-module>, token: { env: BUSBAR_ADMIN_TOKEN } }
 
 auth:
   chain:
@@ -35,7 +35,7 @@ auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
   #                                                        # generate with `busbar --generate-signing-key`,
   #                                                        # fleet-shared across every node
-  admin_auth: [admin-tokens]           # a bare PROVIDER NAME (defined above)
+  admin_auth: [operator]               # a bare PROVIDER NAME (defined above)
 
 groups:
   search-team:
@@ -106,11 +106,11 @@ pools:
     on_exhausted: least_bad    # degraded but available; never hard-503
 
 plugins:
-  enabled: true                          # the durable store is a signed plugin tarball in plugins/
+  enabled: true                          # a durable store is a signed store plugin
 
 store:
-  module: sqlite                         # durable (the busbar-store-sqlite plugin); `module: memory` for the RAM store (the block is required in 1.6.0)
-  settings: { db_path: /var/lib/busbar/governance.db }
+  module: <store-plugin>                # a durable store plugin; `module: memory` for the RAM store (the block is required in 1.6.0)
+  settings: { ... }                      # the store plugin's own settings; see its documentation
 
 rate_card:                               # per-model token pricing, micro-units per token
   claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_write_utok: 3.75 }

@@ -13,7 +13,7 @@ use busbar_plugin_abi::records::{RecErr, Records, Reply, Writer};
 use busbar_plugin_loader::adapters::plane::{
     decode_answer, decode_describe, Call, DescribeInvalid, PlaneDescribe,
 };
-use busbar_plugin_loader::ports::plane::PlaneOut;
+use busbar_ports::plane::PlaneOut;
 
 /// `RouteRec.methods` bits (the kept route encoding: GET = 1, POST = 1 << 2).
 const GET: u32 = 1;
@@ -37,6 +37,9 @@ fn answer(call: Call, r: &Reply) -> Result<(), FaultReason> {
     decode_answer(
         call,
         true,
+        busbar_ports::codec::fallback_usage::Declaration::legacy(),
+        None,
+        None,
         Records::new(r.as_bytes()),
         &mut |_: PlaneOut<'_>| {},
     )

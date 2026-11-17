@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Gzips `src/v1/json/openapi.json` into `OUT_DIR` so the served document is embedded
 //! compressed without a committed `.gz` artifact. flate2's default header carries no
 //! mtime and no filename, so the output is a pure function of the JSON.

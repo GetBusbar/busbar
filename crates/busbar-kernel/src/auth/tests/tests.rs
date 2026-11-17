@@ -1,4 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::*;
+use busbar_contract::json;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_contract::records::ScopeRef;
 
 fn binding(
@@ -191,6 +196,7 @@ fn an_identified_principal_with_no_grant_is_refused() {
         module: module.to_string(),
         principal,
         resolved: None,
+        signed_authority: None,
     };
     let refused = |role_bindings: &crate::config::RoleBindings, v: ChainVerdict, why: &str| {
         match resolve_identity_from_bindings(role_bindings, v) {
@@ -407,21 +413,22 @@ fn test_synth_key_reserved_id_prefixes_refused() {
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 
-fn decode_body(resp: Response) -> serde_json::Value {
+fn decode_body(resp: Response) -> json::Value {
     let bytes = futures::executor::block_on(async {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .expect("test body must collect")
     });
-    serde_json::from_slice(&bytes).expect("auth-failure body must be valid JSON")
+    json::parse_value(&bytes).expect("auth-failure body must be valid JSON")
 }
 
-fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
-    match v {
-        serde_json::Value::String(s) => out.push(s.clone()),
-        serde_json::Value::Array(a) => a.iter().for_each(|e| collect_strings(e, out)),
-        serde_json::Value::Object(o) => o.values().for_each(|e| collect_strings(e, out)),
-        _ => {}
+fn collect_strings(v: &json::Value, out: &mut Vec<String>) {
+    if let Some(s) = v.as_str() {
+        out.push(s.to_owned());
+    } else if let Some(a) = v.as_array() {
+        a.iter().for_each(|e| collect_strings(e, out));
+    } else if let Some(o) = v.as_object() {
+        o.iter().for_each(|(_, e)| collect_strings(e, out));
     }
 }
 
@@ -723,7 +730,8 @@ async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
         (503, Some("1")),
         "a verdict-less answer projects503+Retry-After (SIGN-auth-kind 2026-10-30)"
     );
-    let body: serde_json::Value = serde_json::from_str(&failed.2).expect("the real admin envelope");
+    let body: json::Value =
+        json::parse_value(failed.2.as_bytes()).expect("the real admin envelope");
     assert_eq!(body["error"]["code"], "unavailable", "{failed:?}");
 }
 
@@ -1004,6 +1012,7 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
             module: "test-groups-module".into(),
             principal: grp_principal("test:admins", &["admins"]),
             resolved: None,
+            signed_authority: None,
         },
     )
     .expect_err("an identified unbound principal has no grant");
@@ -1709,6 +1718,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let bindings = bindings_for(
         "test-scope-module",
@@ -1764,6 +1774,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let star = bindings_for(
         "test-scope-module",
@@ -1815,6 +1826,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         let bindings = bindings_for(
@@ -1850,6 +1862,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let bindings = bindings_for(
         "test-scope-module",
@@ -1929,11 +1942,11 @@ async fn admin_unauthorized_challenges_without_changing_the_frozen_error_body() 
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(body["error"]["code"], expected.code());
     assert_eq!(body["error"]["message"], expected.message());
     assert_eq!(body["error"]["reason"], "credential_invalid");
-    assert_eq!(body["error"]["details"], serde_json::json!({}));
+    assert_eq!(body["error"]["details"], json::json!({}));
     assert_eq!(body["error"]["retryable"], false);
     assert_eq!(
         body["error"]["request_id"],
@@ -1959,8 +1972,8 @@ async fn absent_challenge_omits_error_advice_but_keeps_resource_discovery() {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(body, serde_json::json!({"error": "unauthorized"}));
+    let body: json::Value = json::parse_value(&bytes).unwrap();
+    assert_eq!(body, json::json!({"error": "unauthorized"}));
 }
 
 #[tokio::test]
@@ -1996,10 +2009,10 @@ async fn presented_credentials_keep_challenge_error_descriptions_and_scope_rules
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let body: json::Value = json::parse_value(&bytes).unwrap();
         assert_eq!(
             body,
-            serde_json::json!({"error": code, "error_description": "Safe advisory."})
+            json::json!({"error": code, "error_description": "Safe advisory."})
         );
     }
 }
@@ -2021,7 +2034,7 @@ async fn admin_door_throttle_answers_rate_limited_with_the_real_retry_after() {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let body: json::Value = json::parse_value(&bytes).unwrap();
     assert_eq!(body["error"]["code"], expected.code());
     assert_eq!(body["error"]["message"], expected.message());
     assert_eq!(body["error"]["reason"], "mutation_budget");
@@ -2063,7 +2076,7 @@ async fn a_sender_constraint_refusal_without_resource_metadata_names_its_reason_
         let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
             .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let body: json::Value = json::parse_value(&bytes).unwrap();
         let named = match ingress {
             crate::plane_driver::dispatch::Ingress::Mounted(_) => {
                 assert_eq!(body["error"]["code"], -32600, "{body}");

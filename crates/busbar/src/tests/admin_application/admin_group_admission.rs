@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
+
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
     busbar_kernel::config::groups::LimitCfg {
+        selected: None,
         metric: busbar_kernel::config::groups::LimitMetric::Budget,
         amount: cents,
         per: Some(busbar_kernel::config::groups::LimitWindow::Month),
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     }
 }
 
@@ -25,14 +26,13 @@ async fn test_patch_key_three_state_group_and_enabled() {
             parent: None,
             enabled: true,
             limits: vec![busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Requests,
                 amount: 100,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -56,7 +56,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -69,31 +69,33 @@ async fn test_patch_key_three_state_group_and_enabled() {
     let client = reqwest::Client::new();
     let base = format!("http://{addr}/api/v1/admin/keys");
 
-    let created: serde_json::Value = client
+    let created = client
         .post(&base)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
+        .json(&json::json!({"name": "k"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let created = json::parse_value(&created).unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["enabled"], true, "a fresh key is enabled");
     assert!(created["group"].is_null(), "minted without a group");
     let key_url = format!("{base}/{id}");
 
-    let set: serde_json::Value = client
+    let set = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": "eng"}))
+        .json(&json::json!({"group": "eng"}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let set = json::parse_value(&set).unwrap();
     assert_eq!(
         set["group"], "eng",
         "rebind surfaces the new binding: {set}"
@@ -102,7 +104,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     let dangling = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": "ghost"}))
+        .json(&json::json!({"group": "ghost"}))
         .send()
         .await
         .unwrap();
@@ -112,27 +114,29 @@ async fn test_patch_key_three_state_group_and_enabled() {
         "a rebind target must exist (mint parity)"
     );
 
-    let cleared: serde_json::Value = client
+    let cleared = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": null}))
+        .json(&json::json!({"group": null}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let cleared = json::parse_value(&cleared).unwrap();
     assert!(cleared["group"].is_null(), "null unbinds: {cleared}");
-    let toggled: serde_json::Value = client
+    let toggled = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
+        .json(&json::json!({"enabled": false}))
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let toggled = json::parse_value(&toggled).unwrap();
     assert_eq!(toggled["enabled"], false, "enabled toggles");
     assert!(
         toggled["group"].is_null(),
@@ -140,9 +144,9 @@ async fn test_patch_key_three_state_group_and_enabled() {
     );
 
     for gone in [
-        serde_json::json!({"rpm_limit": 5}),
-        serde_json::json!({"tpm_limit": 99}),
-        serde_json::json!({"max_budget_cents": 123}),
+        json::json!({"rpm_limit": 5}),
+        json::json!({"tpm_limit": 99}),
+        json::json!({"max_budget_cents": 123}),
     ] {
         let r = client
             .patch(&key_url)
@@ -206,7 +210,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -221,7 +225,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "name": "alice-cli",
             "group": "user:alice",
             "parent": "team-payments"
@@ -234,22 +238,23 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         201,
         "auto-provision + mint succeeds"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["group"], "user:alice", "key bound to the new leaf");
     assert_eq!(
         body["group_provisioned"], true,
         "the mint reports it created the leaf"
     );
 
-    let leaf: serde_json::Value = client
+    let leaf = client
         .get(format!("http://{addr}/api/v1/admin/groups/user:alice"))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let leaf = json::parse_value(&leaf).unwrap();
     assert_eq!(leaf["parent"], "team-payments");
     assert_eq!(leaf["enabled"], true);
     assert_eq!(leaf["limits"][0]["metric"], "budget");
@@ -260,7 +265,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 
     assert!(leaf.get("child_default").is_none());
 
-    let usage: serde_json::Value = client
+    let usage = client
         .get(format!(
             "http://{addr}/api/v1/admin/groups/user:alice/usage"
         ))
@@ -268,9 +273,10 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         .send()
         .await
         .unwrap()
-        .json()
+        .bytes()
         .await
         .unwrap();
+    let usage = json::parse_value(&usage).unwrap();
     let month_bucket = usage["buckets"]
         .as_array()
         .unwrap()
@@ -285,7 +291,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
     let resp2 = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
+        .json(&json::json!({
             "name": "alice-cli-2",
             "group": "user:alice",
             "parent": "team-payments"
@@ -294,7 +300,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         .await
         .unwrap();
     assert_eq!(resp2.status().as_u16(), 201);
-    let body2: serde_json::Value = resp2.json().await.unwrap();
+    let body2 = json::parse_value(&resp2.bytes().await.unwrap()).unwrap();
     assert_eq!(
         body2["group_provisioned"], false,
         "binding to an existing leaf does not re-provision"
@@ -350,7 +356,7 @@ async fn test_mint_parent_mismatch_is_409() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -366,12 +372,12 @@ async fn test_mint_parent_mismatch_is_409() {
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k", "group": "user:bob", "parent": "team-b"}))
+        .json(&json::json!({"name": "k", "group": "user:bob", "parent": "team-b"}))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 409, "parent mismatch is a conflict");
-    let body: serde_json::Value = resp.json().await.unwrap();
+    let body = json::parse_value(&resp.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]
@@ -384,7 +390,7 @@ async fn test_mint_parent_mismatch_is_409() {
     let ok = client
         .post(&url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k2", "group": "user:bob", "parent": "team-a"}))
+        .json(&json::json!({"name": "k2", "group": "user:bob", "parent": "team-a"}))
         .send()
         .await
         .unwrap();
@@ -433,7 +439,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -450,7 +456,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         client
             .post(&url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": name, "group": group}))
+            .json(&json::json!({"name": name, "group": group}))
             .send()
     };
 
@@ -463,7 +469,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         409,
         "3rd key into a capped group is a conflict"
     );
-    let body: serde_json::Value = r.json().await.unwrap();
+    let body = json::parse_value(&r.bytes().await.unwrap()).unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     assert!(
         body["error"]["message"]
@@ -510,7 +516,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -527,12 +533,12 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
     let filler = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "filler", "group": "capped"}))
+        .json(&json::json!({"name": "filler", "group": "capped"}))
         .send()
         .await
         .unwrap();
     assert_eq!(filler.status().as_u16(), 201);
-    let filler_id = filler.json::<serde_json::Value>().await.unwrap()["id"]
+    let filler_id = json::parse_value(&filler.bytes().await.unwrap()).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -541,7 +547,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .post(&keys_url)
         .header("x-admin-token", "admintok")
         .header("idempotency-key", "reuse-at-cap")
-        .json(&serde_json::json!({"name": "second", "group": "capped"}))
+        .json(&json::json!({"name": "second", "group": "capped"}))
         .send()
         .await
         .unwrap();
@@ -563,7 +569,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .post(&keys_url)
         .header("x-admin-token", "admintok")
         .header("idempotency-key", "reuse-at-cap")
-        .json(&serde_json::json!({"name": "second", "group": "capped"}))
+        .json(&json::json!({"name": "second", "group": "capped"}))
         .send()
         .await
         .unwrap();
@@ -610,7 +616,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -629,13 +635,12 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(anchor).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -676,7 +681,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
             client
                 .post(&url)
                 .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name, "group": "capped"}))
+                .json(&json::json!({"name": name, "group": "capped"}))
                 .send()
                 .await
                 .unwrap()

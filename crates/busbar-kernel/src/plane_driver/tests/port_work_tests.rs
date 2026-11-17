@@ -38,18 +38,16 @@ fn no_standing(_: &str, _: u64) -> Result<RecoveryBinding, &'static str> {
 }
 
 struct Fixture {
-    store: LateStore,
-    binder: LateBinder,
+    store: Arc<CoreStore>,
+    binder: Arc<Binder>,
     work: StoreWork,
     core: Arc<CoreStore>,
 }
 
 async fn fixture() -> Fixture {
     let core = crate::real_store::core().await;
-    let store = LateStore::default();
-    store.install(Arc::clone(&core));
-    let binder = LateBinder::default();
-    binder.install(Arc::new(binding_of));
+    let store = Arc::clone(&core);
+    let binder: Arc<Binder> = Arc::new(binding_of);
     let work = StoreWork::new(store.clone(), binder.clone(), Arc::new(|| 1_000_000));
     work.set_recovery_ready(true);
     Fixture {
@@ -201,8 +199,12 @@ async fn core_that_cannot_recover_answers_unsupported_and_writes_nothing() {
             .unwrap_err(),
         R_UNSUPPORTED
     );
-    // No binder installed (governance not attached).
-    let bare = StoreWork::new(f.store.clone(), LateBinder::default(), Arc::new(|| 1));
+    // A generation configured without governance cannot recover a principal.
+    let bare = StoreWork::new(
+        f.store.clone(),
+        governed_binder(None, Default::default()),
+        Arc::new(|| 1),
+    );
     bare.set_recovery_ready(true);
     assert_eq!(
         bare.open(&who.caller(), &alice, "/jobs/1")
@@ -211,22 +213,11 @@ async fn core_that_cannot_recover_answers_unsupported_and_writes_nothing() {
         R_UNSUPPORTED
     );
     // Governance has no live standing for the principal.
-    let refused = LateBinder::default();
-    refused.install(Arc::new(no_standing));
+    let refused: Arc<Binder> = Arc::new(no_standing);
     let denied = StoreWork::new(f.store.clone(), refused, Arc::new(|| 1));
     denied.set_recovery_ready(true);
     assert_eq!(
         denied
-            .open(&who.caller(), &alice, "/jobs/1")
-            .await
-            .unwrap_err(),
-        R_UNSUPPORTED
-    );
-    // No store open yet.
-    let early = StoreWork::new(LateStore::default(), f.binder.clone(), Arc::new(|| 1));
-    early.set_recovery_ready(true);
-    assert_eq!(
-        early
             .open(&who.caller(), &alice, "/jobs/1")
             .await
             .unwrap_err(),
@@ -339,12 +330,12 @@ async fn settled_and_foreign_rows_are_not_recoverable() {
     assert!(f.work.recoverable(&who.caller()).await.unwrap().is_empty());
 }
 
-/// Core that cannot recover (no store yet) has nothing to recover rather than an error.
+/// An empty opened store has nothing to recover rather than an error.
 #[tokio::test]
-async fn no_store_means_nothing_to_recover() {
+async fn empty_store_means_nothing_to_recover() {
     let work = StoreWork::new(
-        LateStore::default(),
-        LateBinder::default(),
+        crate::real_store::core().await,
+        governed_binder(None, Default::default()),
         Arc::new(|| 1_000_000),
     );
     assert!(work.recoverable(&who().caller()).await.unwrap().is_empty());

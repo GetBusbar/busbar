@@ -129,7 +129,7 @@ async fn after_restart_head_tip_and_every_anchor_survive() {
         (
             expose::head_body(&held.record),
             held.record.heads().anchors(),
-            expose::range_body(&held.record, &sealed, 1, 2),
+            expose::range_body(&sealed, 1, 2),
         )
     };
     assert!(!head_before.contains("\"head\":null"));
@@ -139,8 +139,5 @@ async fn after_restart_head_tip_and_every_anchor_survive() {
     let tip = reopened.record.heads().tip().unwrap();
     assert_eq!((tip.seq, tip.hash.as_str()), (3, sealed[2].hash.as_str()));
     assert_eq!(reopened.record.heads().anchors(), anchors_before);
-    assert_eq!(
-        expose::range_body(&reopened.record, &sealed, 1, 2),
-        range_before
-    );
+    assert_eq!(expose::range_body(&sealed, 1, 2), range_before);
 }

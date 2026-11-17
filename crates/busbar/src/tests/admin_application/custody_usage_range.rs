@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::records::{MeteringDelta, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{Adjustment, GovState};
@@ -43,18 +44,12 @@ impl Fixture {
     async fn new(initial: u64) -> Self {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("usage-adjustment-range");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -72,7 +67,7 @@ impl Fixture {
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
             "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let provider_defs = super::admin_usage_history::complete_usage_fixture(
             &mut document,
@@ -89,13 +84,12 @@ impl Fixture {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let backend = busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the configured actual Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: backend,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("the configured actual Store opens");
         let core = crate::root::real_store::core_over(backend).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
@@ -140,6 +134,7 @@ impl Fixture {
         let day = busbar_kernel::governance::metering_bucket(now);
         core.ledger()
             .add_metering(&MeteringDelta {
+                pricing: None,
                 scale: 0,
                 key_id: KEY.into(),
                 bucket: day,
@@ -210,7 +205,7 @@ impl Fixture {
             .expect("valid correction");
     }
 
-    async fn read(&self) -> Result<serde_json::Value, reqwest::Error> {
+    async fn read(&self) -> Result<json::Value, reqwest::Error> {
         let (_data, admin, _handle) =
             busbar_kernel::build_split_routers_with_limits(self.app.clone(), 1 << 20, 0, false);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -224,21 +219,21 @@ impl Fixture {
         ))
         .await?
         .error_for_status()?
-        .json()
+        .bytes()
         .await;
         serving.abort();
-        result
+        result.map(|body| json::parse_value(&body).expect("the usage view is JSON"))
     }
 }
 
-fn assert_totals(view: &serde_json::Value, count: u64) {
+fn assert_totals(view: &json::Value, count: u64) {
     assert_eq!(view["total"]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["total"]["spend_micros"].as_u64(), Some(0));
     assert_eq!(view["by_model"].as_array().unwrap().len(), 1);
     assert_eq!(view["by_model"][0]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["by_key"].as_array().unwrap().len(), 1);
     assert_eq!(view["by_key"][0]["tokens_input"].as_u64(), Some(count));
-    let json = serde_json::to_value(view).expect("usage wire view");
+    let json = json::to_value(view).expect("usage wire view");
     assert_eq!(json["total"]["tokens_input"].as_u64(), Some(count));
 }
 

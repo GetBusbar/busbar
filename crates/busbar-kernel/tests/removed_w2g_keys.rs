@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Pre-release config keys that were never in a release and are gone: `plugins.logs.*`,
+//! `models.<m>.protocol` and `hooks.<h>.child_dispatch`. A config that sets one is refused as an
+//! unknown key, both read from config.yaml and composed from an admin `PUT /config/settings`
+//! `document_patch`. A 1.5.5-shaped config (no removed key; `hooks.<h>.signals` kept) still parses.
+
+use std::path::PathBuf;
+
+use busbar_kernel::appbuild::{load_config_from_disk_with_document_patches, AcceptAll};
+use busbar_kernel::config::document_patch::DocumentPatch;
+use busbar_kernel::config::{deploy_from_yaml_str, EnvSubst, Grammar};
+
+const BASE: &str = "models:\n  m: { provider: p }\nhooks:\n  h: { module: acme }\n";
+
+const GRANT: &str = "{ revision: 1, plane: decision, operation: POST, \
+    target: /busbar/decisions/v1/classify, target_binding: classifier, max_input_bytes: 16384, \
+    max_output_bytes: 65536, max_children: 1, timeout_ms: 1000, max_budget_micros: 1000000 }";
+
+fn refused(text: &str) -> String {
+    match deploy_from_yaml_str(text, &Grammar::empty()) {
+        Ok(_) => panic!("a config carrying a removed key must be refused:\n{text}"),
+        Err(e) => format!("{e}"),
+    }
+}
+
+#[test]
+fn plugins_logs_is_refused_as_an_unknown_key() {
+    for body in [
+        "dir: /var/log/plugins",
+        "level: debug",
+        "levels: { primary: debug }",
+        "rotate_mb: 64",
+        "keep: 5",
+    ] {
+        let err = refused(&format!("plugins:\n  logs: {{ {body} }}\n"));
+        assert!(err.contains("unknown field `logs`"), "{body}: {err}");
+    }
+}
+
+#[test]
+fn models_protocol_is_refused_as_an_unknown_key() {
+    let err = refused("models:\n  m: { provider: p, protocol: openai }\n");
+    assert!(err.contains("unknown field `protocol`"), "{err}");
+}
+
+#[test]
+fn hooks_child_dispatch_is_refused_as_an_unknown_key() {
+    let err = refused(&format!(
+        "hooks:\n  h:\n    module: acme\n    kind: gate\n    child_dispatch: {GRANT}\n"
+    ));
+    assert!(err.contains("unknown field `child_dispatch`"), "{err}");
+}
+
+#[test]
+fn a_1_5_5_shaped_config_still_parses() {
+    let deploy = deploy_from_yaml_str(
+        "plugins:\n  enabled: false\n  min_versions: { acme: \"1.0.0\" }\n\
+         models:\n  m: { provider: p, max_concurrent: 4, reasoning: true }\n\
+         hooks:\n  h:\n    module: acme\n    kind: gate\n    timeout_ms: 5\n    signals: [request_text_complete]\n",
+        &Grammar::empty(),
+    )
+    .expect("a config with no removed key parses");
+    assert!(deploy.models.contains_key("m"));
+    assert!(deploy.hooks.contains_key("h"));
+}
+
+fn scratch(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("busbar-removed-w2g-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(dir.join("config.yaml"), BASE).expect("config.yaml");
+    dir
+}
+
+/// What the admin `PUT /config/settings` door composes: config.yaml plus a `document_patch`.
+fn composed(tag: &str, patch: serde_json::Value) -> Result<(), String> {
+    let dir = scratch(tag);
+    let patch = DocumentPatch::from_value(patch).expect("a well-formed document_patch");
+    let loaded = load_config_from_disk_with_document_patches(
+        &dir.join("config.yaml"),
+        None,
+        false,
+        EnvSubst::Strict,
+        &AcceptAll,
+        Some(&patch),
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    loaded.map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
+#[test]
+fn the_settings_door_refuses_a_patch_that_sets_a_removed_key() {
+    let grant: serde_json::Value = serde_json::json!({
+        "revision": 1, "plane": "decision", "operation": "POST",
+        "target": "/busbar/decisions/v1/classify", "target_binding": "classifier",
+        "max_input_bytes": 16384, "max_output_bytes": 65536, "max_children": 1,
+        "timeout_ms": 1000, "max_budget_micros": 1000000
+    });
+    for (tag, set, key) in [
+        ("logs-level", "/plugins/logs", "logs"),
+        ("model-protocol", "/models/m/protocol", "protocol"),
+        ("child", "/hooks/h/child_dispatch", "child_dispatch"),
+    ] {
+        let value = match key {
+            "logs" => serde_json::json!({"level": "debug"}),
+            "protocol" => serde_json::json!("openai"),
+            _ => grant.clone(),
+        };
+        let err = composed(tag, serde_json::json!({"set": {set: value}}))
+            .expect_err("the removed key is refused at the settings door");
+        assert!(
+            err.contains("unknown field") && err.contains(key),
+            "{tag}: {err}"
+        );
+    }
+}

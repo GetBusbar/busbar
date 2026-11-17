@@ -319,6 +319,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "busbar-artifact-metadata"
+version = "1.6.0"
+dependencies = [
+ "busbar-json",
+ "serde",
+ "time",
+]
+
+[[package]]
+name = "busbar-artifact-verifier"
+version = "1.6.0"
+dependencies = [
+ "busbar-artifact-metadata",
+ "busbar-crypto",
+ "busbar-json",
+ "busbar-plugin-abi",
+ "flate2",
+ "hex",
+ "olpc-cjson",
+ "serde",
+ "sonic-rs",
+ "tar",
+ "time",
+]
+
+[[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=d2f65de0e2b35c68ba9162eff375d48c77130ff7#d2f65de0e2b35c68ba9162eff375d48c77130ff7"
@@ -427,7 +453,11 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "busbar-artifact-metadata",
+ "busbar-count",
  "busbar-crypto",
+ "busbar-json",
+ "busbar-secure",
  "bytes",
  "ciborium",
  "foldhash 0.2.0",
@@ -436,7 +466,6 @@ dependencies = [
  "http",
  "idna",
  "indexmap",
- "jsonschema",
  "libc",
  "memchr",
  "percent-encoding",
@@ -487,6 +516,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "crc32fast",
  "dimpl",
  "foldhash 0.2.0",
@@ -534,6 +564,14 @@ dependencies = [
  "tokio",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-count"
+version = "1.6.0"
+dependencies = [
+ "serde",
+ "sonic-rs",
 ]
 
 [[package]]
@@ -599,13 +637,15 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-migrate",
- "busbar-migrations",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",
+ "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-plugin-test",
+ "busbar-ports",
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
@@ -776,6 +816,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-json"
+version = "1.6.0"
+dependencies = [
+ "axum-core",
+ "busbar-count",
+ "http",
+ "jsonschema",
+ "serde",
+ "sonic-rs",
+]
+
+[[package]]
 name = "busbar-kernel"
 version = "1.6.0"
 dependencies = [
@@ -793,6 +845,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-ports",
  "bytes",
  "foldhash 0.2.0",
  "futures",
@@ -828,7 +881,6 @@ dependencies = [
  "foldhash 0.2.0",
  "hex",
  "lexopt",
- "serde_json",
  "zeroize",
 ]
 
@@ -890,69 +942,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-migrations"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "busbar-contract",
- "busbar-kernel",
- "busbar-kernel-identity",
- "busbar-kernel-ledger",
- "busbar-kernel-wal",
- "hex",
- "serde",
- "serde_json",
- "tokio",
- "x509-cert",
- "zeroize",
-]
-
-[[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026#19b37e81f00fd0c93be2dc7c16dcf0e40fe4b026"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=48bf971292d7a27d5f3eff984ba0dabbb5ed666a#48bf971292d7a27d5f3eff984ba0dabbb5ed666a"
 dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "httpdate",
- "indexmap",
- "memchr",
+ "busbar-plugin-abi",
  "pbjson",
  "pbjson-build",
- "percent-encoding",
- "proc-macro2",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
  "serde",
- "serde_json",
- "syn 2.0.117",
- "tracing",
- "url",
- "zeroize",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=ae965dc8163be4073876adf08fe213dc21a56424#ae965dc8163be4073876adf08fe213dc21a56424"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=316652515c7a01aaa9a87b95f12d1ec33ee615bb#316652515c7a01aaa9a87b95f12d1ec33ee615bb"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "memchr",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=17372bd6ed66bb1830a635ec745c4880d6b91d56#17372bd6ed66bb1830a635ec745c4880d6b91d56"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=f9e6247ddce2fdecdf266d1ed9cc48062b354573#f9e6247ddce2fdecdf266d1ed9cc48062b354573"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "crc32fast",
  "foldhash 0.2.0",
@@ -968,15 +990,15 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=0fe33ef5207a828457976be8e165f07300cca4da#0fe33ef5207a828457976be8e165f07300cca4da"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=a63691561995d34a307567b85ba0a36f62b5e66c#a63691561995d34a307567b85ba0a36f62b5e66c"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "indexmap",
  "jsonschema",
  "percent-encoding",
- "ring",
  "serde",
  "serde_json",
  "tracing",
@@ -986,10 +1008,11 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=ce5cedec9ad3fec357bdb9c5cd239899efce3fcf#ce5cedec9ad3fec357bdb9c5cd239899efce3fcf"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=5851d48752d940a15d4bc3a2627f1a486ed6f9ef#5851d48752d940a15d4bc3a2627f1a486ed6f9ef"
 dependencies = [
+ "base64 0.22.1",
  "bumpalo",
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "foldhash 0.2.0",
  "serde",
@@ -1007,6 +1030,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-crypto",
  "busbar-ffi",
+ "busbar-secure",
  "crossbeam-queue",
  "hex",
  "percent-encoding",
@@ -1019,9 +1043,13 @@ name = "busbar-plugin-loader"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
+ "busbar-artifact-metadata",
+ "busbar-artifact-verifier",
  "busbar-contract",
  "busbar-ffi",
+ "busbar-kernel-breaker",
  "busbar-plugin-abi",
+ "busbar-ports",
  "flate2",
  "foldhash 0.2.0",
  "futures",
@@ -1037,6 +1065,28 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-plugin-test"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
+ "busbar-plugin-loader",
+ "busbar-ports",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-ports"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-abi",
  "zeroize",
 ]
 
@@ -1059,6 +1109,13 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-secure"
+version = "1.6.0"
+dependencies = [
  "zeroize",
 ]
 
@@ -1952,7 +2009,7 @@ dependencies = [
 [[package]]
 name = "h2"
 version = "0.4.18"
-source = "git+https://github.com/MattJackson/h2?rev=d6146a5c425e55653cdfebc5660e52d87430c588#d6146a5c425e55653cdfebc5660e52d87430c588"
+source = "git+https://github.com/MattJackson/h2?rev=6bdbf046878247aebe9138f37f32d2665b54bdd9#6bdbf046878247aebe9138f37f32d2665b54bdd9"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2046,8 +2103,7 @@ dependencies = [
 [[package]]
 name = "http"
 version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0"
+source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
 dependencies = [
  "bytes",
  "itoa",
@@ -2100,8 +2156,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43"
+source = "git+https://github.com/MattJackson/hyper?rev=c140435f43477ca3ffbdb2078a5994e9dfb11969#c140435f43477ca3ffbdb2078a5994e9dfb11969"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2138,8 +2193,7 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+source = "git+https://github.com/MattJackson/hyper-util?rev=b4c554c133c7fc83ee55a9ce0271849f7387994d#b4c554c133c7fc83ee55a9ce0271849f7387994d"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3462,8 +3516,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+source = "git+https://github.com/MattJackson/rustls?rev=02181ad51e81f9cb33a0648117b03039274716a3#02181ad51e81f9cb33a0648117b03039274716a3"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -3582,7 +3635,7 @@ version = "2.1.1"
 source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
 dependencies = [
  "annotate-snippets",
- "base64 0.23.1",
+ "base64 0.22.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -3629,7 +3682,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3756,7 +3808,7 @@ dependencies = [
 [[package]]
 name = "sonic-number"
 version = "0.1.3"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]
@@ -3764,7 +3816,7 @@ dependencies = [
 [[package]]
 name = "sonic-rs"
 version = "0.5.11"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "ahash",
  "bumpalo",
@@ -3784,7 +3836,7 @@ dependencies = [
 [[package]]
 name = "sonic-simd"
 version = "0.1.4"
-source = "git+https://github.com/MattJackson/sonic-rs?rev=10b80cdcbfb07c0edc6535df28f7b248dc4f5223#10b80cdcbfb07c0edc6535df28f7b248dc4f5223"
+source = "git+https://github.com/MattJackson/sonic-rs?rev=1241c129cef83686109f820825206f56ff470f67#1241c129cef83686109f820825206f56ff470f67"
 dependencies = [
  "cfg-if",
 ]
@@ -3953,7 +4005,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

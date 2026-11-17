@@ -8,10 +8,13 @@
 //! Every plugin entry here runs inline under `entry::guard` (describe) or through the driver (every open step,
 //! which takes the same guard per step), on the thread that polls the future (I10, §10.7).
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use busbar_contract::json::{
+    self, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _,
+};
 use busbar_contract::secure::SecureVec;
 use busbar_ffi::image::Admitted as Header;
 use busbar_ffi::Kind;
@@ -23,22 +26,111 @@ use busbar_plugin_abi::host_side::driver::{
     Driver, Finished, Image, Instance, InstanceParts, NeedRow,
 };
 use busbar_plugin_abi::host_side::needs::Needs;
+use busbar_plugin_abi::host_side::needs::{
+    ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, OpenNeed, RecordNeed, TlsMode,
+};
+
+/// DRY_RUN never receives a serving capability or performs I/O.
+pub(crate) struct DeniedNeeds;
+pub(crate) struct DeniedRefs;
+impl busbar_ports::binder::RefSource for DeniedRefs {
+    fn resolve<'a>(
+        &'a self,
+        _: u64,
+        _: u32,
+        _: u32,
+        _: &'a busbar_contract::secret_ref::SecretRef,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async { None })
+    }
+}
+impl Needs for DeniedNeeds {
+    async fn open(
+        &self,
+        _cx: &Caller<'_>,
+        _n: OpenNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn starttls(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _tls: TlsMode<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn write(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _bytes: &[u8],
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn read(
+        &self,
+        _cx: &Caller<'_>,
+        _c: ConnId,
+        _max: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn close(&self, _cx: &Caller<'_>, _c: ConnId, _reusable: bool) {}
+    async fn fetch(
+        &self,
+        _cx: &Caller<'_>,
+        _n: FetchNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn secret(
+        &self,
+        _cx: &Caller<'_>,
+        _handle: u32,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn record(
+        &self,
+        _cx: &Caller<'_>,
+        _n: RecordNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    async fn directory(
+        &self,
+        _cx: &Caller<'_>,
+        _n: DirNeed<'_>,
+        _res: &mut NeedOut<'_>,
+    ) -> Result<(), NeedErr> {
+        Err(NeedErr::Denied)
+    }
+    fn release(&self, _cx: &Caller<'_>) {}
+}
+
 use busbar_plugin_abi::host_side::pool::Pool;
-use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_OPEN;
 use busbar_plugin_abi::records::{
     tag, CoreCfgRec, MaskRec, MetricDecl, Rec, RecErr, Records, Reply, U64Rec, Writer,
 };
 use busbar_plugin_abi::types::{KindCode, Status};
 
-use crate::binder::{BindError, ConfigBinder};
-use crate::encode::settled::decode_settled;
+use crate::answer::{open_error, port_error};
 use crate::instance::{
-    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, Registry,
-    Settled, SlotLease, SlotRecord,
+    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
+    Registry, Settled, SlotLease,
 };
-use crate::ports::{open_error, port_error};
 use crate::refusal::{Refusal, RefusalCode};
+use busbar_ports::binder::{BindError, ConfigBinder, RefSource};
+use busbar_ports::codec::settled::{for_purpose, settled_limits};
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -151,9 +243,15 @@ pub(crate) fn decode_described(
                 }
             }
             tag::D_SCHEMA => {
-                let text = rec
-                    .text()
-                    .map_err(|_| invalid("describe.schema", "not UTF-8", "UTF-8 JSON"))?;
+                // IF r29 l.2764: core's D_SCHEMA validator holds the schema to the authoritative-schema rules.
+                let text = crate::settings_schema::authoritative_schema(rec.body, "D_SCHEMA")
+                    .map_err(|why| {
+                        invalid(
+                            "describe.schema",
+                            why,
+                            "a JSON Schema object or boolean of at most 262144 bytes",
+                        )
+                    })?;
                 if schema.replace(Box::<str>::from(text)).is_some() {
                     return Err(invalid("describe.schema", "a second schema", "at most one"));
                 }
@@ -188,6 +286,20 @@ pub(crate) fn decode_described(
             "every REQUIRED method of the kind",
         ));
     }
+    crate::upstream_paths::validate(kind, &items)?;
+    if kind == KindCode::Transport {
+        busbar_ports::codec::transport::decode_listener_slots(
+            facts.unwrap_or(0),
+            items.iter().map(|(tag, body)| (*tag, body.as_slice())),
+        )
+        .map_err(|_| {
+            invalid(
+                "describe.listener_slots",
+                "invalid initial stream-listener declarations",
+                "at most 64 distinct 1..=128-byte ASCII slots on a server stream transport",
+            )
+        })?;
+    }
     Ok(Described {
         kind,
         methods,
@@ -209,38 +321,38 @@ pub(crate) fn frame(items: &[(u16, Vec<u8>)]) -> Vec<u8> {
     out.as_bytes().to_vec()
 }
 
-fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
-    match patch {
-        serde_json::Value::Object(fields) => {
+fn merge(base: &mut json::Value, patch: &json::Value) {
+    match patch.as_object() {
+        Some(fields) => {
             if !base.is_object() {
-                *base = serde_json::Value::Object(serde_json::Map::new());
+                *base = json::Value::from(json::Map::new());
             }
             if let Some(target) = base.as_object_mut() {
                 for (key, value) in fields {
                     if value.is_null() {
                         target.remove(&key);
                     } else {
-                        merge(target.entry(key).or_insert(serde_json::Value::Null), value);
+                        merge(target.entry(&key).or_insert(json::Value::new()), value);
                     }
                 }
             }
         }
-        other => *base = other,
+        None => *base = patch.clone(),
     }
 }
 
 /// RFC 7386 merge of `patch` (a JSON object) into `base` (the stored config of an instance): absent fields keep
 /// their values, a `null` removes one, objects merge recursively. A patch that is not an object is refused.
 pub(crate) fn merge_patch(base: &[u8], patch: &[u8]) -> Result<Vec<u8>, String> {
-    let mut config: serde_json::Value =
-        serde_json::from_slice(base).map_err(|e| format!("the stored config is not JSON: {e}"))?;
-    let patch: serde_json::Value =
-        serde_json::from_slice(patch).map_err(|e| format!("the pushed patch is not JSON: {e}"))?;
+    let mut config: json::Value =
+        json::parse_value(base).map_err(|e| format!("the stored config is not JSON: {e}"))?;
+    let patch: json::Value =
+        json::parse_value(patch).map_err(|e| format!("the pushed patch is not JSON: {e}"))?;
     if !patch.is_object() {
         return Err("the pushed patch is not a JSON object".to_owned());
     }
-    merge(&mut config, patch);
-    serde_json::to_vec(&config).map_err(|e| e.to_string())
+    merge(&mut config, &patch);
+    json::to_vec(&config).map_err(|e| e.to_string())
 }
 
 /// The depth of the secret-instance chain a store's open may need (r6 §3 step 2a).
@@ -306,7 +418,7 @@ pub(crate) fn plan_order(
         for dep in deps(store)? {
             visit(dep, kinds, deps, &mut path, &mut placed, &mut plan)?;
         }
-        // Core's own sections the store boot needs (admin token, signing key, at-rest keys): the secret instances
+        // Core's own sections the store boot needs (admin token, signing key): the secret instances
         // they name open in 2a too, after the store's own, each with its own dependencies first. A root that is
         // not a secret instance, or is already placed, is skipped by `visit`.
         for &root in roots {
@@ -337,20 +449,30 @@ pub(crate) fn plan_order(
 /// An `InstanceSpec` the future owns: the open methods return `BoxFut<'_>` tied to the registry only, so the
 /// borrowed spec is copied once, synchronously, before the future is built.
 pub(crate) struct OwnedSpec {
+    purpose: OpenPurpose,
+    store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     identity: String,
     name: String,
-    config_json: Vec<u8>,
+    config_json: SecureVec,
     limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
     public_url: Option<String>,
     caller_upstreams: Vec<Box<str>>,
 }
 
 impl OwnedSpec {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
     pub(crate) fn new(s: &InstanceSpec<'_>) -> Self {
         OwnedSpec {
+            purpose: s.purpose,
+            store_migration: s.store_migration.as_ref().map(Arc::clone),
             identity: s.identity.to_owned(),
             name: s.name.to_owned(),
-            config_json: s.config_json.to_vec(),
+            config_json: SecureVec::from(s.config_json),
             limits: s.limits,
             public_url: s.public_url.map(str::to_owned),
             caller_upstreams: s.caller_upstreams.to_vec(),
@@ -359,6 +481,8 @@ impl OwnedSpec {
 
     pub(crate) fn spec(&self) -> InstanceSpec<'_> {
         InstanceSpec {
+            purpose: self.purpose,
+            store_migration: self.store_migration.as_ref().map(Arc::clone),
             identity: &self.identity,
             name: &self.name,
             config_json: &self.config_json,
@@ -413,9 +537,9 @@ fn bind_error(name: &str, e: BindError) -> OpenError {
 
 /// RFC 6901 `pointer` into `v`: the parent object and the last token.
 fn set_at(
-    v: &mut serde_json::Value,
+    v: &mut json::Value,
     pointer: &str,
-    value: serde_json::Value,
+    value: json::Value,
     name: &str,
 ) -> Result<(), OpenError> {
     let refuse = |why: &str| plan_error(format!("{name}: core cannot write {pointer}: {why}"));
@@ -423,25 +547,128 @@ fn set_at(
         .rsplit_once('/')
         .ok_or_else(|| refuse("not a JSON pointer"))?;
     let key = key.replace("~1", "/").replace("~0", "~");
-    let parent = v
-        .pointer_mut(parent)
-        .ok_or_else(|| refuse("no such parent"))?;
+    let parent = json::pointer_mut(v, parent).ok_or_else(|| refuse("no such parent"))?;
     let object = parent
         .as_object_mut()
         .ok_or_else(|| refuse("the parent is not an object"))?;
     if object.get(&key).is_some_and(|held| !held.is_null()) {
         return Err(refuse("the operator's config already holds that position"));
     }
-    object.insert(key, value);
+    object.insert(&key, value);
     Ok(())
 }
 
+/// LEGACY-KEYFILE-MARKER r2 (IF r35 M-1): core migration vocabulary, written by core alone.
+const MIGRATED: &str = "$migrated";
+
+/// Whether `bytes` may hold the word at all (a JSON escape still spells `migrated`), so most bags skip the parse.
+fn mentions_marker(bytes: &[u8]) -> bool {
+    bytes.windows(8).any(|w| w == b"migrated")
+}
+
+/// r2 §3: an operator bag never carries `$migrated` at its top level, on any path that binds (boot, reload,
+/// admin PATCH and install, DRY_RUN); core writes it only into the bytes a marked converting open sees.
+fn refuse_operator_marker(s: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    if !mentions_marker(s.config_json) {
+        return Ok(());
+    }
+    let held = json::parse_value(s.config_json)
+        .ok()
+        .is_some_and(|v| v.as_object().is_some_and(|m| m.contains_key(&MIGRATED)));
+    if held {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` is core migration vocabulary and cannot appear in a configuration",
+            s.name
+        )));
+    }
+    Ok(())
+}
+
+/// Whether D_SECRET_PATH `pattern` names the concrete `pointer` (a `*` token is any array index).
+fn declares(pattern: &str, pointer: &str) -> bool {
+    if !pointer.starts_with('/') || !pattern.starts_with('/') {
+        return false;
+    }
+    let (mut want, mut have) = (pattern.split('/'), pointer.split('/'));
+    loop {
+        match (want.next(), have.next()) {
+            (None, None) => return true,
+            (Some(w), Some(h))
+                if w == h
+                    || (w == "*" && !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit())) => {}
+            _ => return false,
+        }
+    }
+}
+
+/// r2 §3: marks are for a converting open only, and each names a declared D_SECRET_PATH slot present in the bag.
+fn check_marks(s: &InstanceSpec<'_>, marks: &[Box<str>], secret: &[&str]) -> Result<(), OpenError> {
+    if s.purpose != OpenPurpose::ConvertUnstamped {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` marks only a converting open",
+            s.name
+        )));
+    }
+    let doc = json::parse_value(s.config_json)
+        .map_err(|_| plan_error(format!("{}: the config is not JSON", s.name)))?;
+    for mark in marks {
+        let present = json::pointer(&doc, mark).is_some_and(|v| !v.is_null());
+        if !present || !secret.iter().any(|p| declares(p, mark)) {
+            return Err(plan_error(format!(
+                "{}: {mark} is not a secret position of module {}",
+                s.name, s.identity
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// r2 §2: `"$migrated": {"legacy": [..]}` at the top of the bound bag, the marks deduplicated in order.
+fn insert_marker(v: &mut json::Value, marks: &[Box<str>], name: &str) -> Result<(), OpenError> {
+    let mut legacy: Vec<&str> = Vec::with_capacity(marks.len());
+    for mark in marks {
+        if !legacy.contains(&&**mark) {
+            legacy.push(mark);
+        }
+    }
+    let text = json::to_string(&legacy).unwrap_or_default();
+    let marker = json::parse_value(format!(r#"{{"legacy":{text}}}"#).as_bytes())
+        .map_err(|_| plan_error(format!("{name}: core cannot write `{MIGRATED}`")))?;
+    v.as_object_mut()
+        .ok_or_else(|| plan_error(format!("{name}: a marked config is not a JSON object")))?
+        .insert(MIGRATED, marker);
+    Ok(())
+}
+
+/// r2 §4: a settled CONFIG with `$migrated` at its top level, re-encoded without it (None = nothing to strip).
+fn strip_marker(config: &[u8], name: &str) -> Result<Option<Vec<u8>>, OpenError> {
+    if !mentions_marker(config) {
+        return Ok(None);
+    }
+    let mut v = json::parse_value(config)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG is not valid JSON")))?;
+    let Some(map) = v.as_object_mut() else {
+        return Ok(None);
+    };
+    if map.remove(&MIGRATED).is_none() {
+        return Ok(None);
+    }
+    json::to_vec(&v)
+        .map(Some)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG cannot be re-encoded")))
+}
+
 /// How many `{"$dest": n}` handles the bound config holds.
-fn count_dests(v: &serde_json::Value) -> u32 {
-    match v {
-        serde_json::Value::Object(map) if map.contains_key("$dest") => 1,
-        serde_json::Value::Object(map) => map.values().map(count_dests).sum(),
-        serde_json::Value::Array(items) => items.iter().map(count_dests).sum(),
+fn count_dests(v: &json::Value) -> u32 {
+    match v.get_type() {
+        json::JsonType::Object => match v.as_object() {
+            Some(map) if map.contains_key(&"$dest") => 1,
+            Some(map) => map.iter().map(|(_, v)| count_dests(v)).sum(),
+            None => 0,
+        },
+        json::JsonType::Array => v
+            .as_array()
+            .map_or(0, |items| items.iter().map(count_dests).sum()),
         _ => 0,
     }
 }
@@ -469,14 +696,18 @@ pub(crate) struct Opened {
     pub dests: u32,
 }
 
-impl<N: Needs> Registry<N> {
+impl Registry {
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
-    pub(crate) async fn prepare(
+    async fn prepare_with_id(
         &self,
         s: &InstanceSpec<'_>,
         kind: KindCode,
+        id: u64,
+        slot: u32,
+        refs: &dyn RefSource,
+        marks: Vec<Box<str>>,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -505,25 +736,31 @@ impl<N: Needs> Registry<N> {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let bound = self
-            .binder
-            .bind(
-                id,
-                s.config_json,
-                &paths(tag::D_SECRET_PATH),
-                &paths(tag::D_TRUST_PATH),
-                &paths(tag::D_DEST_PATH),
-                &paths(tag::D_REF_PATH),
-            )
-            .map_err(|e| bind_error(s.name, e))?;
+        refuse_operator_marker(s)?;
+        if !marks.is_empty() {
+            check_marks(s, &marks, &paths(tag::D_SECRET_PATH))?;
+        }
+        let bind = match s.purpose {
+            OpenPurpose::Canonical => ConfigBinder::bind,
+            OpenPurpose::ConvertUnstamped => ConfigBinder::bind_any,
+        };
+        let bound = bind(
+            &*self.binder,
+            id,
+            s.config_json,
+            &paths(tag::D_SECRET_PATH),
+            &paths(tag::D_TRUST_PATH),
+            &paths(tag::D_DEST_PATH),
+            &paths(tag::D_REF_PATH),
+        )
+        .map_err(|e| bind_error(s.name, e))?;
         let unbind = Unbind {
             binder: Arc::clone(&self.binder),
             id,
         };
         let resolved = self
             .binder
-            .resolve_refs(id, bound)
+            .resolve_refs(id, slot, bound, refs)
             .await
             .map_err(|e| bind_error(s.name, e))?;
         let (urls, ups) = (
@@ -532,30 +769,30 @@ impl<N: Needs> Registry<N> {
         );
         let dest_paths = paths(tag::D_DEST_PATH);
         let write_urls = s.public_url.is_some() && !urls.is_empty();
-        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() {
-            let mut v: serde_json::Value =
-                serde_json::from_slice(resolved.as_slice()).map_err(|e| {
-                    plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
-                })?;
+        let marked = !marks.is_empty();
+        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() || marked {
+            let mut v: json::Value = json::parse_value(resolved.as_slice()).map_err(|e| {
+                plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
+            })?;
+            if marked {
+                insert_marker(&mut v, &marks, s.name)?;
+            }
             if let Some(url) = s.public_url {
                 for p in &urls {
-                    set_at(&mut v, p, serde_json::Value::String(url.to_owned()), s.name)?;
+                    set_at(&mut v, p, json::Value::from(url), s.name)?;
                 }
             }
             for p in &ups {
                 let names = s
                     .caller_upstreams
                     .iter()
-                    .map(|n| serde_json::Value::String(n.to_string()))
-                    .collect();
-                set_at(&mut v, p, serde_json::Value::Array(names), s.name)?;
+                    .map(|n| json::Value::from(n.to_string().as_str()))
+                    .collect::<Vec<json::Value>>();
+                set_at(&mut v, p, json::Value::from(names), s.name)?;
             }
             let dests = count_dests(&v);
-            if write_urls || !ups.is_empty() {
-                (
-                    SecureVec::from(serde_json::to_vec(&v).unwrap_or_default()),
-                    dests,
-                )
+            if write_urls || !ups.is_empty() || marked {
+                (SecureVec::from(json::to_vec(&v).unwrap_or_default()), dests)
             } else {
                 (resolved, dests)
             }
@@ -593,12 +830,13 @@ impl<N: Needs> Registry<N> {
     }
 
     /// One `open` entry chain of kind `K` (flags: 0, or DRY_RUN) through the driver, Image-owned.
-    async fn run_open<K: Kind>(
+    async fn run_open<K: Kind, N: Needs>(
         &self,
         s: &InstanceSpec<'_>,
         p: &Prepared,
         lease: &SlotLease,
         flags: u32,
+        needs: &N,
     ) -> Result<busbar_plugin_abi::host_side::driver::Finished<K>, OpenError> {
         let max_out = self.max_out_of(&p.described);
         let host = self.host;
@@ -615,9 +853,14 @@ impl<N: Needs> Registry<N> {
             out_of_process: false,
             limits: s.limits,
         };
-        let mut drv = Driver::new(&*self.needs, caller)
+        let mut drv = Driver::new(needs, caller)
             .for_open()
             .with_max_steps(self.ceilings.max_steps);
+        if flags == 0 && K::CODE == KindCode::Store {
+            if let Some(admission) = &s.store_migration {
+                drv = drv.with_store_migration(Arc::clone(admission));
+            }
+        }
         if K::CODE == KindCode::Store
             && p.described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0
         {
@@ -640,30 +883,48 @@ impl<N: Needs> Registry<N> {
         .map_err(OpenError::Call)
     }
 
-    fn lease_for(&self, s: &InstanceSpec<'_>, p: &Prepared, kind: KindCode) -> SlotLease {
-        self.slots.alloc(
-            SlotRecord {
-                kind,
-                name: Arc::from(s.name),
-                scrub: Arc::new(Scrub::new()),
-                errors: p.errors,
-                undeclared_warned: AtomicBool::new(false),
-            },
-            &p.ceilings,
-        )
-    }
-
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
-    pub(crate) async fn open_instance<K: Kind>(
+    pub(crate) async fn open_reserved_instance<K: Kind, N: Needs>(
         &self,
-        s: &InstanceSpec<'_>,
+        reserved: crate::instance::PreparedInstance,
+        needs: &Arc<N>,
+        refs: &dyn RefSource,
     ) -> Result<Opened, OpenError> {
-        let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
-        let finished = self.run_open::<K>(s, &p, &lease, 0).await?;
+        let crate::instance::PreparedInstance {
+            owner,
+            spec: owned,
+            id,
+            kind,
+            lease,
+        } = reserved;
+        let s = &owned.spec();
+        if kind != K::CODE {
+            return Err(plan_error("reserved instance has another kind".into()));
+        }
+        if !Arc::ptr_eq(&owner, &self.reservation_owner) || !Arc::ptr_eq(lease.table(), &self.slots)
+        {
+            return Err(plan_error(
+                "reserved instance belongs to another process".into(),
+            ));
+        }
+        let p = self
+            .prepare_with_id(s, kind, id, lease.slot(), refs, self.take_legacy(s.name))
+            .await?;
+        let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await;
+        if kind == KindCode::Store
+            && s.store_migration
+                .as_ref()
+                .is_some_and(|admission| admission.first_refused().is_some())
+        {
+            // The image, binding and slot remain owned here until cleanup has completed.
+            // A faulty plugin cannot publish CONFIG or Applied state by ignoring the gate.
+            let _denied = busbar_plugin_abi::host_side::entry::MigrationScope::deny();
+            drop(finished);
+            return Err(plan_error("Store recovery admission refused".into()));
+        }
+        let finished = finished?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
             answer.answer().status,
@@ -692,6 +953,7 @@ impl<N: Needs> Registry<N> {
             unbind,
             ..
         } = p;
+        let limits = settled_limits(s.limits, &answer.answer());
         let parts = InstanceParts {
             image,
             identity,
@@ -700,7 +962,7 @@ impl<N: Needs> Registry<N> {
             slot: lease.slot(),
             cell: Arc::clone(lease.cell()),
             epoch: lease.epoch(),
-            limits: s.limits,
+            limits,
             max_out: self.max_out_of(&described),
             methods: described.methods,
             facts: described.facts,
@@ -725,27 +987,38 @@ impl<N: Needs> Registry<N> {
     }
 
     /// Round 31: CONFIG and CORE_CFG* of an OK open answer mapped back through the binder's reference map and
-    /// kept for `take_settled`. A value the map refuses skips the whole write-back (logged); the instance serves.
+    /// kept for `take_settled`. A refused inverse mapping is CONFIG and the instance never serves.
     fn settle(&self, s: &InstanceSpec<'_>, id: u64, answer: &Answer<'_>) -> Result<(), OpenError> {
         let fault = |e: RecErr| OpenError::Call(CallError::Fault(FaultReason::BadRecords(e)));
-        let Some(out) = decode_settled(answer).map_err(fault)? else {
+        let Some(out) = for_purpose(answer.records(), s.purpose == OpenPurpose::ConvertUnstamped)
+            .map_err(|_| {
+            plan_error(format!(
+                "{}: open CONFIG or CORE_CFG violates its purpose",
+                s.name
+            ))
+        })?
+        else {
+            // #432: a converting open with no CONFIG answer is "unchanged"; core settles the bag as bound.
+            if s.purpose == OpenPurpose::ConvertUnstamped {
+                self.keep_settled(
+                    s.name,
+                    Settled {
+                        config_json: SecureVec::from(s.config_json.to_vec()),
+                        core_cfg: Vec::new(),
+                        answered: false,
+                    },
+                );
+            }
             return Ok(());
         };
-        let skip = |what: &str, e: BindError| {
-            tracing::warn!(
-                instance = s.name,
-                what,
-                error = ?e,
-                "a settled value does not map back through the reference map; the write-back is skipped"
-            );
-        };
-        let config_json = match self.binder.unbind_refs(id, out.config) {
-            Ok(c) => c,
-            Err(e) => {
-                skip("config", e);
-                return Ok(());
-            }
-        };
+        let unmarked = strip_marker(out.config, s.name)?;
+        let config_json = SecureVec::from(
+            self.binder
+                .unbind_refs(id, unmarked.as_deref().unwrap_or(out.config))
+                .map_err(|e| bind_error(s.name, e))?,
+        );
+        json::parse_value(config_json.as_slice())
+            .map_err(|_| plan_error(format!("{}: open CONFIG is not valid JSON", s.name)))?;
         let mut core_cfg = Vec::new();
         for rec in out.core_cfg {
             let rec = rec.map_err(fault)?;
@@ -758,11 +1031,10 @@ impl<N: Needs> Registry<N> {
                 Ok(value_json) => core_cfg.push(CoreCfg {
                     section: head.section,
                     name: String::from_utf8_lossy(name).into(),
-                    value_json,
+                    value_json: SecureVec::from(value_json),
                 }),
                 Err(e) => {
-                    skip("core_cfg", e);
-                    return Ok(());
+                    return Err(bind_error(s.name, e));
                 }
             }
         }
@@ -771,6 +1043,7 @@ impl<N: Needs> Registry<N> {
             Settled {
                 config_json,
                 core_cfg,
+                answered: true,
             },
         );
         Ok(())
@@ -781,12 +1054,22 @@ impl<N: Needs> Registry<N> {
     pub(crate) async fn dry_run<K: Kind>(
         &self,
         s: &InstanceSpec<'_>,
+        refs: &dyn RefSource,
     ) -> Result<Vec<crate::instance::DeclaredEndpoint>, OpenError> {
         let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
+        let reserved = self.reserve(s)?;
+        let lease = reserved.lease;
+        let p = self
+            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs, Vec::new())
+            .await?;
         let finished = self
-            .run_open::<K>(s, &p, &lease, busbar_plugin_abi::plugin::OPEN_DRY_RUN)
+            .run_open::<K, DeniedNeeds>(
+                s,
+                &p,
+                &lease,
+                busbar_plugin_abi::plugin::OPEN_DRY_RUN,
+                &DeniedNeeds,
+            )
             .await?;
         if !lease.is_live() {
             return Err(OpenError::Call(CallError::Quarantined));
@@ -858,6 +1141,96 @@ mod tests {
         );
     }
 
+    /// IF r29 l.2764 ("core's D_SCHEMA validator"): the describe's D_SCHEMA meets the authoritative-schema rules
+    /// a Statement settings_schema met (public JSON within 262144 bytes, an object or boolean), so a pathological
+    /// schema is DescribeInvalid at admission, naming D_SCHEMA and the parser's reason.
+    #[test]
+    fn a_pathological_or_non_schema_d_schema_is_describe_invalid() {
+        let schema = |text: &str| {
+            let mut r = Reply::new();
+            mask(&mut r, tag::D_METHODS, st::REQUIRED);
+            r.put_text(tag::D_SCHEMA, text).unwrap();
+            decode_described(KindCode::Store, Records::new(r.as_bytes()))
+        };
+        let bomb = format!("{}true{}", "{\"allOf\":[".repeat(500), "]}".repeat(500));
+        let e = schema(&bomb).err().expect("a recursion bomb is refused");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert_eq!(e.field, "describe.schema");
+        assert!(
+            e.have.contains("D_SCHEMA") && e.have.contains("recursion limit exceeded"),
+            "{e:?}"
+        );
+        let e = schema("[1]").err().expect("an array is not a schema");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let e = schema("{").err().expect("not JSON");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let big = format!("{{\"description\":\"{}\"}}", "x".repeat(256 * 1024));
+        let e = schema(&big).err().expect("over the cap");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert!(schema("true").is_ok() && schema(r#"{"type":"object"}"#).is_ok());
+    }
+
+    fn transport_slots(facts: u64, slots: &[&[u8]]) -> Reply {
+        let mut out = Reply::new();
+        mask(
+            &mut out,
+            tag::D_METHODS,
+            busbar_plugin_abi::transport::REQUIRED,
+        );
+        mask(&mut out, tag::D_FACTS, facts);
+        for slot in slots {
+            out.put(0x0182, slot).expect("listener descriptor fits");
+        }
+        out
+    }
+
+    #[test]
+    fn native_listener_slots_are_validated_before_admission() {
+        use busbar_plugin_abi::transport::{FB_CLIENT, FB_DATAGRAM, FB_SERVER};
+        let long = vec![b'a'; 129];
+        let invalid: Vec<(u64, Vec<&[u8]>)> = vec![
+            (FB_SERVER, vec![b""]),
+            (FB_SERVER, vec![b"listen.path"]),
+            (FB_SERVER, vec![b"listen/path"]),
+            (FB_SERVER, vec![b"listen slot"]),
+            (FB_SERVER, vec![b"\xff"]),
+            (FB_SERVER, vec![&long]),
+            (FB_SERVER, vec![b"listen", b"listen"]),
+            (FB_CLIENT, vec![b"listen"]),
+            (FB_SERVER | FB_DATAGRAM, vec![b"listen"]),
+        ];
+        for (facts, slots) in invalid {
+            let out = transport_slots(facts, &slots);
+            let refused = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+                .err()
+                .expect("invalid initial-listener authority is rejected");
+            assert_eq!(refused.code, RefusalCode::DescribeInvalid);
+            assert_eq!(refused.field, "describe.listener_slots");
+        }
+    }
+
+    #[test]
+    fn native_listener_slot_count_is_bounded_and_names_are_exact() {
+        use busbar_plugin_abi::transport::FB_SERVER;
+        let names: Vec<String> = (0..65).map(|n| format!("slot_{n}")).collect();
+        let slots: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+        let out = transport_slots(FB_SERVER, &slots);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_err());
+        let out = transport_slots(FB_SERVER, &slots[..64]);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_ok());
+        let out = transport_slots(FB_SERVER, &[b"listen", b"Listen", b"unused-slot"]);
+        let described = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+            .expect("distinct exact slots");
+        assert_eq!(
+            described
+                .items
+                .iter()
+                .filter(|(tag, _)| *tag == 0x0182)
+                .count(),
+            3
+        );
+    }
+
     #[test]
     fn a_method_the_kind_lacks_is_cap_unknown_and_a_missing_required_one_is_invalid() {
         let r = describe(st::REQUIRED | st::ALL + 1);
@@ -879,8 +1252,8 @@ mod tests {
         );
     }
 
-    fn json(bytes: &[u8]) -> serde_json::Value {
-        serde_json::from_slice(bytes).unwrap()
+    fn json(bytes: &[u8]) -> busbar_contract::json::Value {
+        busbar_contract::json::parse_value(bytes).unwrap()
     }
 
     #[test]

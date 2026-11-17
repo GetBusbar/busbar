@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Invocation-scoped child dispatch. Targets and limits originate in host configuration.
-use crate::host_services::{KernelServices, Nest, NestReply};
+use crate::host_services::{InvocationContext, Nest, NestReply};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::services::{Caller, HookChildInvocation, Later, Ran, Stored};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A single immutable operation binding. Payload bytes cannot change any of these fields.
@@ -142,7 +142,7 @@ impl Memo {
 }
 
 struct Invocation {
-    services: Weak<KernelServices>,
+    context: InvocationContext,
     unit: u64,
     hook: Arc<str>,
     /// The parent's ancestry, read once when the invocation was minted and carried to the
@@ -182,9 +182,7 @@ impl Drop for Invocation {
 }
 impl HookChildInvocation for Invocation {
     fn request(&self, caller: &Caller, payload: Vec<u8>, later: Later) -> Ran {
-        let Some(services) = self.services.upgrade() else {
-            return Ran::Now(Stored::refused("child host ended"));
-        };
+        let services = self.context.generation().core();
         let grant = &self.memo.grant;
         if caller.kind() != KindCode::Hook
             || caller.namespace().as_ref() != self.hook.as_ref()
@@ -225,7 +223,7 @@ impl HookChildInvocation for Invocation {
         let mut ancestry = self.ancestry.to_vec();
         ancestry.push(self.hook.clone());
         let memo = self.memo.clone();
-        services.dispatch_hook_child(
+        let dispatched = self.context.dispatch_hook_child(
             Nest {
                 parent: self.unit,
                 depth: parent.depth.saturating_add(1),
@@ -259,34 +257,32 @@ impl HookChildInvocation for Invocation {
                 memo.finish(answer);
             }),
         );
+        if let Err(why) = dispatched {
+            self.memo.finish(Stored::refused(why));
+        }
         Ran::Later
     }
 }
 
 pub(crate) struct Scope {
-    pub services: Arc<KernelServices>,
-    pub unit: u64,
-    /// The unit's hook-child ancestry, read at most once per stage entry: every hook in the
-    /// stage, its recursion check, its invocation and its child request share it
-    /// (SINGLE-PATH SP-P14). A unit's ancestry is fixed when it is nested.
-    ancestry: std::sync::OnceLock<Arc<[Arc<str>]>>,
+    context: InvocationContext,
+    ancestry: Arc<[Arc<str>]>,
 }
 
 impl Scope {
-    pub(crate) fn new(services: Arc<KernelServices>, unit: u64) -> Self {
-        Self {
-            services,
-            unit,
-            ancestry: std::sync::OnceLock::new(),
-        }
+    pub(crate) fn new(context: InvocationContext) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AncestryCheck);
+        let ancestry = context
+            .generation()
+            .core()
+            .units()
+            .child_ancestry(context.unit())
+            .into();
+        Self { context, ancestry }
     }
 
-    /// The hook children this unit was nested through, for the cycle check.
     fn ancestry(&self) -> &Arc<[Arc<str>]> {
-        self.ancestry.get_or_init(|| {
-            busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::AncestryCheck);
-            self.services.units().child_ancestry(self.unit).into()
-        })
+        &self.ancestry
     }
 }
 tokio::task_local! { pub(crate) static SCOPE: Scope; }
@@ -305,10 +301,17 @@ pub(crate) fn invocation(
             if ancestry.iter().any(|h| h.as_ref() == hook) {
                 return None;
             }
-            let parent = scope.services.units().get(scope.unit)?;
-            let memo = scope.services.units().hook_child(scope.unit, hook, || {
-                Arc::new(Memo::new(grant.clone(), parent))
-            })?;
+            let parent = scope
+                .context
+                .generation()
+                .core()
+                .units()
+                .get(scope.context.unit())?;
+            let memo = scope.context.generation().core().units().hook_child(
+                scope.context.unit(),
+                hook,
+                || Arc::new(Memo::new(grant.clone(), parent)),
+            )?;
             // A configuration reload never reclassifies an admitted parent.
             let duration = Duration::from_millis(memo.grant.timeout_ms).min(budget);
             let deadline = Instant::now().checked_add(duration)?;
@@ -317,8 +320,8 @@ pub(crate) fn invocation(
                 state.active = state.active.checked_add(1)?;
             }
             Some(Arc::new(Invocation {
-                services: Arc::downgrade(&scope.services),
-                unit: scope.unit,
+                context: scope.context.clone(),
+                unit: scope.context.unit(),
                 hook: Arc::from(hook),
                 ancestry: Arc::clone(ancestry),
                 deadline,

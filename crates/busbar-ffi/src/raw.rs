@@ -438,6 +438,7 @@ impl<'call> Out<'call> {
         }
         if let Some(cut) = self.view().get_mut(len..old) {
             cut.fill(0);
+            core::hint::black_box(&*cut);
         }
         self.raw.len = len;
     }

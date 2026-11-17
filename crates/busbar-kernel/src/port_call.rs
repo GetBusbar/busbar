@@ -10,17 +10,19 @@
 //! the loader's budget and the driver are unchanged). The export pump runs each delivery through the same gate, so
 //! its per-delivery deadline and in-flight cap are these two rules. 0 in either field = no extra cap.
 
+#[cfg(test)]
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::InstanceLimits;
+#[cfg(test)]
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_loader::ports::{CallCx, PortError};
+use busbar_ports::{CallCx, PortError};
 use tokio::sync::Semaphore;
-
-use crate::config::min3::InstanceLimitsCfg;
 
 /// One instance's operator limits at its port call sites.
 #[derive(Debug)]
@@ -35,12 +37,6 @@ impl PortGate {
     #[must_use]
     pub fn new(limits: InstanceLimits) -> Self {
         Self::of(limits.timeout_ms, limits.max_inflight)
-    }
-
-    /// From `<kind>.<name>.limits` as K7 parsed it.
-    #[must_use]
-    pub fn from_cfg(cfg: &InstanceLimitsCfg) -> Self {
-        Self::of(cfg.timeout_ms, cfg.max_inflight)
     }
 
     fn of(timeout_ms: u32, max_inflight: u32) -> Self {
@@ -114,14 +110,20 @@ impl PortGate {
     }
 }
 
+/// One gate per (kind, configured instance name), with the limits it was built for.
+#[cfg(test)]
+type GateMap = HashMap<(KindCode, Box<str>), (InstanceLimits, Arc<PortGate>)>;
+
 /// Every instance's gate, keyed by (kind, configured instance name). A reconfigure that keeps an instance's limits
 /// keeps its gate (and so its in-flight count); new limits get a new gate, and calls already holding a permit of
 /// the old one finish under it.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct PortGates {
-    gates: Mutex<HashMap<(KindCode, Box<str>), (InstanceLimits, Arc<PortGate>)>>,
+    gates: Mutex<GateMap>,
 }
 
+#[cfg(test)]
 impl PortGates {
     #[must_use]
     pub fn new() -> Self {

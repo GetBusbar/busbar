@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-8023
 
 ## What it means
 
-A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
+A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid does not match the key derived from auth.signing_key on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
 
 ## How to fix it
 
-Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it.
+Give every node that shares the store the same auth.signing_key, and reload. Rotating auth.signing_key retires the credentials sealed under the old one: re-mint them.
 
 ---
 

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::persistence::*;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -64,18 +65,12 @@ impl PersistenceBackend for OverlayReads {
 async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -102,7 +97,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -116,13 +111,12 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -185,7 +179,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let page: serde_json::Value = response.json().await.unwrap();
+    let page = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert!(page["items"].as_array().unwrap().is_empty(), "{page}");
     assert!(
         watchdog.join().unwrap(),
@@ -200,18 +194,12 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
 async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -238,7 +226,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -252,13 +240,12 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -321,7 +308,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 404);
-    let error: serde_json::Value = response.json().await.unwrap();
+    let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(error["error"]["code"], "not_found");
     assert!(
         watchdog.join().unwrap(),
@@ -336,18 +323,12 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -374,7 +355,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -388,13 +369,12 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -449,7 +429,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let page: serde_json::Value = response.json().await.unwrap();
+    let page = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let names: Vec<&str> = page["items"]
         .as_array()
         .unwrap()
@@ -464,7 +444,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
-    let one: serde_json::Value = response.json().await.unwrap();
+    let one = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     assert_eq!(
         one, page["items"][0],
         "the list and the single read give the one flagged view"
@@ -476,18 +456,12 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
 async fn named_defs_propagate_store_overlay_read_failures() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -514,7 +488,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -528,13 +502,12 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let faults = Arc::new(OverlayReads {
         actual,
         fail: AtomicBool::new(false),
@@ -583,7 +556,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 400);
-        let error: serde_json::Value = response.json().await.unwrap();
+        let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(error["error"]["code"], "invalid_request");
     }
     server.abort();

@@ -9,21 +9,39 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_contract::export_calls::{Delivered as Queued, ExportCalls, Family, Sample};
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::kinds::export::export as x;
 
 use super::{AppendBytes, AppendDenied, DestAppend, PortDoor};
-use crate::ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
-use crate::ports::{CallCx, PortError};
+use busbar_ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
+use busbar_ports::{CallCx, PortError};
 
 const WAIT: Duration = Duration::from_secs(5);
 const ACCEPTED: Custody = Custody {
     level: x::CUSTODY_ACCEPTED,
     recheck_s: 0,
 };
+
+#[test]
+fn retry_wait_keeps_the_host_floor_and_shared_backoff_ceiling() {
+    for hint in [None, Some(0)] {
+        let wait = super::Shared::resend_wait(2, hint);
+        assert!(wait >= Duration::from_millis(100));
+        assert!(wait <= Duration::from_millis(250));
+    }
+    assert!(super::Shared::resend_wait(u32::MAX, None) <= Duration::from_secs(60));
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(2)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        super::Shared::resend_wait(2, Some(301)),
+        Duration::from_secs(300)
+    );
+}
 
 #[derive(Debug, Clone, PartialEq)]
 struct Call {
@@ -44,6 +62,7 @@ struct Double {
     calls: Mutex<Sender<Call>>,
     /// When set, the next `deliver` holds the pump until the test sends on it.
     gate: Mutex<Option<Receiver<()>>>,
+    pending: bool,
     rendered: Mutex<
         Vec<(
             u32,
@@ -68,6 +87,7 @@ impl Double {
             script: Mutex::new(VecDeque::new()),
             calls: Mutex::new(tx),
             gate: Mutex::new(None),
+            pending: false,
             rendered: Mutex::new(Vec::new()),
         });
         (d, rx)
@@ -121,10 +141,26 @@ impl ExportPort for Double {
         if let Some(g) = gate {
             let _ = g.recv_timeout(WAIT);
         }
-        Box::pin(async move { answer })
+        if self.pending {
+            Box::pin(futures::future::pending())
+        } else {
+            Box::pin(async move { answer })
+        }
     }
     fn custody_ceiling(&self) -> Option<u32> {
         self.ceiling
+    }
+    fn pending_capacity(&self) -> Option<u64> {
+        None
+    }
+    fn confirm(&self, _cx: CallCx, _delivery: u64) -> BoxFut<'_, Result<Custody, PortError>> {
+        Box::pin(async {
+            Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "the double does not declare confirm".into(),
+                error: None,
+            })
+        })
     }
     fn render(
         &self,
@@ -185,7 +221,14 @@ impl DestAppend for Disk {
 }
 
 fn open(port: Arc<Double>, disk: Arc<Disk>) -> Arc<PortDoor> {
-    PortDoor::open("export.test", port, disk, &InstanceLimits::default()).expect("the pump starts")
+    PortDoor::open(
+        "export.test",
+        port,
+        disk,
+        &InstanceLimits::default(),
+        Arc::new(Observations::default()),
+    )
+    .expect("the pump starts")
 }
 
 fn send(door: &PortDoor, stream: u32, line: &str) {
@@ -197,6 +240,32 @@ fn send(door: &PortDoor, stream: u32, line: &str) {
 
 fn next(rx: &Receiver<Call>) -> Call {
     rx.recv_timeout(WAIT).expect("the pump called deliver")
+}
+
+#[test]
+fn prepared_export_does_not_start_delivery_until_publication() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    let door = PortDoor::prepare(
+        "prepared",
+        port,
+        Arc::new(Disk::default()),
+        &InstanceLimits::default(),
+        Arc::new(Observations::default()),
+    );
+    assert!(door.pump.lock().unwrap().is_none());
+    send(&door, x::STREAM_LOGS, "held");
+    assert!(matches!(
+        rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    door.start().expect("publication starts the prepared pump");
+    assert!(door.start().is_err(), "one candidate can start only once");
+    assert_eq!(next(&rx).lines, vec![b"held".to_vec()]);
+    assert!(door.stop_until(Instant::now() + WAIT).clean());
+    assert!(
+        door.start().is_err(),
+        "a stopped generation cannot be restarted"
+    );
 }
 
 #[test]
@@ -340,6 +409,7 @@ fn facts_and_ceiling_are_read_through_the_port() {
         script: Mutex::new(VecDeque::new()),
         calls: Mutex::new(tx),
         gate: Mutex::new(None),
+        pending: false,
         rendered: Mutex::new(Vec::new()),
     });
     let door = open(port, Arc::new(Disk::default()));
@@ -388,4 +458,458 @@ fn a_scrape_renders_the_lowered_snapshot_at_scope_metrics() {
     assert!(samples[1].2.is_nan());
     assert_eq!(samples[2].0, x::SAMPLE_COUNT);
     assert_eq!(samples[2].1, 3.0);
+}
+
+#[test]
+fn a_terminal_limit_failure_is_not_reoffered() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Err(PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: "limit".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    let door = open(port, Arc::new(Disk::default()));
+    let lines = [super::Line {
+        stream: x::STREAM_LOGS as u8,
+        bytes: busbar_contract::secure::SecureVec::from(b"limit-line".to_vec()),
+        _hold: Box::new(()),
+    }];
+    // Drive the production delivery loop synchronously: no sleeps or timeout-based
+    // assertion can hide a late retry, and the background queue stays empty.
+    door.shared.deliver_set(x::STREAM_LOGS as u8, &lines);
+    assert_eq!(next(&rx).attempt, 1);
+    assert!(
+        rx.try_recv().is_err(),
+        "F_LIMIT is terminal, never a resend"
+    );
+    assert_eq!(door.dropped(), 1);
+    assert_eq!(door.delivered(), 0);
+}
+
+#[test]
+fn draining_rejects_new_lines_and_finishes_the_accepted_queue() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    let (release, gate) = channel();
+    *port.gate.lock().unwrap() = Some(gate);
+    let door = open(port, Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "first");
+    let _ = next(&rx);
+    send(&door, x::STREAM_LOGS, "queued");
+    let deadline = std::time::Instant::now() + WAIT;
+    door.begin_drain(deadline);
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, b"late".to_vec(), Box::new(())),
+        Queued::Shed
+    );
+    release.send(()).unwrap();
+    let report = door.stop_until(deadline);
+    assert!(report.worker_stopped);
+    assert_eq!((report.queued, report.in_flight, report.dropped), (0, 0, 1));
+    assert_eq!(door.delivered(), 2);
+    assert_eq!(next(&rx).lines, vec![b"queued".to_vec()]);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn stop_cancels_a_pending_call_without_an_unbounded_join() {
+    struct Released(Sender<()>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut port).unwrap().pending = true;
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.start().unwrap();
+    let (released, custody) = channel();
+    assert_eq!(
+        door.deliver(
+            x::STREAM_LOGS as u8,
+            b"held".to_vec(),
+            Box::new(Released(released))
+        ),
+        Queued::Queued
+    );
+    let _ = next(&calls);
+    let began = std::time::Instant::now();
+    let _ = door.stop_until(began + Duration::from_millis(20));
+    assert!(
+        began.elapsed() < WAIT,
+        "shutdown is bounded even when deliver stays pending"
+    );
+    custody
+        .recv_timeout(WAIT)
+        .expect("cancellation releases custody");
+    let report = door.stop_until(std::time::Instant::now() + WAIT);
+    assert_eq!(report.dropped, 1);
+    assert_eq!(door.delivered(), 0);
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[busbar_contract::export_calls::ExportObservation::Dropped {
+            reason: busbar_contract::export_calls::ExportDropReason::Stopped,
+            lines: 1,
+        },]
+    );
+    assert!(calls.try_recv().is_err(), "no offer after cancellation");
+}
+
+#[test]
+fn stop_interrupts_a_long_retry_after_without_another_offer() {
+    struct Released(Sender<()>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Err(PortError::Failed {
+        code: 1,
+        text: "retry later".into(),
+        retry_after_s: Some(300),
+        backend_status: None,
+        error: None,
+    }));
+    let door = open(port, Arc::new(Disk::default()));
+    let (released, custody) = channel();
+    assert_eq!(
+        door.deliver(
+            x::STREAM_LOGS as u8,
+            b"held".to_vec(),
+            Box::new(Released(released))
+        ),
+        Queued::Queued
+    );
+    let first = next(&calls);
+    assert_eq!(first.attempt, 1);
+    let began = Instant::now();
+    let report = door.stop_until(began + Duration::from_millis(20));
+    assert!(
+        began.elapsed() < WAIT,
+        "Retry-After cannot extend the shutdown deadline"
+    );
+    assert!(!report.clean(), "the accepted line was not delivered");
+    custody
+        .recv_timeout(WAIT)
+        .expect("the interrupted retry releases its retained custody");
+    assert_eq!(door.delivered(), 0);
+    assert!(
+        calls.try_recv().is_err(),
+        "stopping cannot reoffer the failed delivery"
+    );
+}
+
+#[test]
+fn a_later_stop_request_cannot_extend_the_first_deadline() {
+    let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
+    Arc::get_mut(&mut port).unwrap().pending = true;
+    let door = open(port, Arc::new(Disk::default()));
+    send(&door, x::STREAM_LOGS, "held");
+    let _ = next(&calls);
+    let first = std::time::Instant::now();
+    door.begin_drain(first);
+    let report = door.stop_until(first + WAIT);
+    assert!(first.elapsed() < Duration::from_secs(1));
+    assert!(
+        !report.clean(),
+        "deadline loss must not look like a clean drain"
+    );
+}
+
+#[test]
+fn declared_scopes_are_get_routes_before_the_pump_starts() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let (mut port, _) = Double::new(&[x::STREAM_METRICS]);
+    Arc::get_mut(&mut port).unwrap().scopes.push(ScopeInfo {
+        scope: x::SCOPE_HOOKS,
+        path: "/observations/hooks".into(),
+    });
+    let door = PortDoor::prepare(
+        "observations",
+        port,
+        Arc::new(Disk::default()),
+        &InstanceLimits::default(),
+        Arc::new(Observations::default()),
+    );
+    let paths: Vec<_> = door
+        .routes()
+        .iter()
+        .map(|route| route.path.as_str())
+        .collect();
+    assert_eq!(paths, ["/metrics", "/observations/hooks"]);
+    assert!(door
+        .routes()
+        .iter()
+        .all(|route| { route.method == RouteMethod::Get && route.auth == RouteAuth::None }));
+    assert_eq!(door.public_routes(), ["/metrics", "/observations/hooks"]);
+    assert!(
+        door.pump.lock().unwrap().is_none(),
+        "route assembly never starts the delivery worker"
+    );
+}
+
+#[derive(Default)]
+struct Observations(Mutex<Vec<busbar_contract::export_calls::ExportObservation>>);
+
+impl busbar_contract::export_calls::ExportObserver for Observations {
+    fn observe(&self, event: busbar_contract::export_calls::ExportObservation) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+fn observed(port: Arc<Double>, disk: Arc<Disk>) -> (Arc<PortDoor>, Arc<Observations>) {
+    let observer = Arc::new(Observations::default());
+    let door = PortDoor::prepare(
+        "observed",
+        port,
+        disk,
+        &InstanceLimits::default(),
+        observer.clone(),
+    );
+    (door, observer)
+}
+
+fn retained_lines(n: usize) -> Vec<super::Line> {
+    (0..n)
+        .map(|_| super::Line {
+            stream: x::STREAM_LOGS as u8,
+            bytes: busbar_contract::secure::SecureVec::from(b"line".to_vec()),
+            _hold: Box::new(()),
+        })
+        .collect()
+}
+
+#[test]
+fn observer_records_exact_accepted_prefixes_and_terminal_remainder() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportDropReason, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Ok(Delivered::Acked {
+        accepted: 1,
+        custody: ACCEPTED,
+    }));
+    port.answer(Err(PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: "private".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(3));
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[
+            ExportObservation::Custody {
+                stream: ExportStream::Logs,
+                level: ExportCustodyLevel::Accepted,
+                lines: 1
+            },
+            ExportObservation::Dropped {
+                reason: ExportDropReason::Refused,
+                lines: 2
+            },
+        ]
+    );
+    assert_eq!(door.delivered(), 1);
+    assert_eq!(door.dropped(), 2);
+    assert_eq!(next(&calls).lines.len(), 3);
+    assert_eq!(next(&calls).lines.len(), 2);
+    assert!(calls.try_recv().is_err());
+}
+
+#[test]
+fn observer_separates_capture_integrity_queue_full_and_stopped() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportLossKind, ExportObservation};
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shed(ExportLossKind::CaptureRefused);
+    door.shed(ExportLossKind::IntegrityFailed);
+    assert_eq!(
+        door.deliver(x::STREAM_METRICS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    for _ in 0..super::MAX_QUEUED_LINES {
+        send(&door, x::STREAM_LOGS, "line");
+    }
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    door.begin_drain(Instant::now());
+    assert_eq!(
+        door.deliver(x::STREAM_LOGS as u8, vec![], Box::new(())),
+        Queued::Shed
+    );
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[
+            ExportObservation::CaptureRefused,
+            ExportObservation::IntegrityFailed,
+            ExportObservation::CaptureRefused,
+            ExportObservation::Dropped {
+                reason: ExportDropReason::QueueFull,
+                lines: 1
+            },
+            ExportObservation::Dropped {
+                reason: ExportDropReason::Stopped,
+                lines: 1
+            },
+        ]
+    );
+    assert_eq!(
+        door.dropped(),
+        2,
+        "capture/integrity failures are not dropped lines"
+    );
+    drop(door);
+    assert_eq!(
+        observer.0.lock().unwrap().last(),
+        Some(&ExportObservation::Dropped {
+            reason: ExportDropReason::Stopped,
+            lines: super::MAX_QUEUED_LINES as u64,
+        })
+    );
+}
+
+#[test]
+fn observer_append_acknowledges_only_successful_disk_custody() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportDropReason, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    for foreign in [false, true] {
+        let (port, _) = Double::new(&[x::STREAM_LOGS]);
+        port.answer(Ok(Delivered::Append {
+            dest: 7,
+            bytes: None,
+            accepted: 2,
+        }));
+        let disk = Arc::new(Disk::default());
+        if foreign {
+            *disk.deny.lock().unwrap() = Some(AppendDenied::Foreign);
+        }
+        let (door, observer) = observed(port, disk);
+        door.shared
+            .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+        let expected = if foreign {
+            ExportObservation::Dropped {
+                reason: ExportDropReason::ForeignDestination,
+                lines: 2,
+            }
+        } else {
+            ExportObservation::Custody {
+                stream: ExportStream::Logs,
+                level: ExportCustodyLevel::Accepted,
+                lines: 2,
+            }
+        };
+        assert_eq!(observer.0.lock().unwrap().as_slice(), &[expected]);
+    }
+}
+
+#[test]
+fn observer_maps_only_canonical_positive_wire_custody() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    for wire in [x::CUSTODY_NONE, x::CUSTODY_INDEXED + 1, u32::MAX] {
+        door.shared.count_custody(x::STREAM_LOGS as u8, wire, 1);
+    }
+    assert!(observer.0.lock().unwrap().is_empty());
+    let levels = [
+        (
+            x::CUSTODY_ACCEPTED,
+            ExportCustodyLevel::Accepted,
+            "accepted",
+        ),
+        (x::CUSTODY_DURABLE, ExportCustodyLevel::Durable, "durable"),
+        (x::CUSTODY_INDEXED, ExportCustodyLevel::Indexed, "indexed"),
+    ];
+    for (wire, level, label) in levels {
+        door.shared.count_custody(x::STREAM_LOGS as u8, wire, 1);
+        assert_eq!(door.custody_total(x::STREAM_LOGS, wire), 1);
+        assert_eq!(level.as_str(), label);
+    }
+    assert_eq!(
+        *observer.0.lock().unwrap(),
+        levels.map(|(_, level, _)| ExportObservation::Custody {
+            stream: ExportStream::Logs,
+            level,
+            lines: 1,
+        })
+    );
+}
+
+#[test]
+fn observer_ignores_zero_and_invalid_custody_levels() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    for level in [0, 4, u32::MAX] {
+        door.shared.count_custody(x::STREAM_LOGS as u8, level, 1);
+    }
+    door.shared
+        .count_custody(x::STREAM_LOGS as u8, x::CUSTODY_ACCEPTED, 0);
+    door.shared
+        .count_custody(x::STREAM_LOGS as u8, x::CUSTODY_INDEXED, 2);
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Custody {
+            stream: ExportStream::Logs,
+            level: ExportCustodyLevel::Indexed,
+            lines: 2
+        },]
+    );
+    assert_eq!(door.custody_total(x::STREAM_LOGS, 0), 0);
+}
+
+#[test]
+fn observer_reports_stopping_inflight_bytes_once() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportObservation};
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.begin_drain(Instant::now());
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+    assert!(calls.try_recv().is_err());
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Dropped {
+            reason: ExportDropReason::Stopped,
+            lines: 2
+        },]
+    );
+}
+
+#[test]
+fn observer_records_one_drop_after_zero_ack_exhausts_attempts() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportObservation};
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    for _ in 0..super::DELIVER_ATTEMPTS {
+        port.answer(Ok(Delivered::Acked {
+            accepted: 0,
+            custody: ACCEPTED,
+        }));
+    }
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Dropped {
+            reason: ExportDropReason::AttemptsExhausted,
+            lines: 2
+        },]
+    );
+    let attempts: Vec<_> = calls.try_iter().collect();
+    assert_eq!(attempts.len(), super::DELIVER_ATTEMPTS as usize);
+    assert!(attempts
+        .iter()
+        .all(|call| call.delivery == attempts[0].delivery));
+    assert_eq!(door.delivered(), 0);
+    assert_eq!(door.dropped(), 2);
 }

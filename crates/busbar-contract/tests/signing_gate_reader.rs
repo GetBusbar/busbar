@@ -137,7 +137,7 @@ fn the_signing_gates_reader_reads_a_tailed_statement_that_declares_secret_fields
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(
             dir.join("manifest.json"),
-            serde_json::json!({ "statement": hex }).to_string(),
+            busbar_contract::json::json!({ "statement": hex }).to_string(),
         )
         .expect("manifest");
         let packed = Command::new("tar")

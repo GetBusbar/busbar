@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 use crate::test_common as common;
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::persistence::*;
 
 // Each independent deployment owns a process-local root rate history. Keep
@@ -87,18 +88,12 @@ impl PersistenceBackend for ObservedBackend {
 async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-self-group-provision");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -135,13 +130,16 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -150,8 +148,6 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -291,18 +287,12 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("auth-self-group-refuse-rehome");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -343,13 +333,16 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
                 "user:sam": { "parent": "team-a", "limits": [{ "budget": 37, "per": "month" }] }
             },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-        let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+        let crate::root::min3_boot::fixture::Admitted {
+            core: anchor,
+            rules,
+        } = crate::root::test_plugins::bootstrap_fresh_application_store(
             &config,
             &plugin_config,
             &directory,
@@ -358,8 +351,6 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         .expect("the actual Store bootstraps its config authority");
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
-        let rules = Arc::new(crate::root::door_steps::Rules::default())
-            as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
@@ -459,18 +450,12 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
 async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persistence() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-self-group-reuse");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -511,21 +496,22 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
             "user:sam": { "parent": "team-a", "limits": [{ "budget": 37, "per": "month" }] }
         },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
     )
     .await
     .expect("the actual Store bootstraps its config authority");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -615,18 +601,12 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("auth-self-mint-policy");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -663,7 +643,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             },
             "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -686,15 +666,16 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         )
         .await
         .expect("the actual Store is provisioned through its primitive observer");
-        let anchor = fresh
+        let crate::root::min3_boot::fixture::Admitted {
+            core: anchor,
+            rules,
+        } = fresh
             .initialize_principal_format(&config, &plugin_config)
             .await
             .expect("the actual Store bootstraps its config authority");
         let observed = observed.expect("the primitive observer was installed");
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
-        let rules = Arc::new(crate::root::door_steps::Rules::default())
-            as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
@@ -756,7 +737,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         .await
         .expect("the actual exchange body completes within ten seconds")
         .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let body: json::Value = json::parse_value(&body).unwrap();
         if self_mint == Some(false) {
             assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
             assert!(body.get("api_key").is_none(), "no credential is issued");
@@ -855,18 +836,12 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             }
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let library = std::fs::read(library_path).expect("the actual store library reads");
             let directory = plugins::scratch("auth-self-mint-mode-policy");
             let archive =
@@ -904,7 +879,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 },
                 "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }), &crate::root::boot::axis_test_grammar())
             .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -927,15 +902,16 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             )
             .await
             .expect("the actual Store is provisioned through its primitive observer");
-            let anchor = fresh
+            let crate::root::min3_boot::fixture::Admitted {
+                core: anchor,
+                rules,
+            } = fresh
                 .initialize_principal_format(&config, &plugin_config)
                 .await
                 .expect("the actual Store bootstraps its config authority");
             let observed = observed.expect("the primitive observer was installed");
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional config records");
-            let rules = Arc::new(crate::root::door_steps::Rules::default())
-                as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 config,
                 plugin_config,
@@ -1033,7 +1009,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 .await
                 .expect("the actual exchange body is bounded")
                 .unwrap();
-                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let body: json::Value = json::parse_value(&body).unwrap();
                 if allowed {
                     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
                     Some(body["api_key"].as_str().expect("issued token").to_string())

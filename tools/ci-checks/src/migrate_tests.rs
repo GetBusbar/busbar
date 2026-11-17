@@ -68,7 +68,7 @@ fn an_anchor_without_cold_or_inline_never_is_not_pinned() {
 }
 
 /// Red (k), the real tree: no retired migration-table key in a `[package.metadata.busbar.*]` table,
-/// and no production `RootHost` outside the files package 4 deletes with `startup_upgrade/`.
+/// and no production `RootHost` anywhere.
 #[test]
 fn no_retired_migration_vocabulary_survives_in_the_real_tree() {
     let findings = retired_words(&repo_root()).expect("the tree scans");

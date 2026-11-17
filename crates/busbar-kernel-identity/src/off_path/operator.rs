@@ -247,7 +247,7 @@ pub fn operator_file_policy(name: &str) -> String {
 pub fn operator_admission_path(path: &str) -> String {
     config_text(format_args!(
         "{path} is the plugin admission set, which decides the operator credential and is set only \
-         in config.yaml: a document_patch path under /plugins other than /plugins/logs is refused"
+         in config.yaml: a document_patch path under /plugins is refused"
     ))
 }
 

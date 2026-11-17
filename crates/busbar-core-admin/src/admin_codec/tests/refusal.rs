@@ -1,6 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Tests for `refusal.rs`. Lifted out of the implementation file so its line count
 
 use super::*;
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 /// The wire shape, from the one place it is written. 1.5.5's keys survive unchanged (the top-level
 /// pair, `error.code`, `error.message`: 1.5.5's `Error` schema is an open object, so the v1 rule is
@@ -8,7 +12,7 @@ use super::*;
 #[test]
 fn envelope_shape_matches_the_1_5_5_error_contract() {
     let rendered = envelope_of("forbidden", "insufficient scope");
-    let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
+    let parsed = json::parse_value(rendered.as_bytes()).expect("valid json");
     assert_eq!(parsed.as_object().expect("an object").len(), 2);
     assert_eq!(
         parsed["code"],
@@ -32,7 +36,7 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
         "retryable",
         "details",
     ] {
-        assert!(error.contains_key(key), "no `{key}`: {rendered}");
+        assert!(error.contains_key(&key), "no `{key}`: {rendered}");
     }
     assert_eq!(error["reason"], "scope_insufficient");
     assert_eq!(error["retryable"], false);
@@ -76,8 +80,7 @@ fn all_eleven_frozen_codes_render_verbatim() {
         "the frozen set is eleven and only eleven"
     );
     for code in FROZEN_CODES {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&envelope_of(code, code)).expect("valid json");
+        let parsed = json::parse_value(envelope_of(code, code).as_bytes()).expect("valid json");
         assert_eq!(parsed["error"]["code"], *code);
         assert_eq!(parsed["error"]["message"], *code);
     }
@@ -88,8 +91,8 @@ fn all_eleven_frozen_codes_render_verbatim() {
 fn a_message_carrying_caller_text_is_escaped_into_one_string() {
     let hostile = r#"`pool` names `a","injected":"x\`, which is not a configured pool"#;
     let rendered = envelope_of("invalid_request", hostile);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&rendered).expect("the envelope is valid JSON whatever the message");
+    let parsed = json::parse_value(rendered.as_bytes())
+        .expect("the envelope is valid JSON whatever the message");
     let error = parsed["error"].as_object().expect("an object");
     assert_eq!(
         error.len(),
@@ -100,8 +103,7 @@ fn a_message_carrying_caller_text_is_escaped_into_one_string() {
     assert_eq!(error["message"], hostile);
     let control = envelope_of("invalid_request", "line\nbreak");
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&control).expect("valid JSON")["error"]
-            ["message"],
+        json::parse_value(control.as_bytes()).expect("valid JSON")["error"]["message"],
         "line\nbreak"
     );
 }

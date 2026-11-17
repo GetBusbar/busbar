@@ -25,9 +25,9 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::{self, Reply, Writer};
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
-use busbar_plugin_loader::encode::plane::{encode_refusal, encode_upstream_head};
-use busbar_plugin_loader::ports::plane::TargetIn;
-use busbar_plugin_loader::ports::{FactVal, PortError};
+use busbar_ports::codec::plane::{encode_refusal, encode_upstream_head};
+use busbar_ports::plane::TargetIn;
+use busbar_ports::{FactVal, PortError};
 
 use super::port_session::{
     hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
@@ -75,7 +75,21 @@ impl Wants {
 
 /// One member the walk picked, as the plane's `Target` states it (operator vocabulary, never a plugin).
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetIdentity {
+    /// A declared registration uses the requesting plane's dialect and request model.
+    Registration,
+    /// A provider model always uses the values resolved in this generation's catalog.
+    Model { dialect: Box<str>, model: Box<str> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
+    /// Exact pool and member returned by the admitted walk, before display-name conversion.
+    pub pool: Box<str>,
+    pub qualified_member: Box<str>,
+    pub identity: TargetIdentity,
+    /// Frozen configured rate-resource label; descriptive data, never admission authority.
+    pub resource: Option<Box<str>>,
     /// The configured upstream (member) name.
     pub upstream: Box<str>,
     /// The plane-owned provider keys as one canonical JSON object (`{}` when none).
@@ -96,6 +110,21 @@ impl Candidate {
         model: &str,
         f: impl FnOnce(&TargetIn<'_>) -> R,
     ) -> R {
+        self.with_admission_target(attempt, dialect, model, &[], f)
+    }
+
+    pub(crate) fn with_admission_target<R>(
+        &self,
+        attempt: u32,
+        dialect: &str,
+        model: &str,
+        admission: &[u8],
+        f: impl FnOnce(&TargetIn<'_>) -> R,
+    ) -> R {
+        let (dialect, model) = match &self.identity {
+            TargetIdentity::Registration => (dialect, model),
+            TargetIdentity::Model { dialect, model } => (dialect.as_ref(), model.as_ref()),
+        };
         let params: Vec<Pair<'_>> = self
             .params
             .iter()
@@ -113,6 +142,7 @@ impl Candidate {
             upstream: &self.upstream,
             provider: &self.provider,
             params: &params,
+            admission,
         })
     }
 }
@@ -130,6 +160,40 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn request_walk(&self) -> Option<&super::request_admission::RequestWalk> {
+        None
+    }
+    fn select_request(
+        &mut self,
+        _receipt: &super::request_admission::RequestPoolReceipt,
+        _wants: &Wants,
+    ) -> bool {
+        false
+    }
+    fn admit_request(&mut self, _request: &super::request_admission::AdmittedRequest) -> bool {
+        false
+    }
+    fn hook_remaining(&self) -> Option<usize> {
+        None
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        None
+    }
+
+    /// Inspect the same configured walk that will choose the first member.
+    fn hook_candidates(&mut self, _wants: &Wants) -> Option<super::hooks::Candidates> {
+        None
+    }
+    fn hook_scope(&mut self, _wants: &Wants) -> Option<super::RoutedScope> {
+        None
+    }
+    fn hook_lane(&mut self, _wants: &Wants, _index: usize) -> Option<String> {
+        None
+    }
+    /// False means no enforcing constraint was installed; core must not dial.
+    fn hook_constrain(&mut self, _wants: &Wants, _constraint: super::hooks::Constraint) -> bool {
+        false
+    }
     /// The next member to try, `None` when the walk is exhausted. `wants.upstream` pins one member.
     fn next(&mut self, wants: &Wants) -> Option<Candidate>;
     /// The plane will not send to this member; it was never dialled.
@@ -190,6 +254,12 @@ impl UpChunks for Whole {
 
 /// The carrier: core adds the host, the carrier's defaults and the credential and sends the exchange.
 pub trait UpSend {
+    fn open_selected<'a>(
+        &'a mut self,
+        _prepared: super::port_egress::OwnedPreparation,
+    ) -> Result<super::port_egress::SelectedOpen<'a>, super::port_egress::SelectedSendError> {
+        Err(super::port_egress::SelectedSendError::backend())
+    }
     /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
     /// buffering; a carrier that does not stream implements this one and gets `open` for free.
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed>;
@@ -221,7 +291,7 @@ pub enum Attempted {
         attempt: Option<AttemptItem>,
     },
     /// No member is left.
-    Exhausted { attempts: u32 },
+    Exhausted { attempts: u32, local_quota: bool },
 }
 
 /// The reply's head as the piece it is fed in: H_STATUS, PAIR*.
@@ -292,6 +362,7 @@ fn step<K: Calls + ?Sized>(
     // An item for the client means the plane decided (the attempt rule: it writes the response or it fails the
     // attempt with nothing for the client), so it goes out at once when a sink takes it.
     fed.began |= !fed.client.is_empty();
+    effects.observed_usage(task.usage());
     if !hand_out(effects, &mut fed.client) {
         fed.gone = true;
         return Ok(false);
@@ -366,33 +437,89 @@ pub fn run_attempts<K: Calls + ?Sized>(
     send: &mut dyn UpSend,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
+    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
+    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
+    if task.data().is_some() && !task.selected_attempts() {
+        return Err(SessionError::NotDriven);
+    }
     let mut attempts = 0_u32;
+    let mut local_quota = false;
     loop {
         let Some(member) = members.next(wants) else {
-            return Ok(Attempted::Exhausted { attempts });
+            return Ok(Attempted::Exhausted {
+                attempts,
+                local_quota,
+            });
         };
         attempts += 1;
-        let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
-        if answer
-            .attempt
-            .as_ref()
-            .is_some_and(|a| a.verdict == ATT_DECLINE)
-        {
-            members.declined(&member);
-            continue;
-        }
-        let exchange = exchange_zero(answer.exchanges)?;
+        effects.routing(
+            attempts,
+            &member.upstream,
+            members.hook_remaining(),
+            members.hook_failure(),
+        );
         let unsent = Failure {
             verdict: ATT_RETRY,
             class: FC_SERVER,
             retry_after_s: 0,
         };
-        let Ok(reply) = send.open(&member, &exchange) else {
-            members.failed(&member, &unsent);
-            continue;
+        let reply = if task.selected_attempts() {
+            let Some(prepared) =
+                task.prepare_selected(&member, attempts, dialect, model, effects)?
+            else {
+                members.declined(&member);
+                continue;
+            };
+            let owned = super::port_egress::OwnedPreparation::new(prepared, task.data().cloned());
+            let opened = match send.open_selected(owned) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    use super::port_egress::SelectedFailure;
+                    match &error.0 {
+                        SelectedFailure::NoSend | SelectedFailure::Policy(crate::governance::selected_policy::SelectedPolicyRefusal::StalePolicyTarget) => {
+                            members.declined(&member);
+                            continue;
+                        }
+                        SelectedFailure::Quota => {
+                            local_quota = true;
+                            members.declined(&member);
+                            continue;
+                        }
+                        _ => return Err(SessionError::SelectedRefused(error)),
+                    }
+                }
+            };
+            task.install_attempt(opened.attempt)?;
+            match opened.opened {
+                Ok(reply) => reply,
+                Err(_) => {
+                    task.finish_attempt()?;
+                    members.failed(&member, &unsent);
+                    continue;
+                }
+            }
+        } else {
+            let answer =
+                member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
+            if answer
+                .attempt
+                .as_ref()
+                .is_some_and(|a| a.verdict == ATT_DECLINE)
+            {
+                members.declined(&member);
+                continue;
+            }
+            let exchange = exchange_zero(answer.exchanges)?;
+            let Ok(reply) = send.open(&member, &exchange) else {
+                members.failed(&member, &unsent);
+                continue;
+            };
+            reply
         };
+        task.answered_attempt()?;
         let fed = feed(task, reply, effects)?;
         if fed.broken {
+            task.finish_attempt()?;
             members.failed(&member, &unsent);
             continue;
         }
@@ -401,6 +528,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             .as_ref()
             .filter(|a| matches!(a.verdict, ATT_RETRY | ATT_HARD))
         {
+            task.finish_attempt()?;
             members.failed(
                 &member,
                 &Failure {
@@ -411,6 +539,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             );
             continue;
         }
+        task.served_attempt()?;
         members.served(&member);
         return Ok(Attempted::Served {
             client: fed.client,

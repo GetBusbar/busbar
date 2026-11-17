@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
+
 use crate::test_common as common;
 
 const AUDIENCE: &str = "api://admin-cache-flush";
@@ -42,7 +44,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -70,10 +72,11 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     .expect("the actual admin deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -151,7 +154,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let flush = |token: String, body: serde_json::Value| {
+    let flush = |token: String, body: json::Value| {
         client
             .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
             .header("x-admin-token", token)
@@ -160,7 +163,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     };
     let viewer = common::credentials::token_for("cache-viewer", &["viewers"], AUDIENCE);
     assert_eq!(
-        flush(viewer, serde_json::json!({"module":"test-scope-module"}))
+        flush(viewer, json::json!({"module":"test-scope-module"}))
             .await
             .unwrap()
             .status()
@@ -171,53 +174,46 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
 
     let answer = flush(
         "admintok".into(),
-        serde_json::json!({"module":"test-scope-module"}),
+        json::json!({"module":"test-scope-module"}),
     )
     .await
     .unwrap();
     assert_eq!(answer.status().as_u16(), 200);
     assert_eq!(
-        answer.json::<serde_json::Value>().await.unwrap()["flushed"],
+        json::parse_value(&answer.bytes().await.unwrap()).unwrap()["flushed"],
         3
     );
-    let answer = flush("admintok".into(), serde_json::json!({"module":operator}))
+    let answer = flush("admintok".into(), json::json!({"module":operator}))
         .await
         .unwrap();
     assert_eq!(answer.status().as_u16(), 200);
     assert_eq!(
-        answer.json::<serde_json::Value>().await.unwrap()["flushed"],
+        json::parse_value(&answer.bytes().await.unwrap()).unwrap()["flushed"],
         0
     );
-    let answer = flush(
-        "admintok".into(),
-        serde_json::json!({"module":"not-configured"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer.status().as_u16(), 200);
-    assert_eq!(
-        answer.json::<serde_json::Value>().await.unwrap()["flushed"],
-        0
-    );
-    let answer = flush("admintok".into(), serde_json::json!({}))
+    let answer = flush("admintok".into(), json::json!({"module":"not-configured"}))
         .await
         .unwrap();
     assert_eq!(answer.status().as_u16(), 200);
     assert_eq!(
-        answer.json::<serde_json::Value>().await.unwrap()["flushed"],
+        json::parse_value(&answer.bytes().await.unwrap()).unwrap()["flushed"],
+        0
+    );
+    let answer = flush("admintok".into(), json::json!({})).await.unwrap();
+    assert_eq!(answer.status().as_u16(), 200);
+    assert_eq!(
+        json::parse_value(&answer.bytes().await.unwrap()).unwrap()["flushed"],
         1,
         "the filtered flush did not touch the omitted real admin instance"
     );
-    let answer = flush("admintok".into(), serde_json::json!({}))
-        .await
-        .unwrap();
+    let answer = flush("admintok".into(), json::json!({})).await.unwrap();
     assert_eq!(
-        answer.json::<serde_json::Value>().await.unwrap()["flushed"],
+        json::parse_value(&answer.bytes().await.unwrap()).unwrap()["flushed"],
         0,
         "the unfiltered flush reached both chains"
     );
     assert_eq!(
-        flush("admintok".into(), serde_json::json!({"module":7}))
+        flush("admintok".into(), json::json!({"module":7}))
             .await
             .unwrap()
             .status()

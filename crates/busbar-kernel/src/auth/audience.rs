@@ -64,7 +64,7 @@ impl Bearer {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(payload)
             .ok()
-            .filter(|bytes| serde_json::from_slice::<claims::Checked>(bytes).is_ok())
+            .filter(|bytes| busbar_contract::json::parse::<claims::Checked>(bytes).is_ok())
             .map_or(Bearer::Opaque, |bytes| Bearer::Jwt(JwtPayload(bytes)))
     }
 
@@ -124,7 +124,7 @@ mod claims {
     where
         S: DeserializeSeed<'de> + Copy,
     {
-        let mut de = serde_json::Deserializer::from_slice(payload);
+        let mut de = busbar_contract::json::Deserializer::from_slice(payload).use_rawnumber();
         de::Deserializer::deserialize_any(&mut de, Member { name, seed })
             .ok()
             .flatten()

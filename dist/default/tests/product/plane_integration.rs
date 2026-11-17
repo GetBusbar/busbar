@@ -35,6 +35,7 @@ mod linked {
 }
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
 use std::sync::Arc;
@@ -221,14 +222,12 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -283,11 +282,13 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         "a mounted door plane must refuse in JSON-RPC 2.0, the only wire format it speaks; got {v}"
     );
     assert!(
-        v.pointer("/error/code").and_then(|c| c.as_i64()).is_some(),
+        json::pointer(&v, "/error/code")
+            .and_then(|c| c.as_i64())
+            .is_some(),
         "a JSON-RPC refusal carries a numeric `error.code`; got {v}"
     );
     assert!(
-        v.pointer("/error/type").is_none(),
+        json::pointer(&v, "/error/type").is_none(),
         "`error.type` is the fallback dialect's envelope member — the vendor shape must not survive \
          on a mounted plane; got {v}"
     );
@@ -325,14 +326,12 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -393,7 +392,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
          shape; got {sibling}"
     );
     assert!(
-        sibling.pointer("/error/message").is_some(),
+        json::pointer(&sibling, "/error/message").is_some(),
         "the residual plane still answers a legible native envelope; got {sibling}"
     );
 }
@@ -451,14 +450,12 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     let mut cfg = cfg;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -601,14 +598,12 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let mut cfg = cfg;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -757,14 +752,12 @@ mod metrics_scrape {
         cfg.public_url = Some("https://busbar.example".into());
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            plugins::FIXTURE_PUBLISHER,
+        );
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "plane_integration-{}",
@@ -790,7 +783,7 @@ mod metrics_scrape {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let exports = cfg.export.clone();
-        busbar_kernel::export::plugin::open(&exports).expect("the configured exporter opens");
+        let judge = crate::root::connector::dest_judge(&cfg);
         let (app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             plugin_config,
@@ -803,7 +796,50 @@ mod metrics_scrape {
         )
         .await
         .expect("the actual product builds the door deployment");
-        crate::dist_root_install::attach_services(&app);
+        let declarations: Vec<_> = linked::planes()
+            .iter()
+            .map(|decl| &decl.declaration)
+            .collect();
+        let core = app
+            .governance
+            .as_ref()
+            .expect("actual governance book")
+            .core_store_handle()
+            .expect("actual metrics Store custody");
+        let services = crate::root::serve::compose(judge, &app, core, &declarations);
+        let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
+        let rows = busbar_plugin_loader::export_axis::ExportRows::new(
+            crate::root::linked::dropped().expect("actual linked export registry"),
+            dispatcher,
+        )
+        .with_disk(
+            busbar_contract::services::disk_admission::DiskAuthority::issue(
+                &busbar_kernel::seal::acquire(),
+            ),
+        )
+        .with_logs(crate::root::boot::plugin_logs())
+        .with_conns(crate::root::connector::admit(
+            crate::root::connector::the().clone(),
+        ));
+        let opened = exports
+            .plugins
+            .iter()
+            .map(|plugin| {
+                let settings =
+                    busbar_contract::export_calls::ExportOpening::new(plugin.def.settings.clone())
+                        .prepare();
+                let calls = rows
+                    .open(
+                        plugin.def.module.trim(),
+                        &format!("export.{}", plugin.name),
+                        &settings,
+                    )
+                    .expect("the configured exporter opens with complete services");
+                (plugin.name.clone(), calls)
+            })
+            .collect();
+        busbar_kernel::export::plugin::open_prepared(&exports, &opened)
+            .expect("the configured export projection retains its real exporter");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
             .await
@@ -826,7 +862,7 @@ mod metrics_scrape {
         let door_status = client
             .post(format!("{base}{door_mount}"))
             .header("authorization", &door_bearer)
-            .json(&serde_json::json!({
+            .json(&json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/list",
@@ -841,7 +877,7 @@ mod metrics_scrape {
         let agents_status = client
             .post(format!("{base}{agents_mount}/agents/planner"))
             .header("authorization", &traffic_bearer)
-            .json(&serde_json::json!({
+            .json(&json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "message/send",
@@ -1020,14 +1056,12 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -1152,7 +1186,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         }
     }
 
-    let body = serde_json::json!({
+    let body = json::json!({
         "model": "pa",
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 16
@@ -1386,7 +1420,7 @@ async fn oversized_413_body(
     app: Arc<busbar_kernel::state::App>,
     sections: &str,
     path: &str,
-) -> serde_json::Value {
+) -> json::Value {
     let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit").await;
     let mount = jsonrpc_mount(door_plane(), sections);
     let bearer = if path == mount || path.starts_with(&format!("{mount}/")) {
@@ -1417,7 +1451,7 @@ async fn oversized_413_body(
         "{path}: {}",
         String::from_utf8_lossy(&bytes)
     );
-    serde_json::from_slice(&bytes).expect("the refusal is JSON")
+    json::parse_value(&bytes).expect("the refusal is JSON")
 }
 
 async fn plane_router(
@@ -1428,23 +1462,23 @@ async fn plane_router(
 ) -> axum::Router {
     use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
     let cfg = resolved(sections);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = Arc::new(crate::root::dispatch::build(1, &late));
-    let (credentials, live) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
     let declarations: Vec<_> = linked::planes()
         .iter()
         .map(|decl| &decl.declaration)
         .collect();
-    crate::root::serve::attach(
-        &late,
-        app.governance.as_deref(),
-        app.governance
-            .clone()
-            .map(|gov| gov as Arc<dyn busbar_kernel::host_services::SignKey>),
-        &app.demotion_record,
+    let core = app
+        .governance
+        .as_ref()
+        .expect("actual governance book")
+        .core_store_handle()
+        .expect("actual plane Store custody");
+    let services = crate::root::serve::compose(
+        crate::root::connector::dest_judge(&cfg),
+        &app,
+        core,
         &declarations,
     );
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
     let doors: Vec<_> = crate::LINKED
         .plane_door_declares
         .iter()
@@ -1486,7 +1520,7 @@ async fn plane_router(
     let served = crate::root::serve::compose_planes(
         &doors,
         &dispatcher,
-        &late,
+        &services,
         &configured,
         Some("https://busbar.example"),
         &|| {
@@ -1547,6 +1581,5 @@ async fn plane_router(
     if let Some(refuser) = refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
-    live.set(handle);
     router
 }

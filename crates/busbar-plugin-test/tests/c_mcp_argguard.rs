@@ -8,7 +8,7 @@
 //! the arm's body and un-ignores it in its own MR (red first, then green).
 
 #[test]
-#[ignore = "owner: W1-K8A"]
+#[ignore = "owner: W1-K8A; blocked (re-checked on dev 2026-11-16): JUDGE per extracted destination needs MIN-3 plane serving (K8A tail, OUTSTANDING row 5) and plane-mcp's 1.6 argument-guard corpus (plane-mcp P-builder, plugin repo)"]
 fn judge_per_extracted_destination() {
     todo!("owner: W1-K8A (C-MCP-ARGGUARD)")
 }

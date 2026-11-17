@@ -515,6 +515,7 @@ impl DocumentPatch {
 
     /// Check the effective top-level keys before constructing typed config.
     /// Key references borrow the guarded tree and must not be retained.
+    #[cfg(test)]
     fn parse_deploy_yaml_checked(
         &self,
         yaml: &str,
@@ -535,6 +536,9 @@ impl DocumentPatch {
     ) -> Result<busbar_contract::secure::SecureString, String> {
         let mut document = source::SourceDocument::parse(yaml)?;
         document.apply(self)?;
+        if let Some(refusal) = super::prepass::reserved_key_refusal(&document.value.0) {
+            return Err(refusal);
+        }
         let mapping = document
             .value
             .0

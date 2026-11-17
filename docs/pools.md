@@ -4,6 +4,13 @@ A **pool** is a named, weighted group of model lanes that share failover, circui
 
 Pools are optional: you can route directly to a single model. But the moment you want weighting, failover, cost-aware routing, or overflow, you reach for a pool.
 
+For a plane declaring a `member_granted` pool, core enforces the caller's per-member
+`allowed_<kind>s` grants from `role_bindings`. A scoped caller must address a member
+listed in that pool and granted to the caller; omitting the member or naming a member
+outside the pool is refused. A grant of the pool name does not grant its members.
+Budget downgrades, retries and fallback walks retain only authorized members of each
+pool. An ordinary pool continues to use its pool-name grant.
+
 <svg viewBox="0 0 760 360" role="img" aria-label="A client addresses pool chat. Smooth weighted round-robin (SWRR), the default policy, selects the top lane gpt-4o (weight 8); it fails before the first byte, so Busbar fails over to the next healthy lane claude-sonnet (weight 2); gemini-pro (weight 1) is skipped because its breaker is open. Each lane shows its per-(pool,lane) breaker cell: Closed, Closed, Open. A legend marks healthy and tripped lanes." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <rect x="0" y="0" width="760" height="360" fill="#111a2e"/>
   <!-- client -->
@@ -78,7 +85,7 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even on a streaming request. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
-Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
+Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Hooks](hooks.md)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
 
 ## Config reference
 
@@ -86,7 +93,7 @@ The field-by-field reference, every pool and member field with its type, default
 
 In short: a pool takes a list of `members`, an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
-A member is written as it has been since 1.5: a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what the first-boot migration leaves exactly as you wrote it.
+A member is written as a `model:` naming an entry in `models:`, with an optional `weight:` and any per-member capabilities (`context_max`, `attempt_timeout_ms`, `reasoning`, `tier`, `tags`) beside it. That is the canonical form, it is what the field reference documents, and it is what the first-boot migration leaves exactly as you wrote it.
 
 ```yaml
 pools:
@@ -99,7 +106,8 @@ pools:
       - model: gemini-pro                # weight defaults to 1
 ```
 
-An equivalent shorthand is accepted for pools whose members carry nothing but a weight: list the members as bare names and put the weights in a pool-level `weights:` map (`weights:` present ⇒ weighted distribute; absent ⇒ ordered failover with the first member as primary). The two spellings mean the same thing and may be mixed; a per-member `weight:` written inline wins over the `weights:` map for that member. The bare-name form is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities.
+A member that carries nothing else may be written as a bare name (shorthand for `{ model: <name> }`). That is also how MCP and A2A failover pools name their `tools:` / `agents:` members, since those carry no per-member capabilities. Weights, tier and the attempt timeout are per-member fields only; there is no pool-level `weights:`, `tier:` or `attempt_timeout_ms:`.
+<!-- docs-truth: depends on !2665 (unmerged): LLM pool-level weights/tier/attempt_timeout_ms/repeatable deleted; tools/agents failover pools keep `repeatable` -->
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
@@ -118,15 +126,6 @@ pools:
       - { model: gpt-4o,        weight: 8 }   # ~80% of traffic
       - { model: claude-sonnet, weight: 2 }   # ~20%
       - { model: gemini-pro,    weight: 1 }   # picks up load when the others trip
-```
-
-The same pool in the bare-name shorthand:
-
-```yaml
-pools:
-  chat:
-    members: [gpt-4o, claude-sonnet, gemini-pro]
-    weights: { gpt-4o: 8, claude-sonnet: 2, gemini-pro: 1 }
 ```
 
 ### Same model, two providers (cross-provider failover)

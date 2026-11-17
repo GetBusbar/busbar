@@ -1,10 +1,10 @@
 # 1.6.0 advisories
 
 These are shipped-behavior and billing-correctness disclosures gathered for the 1.6.0 release —
-distinct from [`docs/security/advisories/`](../security/advisories/), which (where that
-directory exists on a given branch) tracks confirmed security vulnerabilities disclosed per
+distinct from [`docs/security/advisories/`](../security/advisories/), which tracks confirmed security vulnerabilities disclosed per
 [SECURITY.md](../../SECURITY.md)'s severity/backport process. None of the four items below is a
-SECURITY.md-scoped vulnerability; each says so explicitly and states why.
+SECURITY.md-scoped vulnerability; each says so explicitly and states why. The security directory holds only
+its README and template today: no vulnerability has been published there.
 
 | Id | Title | Classification |
 |---|---|---|

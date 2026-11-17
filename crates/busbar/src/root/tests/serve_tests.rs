@@ -153,18 +153,12 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = crate::root::test_plugins::scratch("serve-empty-plane-set");
     let archive = crate::root::test_plugins::signed(
@@ -176,12 +170,12 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &busbar_contract::json::json!({
             "providers": {},
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

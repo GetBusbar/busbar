@@ -117,7 +117,7 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
         "and approves nothing either"
     );
     let (_, kept) = b
-        .decide(&i, "cp", None, Ruling::Approve, Some("fp"))
+        .decide(&i, "cp", None, Ruling::Approve, Some(Reviewed::Seen("fp")))
         .expect("a key");
     assert_eq!(
         b.judge(&i, &whole),
@@ -699,6 +699,9 @@ fn a_kept_approval_never_replays_onto_a_rootless_registration() {
         approved: approved.map(Into::into),
         declared: rootless.pin.clone(),
         demoted: false,
+        decided_by: None,
+        decided_at: None,
+        operation: None,
     };
     b.sight_item(&i, "cp", "t", "d1").unwrap();
     b.admit_decided(&i, [&row(None, Some("h1")), &row(Some("t"), Some("d1"))]);
@@ -728,7 +731,7 @@ fn a_kept_approval_does_not_replay_over_a_declaration_changed_while_down() {
     let (b, i) = book(entry(Some("fp"), 0, 0));
     b.sight(&i, "cp", "fp", 1).unwrap();
     let (_, kept) = b
-        .decide(&i, "cp", None, Ruling::Approve, Some("fp"))
+        .decide(&i, "cp", None, Ruling::Approve, Some(Reviewed::Seen("fp")))
         .unwrap();
     assert_eq!(b.judge(&i, &whole), Ok(()));
 
@@ -761,7 +764,9 @@ fn a_ruling_changes_nothing_until_it_is_applied() {
     };
     let (b, i) = book(entry(None, 0, 0));
     b.sight(&i, "cp", "h1", 1).unwrap();
-    let fact = b.rule(&i, "cp", None, Ruling::Approve, Some("h1")).unwrap();
+    let fact = b
+        .rule(&i, "cp", None, Ruling::Approve, Some(Reviewed::Seen("h1")))
+        .unwrap();
     assert_eq!(fact.approved.as_deref(), Some("h1"));
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
     let row = b.apply(&fact).unwrap();

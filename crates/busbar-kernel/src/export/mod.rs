@@ -5,7 +5,10 @@ pub mod delivery;
 pub mod plugin;
 pub(crate) mod projection;
 pub(crate) mod scrape;
-pub use scrape::{app_families, hook_families, ScrapeRefusal};
+pub use scrape::{
+    app_families, app_families_budgeted, hook_families, hook_families_budgeted,
+    BudgetedScrapeRefusal, ScrapeRefusal,
+};
 pub mod traces;
 
 use crate::export::projection::{ProjectedRecord, Rendered};
@@ -74,10 +77,13 @@ pub(crate) fn build_request_log(
     rec.finish()
 }
 
-pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
-    plugin::deliver(ExportStream::Logs, facts.ingress_protocol, |projection| {
-        build_request_log(projection, facts)
-    });
+pub(crate) fn deliver_request_log(exports: &plugin::Exports, facts: &RequestLogFacts<'_>) {
+    plugin::deliver_on(
+        exports,
+        ExportStream::Logs,
+        facts.ingress_protocol,
+        |projection| build_request_log(projection, facts),
+    );
 }
 
 #[cfg(test)]

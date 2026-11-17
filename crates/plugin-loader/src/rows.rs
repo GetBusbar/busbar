@@ -18,6 +18,18 @@ impl PluginRows for PluginRegistry {
         PluginRegistry::resolve(self, name_or_alias).and_then(archive_sha256)
     }
 
+    fn verification(
+        &self,
+        name_or_alias: &str,
+    ) -> Option<busbar_contract::plugin_rows::Verification> {
+        PluginRegistry::resolve(self, name_or_alias).map(|image| image.verification.clone())
+    }
+
+    fn signature_present(&self, name_or_alias: &str) -> bool {
+        PluginRegistry::resolve(self, name_or_alias)
+            .is_some_and(|image| !image.linked() && !image.manifest.signature.is_empty())
+    }
+
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
         PluginRegistry::unresolved_reason(self, name_or_alias).map(skipped)
     }
@@ -32,13 +44,6 @@ impl PluginRows for PluginRegistry {
 
     fn skipped(&self) -> Vec<Skipped> {
         skipped_rows(self)
-    }
-
-    fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        PluginRegistry::store_door(self, name_or_alias)
     }
 
     fn secret_refusal(&self, name_or_alias: &str) -> String {

@@ -32,17 +32,13 @@ fn provider<'a>(name: &'a str, protocol: &'a str) -> ProviderView<'a> {
     }
 }
 
-fn member<'a>(
-    plane: &'a str,
-    provider: &'a str,
-    model_protocol: Option<&'a str>,
-) -> MemberView<'a> {
+fn member<'a>(plane: &'a str, provider: &'a str) -> MemberView<'a> {
     MemberView {
         member: "m",
         plane,
         image: "llm",
         provider,
-        model_protocol,
+        dialect: None,
     }
 }
 
@@ -79,15 +75,12 @@ fn plan<'a>(
     }
 }
 
-/// Guards C-DIALECT-AUTH (b): one provider reached under two dialects opens two implicit instances, one per
-/// dialect, each with its own style.
+/// Guards C-DIALECT-AUTH (b): two providers of two protocols open two implicit instances, one per
+/// dialect, each with its own style (a model reaches a second protocol through a second `providers:` entry).
 #[test]
-fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
-    let providers = [provider("p", "openai")];
-    let members = [
-        member("llm1", "p", Some("anthropic")),
-        member("llm1", "p", None),
-    ];
+fn two_providers_of_two_dialects_get_two_implicit_bindings() {
+    let providers = [provider("p", "openai"), provider("q", "anthropic")];
+    let members = [member("llm1", "p"), member("llm1", "q")];
     let (rows, styles) = (rows(), styles());
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     let mut names: Vec<_> = got.implicit.iter().map(|i| (&*i.name, &*i.style)).collect();
@@ -95,8 +88,8 @@ fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
     assert_eq!(
         names,
         [
-            ("p-anthropic-outbound", "api-key"),
-            ("p-openai-outbound", "bearer")
+            ("p-openai-outbound", "bearer"),
+            ("q-anthropic-outbound", "api-key")
         ]
     );
 }
@@ -105,7 +98,7 @@ fn one_provider_under_two_dialects_gets_two_implicit_bindings() {
 #[test]
 fn two_planes_with_equal_rows_share_one_implicit_binding() {
     let providers = [provider("p", "openai")];
-    let members = [member("llm1", "p", None), member("llm2", "p", None)];
+    let members = [member("llm1", "p"), member("llm2", "p")];
     let (rows, styles) = (rows(), styles());
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     assert_eq!(got.implicit.len(), 1);
@@ -117,11 +110,11 @@ fn two_planes_with_equal_rows_share_one_implicit_binding() {
 #[test]
 fn differing_rows_for_one_provider_dialect_name_by_the_first_plane() {
     let providers = [provider("p", "openai")];
-    let a = member("llm1", "p", None);
+    let a = member("llm1", "p");
     let b = MemberView {
         image: "stream",
         plane: "st1",
-        ..member("llm1", "p", None)
+        ..member("llm1", "p")
     };
     let mut rows = rows();
     rows.push(("stream", vec![header_row("openai", Some("x-goog-api-key"))]));
@@ -137,7 +130,7 @@ fn differing_rows_for_one_provider_dialect_name_by_the_first_plane() {
 #[test]
 fn no_row_for_a_keyed_provider_refuses_with_todays_text() {
     let providers = [provider("p", "cohere")];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let err = bind_providers(&plan(&members, &providers, &rows, &styles, &[]))
         .err()
@@ -152,7 +145,7 @@ fn no_row_for_a_keyed_provider_refuses_with_todays_text() {
 #[test]
 fn an_operator_instance_under_an_implicit_name_refuses() {
     let providers = [provider("p", "openai")];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let op = [OperatorAuth {
         name: "p-openai-outbound",
@@ -175,7 +168,7 @@ fn an_explicit_binding_of_the_rows_style_gets_the_absent_core_keys() {
     let mut p = provider("p", "openai");
     p.auth = ProviderAuth::Instance("mine");
     let providers = [p];
-    let members = [member("llm1", "p", None)];
+    let members = [member("llm1", "p")];
     let (rows, styles) = (rows(), styles());
     let op = [OperatorAuth {
         name: "mine",
@@ -324,4 +317,132 @@ fn upstream_credentials_must_agree_with_the_binding() {
     assert_eq!(ok("u", Some(Connection), Some(true), true), Ok(()));
     assert_eq!(ok("u", None, Some(true), true), Ok(()));
     assert_eq!(ok("u", Some(Own), None, false), Ok(()));
+}
+
+#[test]
+fn scoped_upstream_bindings_use_collision_free_reserved_identity() {
+    let cfg = connection_form();
+    let resolve = |instance: &str, name: &str| {
+        bind_upstreams_for(
+            instance,
+            &[UpstreamView {
+                name,
+                auth: Some(&cfg),
+                upstream_credentials: Some(UpstreamCreds::Connection),
+                stdio: false,
+            }],
+            &styles(),
+            &[],
+            &flags,
+        )
+        .unwrap()
+    };
+    let left = resolve("a-b", "c");
+    let right = resolve("a", "b-c");
+    let left = left[0].auth.as_ref().unwrap();
+    let right = right[0].auth.as_ref().unwrap();
+    assert_ne!(left.instance, right.instance);
+    assert_eq!(&*left.instance, "\0upstream:3:a-b1:c");
+    assert_eq!(&*right.instance, "\0upstream:1:a3:b-c");
+    assert!(left.caller && right.caller);
+    assert_eq!(left.connect_callback.as_deref(), Some("/connect/cb"));
+}
+
+#[test]
+fn scoped_bindings_preserve_explicit_own_bindings_and_do_not_reserve_legacy_names() {
+    let form = connection_form();
+    let explicit = UpstreamAuthCfg {
+        form: UpstreamAuthForm::Instance("upstream-c-outbound".into()),
+        cache_max_s: Some(17),
+    };
+    let op = [OperatorAuth {
+        name: "upstream-c-outbound",
+        module: "oauth",
+        style: Some("oauth-token-exchange"),
+        settings_keys: Vec::new(),
+    }];
+    let views = [
+        UpstreamView {
+            name: "c",
+            auth: Some(&form),
+            upstream_credentials: Some(UpstreamCreds::Connection),
+            stdio: false,
+        },
+        UpstreamView {
+            name: "explicit",
+            auth: Some(&explicit),
+            upstream_credentials: Some(UpstreamCreds::Own),
+            stdio: false,
+        },
+    ];
+    let mask = |module: &str, style: &str| {
+        flags(module, style) | busbar_plugin_abi::auth::STYLE_PER_REQUEST
+    };
+    let got = bind_upstreams_for("plane", &views, &styles(), &op, &mask).unwrap();
+    assert!(got[0].implicit.is_some());
+    let own = got[1].auth.as_ref().unwrap();
+    assert!(got[1].implicit.is_none());
+    assert_eq!(&*own.instance, "upstream-c-outbound");
+    assert!(!own.caller && own.scoped && own.per_request);
+    assert_eq!(own.cache_max_s, Some(17));
+}
+
+#[test]
+fn scoped_bindings_refuse_operator_names_in_the_internal_namespace() {
+    let operator = [OperatorAuth {
+        name: "\0upstream:1:a1:b",
+        module: "oauth",
+        style: Some("oauth-connection"),
+        settings_keys: Vec::new(),
+    }];
+    let refused = bind_upstreams_for("plane", &[], &styles(), &operator, &flags)
+        .err()
+        .expect("reserved operator name");
+    assert!(refused.iter().any(|message| message.contains("reserved")));
+    assert!(refused.iter().all(|message| !message.contains('\0')));
+}
+
+#[test]
+fn scoped_bindings_keep_credential_mode_and_stdio_refusals() {
+    let cfg = connection_form();
+    let own = [UpstreamView {
+        name: "c",
+        auth: Some(&cfg),
+        upstream_credentials: Some(UpstreamCreds::Own),
+        stdio: false,
+    }];
+    assert!(bind_upstreams_for("plane", &own, &styles(), &[], &flags).is_err());
+    let stdio = [UpstreamView {
+        name: "c",
+        auth: Some(&cfg),
+        upstream_credentials: None,
+        stdio: true,
+    }];
+    assert!(bind_upstreams_for("plane", &stdio, &styles(), &[], &flags).is_err());
+}
+
+#[test]
+fn configured_member_dialect_selects_its_own_image_local_auth_row() {
+    let providers = [provider("p", "openai")];
+    let members = [
+        member("llm1", "p"),
+        MemberView {
+            dialect: Some("anthropic"),
+            ..member("llm1", "p")
+        },
+    ];
+    let (rows, styles) = (rows(), styles());
+    let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
+    assert_eq!(got.by_attempt.len(), 2);
+    assert_eq!(
+        got.by_attempt
+            .get(&("llm1".into(), "p".into(), "anthropic".into()))
+            .map(AsRef::as_ref),
+        Some("p-anthropic-outbound")
+    );
+    assert!(got
+        .implicit
+        .iter()
+        .any(|instance| instance.name.as_ref() == "p-anthropic-outbound"
+            && instance.style.as_ref() == "api-key"));
 }

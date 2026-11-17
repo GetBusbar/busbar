@@ -46,7 +46,7 @@ async fn plane_unavailable_and_internal_fault_remain_distinct_on_the_listener() 
         assert_eq!(response.headers()["content-type"], "application/json");
         let text = response.text().await.unwrap();
         assert!(!text.contains("PRIVATE_BACKEND_SENTINEL"));
-        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let body = busbar_contract::json::parse_value(text.as_bytes()).unwrap();
         assert_eq!(body["error"]["code"], code);
     }
     server.abort();

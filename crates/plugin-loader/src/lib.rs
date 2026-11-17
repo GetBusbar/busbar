@@ -240,13 +240,21 @@ mod ordinary_load_negatives;
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
+#[cfg(test)]
+#[path = "tests/artifact_verifier_parity.rs"]
+mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
+#[cfg(feature = "pack")]
+#[deny(unsafe_code)]
+pub mod pack_native;
 #[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -275,18 +283,20 @@ pub mod adapters;
 #[deny(unsafe_code)]
 pub mod admit;
 #[deny(unsafe_code)]
-pub mod binder;
+pub mod answer;
 mod chains;
+#[cfg(target_os = "linux")]
 #[deny(unsafe_code)]
-pub mod encode;
+pub mod inspect;
+#[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod instance;
 #[deny(unsafe_code)]
-pub mod ports;
 #[deny(unsafe_code)]
 pub mod refusal;
 #[deny(unsafe_code)]
 pub mod scan;
+mod upstream_paths;
 #[deny(unsafe_code)]
 pub mod watchdog;
 
@@ -596,3 +606,8 @@ mod neutral_transport;
 #[cfg(test)]
 #[path = "tests/neutral_auth.rs"]
 mod neutral_auth;
+
+/// Process-owned MIN-3 resources.
+pub mod process;
+
+mod reopen;

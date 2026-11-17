@@ -31,25 +31,25 @@ fn a_panicking_log_sink_is_contained_and_counted_once() {
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: needs the busbar-plugin-abi `conformance` injection feature (host_vt injection::fire) driven from inside a real fixture entry, and a spawned SIGABRT control process; no such fixture or dev-edge feature here (W1-H1)"]
 fn every_host_fn_panicking_inside_a_real_entry_answers_its_fallback() {
     todo!("owner: W1-H1 (C-PANIC-HOST)")
 }
 
 #[test]
-#[ignore = "owner: W1-H1 (blocked: entry::guard, GetBusbar/busbar#272)"]
+#[ignore = "blocked: needs the busbar-plugin-abi `conformance` injection feature (host_vt injection::fire) driven from inside a real fixture entry, and a spawned SIGABRT control process; no such fixture or dev-edge feature here (W1-H1)"]
 fn the_uncontained_control_dies_with_sigabrt() {
     todo!("owner: W1-H1 (C-PANIC-HOST)")
 }
 
 #[test]
-#[ignore = "owner: W1-L2"]
+#[ignore = "blocked: the host_callback_panic audit row and metric are the registry watchdog (W1-L2), absent from this crate's reachable surface"]
 fn one_host_callback_panic_row_and_metric_within_a_tick() {
     todo!("owner: W1-L2 (C-PANIC-HOST)")
 }
 
 #[test]
-#[ignore = "owner: W1-K8D"]
+#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): needs an auth fixture's verify through the MIN-3 auth port (plugin-loader adapters/auth.rs chain_req is todo!(), OUTSTANDING row 1) with busbar-plugin-abi's conformance crypto injection armed (no such dev edge here), and a store fixture through the store adapter (adapters/store.rs request todo!()); RefusalMap::from_port's 502 then runs beside the kernel's refusal map"]
 fn a_crypto_panic_reaches_the_port_as_failed_unavailable() {
     todo!("owner: W1-K8D (C-PANIC-HOST)")
 }

@@ -6,8 +6,6 @@
 //! scope projection a snapshot is built with. It runs once per configuration generation or
 //! listener preparation, never per request; the handlers it mounts stay in `crate::router`.
 
-use axum::Router;
-
 use crate::router::{
     method_not_allowed_handler, mount_plane_route, mount_plane_session, private_not_found,
     unchanged_dispatch_layer, PreparedListener,
@@ -24,10 +22,7 @@ pub(crate) fn base_data_router_scoped(
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     root_surface: bool,
-) -> (
-    Router<std::sync::Arc<state::AppHandle>>,
-    crate::core_routes::CoreRouteTable,
-) {
+) -> crate::core_routes::CoreRouter {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 
     let router = if root_surface {
@@ -38,6 +33,18 @@ pub(crate) fn base_data_router_scoped(
                 RouteMethod::Get,
                 RouteAuth::None,
                 endpoints::healthz,
+            )
+            .route(
+                crate::auth::LIVEZ_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                endpoints::livez,
+            )
+            .route(
+                crate::auth::READYZ_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                endpoints::readyz,
             );
 
         router
@@ -101,16 +108,14 @@ pub(crate) fn base_data_router_scoped(
 
     let router =
         router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
-    router
-        .map_router(|r| {
-            let r = if root_surface {
-                r.fallback(ingress::protocol_dispatch)
-            } else {
-                r.fallback(private_not_found)
-            };
-            r.method_not_allowed_fallback(method_not_allowed_handler)
-        })
-        .into_parts()
+    router.map_router(|r| {
+        let r = if root_surface {
+            r.fallback(ingress::protocol_dispatch)
+        } else {
+            r.fallback(private_not_found)
+        };
+        r.method_not_allowed_fallback(method_not_allowed_handler)
+    })
 }
 
 fn unclaimed_verbs(claimed: axum::routing::MethodFilter) -> Option<axum::routing::MethodFilter> {
@@ -152,6 +157,25 @@ fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method)
 }
 
 impl PreparedListener {
+    /// Prepare the same operator surface as the existing admin listener, retaining the
+    /// actual mounted declaration table beside its dispatcher before publication.
+    pub fn new_admin(app: &state::App) -> Result<Self, String> {
+        let (router, core_routes) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admin_routes(&app.plugin_routes)
+        }))
+        .map_err(|_| "candidate operator routes cannot be mounted together".to_string())?;
+        Ok(Self {
+            physical: None,
+            data: None,
+            router,
+            core_routes,
+            refusals: Vec::new(),
+            refuse_by_path: None,
+            root_surface: false,
+            dispatch_layer: unchanged_dispatch_layer,
+        })
+    }
+
     pub fn new(
         app: &state::App,
         plugins: &crate::plugin_routes::PluginRouteTable,
@@ -180,10 +204,12 @@ impl PreparedListener {
                 sessions,
                 root_surface,
             )
+            .into_parts()
         }))
         .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
         let core_routes = core_routes.with_door_refusals(refusals.clone());
         Ok(Self {
+            physical: None,
             data: None,
             router,
             core_routes,
@@ -193,6 +219,40 @@ impl PreparedListener {
             dispatch_layer: unchanged_dispatch_layer,
         })
     }
+}
+
+/// The actual admin mount, shared by ordinary and physically prepared listener construction.
+pub(crate) fn admin_routes(
+    plugins: &crate::plugin_routes::PluginRouteTable,
+) -> (
+    axum::Router<std::sync::Arc<state::AppHandle>>,
+    crate::core_routes::CoreRouteTable,
+) {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let admin = crate::core_routes::CoreRouter::new()
+        .route(
+            crate::auth::HEALTHZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::healthz,
+        )
+        .route(
+            crate::auth::LIVEZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::livez,
+        )
+        .route(
+            crate::auth::READYZ_PATH,
+            RouteMethod::Get,
+            RouteAuth::None,
+            endpoints::readyz,
+        );
+    let (admin, routes) = crate::admin::seam::mount_admin(admin).into_parts();
+    (
+        crate::plugin_routes::mount_plugin_routes(admin, plugins, true),
+        routes,
+    )
 }
 
 pub(crate) fn project_auth_scope_caps<M: FromIterator<(String, String)>>(a: &config::AuthCfg) -> M {

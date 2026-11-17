@@ -22,11 +22,14 @@ use super::{
     facade::{AccessError, CoreStore, Limits, WriterAuthority},
     fences,
     first_start::{self, Birth, FirstStart},
+    format_migration,
 };
 use crate::diagnostics::{diag_error, FIRST_START_TAKEOVER, FIRST_START_TAKEOVER_UNCONFIRMED};
 
 const NAMESPACE: NamespaceId = witness::FORMAT_NAMESPACE;
 const KEY: &[u8] = b"active";
+/// The record-format cursor's key (`busbar_migrate::records::CURSOR_KEY` names the same bytes).
+const CURSOR_KEY: &[u8] = b"step";
 const FORMAT: u32 = 1;
 
 /// Base stall window: longer than the longest legitimate gap between two progress writes of an
@@ -65,6 +68,8 @@ struct Stall {
     since: Instant,
     owner: [u8; 16],
     window: Duration,
+    /// The owner is a record-format migration owner, not a first-start owner (#319 r4 §8).
+    migrating: bool,
 }
 
 /// What a waiting `Startup` waits on, for the boot wait line.
@@ -73,6 +78,9 @@ pub struct Waiting {
     pub owner: [u8; 16],
     pub since_change: Duration,
     pub window: Duration,
+    /// The owner converts the dataset's record format (#319 r4 §8); otherwise it runs the first
+    /// start.
+    pub migrating: bool,
 }
 
 /// Facts of a takeover candidate, carried beside its attempt. Copied, never re-read.
@@ -235,11 +243,17 @@ pub(crate) struct Manifest {
 
 impl Manifest {
     pub(crate) fn encode(self) -> [u8; 80] {
+        self.encode_at(FORMAT, 0)
+    }
+
+    /// This manifest with its records at `format` and a step under way to `tail` (0 = none).
+    pub(crate) fn encode_at(self, format: u32, tail: u32) -> [u8; 80] {
         let mut bytes = [0; 80];
         bytes[..8].copy_from_slice(b"BSCFMT1\0");
         for at in [8, 12, 16, 20] {
-            bytes[at..at + 4].copy_from_slice(&FORMAT.to_le_bytes());
+            bytes[at..at + 4].copy_from_slice(&format.to_le_bytes());
         }
+        bytes[72..76].copy_from_slice(&tail.to_le_bytes());
         bytes[24..40].copy_from_slice(&self.dataset.0);
         bytes[40..48].copy_from_slice(&self.registrar.writer_epoch.to_le_bytes());
         bytes[48..64].copy_from_slice(&self.registrar.writer);
@@ -253,6 +267,15 @@ impl Manifest {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if classify(bytes, |_| false) != Format::Current {
             return Err(Error::UnsupportedFormat);
+        }
+        Self::identities(bytes)
+    }
+
+    /// The dataset and registrar of a manifest `classify` already judged (any format): every
+    /// identity and epoch nonzero (#319 r4 §5).
+    pub(crate) fn identities(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 80 {
+            return Err(Error::Corrupt);
         }
         let value = Self {
             dataset: DatasetId(bytes[24..40].try_into().map_err(|_| Error::Corrupt)?),
@@ -306,6 +329,10 @@ pub enum Progress {
     Reconcile,
     Admitted,
     Retired,
+    /// The dataset's records are at an older format and this process owns their conversion
+    /// (#319 r4 §5): [`Startup::migration`] hands the owner to the composition root's driver.
+    /// Nothing serves; ordinary admission follows only after the final publication.
+    Migrate,
 }
 
 #[derive(Clone)]
@@ -326,6 +353,12 @@ enum Phase {
     RetireEpoch(Session, control::Writer, Arc<Attempt>),
     Retiring(Arc<Attempt>),
     Retired,
+    /// The atomic opening of a record-format step (#319 r4 §6), with the owner it installs.
+    Open(WriterAuthority, Arc<Attempt>),
+    /// The takeover of a stalled migration owner (#319 r4 §8), with the owner it installs.
+    ClaimMigration(WriterAuthority, Arc<Attempt>),
+    /// This process owns the conversion; the root's driver runs it.
+    Migrate(Arc<format_migration::MigrationOwner>),
 }
 
 /// The last confirmed writer control value stays with this process session.
@@ -349,6 +382,21 @@ pub struct Startup {
     /// Definitive CAS losses of Initialize or Register, bounded by `limits.conflict_retries`
     /// (STORE-TRANSACTIONS §2.3, FIRST-START-TAKEOVER §2.5).
     lost: usize,
+    /// The record-format chain the composition root supplies; `None` admits only Current.
+    chain: Option<Arc<dyn FormatChain>>,
+    /// The migration owner whose opening or takeover this process confirmed (#319 r4 §6, §8).
+    /// Reinspection attaches it only while the manifest still names it.
+    owned: Option<WriterAuthority>,
+}
+
+/// The cold record-format chain the composition root supplies (#319 r4 §5): which steps exist
+/// and the cursor each step starts at. The kernel owns authority and custody; the migration
+/// library owns conversion; neither names the other.
+pub trait FormatChain: Send + Sync {
+    /// Whether a step from format `from` to `from + 1` exists.
+    fn has_step(&self, from: u32) -> bool;
+    /// The cursor record the step from `from` starts at, written by the opening.
+    fn initial_cursor(&self, from: u32) -> Option<Vec<u8>>;
 }
 
 impl Startup {
@@ -378,7 +426,51 @@ impl Startup {
             phase: Phase::Inspect,
             stall: None,
             lost: 0,
+            chain: None,
+            owned: None,
         })
+    }
+
+    /// Admit older record formats this chain converts (#319 r4 §5). Without a chain, any format
+    /// but the current one is refused before any write, as before.
+    #[must_use]
+    pub fn with_format_chain(mut self, chain: Arc<dyn FormatChain>) -> Self {
+        self.chain = Some(chain);
+        self
+    }
+
+    /// Whether the chain converts format `from` all the way to [`RECORD_FORMAT`].
+    fn supports(&self, from: u32) -> bool {
+        from < RECORD_FORMAT
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| (from..RECORD_FORMAT).all(|f| chain.has_step(f)))
+    }
+
+    /// The migration owner, while [`Progress::Migrate`]: the only handle to the dataset before
+    /// ordinary admission. It exposes record-format reads, page commits and the final
+    /// publication, never a serving store.
+    pub fn migration(&self) -> Option<Arc<format_migration::MigrationOwner>> {
+        match &self.phase {
+            Phase::Migrate(owner) => Some(owner.clone()),
+            _ => None,
+        }
+    }
+
+    /// The root's driver finished the conversion (its final publication applied): reinspect.
+    /// The next advance admits ordinarily only if the dataset is now coherently Current.
+    ///
+    /// # Errors
+    /// `NotAdmitted` outside [`Progress::Migrate`].
+    pub fn migration_finished(&mut self) -> Result<(), Error> {
+        if !matches!(self.phase, Phase::Migrate(_)) {
+            return Err(Error::NotAdmitted);
+        }
+        self.owned = None;
+        self.stall = None;
+        self.phase = Phase::Inspect;
+        Ok(())
     }
 
     /// No hidden retry loop. Install custody before crossing; dropping this
@@ -504,6 +596,24 @@ impl Startup {
                 return Ok(Progress::Retired);
             }
             Phase::Retired => return Ok(Progress::Retired),
+            // One self-fenced attempt each (its fresh owner's writer row is the witness): a lost
+            // reply replays it exactly and the witness resolves it, even after the dataset epoch
+            // it advanced fences the replay (#319 r4 §6, §8). A definitive loss reinspects.
+            Phase::Open(owner, attempt) | Phase::ClaimMigration(owner, attempt) => {
+                let result = attempt.submit().await;
+                if is_loss(&result, true) {
+                    return self.lose();
+                }
+                if let Some(progress) = settle(result)? {
+                    return Ok(progress);
+                }
+                // Applied proves the transition happened, not that this owner still holds the
+                // dataset: reinspection attaches it only while the manifest names it.
+                self.owned = Some(owner);
+                self.stall = None;
+                self.phase = Phase::Inspect;
+            }
+            Phase::Migrate(_) => return Ok(Progress::Migrate),
         }
         Ok(Progress::Advanced)
     }
@@ -518,6 +628,7 @@ impl Startup {
             owner: stall.owner,
             since_change: stall.since.elapsed(),
             window: stall.window,
+            migrating: stall.migrating,
         })
     }
 
@@ -585,17 +696,20 @@ impl Startup {
     /// is making progress (FIRST-START-TAKEOVER §2.1); otherwise the next phase is set.
     async fn inspect(&mut self) -> Result<Option<Progress>, Error> {
         let info = self.backend.info();
+        // The record-format cursor joins the same coherent read (#319 r4 §5): no extra round
+        // trip, and every boot can hold the Current-means-no-cursor invariant.
         let values = self
             .read(vec![
                 root_address(),
                 manifest_address(),
                 first_start::address(),
+                cursor_address(),
             ])
             .await?;
         let seal = crate::seal::lend();
         match (&values[0], &values[1]) {
             (None, None) => {
-                if values[2].is_some() {
+                if values[2].is_some() || values[3].is_some() {
                     return Err(Error::Corrupt);
                 }
                 // A FENCED Initialize that left no dataset root was not a peer's win: the
@@ -634,6 +748,31 @@ impl Startup {
             (Some(_), None) => return Err(Error::IncompleteInitialization),
             (None, Some(_)) => return Err(Error::Corrupt),
             (Some(root_bytes), Some(bytes)) => {
+                let cursor = values[3].as_ref().map(|value| value.expose(&seal).clone());
+                match classify(bytes.expose(&seal), |from| self.supports(from)) {
+                    // A cursor beside a Current manifest is contradictory evidence: refuse it,
+                    // never ignore or delete it.
+                    Format::Current if cursor.is_some() => return Err(Error::Corrupt),
+                    Format::Current => {}
+                    Format::Older(from) => {
+                        if cursor.is_some() {
+                            return Err(Error::Corrupt);
+                        }
+                        let birth = values[2].as_ref().map(|value| value.expose(&seal).clone());
+                        return self
+                            .open(from, root_bytes.expose(&seal), bytes.expose(&seal), birth)
+                            .await;
+                    }
+                    Format::Migrating { from, .. } => {
+                        let cursor = cursor.ok_or(Error::Corrupt)?;
+                        return self
+                            .migrating(from, root_bytes.expose(&seal), bytes.expose(&seal), cursor)
+                            .await;
+                    }
+                    Format::Newer | Format::Unsupported | Format::Corrupt => {
+                        return Err(Error::UnsupportedFormat);
+                    }
+                }
                 let manifest = Manifest::decode(bytes.expose(&seal))?;
                 if manifest.dataset != info.dataset
                     || control::Dataset::decode(root_bytes.expose(&seal)) != Some(root(manifest))
@@ -671,10 +810,8 @@ impl Startup {
                         expected: ExpectedValue::Absent,
                     },
                 ];
-                let mut mutations = vec![Mutation::Put {
-                    address: writer_address(authority.writer),
-                    value: Secret::new(open_writer().encode().ok_or(Error::Corrupt)?.to_vec()),
-                }];
+                let mut mutations = control::writer_put(authority.writer, None, open_writer())
+                    .ok_or(Error::Corrupt)?;
                 let mut takeover = None;
                 let mut waiting = false;
                 if let Some(pending) = birth.as_mut().filter(|birth| !birth.published) {
@@ -712,6 +849,7 @@ impl Startup {
                                         since: now,
                                         owner: previous,
                                         window,
+                                        migrating: false,
                                     });
                                     now
                                 }
@@ -744,12 +882,10 @@ impl Startup {
                                         expected: ExpectedValue::Absent,
                                     },
                                 });
-                                mutations.push(Mutation::Put {
-                                    address: writer_address(previous),
-                                    value: Secret::new(
-                                        retired.encode().ok_or(Error::Corrupt)?.to_vec(),
-                                    ),
-                                });
+                                mutations.extend(
+                                    control::writer_put(previous, Some(prior), retired)
+                                        .ok_or(Error::Corrupt)?,
+                                );
                                 takeover = Some(Takeover {
                                     dataset: info.dataset,
                                     previous,
@@ -787,6 +923,221 @@ impl Startup {
                 );
             }
         }
+        Ok(None)
+    }
+
+    /// The dataset root and manifest of an older format, checked as ordinary admission checks a
+    /// current one: this dataset, a root at the registrar's epoch.
+    fn older_manifest(&self, root_bytes: &[u8], bytes: &[u8]) -> Result<Manifest, Error> {
+        let manifest = Manifest::identities(bytes)?;
+        if manifest.dataset != self.backend.info().dataset
+            || control::Dataset::decode(root_bytes) != Some(root(manifest))
+        {
+            return Err(Error::Authority);
+        }
+        Ok(manifest)
+    }
+
+    /// Older, no cursor (#319 r4 §6): one atomic opening, stamped by the persistent registrar,
+    /// that advances the dataset epoch (fencing every writer of the old epoch at its next commit),
+    /// writes the tail, the step's initial cursor and a fresh migration owner `m`, all at one
+    /// serialization point. Its witness is `m`'s fresh writer row.
+    async fn open(
+        &mut self,
+        from: u32,
+        root_bytes: &[u8],
+        bytes: &[u8],
+        birth: Option<Vec<u8>>,
+    ) -> Result<Option<Progress>, Error> {
+        let dataset = self.backend.info().dataset;
+        let manifest = self.older_manifest(root_bytes, bytes)?;
+        let registrar = self
+            .read(vec![writer_address(manifest.registrar.writer)])
+            .await?
+            .pop()
+            .flatten()
+            .ok_or(Error::Corrupt)?;
+        let seal = crate::seal::lend();
+        let registrar_bytes = registrar.expose(&seal).clone();
+        let registrar_row = control::Writer::decode(&registrar_bytes).ok_or(Error::Corrupt)?;
+        if !registrar_row.admits(manifest.registrar.execution_epoch) {
+            return Err(Error::Authority);
+        }
+        // A first start still pending at an old format cannot also be converted: first-start
+        // takeover and format takeover must never both acquire the dataset.
+        let birth_predicate = match birth {
+            Some(birth_bytes) => {
+                if !Birth::decode(&birth_bytes, dataset)?.published {
+                    return Err(Error::IncompleteInitialization);
+                }
+                exact(first_start::address(), birth_bytes)
+            }
+            None => Predicate {
+                address: first_start::address(),
+                expected: ExpectedValue::Absent,
+            },
+        };
+        let cursor = self
+            .chain
+            .as_ref()
+            .and_then(|chain| chain.initial_cursor(from))
+            .ok_or(Error::UnsupportedFormat)?;
+        let epoch = manifest
+            .registrar
+            .writer_epoch
+            .checked_add(1)
+            .ok_or(Error::EpochExhausted)?;
+        let owner = WriterAuthority {
+            writer_epoch: epoch,
+            writer: random_id()?,
+            execution_epoch: 1,
+        };
+        let opened = Manifest {
+            dataset,
+            registrar: owner,
+        };
+        let predicates = vec![
+            exact(root_address(), root_bytes.to_vec()),
+            exact(manifest_address(), bytes.to_vec()),
+            exact(writer_address(manifest.registrar.writer), registrar_bytes),
+            Predicate {
+                address: cursor_address(),
+                expected: ExpectedValue::Absent,
+            },
+            Predicate {
+                address: writer_address(owner.writer),
+                expected: ExpectedValue::Absent,
+            },
+            birth_predicate,
+        ];
+        let mut mutations = vec![
+            dataset_put(dataset, epoch)?,
+            Mutation::Put {
+                address: manifest_address(),
+                value: Secret::new(opened.encode_at(from, from + 1).to_vec()),
+            },
+            Mutation::Put {
+                address: cursor_address(),
+                value: Secret::new(cursor),
+            },
+        ];
+        mutations
+            .extend(control::writer_put(owner.writer, None, open_writer()).ok_or(Error::Corrupt)?);
+        let candidate = prepare(manifest, predicates, mutations)?;
+        self.phase = Phase::Open(owner, self.attempt(candidate)?);
+        Ok(None)
+    }
+
+    /// Migrating, with its cursor (#319 r4 §8). The owner this process confirmed attaches at
+    /// once. Any other owner is watched: only after the whole tuple (root, manifest, cursor,
+    /// owner's writer row) stays byte-for-byte unchanged for [`FIRST_START_STALL`], measured on
+    /// this process's monotonic clock, may this process claim it, in one transaction stamped by
+    /// the observed owner that advances the dataset epoch (fencing it) and installs a fresh owner.
+    /// Elapsed time proves eligibility to compete, never that the owner died.
+    async fn migrating(
+        &mut self,
+        from: u32,
+        root_bytes: &[u8],
+        bytes: &[u8],
+        cursor: Vec<u8>,
+    ) -> Result<Option<Progress>, Error> {
+        let dataset = self.backend.info().dataset;
+        let manifest = self.older_manifest(root_bytes, bytes)?;
+        if self.owned == Some(manifest.registrar) {
+            let store = CoreStore::attach(self.backend.clone(), manifest.registrar, self.limits)
+                .await
+                .map_err(Error::Access)?;
+            let owner = format_migration::MigrationOwner::new(
+                self.backend.clone(),
+                Arc::new(store),
+                manifest,
+                bytes.to_vec(),
+                from,
+            );
+            self.phase = Phase::Migrate(Arc::new(owner));
+            return Ok(Some(Progress::Migrate));
+        }
+        let previous = manifest.registrar.writer;
+        let writer = self
+            .read(vec![writer_address(previous)])
+            .await?
+            .pop()
+            .flatten()
+            .ok_or(Error::Corrupt)?;
+        let seal = crate::seal::lend();
+        let writer_bytes = writer.expose(&seal).clone();
+        if !control::Writer::decode(&writer_bytes)
+            .ok_or(Error::Corrupt)?
+            .admits(manifest.registrar.execution_epoch)
+        {
+            return Err(Error::Authority);
+        }
+        let mut hash = Sha256::new();
+        for part in [
+            root_bytes,
+            bytes,
+            cursor.as_slice(),
+            writer_bytes.as_slice(),
+        ] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part);
+        }
+        let digest = hash.finalize();
+        let now = Instant::now();
+        let since = match self
+            .stall
+            .filter(|stall| stall.migrating && stall.observed == digest)
+        {
+            Some(stall) => stall.since,
+            None => {
+                self.stall = Some(Stall {
+                    observed: digest,
+                    since: now,
+                    owner: previous,
+                    window: FIRST_START_STALL,
+                    migrating: true,
+                });
+                now
+            }
+        };
+        if now.duration_since(since) < FIRST_START_STALL {
+            return Ok(Some(Progress::Pending));
+        }
+        let epoch = manifest
+            .registrar
+            .writer_epoch
+            .checked_add(1)
+            .ok_or(Error::EpochExhausted)?;
+        let owner = WriterAuthority {
+            writer_epoch: epoch,
+            writer: random_id()?,
+            execution_epoch: 1,
+        };
+        let claimed = Manifest {
+            dataset,
+            registrar: owner,
+        };
+        let predicates = vec![
+            exact(root_address(), root_bytes.to_vec()),
+            exact(manifest_address(), bytes.to_vec()),
+            exact(cursor_address(), cursor),
+            exact(writer_address(previous), writer_bytes),
+            Predicate {
+                address: writer_address(owner.writer),
+                expected: ExpectedValue::Absent,
+            },
+        ];
+        let mut mutations = vec![
+            dataset_put(dataset, epoch)?,
+            Mutation::Put {
+                address: manifest_address(),
+                value: Secret::new(claimed.encode_at(from, from + 1).to_vec()),
+            },
+        ];
+        mutations
+            .extend(control::writer_put(owner.writer, None, open_writer()).ok_or(Error::Corrupt)?);
+        let candidate = prepare(manifest, predicates, mutations)?;
+        self.phase = Phase::ClaimMigration(owner, self.attempt(candidate)?);
         Ok(None)
     }
 
@@ -843,10 +1194,7 @@ fn writer_transition(session: &Session, next: control::Writer) -> Result<Prepare
                 session.writer.encode().ok_or(Error::Corrupt)?.to_vec(),
             ),
         ],
-        vec![Mutation::Put {
-            address: writer_address(authority.writer),
-            value: Secret::new(next.encode().ok_or(Error::Corrupt)?.to_vec()),
-        }],
+        control::writer_put(authority.writer, Some(session.writer), next).ok_or(Error::Corrupt)?,
     )
 }
 
@@ -911,6 +1259,29 @@ pub(crate) fn manifest_address() -> Address {
         key: KEY.to_vec(),
     }
 }
+/// The record-format step's cursor, beside the manifest (#319 r4 §4 C): written by the opening,
+/// advanced by the migration driver's pages, deleted by the final publication.
+pub(crate) fn cursor_address() -> Address {
+    Address {
+        namespace: NAMESPACE.0,
+        key: CURSOR_KEY.to_vec(),
+    }
+}
+
+/// The dataset root advanced to `epoch` (its replacement is judged by `control::admit`).
+pub(super) fn dataset_put(dataset: DatasetId, epoch: u64) -> Result<Mutation, Error> {
+    let root = control::Dataset {
+        id: dataset,
+        writer_epoch: epoch,
+    }
+    .encode()
+    .ok_or(Error::Corrupt)?;
+    Ok(Mutation::Put {
+        address: root_address(),
+        value: Secret::new(root.to_vec()),
+    })
+}
+
 pub(crate) fn root_address() -> Address {
     Address {
         namespace: control::NAMESPACE.0,
@@ -935,7 +1306,7 @@ fn root(manifest: Manifest) -> control::Dataset {
         writer_epoch: manifest.registrar.writer_epoch,
     }
 }
-fn open_writer() -> control::Writer {
+pub(super) fn open_writer() -> control::Writer {
     control::Writer {
         retired_through: 0,
         admitted_through: 1,

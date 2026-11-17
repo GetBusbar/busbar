@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -84,7 +85,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                 "models": {},
                 "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
                 "identity-providers": {},
             });
             document["identity-providers"][operator] = serde_json::json!({
@@ -100,13 +101,12 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = busbar_kernel::appbuild::bootstrap_config_store(
-                &config,
-                &plugin_config,
-                &busbar_kernel::preflight::Unopened,
-            )
-            .await
-            .expect("the actual Store opens the configuration authority");
+            let crate::root::min3_boot::fixture::Fixture {
+                backend: anchor,
+                rules,
+            } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+                .await
+                .expect("the actual Store opens the configuration authority");
             let anchor = crate::root::real_store::core_over(anchor).await;
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional configuration records");
@@ -140,16 +140,19 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
             let mut server =
                 tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
             let client = reqwest::Client::new();
-            let created: serde_json::Value = client
-                .post(format!("http://{addr}/api/v1/admin/keys"))
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": "rotate-target"}))
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
+            let created = json::parse_value(
+                &client
+                    .post(format!("http://{addr}/api/v1/admin/keys"))
+                    .header("x-admin-token", "admintok")
+                    .json(&json::json!({"name": "rotate-target"}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
             let target = created["id"]
                 .as_str()
                 .expect("the target was minted")
@@ -181,7 +184,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                     client
                         .post(format!("http://{addr}/api/v1/admin/keys"))
                         .header("idempotency-key", &create_header)
-                        .json(&serde_json::json!({"name": "independent-create"}))
+                        .json(&json::json!({"name": "independent-create"}))
                 } else {
                     client
                         .post(format!("http://{addr}/api/v1/admin/keys/{target}/rotate"))
@@ -193,7 +196,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                     .await
                     .unwrap();
                 assert_eq!(response.status().as_u16(), if create { 201 } else { 200 });
-                let body: serde_json::Value = response.json().await.unwrap();
+                let body = json::parse_value(&response.bytes().await.unwrap()).unwrap();
                 let id = body["id"].as_str().expect("the operation returns a key id");
                 let token = body["token"]
                     .as_str()

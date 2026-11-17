@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -32,9 +33,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         );
         // Each path composes an isolated router over the actual Store. The bounded child
         // budget must grow with the complete document, not stop a progressing census halfway.
-        let document: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../busbar-core-admin/src/v1/json/openapi.json"
-        ))
+        let document = json::parse_value(
+            include_str!("../../../../busbar-core-admin/src/v1/json/openapi.json").as_bytes(),
+        )
         .expect("the committed administrative document parses");
         let path_count = document["paths"].as_object().expect("document paths").len();
         let budget = std::time::Duration::from_secs(30 + 5 * path_count as u64);
@@ -70,14 +71,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&store_library).name;
+    let manifest =
+        crate::root::test_plugins::native_manifest("store", &store_library, "third-party");
     let directory = plugins::scratch("test_admin_v1_openapi_paths_all_resolve-actual-store");
     let archive = plugins::signed(
         &plugins::key(0x33),
@@ -102,7 +98,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
@@ -151,7 +147,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let mut plugin_config = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
-        fetch: vec![serde_json::from_value(serde_json::json!({
+        fetch: vec![json::from_value(&json::json!({
             "url": "https://plugins.example/store.tar.gz", "sha256": archive_sha256
         }))
         .expect("the exact signed archive has a normal fetch pin")],
@@ -162,18 +158,21 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         .publishers
         .push(busbar_kernel::config::PluginPublisher {
             name: "third-party".into(),
-            public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+            plugins: vec![module.clone()],
+            keys: vec![busbar_kernel::config::PluginPublisherKey {
+                public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
+                revoked: false,
+            }],
         });
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual admin deployment resolves");
     eprintln!("OpenAPI census: opening the shared actual Store");
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the actual Store opens the configuration authority");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: backend,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the actual Store opens the configuration authority");
     let anchor = crate::root::real_store::core_over(backend).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
@@ -275,9 +274,13 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     };
 
     let (addr, handle) = spawn().await;
-    let doc: serde_json::Value =
-        serde_json::from_str(&ask(addr, "GET", &format!("{PREFIX}/openapi.json")).await.1)
-            .expect("the served openapi.json parses");
+    let doc = json::parse_value(
+        ask(addr, "GET", &format!("{PREFIX}/openapi.json"))
+            .await
+            .1
+            .as_bytes(),
+    )
+    .expect("the served openapi.json parses");
     assert_eq!(doc["openapi"], "3.1.0");
     assert_eq!(doc["info"]["title"], "Busbar Admin API");
     let codes = doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]
@@ -301,9 +304,9 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
                 .as_object()
                 .unwrap_or_else(|| panic!("{method} {path} documents no status"))
                 .keys()
-                .cloned()
+                .map(str::to_owned)
                 .collect();
-            documented.insert((method, path.clone()), statuses);
+            documented.insert((method, path.to_owned()), statuses);
         }
     }
 

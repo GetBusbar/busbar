@@ -17,6 +17,7 @@ mod common;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use busbar_contract::json;
 use busbar_kernel::config_validate::SEMANTIC_PASS_PROBE;
 
 #[test]
@@ -43,8 +44,6 @@ fn a_fresh_instance_transition_that_serves_judges_its_configuration_once() {
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
-advanced:
-  allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 auth:
   chain: []
@@ -86,8 +85,7 @@ models:
         String::from_utf8_lossy(&inspected.stdout),
         String::from_utf8_lossy(&inspected.stderr)
     );
-    let inventory: serde_json::Value =
-        serde_json::from_slice(&inspected.stdout).expect("the inspection report is JSON");
+    let inventory = json::parse_value(&inspected.stdout).expect("the inspection report is JSON");
     assert_eq!(
         inventory["store_ephemeral"], true,
         "the memory Store is the ephemeral instance this action initializes"
@@ -95,7 +93,7 @@ models:
     let receipt = dir.join("fresh.json");
     std::fs::write(
         &receipt,
-        serde_json::to_vec(&serde_json::json!({
+        json::to_vec(&json::json!({
             "version": 1,
             "store_config_sha256": inventory["store_config_sha256"],
             "requirements": inventory["requirements"],

@@ -6,7 +6,6 @@ use super::*;
 #[test]
 fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
     for yaml in [
-        "credentials: {}\ncredentials: {}\n",
         "oauth_as: null\noauth_as: null\n",
         "auth: {policy: {self_mint: false}, policy: {self_mint: true}}\n",
     ] {
@@ -16,7 +15,8 @@ fn duplicate_lifted_sections_and_policies_are_refused_by_the_live_reader() {
         assert!(error.contains("duplicate field"), "{error}");
     }
 
-    let mut json = serde_json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
+    let mut json =
+        busbar_contract::json::Deserializer::from_str(r#"{"auth":{"policy":{},"policy":{}}}"#);
     let error = deploy_from_deserializer(&mut json, &crate::config::Grammar::empty())
         .expect_err("duplicate JSON policy")
         .to_string();
@@ -47,7 +47,7 @@ fn duplicate_provider_names_are_refused_in_deployment_and_catalog_readers() {
 }
 
 const POLICY_VAR: &str = "BUSBAR_TEST_KC_DUPLICATE_POLICY_TTL";
-const POLICY_TEMPLATE: &str = r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: 7d, default_ttl: "${BUSBAR_TEST_KC_DUPLICATE_POLICY_TTL}"}}}"#;
+const POLICY_TEMPLATE: &str = r#"{providers: {}, models: {}, store: {module: memory}, auth: {policy: {self_mint: false, max_ttl: "${BUSBAR_TEST_KC_DUPLICATE_POLICY_TTL}"}}}"#;
 
 #[test]
 fn interpolation_cannot_replace_a_lifted_auth_policy() {
@@ -70,7 +70,7 @@ fn interpolation_cannot_replace_a_lifted_auth_policy() {
     }
     std::env::set_var(
         POLICY_VAR,
-        r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#,
+        r#"90d"}, policy: {self_mint: true, max_ttl: "90d"#,
     );
     let error =
         interpolate_env(POLICY_TEMPLATE).expect_err("duplicate-map expansion must fail closed");
@@ -141,7 +141,7 @@ fn disk_loader_refuses_interpolation_before_policy_can_be_overwritten() {
     }
     std::env::set_var(
         "BUSBAR_TEST_KC_BOOT_POLICY_TTL",
-        r#"90d"}, policy: {self_mint: true, default_ttl: "90d"#,
+        r#"90d"}, policy: {self_mint: true, max_ttl: "90d"#,
     );
     let dir = std::env::temp_dir().join(format!(
         "busbar-kc-env-{}-{}",

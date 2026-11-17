@@ -47,10 +47,18 @@ pub struct AuditEntry {
     /// `severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its
     /// canonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,
     /// minimal string escapes), so every member of `data` is inside the digest.
+    ///
+    /// Scheme 4 (ADMIN-API-1.6-ONE-MODEL section 7.1): `prev_hash|seq` as before, then one 0x04 byte
+    /// and scheme 3's row fields in scheme 3's order and framing (`ts` is `at_ms` divided by 1000),
+    /// then `at_ms` as its 8-byte big-endian value, then `client_request_id`, `trace_id`,
+    /// `operation_id` and `on_behalf_of` (each framed like `request_id`), then `unconditional` as one
+    /// byte (0x01 when true, 0x00 when false), then `before_digest` and `after_digest` (framed like
+    /// `request_id`). A member this record does not serve is absent (a single 0x00 field).
     pub hash: String,
-    /// WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields) or 3 (the row fields);
-    /// all are stated on `hash`. A record is sealed under 3 when it is written through the row path
-    /// (`AUDIT.record_by` and `emit_row_now`: every admin request's rows), under 1 otherwise when its
+    /// WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields), 3 (the row fields)
+    /// or 4 (the row fields and the request fields); all are stated on `hash`. A record is sealed under 4
+    /// when it is written through the row path (`AUDIT.record_by` and `emit_row_now`: every admin
+    /// request's rows; an earlier engine sealed those under 3), under 1 otherwise when its
     /// `action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always
     /// read back exactly. A
     /// record without this field is scheme 1. A verifier checks each record under its own scheme.
@@ -84,6 +92,25 @@ pub struct AuditEntry {
     /// Members typed per action. Always an object; `{}` when the action has none.
     #[serde(default)]
     pub data: AuditData,
+    /// Epoch milliseconds of the same instant as `ts`, sealed by scheme 4; absent on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+    /// Scheme 4: whether the request was admitted on `If-Match: *`, a deliberately unconditional
+    /// mutation; absent on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unconditional: Option<bool>,
+    /// Scheme 4: the caller's own `X-Request-Id`, kept beside the minted `request_id`; absent when
+    /// the request sent none (or an invalid one), and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
+    /// Scheme 4: the W3C trace id the request arrived in (32 lowercase hex digits); absent when it
+    /// arrived in none, and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Scheme 4: the operation the request created (`GET /operations/{key}` serves the same id);
+    /// absent when it created none, and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// TRUE only for entries THIS process appended live (the seam's live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
     /// explicitly. It carries no ring logic now that the durable rebase is retired; the boot-verify
@@ -101,6 +128,8 @@ pub const AUDIT_SCHEME_PIPE: u8 = 1;
 pub const AUDIT_SCHEME_LENGTH_PREFIXED: u8 = 2;
 
 pub const AUDIT_SCHEME_ROW: u8 = 3;
+
+pub const AUDIT_SCHEME_ROW4: u8 = 4;
 
 /// The severities a row may carry.
 pub const SEVERITIES: [&str; 3] = ["info", "warning", "error"];
@@ -130,6 +159,11 @@ impl Default for AuditEntry {
             severity: audit_severity_default(),
             message: String::new(),
             data: AuditData::default(),
+            at_ms: None,
+            unconditional: None,
+            client_request_id: None,
+            trace_id: None,
+            operation_id: None,
             recorded_here: false,
         }
     }
@@ -137,6 +171,10 @@ impl Default for AuditEntry {
 
 /// A row's `data`: one JSON object, held in the canonical form scheme 3 digests (see
 /// `audit::canonical`). It serializes as the object itself.
+/// Why [`AuditData::from_json`] refused a text: it is not one JSON object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAnObject;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditData(String);
 
@@ -148,8 +186,10 @@ impl Default for AuditData {
 
 impl AuditData {
     /// Canonicalize the JSON object `text`. `Err` when it is not one JSON object.
-    pub fn from_json(text: &str) -> Result<Self, ()> {
-        crate::audit::canonical::canonical_object(text).map(Self)
+    pub fn from_json(text: &str) -> Result<Self, NotAnObject> {
+        crate::audit::canonical::canonical_object(text)
+            .map(Self)
+            .map_err(|()| NotAnObject)
     }
 
     /// The canonical bytes, as text: exactly what scheme 3 digests.
@@ -172,7 +212,7 @@ impl<'de> serde::Deserialize<'de> for AuditData {
         let value = <sonic_rs::Value as serde::Deserialize>::deserialize(deserializer)?;
         let text = sonic_rs::to_string(&value).map_err(serde::de::Error::custom)?;
         Self::from_json(&text)
-            .map_err(|()| serde::de::Error::custom("`data` must be a JSON object"))
+            .map_err(|NotAnObject| serde::de::Error::custom("`data` must be a JSON object"))
     }
 }
 
@@ -204,7 +244,7 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
-    /// Write one admin audit row under hash scheme 3, stamped with the request in flight (its id, its
+    /// Write one admin audit row under hash scheme 4, stamped with the request in flight (its id, its
     /// `Idempotency-Key`, and on an applied row the config generation and sections it changed).
     pub fn record_by(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
         crate::audit::auditlog::emit_row_now(crate::audit::auditlog::AuditRowInput {
@@ -216,7 +256,7 @@ impl AuditLog {
         });
     }
 
-    /// Write a fully specified row (an engine event, say) under hash scheme 3.
+    /// Write a fully specified row (an engine event, say) under hash scheme 4.
     pub fn record_row(&self, row: crate::audit::auditlog::AuditRowInput) {
         crate::audit::auditlog::emit_row_now(row);
     }

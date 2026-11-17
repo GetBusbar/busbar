@@ -261,6 +261,61 @@ A plane journal scope that had been evicted from the in-memory cache was read ba
 
 **What to do:** Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.
 
+<a id="audit-stamp-failed"></a>
+### BUSBAR-2049 — The audit notary could not stamp a page (lines stay durable and linked)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-stamp-failed`
+
+The background audit notary signs the newest audit line fingerprint every audit.seal_every milliseconds, and that one stamp vouches for every line before it. It could not: its signer failed, timed out or panicked three times in a row (reason=signer, signer_panic), the store refused or did not confirm the staged stamp (reason names the journal error), the journal failed for this process, or the notary task itself stopped (reason=panic). Requests are not affected and every line is still durable and linked; only the stamp is missing. Stamping resumes on its own after a transient failure, with a capped backoff of up to one second, and an Info line follows the first success. If the notary stopped for good, the next busbar process on this host seals the unstamped tail after restart or records a chain break.
+
+**What to do:** Check the field reason. For signer: check the audit signing key or KMS secret plugin. For a journal error: check the store health. For panic or signer_panic: restart the process when convenient and report the log; until then lines are unstamped but durable.
+
+<a id="audit-notary-stalled"></a>
+### BUSBAR-2050 — Audit lines have gone unstamped for too long
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-notary-stalled`
+
+The oldest audit line no stamp covers yet is older than the alert threshold (ten times audit.seal_every, at least one second). The notary is backing off a failing signer or store, or it has stopped. Lines are durable and linked; a crash now leaves a longer unstamped tail for the next process on this host to seal or report.
+
+**What to do:** Look for BUSBAR-2049 just before this line and act on its reason. The gauge audit_unstamped_age_ms shows the current age.
+
+<a id="terminal-audit-stage-failed"></a>
+### BUSBAR-2051 — A request terminal audit original could not be staged
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `terminal-audit-stage-failed`
+
+The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.
+
+**What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
+
+<a id="export-loss-observed"></a>
+### BUSBAR-2052 — An exporter first observed lost delivery or failed evidence
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `export-loss-observed`
+
+The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.
+
+**What to do:** Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.
+
+<a id="export-loss-unconfirmed"></a>
+### BUSBAR-2053 — Exporter loss evidence remains unconfirmed or a producer reported after quiescence
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `export-loss-unconfirmed`
+
+The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.
+
+**What to do:** Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>
@@ -501,9 +556,9 @@ RETIRED. Nothing emits this code: a metadata host-list entry that names no host 
 - **Since:** 1.6.0
 - **Slug:** `config-provider-destination-refused`
 
-A provider's `base_url` or `token_url` names a private or loopback address (an RFC 1918, loopback, link-local, CGNAT or unique-local literal, or the `localhost` name), and `advanced.block_private_addresses` is on (the default) and `advanced.allow_destinations` does not name it. The destination guard refuses every request to it, so the provider would fail on its first request rather than at startup. 1.5.5 had no such guard. Emitted once per URL at config load, naming the provider, the key and the host.
+RETIRED. Configured providers retain private reach on their core-selected base/token routes. The grant is restricted to those origins and never becomes a global hostname permission. Metadata remains refused.
 
-**What to do:** Add exactly that host to `advanced.allow_destinations` (the first-boot migration adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
+**What to do:** Nothing emits this code. Review the configured provider route; arbitrary requests and strict OPEN_WEB checks do not inherit its private reach.
 
 <a id="config-rate-card-missing"></a>
 ### BUSBAR-3026 — Declared billable classes have no configured rate
@@ -2282,7 +2337,7 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 - **Since:** 1.6.0
 - **Slug:** `entitlement-undeclared-scope-kind`
 
-A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel denies access without consulting the principal's grants.
 
 **What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
 
@@ -2304,9 +2359,9 @@ A unit's drained usage report named a class that no installed plane declares as 
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-unopenable`
 
-A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
+A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid does not match the key derived from auth.signing_key on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
 
-**What to do:** Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it.
+**What to do:** Give every node that shares the store the same auth.signing_key, and reload. Rotating auth.signing_key retires the credentials sealed under the old one: re-mint them.
 
 <a id="credential-at-rest-rewrap-pending"></a>
 ### BUSBAR-8024 — Recoverable credentials are not yet re-sealed under the current at-rest key
@@ -2315,9 +2370,9 @@ A recoverable credential (a signed-request secret) is stored sealed under an at-
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-rewrap-pending`
 
-A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under.
+A boot or reload re-seals every stored recoverable credential stored in the clear before 1.6.0 under the key derived from auth.signing_key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate.
 
-**What to do:** Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
+**What to do:** A later boot or reload re-seals them (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
 
 <a id="credential-at-rest-legacy-plain"></a>
 ### BUSBAR-8025 — A recoverable credential written before 1.6.0 is stored in the clear
@@ -2326,9 +2381,9 @@ A boot or reload re-seals every stored recoverable credential sealed under crede
 - **Since:** 1.6.0
 - **Slug:** `credential-at-rest-legacy-plain`
 
-A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.
+A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with auth.signing_key configured re-seals it under the key derived from it.
 
-**What to do:** Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
+**What to do:** Configure auth.signing_key and reload; the row is re-sealed and no longer stored in the clear.
 
 <a id="admin-not-found"></a>
 ### BUSBAR-8101 — The admin resource named in the request does not exist
@@ -2581,9 +2636,9 @@ A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or CTRL_CLOS
 - **Since:** 1.6.0
 - **Slug:** `jemalloc-idle-purge-fallback-unavailable`
 
-The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
+The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
 
-**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
+**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
 
 <a id="signing-key-generation-failed"></a>
 ### BUSBAR-9011 — --generate-signing-key could not mint a key (OS entropy source unavailable)

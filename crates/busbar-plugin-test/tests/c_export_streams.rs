@@ -75,7 +75,7 @@ fn bad_d_streams_bodies_are_describe_invalid() {
 }
 
 #[test]
-#[ignore = "owner: W1-K8C"]
+#[ignore = "owner: W1-K8C; re-checked 2026-11-16: the kernel has the delivery ids, custody counting and per-instance breaker cell (busbar-kernel export/delivery.rs, unit-tested in export/tests/delivery_tests.rs) but no export pump and no DiskSink (no DiskSink or ExportPump type in busbar-kernel or busbar; plugin-loader ports/export.rs:68 only names it), so the booted arm waits on open MR !2645 (W1-K8C + W2-SW-EXPORT, OUTSTANDING rows 4 and 9); stream routing and its refusals are the pump's"]
 fn stream_routing_and_refusals() {
     todo!("owner: W1-K8C (C-EXPORT-STREAMS)")
 }

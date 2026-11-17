@@ -8,6 +8,7 @@ use crate::export::projection::{
 };
 use busbar_contract::abi::export::ExportField;
 use busbar_contract::export_stream::ExportStream;
+use busbar_contract::json::{self, JsonContainerTrait as _};
 
 fn resolve_errs(yaml: &str, carries: &[ExportStream]) -> Vec<String> {
     let defs: ExportDefs = busbar_contract::yaml::from_str(yaml).expect("fixture parses");
@@ -209,8 +210,8 @@ fn logs_default_line_carries_correlation_id() {
         outcome: "ok",
         latency_ms: 5,
     };
-    let line: serde_json::Value =
-        serde_json::from_slice(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
+    let line: json::Value =
+        json::parse_value(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
     assert_eq!(
         line["correlation_id"],
         "node_00000000000000aa.0123456789abcdef0123456789abcdef.7"
@@ -367,14 +368,14 @@ fn projected_record_cannot_carry_an_ungranted_field() {
         .set(ExportField::Kind, "key.delete")
         .set(ExportField::Actor, "admin@example.com")
         .set(ExportField::Resource, "key:k1");
-    let payload: serde_json::Value = serde_json::from_slice(&rec.finish().line).unwrap();
+    let payload: json::Value = json::parse_value(&rec.finish().line).unwrap();
 
     let obj = payload.as_object().expect("an object");
-    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = obj.iter().map(|(k, _)| k).collect();
     keys.sort();
     assert_eq!(keys, vec!["kind", "prev_hash", "seq", "ts"]);
 
-    let bytes = serde_json::to_string(&payload).unwrap();
+    let bytes = json::to_string(&payload).unwrap();
     assert!(!bytes.contains("admin@example.com"), "{bytes}");
     assert!(!bytes.contains("actor"), "{bytes}");
 }
@@ -424,7 +425,7 @@ fn a_projected_record_is_byte_for_byte_its_json_document() {
         .set(ExportField::SpanId, FieldValue::F64(0.1));
     rec.span(b"{\"name\":\"s\"}");
     let rendered = rec.finish();
-    let document = serde_json::json!({
+    let document = json::json!({
         "ts": 1_700_000_000u64,
         "pool": "p\"1\\\u{1}é",
         "outcome": {"$busbar_f64": "NaN"},
@@ -435,11 +436,11 @@ fn a_projected_record_is_byte_for_byte_its_json_document() {
         "span_id": 0.1,
         "span": {"name": "s"},
     });
-    assert_eq!(rendered.line, serde_json::to_vec(&document).unwrap());
+    assert_eq!(rendered.line, json::to_vec(&document).unwrap());
     assert!(rendered
         .members
         .names()
-        .eq(document.as_object().unwrap().keys().map(String::as_str)));
+        .eq(document.as_object().unwrap().iter().map(|(k, _)| k)));
 }
 
 #[test]
@@ -498,13 +499,13 @@ fn produced_logs_fields_match_the_request_log_producer() {
         outcome: "ok",
         latency_ms: 5,
     };
-    let payload: serde_json::Value =
-        serde_json::from_slice(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
+    let payload: json::Value =
+        json::parse_value(&crate::export::build_request_log(all_logs, &facts).line).unwrap();
     let mut written: Vec<&str> = payload
         .as_object()
         .expect("an object")
-        .keys()
-        .map(String::as_str)
+        .iter()
+        .map(|(k, _)| k)
         .collect();
     written.sort();
     let mut claimed: Vec<&str> = produced_fields(ExportStream::Logs)

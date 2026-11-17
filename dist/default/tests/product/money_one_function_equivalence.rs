@@ -854,28 +854,55 @@ async fn accrued_on_the_book(
     (spend, lines)
 }
 
-#[cfg(linked_axis_plane_door)]
+#[cfg(linked_axis_min3_images)]
 mod declared {
-    include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
+    include!(concat!(env!("OUT_DIR"), "/linked_native_images.rs"));
 
-    pub(super) fn open_classes() -> Vec<&'static str> {
-        LINKED_PLANE_DOORS
-            .iter()
-            .flat_map(|door| {
-                busbar_plugin_loader::dispatch::kinds::plane::stated_facts(*door)
-                    .expect("the linked plane door declares valid billable classes")
-                    .1
-                    .served
-                    .billable_classes
-            })
-            .filter(|class| !busbar_contract::records::RESERVED_UNITS.contains(class))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect()
+    pub(super) fn open_classes() -> Vec<String> {
+        use busbar_plugin_abi::plane::{tag::D_USAGE_CLASS, UsageClassRec};
+        use busbar_plugin_abi::records::Rec;
+        use busbar_plugin_abi::types::KindCode;
+        use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder, SlotTable};
+
+        let mut builder = ImagesBuilder::new(
+            &busbar_plugin_abi::host_side::host_vt::HOST,
+            std::sync::Arc::new(SlotTable::new()),
+            Ceilings::DEFAULT,
+        );
+        let mut planes = Vec::new();
+        for admit in LINKED_NATIVE_IMAGES {
+            let image = admit().expect("the linked native image passes checked admission");
+            if image.kind() == KindCode::Plane {
+                planes.push(image.identity().to_owned());
+                builder
+                    .admit(image)
+                    .expect("the linked plane declares valid billable classes");
+            }
+        }
+        let images = builder.finish();
+        let mut classes = std::collections::BTreeSet::new();
+        for identity in planes {
+            let described = images
+                .described(&identity)
+                .expect("the admitted plane remains owned");
+            for (tag, body) in &described.items {
+                if *tag != D_USAGE_CLASS {
+                    continue;
+                }
+                let (_, text) = Rec { tag: *tag, body }
+                    .pod_tail::<UsageClassRec>()
+                    .expect("admission checked the usage-class record");
+                let class = std::str::from_utf8(text).expect("admission checked class text");
+                if !busbar_contract::records::RESERVED_UNITS.contains(&class) {
+                    classes.insert(class.to_owned());
+                }
+            }
+        }
+        classes.into_iter().collect()
     }
 }
 
-#[cfg(linked_axis_plane_door)]
+#[cfg(linked_axis_min3_images)]
 #[tokio::test]
 async fn every_open_class_ledgers_one_line_priced_by_the_card() {
     let classes = declared::open_classes();
@@ -884,6 +911,7 @@ async fn every_open_class_ledgers_one_line_priced_by_the_card() {
         "the linked plane doors declare open classes: nothing to price"
     );
     for class in classes {
+        let class = class.as_str();
         let one_line = BTreeMap::from([(class.to_string(), 3)]);
         let priced = format!("{OPEN_LANE}: {{ units: {{ {class}: 10000 }} }}\n");
         let (spend, lines) = accrued_on_the_book(Some(&priced), &[(class, 3)]).await;

@@ -674,20 +674,22 @@ fn rig(
                     rides: Vec::new(),
                     spelled: Vec::new(),
                     anchors: Default::default(),
-                    auth: Some(AuthBinding {
-                        auth: auth.clone() as Arc<dyn OutboundAuth>,
-                        handle: 1,
+                    auth: Some(AuthBinding::Configured(
+                        crate::plane_driver::ConfiguredAuthBinding {
+                            auth: auth.clone() as Arc<dyn OutboundAuth>,
+                            handle: 1,
 
-                        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
+                            style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
 
-                        points: if k == 1 {
-                            AuthPoints::HEAD_BODY
-                        } else {
-                            AuthPoints::HEAD
+                            points: if k == 1 {
+                                AuthPoints::HEAD_BODY
+                            } else {
+                                AuthPoints::HEAD
+                            },
+                            passthrough: k == 1,
+                            per_request: None,
                         },
-                        passthrough: k == 1,
-                        per_request: None,
-                    }),
+                    )),
                 },
             )
         })
@@ -729,6 +731,37 @@ fn rig(
 fn token() -> Pass<Route> {
     let kernel = crate::teller::Kernel::new();
     Pass::mint(kernel.seal())
+}
+
+#[tokio::test]
+async fn selected_registration_probes_retain_the_exact_pool_and_member() {
+    let mut rig = rig(&[("a.test", Script::Silent)], OnExhausted::Status503, None);
+    let destination = DestinationId::new(1);
+    rig.egress.routes.get_mut(&destination).unwrap().auth = None;
+    let mut other = rig.egress.pools.get(POOL).unwrap().clone();
+    other.name = "other".into();
+    other.members[0].name = "other\u{1f}m0".into();
+    rig.egress.pools.insert("other".into(), other);
+    let far = rig
+        .egress
+        .probe_selected(
+            "other",
+            "other\u{1f}m0",
+            destination,
+            Duration::from_secs(1),
+        )
+        .expect("an explicitly unauthenticated registration is probeable");
+    let token = token();
+    let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
+        panic!("selected member")
+    };
+    assert_eq!(name, "other\u{1f}m0");
+    assert_eq!(pool, "other");
+    assert!(rig
+        .egress
+        .probe_selected("other", "m0", destination, Duration::from_secs(1))
+        .is_none());
+    assert!(rig.table.opened.lock().unwrap().is_empty());
 }
 
 fn request() -> OutboundRequest {
@@ -933,6 +966,78 @@ async fn host_member_binding_confines_candidates_dispatch_and_followup() {
     assert!(opened
         .iter()
         .all(|row| row.0.starts_with("https://b.test/")));
+}
+
+#[tokio::test]
+async fn member_grants_confine_candidates_and_dispatch_per_pool() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"denied"])),
+            ("b.test", Script::Answer(200, None, vec![b"allowed"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        member_grants: Some(std::collections::BTreeMap::from([
+            (POOL.into(), vec!["m1".into()]),
+            ("another-pool".into(), vec!["m0".into()]),
+        ])),
+        ..route()
+    });
+    let candidates = far.candidates(&t).unwrap();
+    assert_eq!(candidates.members.len(), 1);
+    assert_eq!(candidates.members[0].idx, 1);
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m1"));
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0].0.starts_with("https://b.test/"));
+}
+
+#[tokio::test]
+async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"denied"])),
+            ("b.test", Script::Answer(200, None, vec![b"allowed"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let pool = r.egress.pools.get_mut(POOL).unwrap();
+    pool.members[0].name = "other\u{1f}m1".into();
+    pool.members[1].name = "plane\u{1f}m1".into();
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        native_member_grants: Some(std::collections::BTreeMap::from([(
+            POOL.into(),
+            vec!["plane\u{1f}m1".into()],
+        )])),
+        ..route()
+    });
+    let candidates = far.candidates(&t).unwrap();
+    assert_eq!(candidates.members.len(), 1);
+    assert_eq!(candidates.members[0].idx, 1);
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "plane\u{1f}m1")
+    );
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1);
+    let denied = r.egress.unit(UnitRoute {
+        native_member_grants: Some(std::collections::BTreeMap::from([(
+            "absent".into(),
+            vec!["plane\u{1f}m1".into()],
+        )])),
+        ..route()
+    });
+    assert!(denied.candidates(&t).unwrap().members.is_empty());
+    assert!(matches!(denied.member(&t, 1).await, Pick::Exhausted { .. }));
 }
 
 #[tokio::test]
@@ -2921,16 +3026,18 @@ fn resolving(r: &mut Rig, answers: &[Option<u64>]) -> (Arc<Resolving>, Arc<ByHan
         .routes
         .get_mut(&DestinationId::new(1))
         .expect("m0's route")
-        .auth = Some(AuthBinding {
-        auth: Arc::clone(&auth) as Arc<dyn OutboundAuth>,
-        handle: 1,
-        style_flags: 0,
-        points: AuthPoints::HEAD,
-        passthrough: false,
-        per_request: Some(
-            Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
-        ),
-    });
+        .auth = Some(AuthBinding::Configured(
+        crate::plane_driver::ConfiguredAuthBinding {
+            auth: Arc::clone(&auth) as Arc<dyn OutboundAuth>,
+            handle: 1,
+            style_flags: 0,
+            points: AuthPoints::HEAD,
+            passthrough: false,
+            per_request: Some(
+                Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+            ),
+        },
+    ));
     (per, auth)
 }
 
@@ -4256,3 +4363,228 @@ async fn a_shed_followed_by_a_credential_refusal_is_the_walks_answer() {
 
 #[path = "auth_fields_copy_tests.rs"]
 mod auth_fields_copy_tests;
+
+#[tokio::test]
+async fn native_credential_hashes_exact_body_bytes() {
+    use crate::auth_bindings::native_tests::{native_binding, NativePort};
+    let rig = rig(&[], OnExhausted::Status503, None);
+    let far = rig.egress.unit(route());
+    let port = Arc::new(NativePort::default());
+    let binding = native_binding(
+        Arc::clone(&port),
+        busbar_plugin_abi::auth::STYLE_PER_REQUEST,
+        1,
+    );
+    for (body, digest) in [
+        (
+            &b""[..],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            &b"abc"[..],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            &b"\0\xffa\0"[..],
+            "68fb72a776827f2a507010fa33656289515073d97e757a66d8f93a1a1f8a2a35",
+        ),
+    ] {
+        let mut request = request();
+        request.body = body.to_vec();
+        far.native_credential(&binding, &request, "https://a.test/chat", None, &[])
+            .await
+            .unwrap();
+        let recorded = port.body_hashes.lock().unwrap();
+        let actual = recorded.last().unwrap().unwrap();
+        assert_eq!(actual.as_slice(), hex::decode(digest).unwrap());
+        assert_eq!(request.body, body);
+    }
+    assert_eq!(port.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn native_selected_send_seals_credentials_and_requires_secure_connector() {
+    use crate::auth_bindings::native::{NativeRouteBindings, SelectedCredential};
+    use crate::auth_bindings::native_tests::{native_binding, NativePort};
+    let mut rig = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let port = Arc::new(NativePort::default());
+    let binding = native_binding(Arc::clone(&port), 0, 1);
+    rig.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .unwrap()
+        .auth = Some(AuthBinding::Native(
+        NativeRouteBindings::new([(
+            "p".into(),
+            "m0".into(),
+            DestinationId::new(1),
+            SelectedCredential::Required(binding),
+        )])
+        .unwrap(),
+    ));
+    let token = token();
+    let far = rig.egress.unit(route());
+    let _ = far.member(&token, 1).await;
+    assert!(
+        !far.send(&token, request()).await,
+        "credential must refuse plaintext connector"
+    );
+    assert!(rig.table.opened.lock().unwrap().is_empty());
+    rig.table.secured.store(true, Ordering::SeqCst);
+    let far = rig.egress.unit(route());
+    let _ = far.member(&token, 1).await;
+    let mut request = request();
+    request
+        .fields
+        .push((b"AuThOrIzAtIoN".to_vec(), b"plane-value".to_vec()));
+    assert!(far.send(&token, request).await);
+    let opened = rig.table.opened.lock().unwrap();
+    let fields = &opened[0].1;
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .count(),
+        1
+    );
+    assert!(fields
+        .iter()
+        .any(|(name, value)| name == "authorization" && value == b"native-canary"));
+    assert_eq!(
+        rig.auth.calls.load(Ordering::SeqCst),
+        0,
+        "native never calls historical fields"
+    );
+    assert_eq!(
+        port.calls.load(Ordering::SeqCst),
+        1,
+        "failed dial keeps existing shared credential custody"
+    );
+    assert!(rig
+        .egress
+        .probe(DestinationId::new(1), Duration::from_secs(1))
+        .is_none());
+    assert!(rig
+        .egress
+        .probe_selected("wrong", "m0", DestinationId::new(1), Duration::from_secs(1))
+        .is_none());
+    assert!(rig
+        .egress
+        .probe_selected("p", "m0", DestinationId::new(1), Duration::from_secs(1))
+        .is_some());
+}
+
+#[tokio::test]
+async fn native_missing_exact_row_and_passthrough_never_fall_back_to_shared_auth() {
+    use crate::auth_bindings::native::{NativeRouteBindings, SelectedCredential};
+    for passthrough in [false, true] {
+        let mut rig = rig(
+            &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        let selected_pool = if passthrough { "p" } else { "another-pool" };
+        rig.egress.pools.get_mut("p").unwrap().members[0].passthrough = passthrough;
+        rig.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .unwrap()
+            .auth = Some(AuthBinding::Native(
+            NativeRouteBindings::new([(
+                selected_pool.into(),
+                "m0".into(),
+                DestinationId::new(1),
+                SelectedCredential::None,
+            )])
+            .unwrap(),
+        ));
+        let token = token();
+        let far = rig.egress.unit(route());
+        let _ = far.member(&token, 1).await;
+        assert!(!far.send(&token, request()).await);
+        assert!(rig.table.opened.lock().unwrap().is_empty());
+        assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn native_retry_mints_for_the_actual_second_destination() {
+    use crate::auth_bindings::native::{
+        NativeBinding, NativeBindingSpec, NativeRouteBindings, SelectedCredential, SelectedRouteKey,
+    };
+    use crate::auth_bindings::native_tests::NativePort;
+    use crate::custody::{CredCache, CredPolicy};
+    let mut rig = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"down"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    rig.table.secured.store(true, Ordering::SeqCst);
+    let ports = [
+        Arc::new(NativePort::default()),
+        Arc::new(NativePort::default()),
+    ];
+    let cache = Arc::new(CredCache::new(
+        CredPolicy::DEFAULT,
+        |_, _| crate::retry::Retry::Stop,
+        |_, _| {},
+    ));
+    for (index, port) in ports.iter().enumerate() {
+        let destination = DestinationId::new(index as u64 + 1);
+        let name = format!("m{index}");
+        let binding = Arc::new(
+            NativeBinding::new(
+                NativeBindingSpec {
+                    key: SelectedRouteKey {
+                        plane: "plane".into(),
+                        pool: "p".into(),
+                        member: name.clone().into(),
+                    },
+                    destination,
+                    upstream: "provider".into(),
+                    auth_instance: 21,
+                    credential_namespace: index as u64 + 1,
+                    style_flags: 0,
+                    mode: busbar_contract::config::UpstreamCreds::Own,
+                    cache_max_s: None,
+                },
+                port.clone(),
+                Arc::clone(&cache),
+            )
+            .unwrap(),
+        );
+        rig.egress.routes.get_mut(&destination).unwrap().auth = Some(AuthBinding::Native(
+            NativeRouteBindings::new([(
+                "p".into(),
+                name.into(),
+                destination,
+                SelectedCredential::Required(binding),
+            )])
+            .unwrap(),
+        ));
+    }
+    let token = token();
+    let far = rig.egress.unit(route());
+    for attempt in 1..=2 {
+        assert!(matches!(
+            far.member(&token, attempt).await,
+            Pick::Member { .. }
+        ));
+        assert!(far.send(&token, request()).await);
+        let _ = drain(&far, &token).await;
+    }
+    for port in ports {
+        assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    }
+    let opened = rig.table.opened.lock().unwrap();
+    assert!(opened[0].0.contains("a.test"));
+    assert!(opened[1].0.contains("b.test"));
+    assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
+}

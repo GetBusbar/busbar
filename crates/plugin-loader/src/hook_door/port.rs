@@ -34,8 +34,8 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::kinds::hook::hook::{self as abi, CandidateRec};
 
 use crate::instance::{InstanceSpec, OpenError, Registry};
-use crate::ports::hook::{BudgetIn, CandidateIn, HookAnswer, HookCall, HookPort, HookView};
-use crate::ports::{CallCx, FactRef, PortError};
+use busbar_ports::hook::{BudgetIn, CandidateIn, HookAnswer, HookCall, HookPort, HookView};
+use busbar_ports::{CallCx, FactRef, PortError};
 
 /// The text `configure` answers: MIN-3 hooks have no configure op (IF §8.4).
 pub const CONFIGURE_IS_RECONFIGURE: &str =
@@ -57,10 +57,28 @@ pub trait HookOpener: Send + Sync + 'static {
     fn words(&self, module: &str) -> Option<Vec<Box<str>>>;
 }
 
-impl<N: Needs> HookOpener for Registry<N>
-where
-    Registry<N>: Send + Sync + 'static,
-{
+/// Complete hook-opening context, bound to serving Needs by its owner.
+pub struct BoundRegistry<N: Needs> {
+    registry: Arc<Registry>,
+    needs: Arc<N>,
+    refs: Arc<dyn busbar_ports::binder::RefSource>,
+}
+
+impl<N: Needs> BoundRegistry<N> {
+    pub fn new(
+        registry: Arc<Registry>,
+        needs: Arc<N>,
+        refs: Arc<dyn busbar_ports::binder::RefSource>,
+    ) -> Self {
+        Self {
+            registry,
+            needs,
+            refs,
+        }
+    }
+}
+
+impl<N: Needs> HookOpener for BoundRegistry<N> {
     fn open<'a>(
         &'a self,
         module: &'a str,
@@ -69,6 +87,8 @@ where
     ) -> BoxFut<'a, Result<Arc<dyn HookPort>, OpenError>> {
         Box::pin(async move {
             let spec = InstanceSpec {
+                store_migration: None,
+                purpose: crate::instance::OpenPurpose::Canonical,
                 identity: module,
                 name,
                 config_json,
@@ -76,12 +96,15 @@ where
                 public_url: None,
                 caller_upstreams: &[],
             };
-            self.open_hook(&spec).await
+            self.registry
+                .open_hook(&spec, &self.needs, &self.refs)
+                .await
         })
     }
 
     fn words(&self, module: &str) -> Option<Vec<Box<str>>> {
-        self.hook_words()
+        self.registry
+            .hook_words()
             .into_iter()
             .find(|(identity, _)| *identity == module)
             .map(|(_, words)| words.into_iter().map(Box::from).collect())

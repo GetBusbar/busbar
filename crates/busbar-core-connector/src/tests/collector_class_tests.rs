@@ -69,17 +69,6 @@ fn dial_judge() -> Arc<dyn DialJudge> {
     judge(Arc::new(dest_judge()), &[OWN])
 }
 
-/// The connector's dial judge over a guard whose `advanced.allow_destinations` is `allow`
-fn allowing(allow: &[&str]) -> Arc<dyn DialJudge> {
-    let guard = Guard::from_config(&Destinations {
-        block_private_addresses: true,
-        allow: allow.iter().map(|a| (*a).to_owned()).collect(),
-        ..Destinations::default()
-    })
-    .expect("a valid allowlist");
-    judge(Arc::new(GuardJudge::new(guard, Arc::new(Table))), &[OWN])
-}
-
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
 fn open(
     j: &Arc<dyn DialJudge>,
@@ -244,9 +233,9 @@ fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
     assert!(open(&j, "127.0.0.1:4318", false, LA).is_ok());
 }
 
-/// A private collector is refused by default and reached when allowlisted.
+/// A private collector is refused without independently selected route authority.
 #[test]
-fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
+fn a_private_collector_is_refused_without_route_authority() {
     let strict = dial_judge();
     for authority in [
         "\x310.0.0.1:4318",
@@ -266,29 +255,6 @@ fn a_private_collector_is_refused_by_default_and_reached_when_allowlisted() {
     }
     assert!(open(&strict, "93.184.216.34:4318", true, LA).is_ok());
     assert!(open(&strict, "localhost:4318", false, LA).is_ok());
-    let allowed = allowing(&["\x310.0.0.1", "lan.test", "\x3100.64.0.0/10", "fd00::/8"]);
-    for (authority, at) in [
-        ("\x310.0.0.1:4318", "\x310.0.0.1:4318"),
-        ("lan.test:4318", "\x3192.168.1.1:4318"),
-        ("cgnat.test:4318", "\x3100.64.0.1:4318"),
-        ("[fd00::1]:4318", "[fd00::1]:4318"),
-    ] {
-        assert_eq!(
-            open(&allowed, authority, true, LA),
-            Ok(at.parse().unwrap()),
-            "{authority}"
-        );
-    }
-
-    assert_eq!(
-        open(&allowed, "\x310.0.0.1:4318", false, LA),
-        Err(DEST_PLAINTEXT)
-    );
-
-    assert_eq!(
-        open(&allowed, "\x3192.168.1.1:4318", true, LA),
-        Err(DEST_INTERNAL)
-    );
 }
 
 /// An address is judged the same named or written.

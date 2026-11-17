@@ -24,14 +24,13 @@ fn raw_cost(rate: f64, fee: i64) -> CostModel {
         busbar_kernel::config::GroupCfg {
             enabled: true,
             limits: vec![busbar_kernel::config::groups::LimitCfg {
+                selected: None,
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 1_000,
                 per: Some(busbar_kernel::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                admission: None,
-                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -416,14 +415,13 @@ fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_correction
     let (holder, _serial) = holder_opening(raw_card(1.0, OPENING_FEE));
     holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
     let limit = |pool: Option<&str>| LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount: 1_000,
         per: Some(LimitWindow::Day),
         scope: pool.map(ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
-        admission: None,
-        on_exhaustion: None,
     };
     let groups = BTreeMap::from([
         (

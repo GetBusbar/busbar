@@ -207,18 +207,19 @@ fn two_catalogues_lent_in_one_process_each_resolve_only_their_own_codes() {
 
 #[test]
 fn retired_env_var_diagnostics_match_published_docs() {
-    let published: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/diagnostics.json"
-    )))
-    .unwrap();
+    let published: Vec<busbar_contract::json::Value> =
+        busbar_contract::json::parse_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/diagnostics.json"
+        )))
+        .unwrap();
     let page = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/diagnostics.md"
     ));
     for diagnostic in [&RETIRED_ENV_VAR_IGNORED, &DEPRECATED_ENV_VAR_HONORED] {
-        let rendered: Vec<serde_json::Value> =
-            serde_json::from_str(&render_json_for(&[diagnostic])).unwrap();
+        let rendered: Vec<busbar_contract::json::Value> =
+            busbar_contract::json::parse_str(&render_json_for(&[diagnostic])).unwrap();
         assert_eq!(
             published
                 .iter()
@@ -250,7 +251,7 @@ fn retired_env_var_diagnostics_match_published_docs() {
 fn plane_judge_unavailable_is_a_registered_diagnostic() {
     assert_eq!(PLANE_JUDGE_UNAVAILABLE.code, 7108);
     assert_eq!(PLANE_JUDGE_UNAVAILABLE.slug, "plane-judge-unavailable");
-    assert!(!PLANE_JUDGE_UNAVAILABLE.retired);
+    assert!(!std::hint::black_box(PLANE_JUDGE_UNAVAILABLE.retired));
     assert!(
         REGISTRY.iter().any(|d| d.code == 7108),
         "the code is in the built-in registry, so its docs page is generated"

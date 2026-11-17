@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use crate::root::plane_node::NodeEndPost;
 use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};
 
-use super::{compose_planes, LateServices};
+use super::{compose_planes, Services};
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
 };
@@ -73,12 +74,8 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
     )
 }
 
-pub(crate) fn composed_services() -> Arc<LateServices> {
-    let late = LateServices::new();
-    let kernel = Arc::new(KernelServices::new());
-    late.install_kernel(Arc::clone(&kernel), kernel)
-        .expect("installed once");
-    late
+pub(crate) fn composed_services() -> Arc<Services> {
+    Services::serving(Arc::new(KernelServices::new()))
 }
 
 async fn admin(
@@ -105,7 +102,7 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
         .expect("the distribution links its actual Store")
         .0;
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
+        &json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module},
         }),
@@ -239,7 +236,7 @@ async fn no_door_plane_composes_nothing_and_needs_no_services() {
     let served = compose_planes(
         &[],
         &dispatcher,
-        &LateServices::new(),
+        &Services::bootstrap(),
         &BTreeMap::new(),
         None,
         &money,
@@ -311,8 +308,8 @@ async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_
         .sugars();
     let seal = busbar_kernel::seal::acquire();
     let reference = |name: &str| {
-        serde_json::to_value(
-            sources
+        json::to_value(
+            &sources
                 .reference_for_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL, name)
                 .expect("the admitted source supplies the interpolation role")
                 .authoring(&seal),
@@ -321,8 +318,8 @@ async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_
     };
     let whole = reference(&plain_var);
     let written_reference = reference(&ref_var);
-    let part = serde_json::to_value(
-        busbar_contract::secret_ref::SecretRef::template(
+    let part = json::to_value(
+        &busbar_contract::secret_ref::SecretRef::template(
             format!("Bearer ${{{plain_var}}}"),
             &sources,
         )
@@ -417,7 +414,7 @@ test_plane_owned:
     }
     for name in ["open.settings", "refresh.settings"] {
         let text = read(name);
-        let settings: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        let settings: json::Value = json::parse_value(text.as_bytes()).expect("JSON");
         assert_eq!(settings["reg1"]["token"], whole, "{name}: {text}");
         let env = &settings["reg1"][busbar_contract::conn::PROGRAM_ENV_KEY];
         assert_eq!(env["WHOLE"], whole, "{name}: {text}");
@@ -433,12 +430,12 @@ test_plane_owned:
         );
         assert_eq!(
             settings["reg1"]["args"],
-            serde_json::json!(["--flag", "upstream.invalid"]),
+            json::json!(["--flag", "upstream.invalid"]),
             "{name}: {text}"
         );
     }
     let text = read("open.owned");
-    let owned: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    let owned: json::Value = json::parse_value(text.as_bytes()).expect("JSON");
     assert_eq!(owned["test_plane_owned"]["reg"]["api_key"], whole, "{text}");
     assert_eq!(
         owned["test_plane_owned"]["reg"]["ref"], written_reference,
@@ -492,7 +489,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     assert_eq!(names, ["eng-a", "eng-b"], "referenced, once each, in order");
     let snapshot =
         super::open(&plane, &["test_plane"], &section, None, &[], &facts).expect("the door opens");
-    let handed: serde_json::Value = serde_json::from_slice(
+    let handed: json::Value = json::parse_value(
         snapshot
             .resource_facts
             .as_deref()
@@ -501,7 +498,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     .expect("JSON");
     assert_eq!(
         handed,
-        serde_json::json!([
+        json::json!([
             ["eng-a", "dial-one", {"429": "rate_limited"}],
             ["eng-b", "dial-two", null]
         ])
