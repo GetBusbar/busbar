@@ -213,5 +213,18 @@ pub fn migrate_case(
     needs: FakeNeeds,
     expect: MigrateExpect<'_>,
 ) {
-    migrate::run(plugin, case, needs, expect);
+    migrate::run(plugin, case, &[], needs, expect);
+}
+
+/// [`migrate_case`] for a converting case whose bag carries 1.5.5 values at the D_SECRET_PATH pointers `legacy`
+/// (LEGACY-KEYFILE-MARKER r2): the first open sees `"$migrated": {"legacy": [..]}` in its bag, as core's
+/// migration plan marks it, and the settled answer is compared with the marker stripped.
+pub fn migrate_legacy(
+    plugin: &'static Plugin,
+    case: MigrateCase<'_>,
+    legacy: &[&str],
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+) {
+    migrate::run(plugin, case, legacy, needs, expect);
 }

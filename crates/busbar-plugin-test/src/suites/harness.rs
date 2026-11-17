@@ -1077,6 +1077,13 @@ impl Harness {
         self.registry.take_settled(name)
     }
 
+    /// Mark instance `name`'s next (converting) open as carrying 1.5.5 values at `pointers`, as core's migration
+    /// plan does (`Registry::mark_legacy`): the open sees `"$migrated": {"legacy": [..]}` in its bag, and the
+    /// settled answer is stripped of it.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.registry.mark_legacy(name, pointers);
+    }
+
     /// Every line the plugin logged since the harness was built, in order.
     pub fn logs(&self) -> Vec<LogLine> {
         self.logs

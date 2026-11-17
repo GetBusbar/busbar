@@ -453,6 +453,8 @@ pub struct Registry {
     applied: Mutex<HashMap<(KindCode, Box<str>), Applied>>,
     /// Round 31: each instance's settled answer from its last `open`, by configured name, until taken once.
     settled: Mutex<HashMap<Box<str>, Settled>>,
+    /// LEGACY-KEYFILE-MARKER r2 section 3: the marked D_SECRET_PATH pointers of an instance's next converting open.
+    legacy: Mutex<HashMap<Box<str>, Vec<Box<str>>>>,
 }
 
 /// One admitted image as `add` left it: the verified identity, its `former_names` words, whether it is
@@ -588,6 +590,7 @@ impl Registry {
             ids,
             applied: Mutex::new(HashMap::new()),
             settled: Mutex::new(HashMap::new()),
+            legacy: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1203,6 +1206,20 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(name)
+    }
+
+    /// LEGACY-KEYFILE-MARKER r2 §3: the D_SECRET_PATH pointers of instance `name` whose slot carries its 1.5.5
+    /// value, from the migration plan's side table (`busbar_migrate::Plan::legacy_marks`). The instance's next
+    /// open takes them and must be converting: core checks each against the image's D_SECRET_PATH items, writes
+    /// `"$migrated": {"legacy": [..]}` into the bound bag it hands `open`, and strips it from the settled answer.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                Box::from(name),
+                pointers.iter().map(|p| Box::from(*p)).collect(),
+            );
     }
 
     /// Round 6, boot only: the r6 §3 step 2 order, computed generically. `instances[i]` is configured instance i

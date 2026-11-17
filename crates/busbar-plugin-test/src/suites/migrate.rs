@@ -45,6 +45,7 @@ const NEWER: u64 = 1_000_000;
 pub(super) fn run(
     plugin: &'static Plugin,
     case: MigrateCase<'_>,
+    legacy: &[&str],
     needs: FakeNeeds,
     expect: MigrateExpect<'_>,
 ) {
@@ -52,6 +53,9 @@ pub(super) fn run(
         Ok(harness) => harness,
         Err(refusal) => panic!("migrate: the plugin image was refused at admission: {refusal:?}"),
     };
+    if !legacy.is_empty() {
+        harness.mark_legacy("migrate", legacy);
+    }
 
     match expect {
         MigrateExpect::Refused(code) => refused_case(&harness, &case, code),
