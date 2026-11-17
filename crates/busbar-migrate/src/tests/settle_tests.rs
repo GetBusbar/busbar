@@ -455,9 +455,9 @@ fn an_unlifted_literal_at_a_declared_slot_is_lifted_by_core() {
 #[test]
 fn a_known_secret_moved_to_an_undeclared_slot_refuses_the_migration() {
     let settled = ldap(
-        r#"{"bind_service_password": {"file": "/x"}, "note": "hunter2"}"#,
+        r#"{"bind_service_password": {"file": "/x"}, "note": "hunter2-secret"}"#,
         &["/bind_service_password"],
-        &["hunter2"],
+        &["hunter2-secret"],
     );
     let refused = apply(STAMPED, &[settled], false)
         .err()
@@ -482,4 +482,18 @@ fn settings_that_are_not_known_secrets_pass() {
         &["hunter2"],
     );
     assert!(apply(STAMPED, &[settled], false).is_ok());
+}
+
+/// A short or generic known value (a bare boolean or number, or under 8 bytes) is never matched, so
+/// it cannot refuse a correct migration.
+#[test]
+fn short_and_generic_known_values_pass() {
+    for known in ["admin", "true", "12345678", "1.5e10", "short"] {
+        let settled = ldap(
+            &format!(r#"{{"bind_service_password": {{"file": "/x"}}, "note": "{known}"}}"#),
+            &["/bind_service_password"],
+            &[known],
+        );
+        assert!(apply(STAMPED, &[settled], false).is_ok(), "{known}");
+    }
 }

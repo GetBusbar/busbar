@@ -389,6 +389,13 @@ fn settle_block(
     Ok(())
 }
 
+/// Whether a known secret is distinctive enough to refuse on: at least 8 bytes and not a bare
+/// boolean or number. A short or generic value (`true`, `admin`, `1234`) legitimately recurs as an
+/// ordinary setting, so matching it would refuse correct migrations (#441).
+fn distinctive(secret: &str) -> bool {
+    secret.len() >= 8 && !matches!(secret, "true" | "false") && secret.parse::<f64>().is_err()
+}
+
 /// The first pointer under `at` whose text equals one of the `known` secrets.
 fn find_known(value: &Value, at: &str, known: &[SecureString], found: &mut Option<String>) {
     if found.is_some() {
@@ -396,7 +403,10 @@ fn find_known(value: &Value, at: &str, known: &[SecureString], found: &mut Optio
     }
     match value {
         Value::Text(text) => {
-            if !text.is_empty() && known.iter().any(|secret| secret.as_str() == text.as_str()) {
+            if known
+                .iter()
+                .any(|secret| distinctive(secret.as_str()) && secret.as_str() == text.as_str())
+            {
                 *found = Some(at.to_owned());
             }
         }
