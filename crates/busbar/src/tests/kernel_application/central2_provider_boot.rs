@@ -200,6 +200,7 @@ async fn boot_starts_a_keyless_lane_declared_none() {
 fn model_cfg_for_provider(provider: &str) -> busbar_kernel::config::ModelCfg {
     busbar_kernel::config::ModelCfg {
         resource: None,
+        protocol: None,
         provider: provider.into(),
         max_concurrent: Some(1),
         max_requests: -1,
