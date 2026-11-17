@@ -92,6 +92,14 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {
+        self.proofs
+            .iter()
+            .filter(|(_, proof)| proof.kind == busbar_plugin_abi::types::KindCode::Transport)
+            .map(|(name, proof)| (name.clone(), proof.digest))
+            .collect()
+    }
+
     /// Preserve the admitted executable owners alongside the metadata from this same read.
     pub(crate) fn prepared_read(
         &self,

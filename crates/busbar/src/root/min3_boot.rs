@@ -205,6 +205,7 @@ pub(crate) struct Booted {
     _bootstrap_registry: Arc<MinRegistry>,
     _channel_accounts: Arc<ChannelAccounts>,
     pub(crate) framers: super::min3_framers::NativeFramers,
+    pub(crate) transport_sources: TransportSources,
     pub(crate) inventories: Arc<super::min3_physical::Inventories>,
     _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
@@ -408,6 +409,7 @@ fn admit_dropped_images(
 }
 
 /// One configured instance, owned until the plan borrows it.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Configured {
     pub(crate) kind: KindCode,
     pub(crate) identity: String,
@@ -1197,6 +1199,7 @@ impl BootstrapSources {
         process: &busbar_plugin_loader::process::ProcessResources,
         cfg: &RootCfg,
         guard: Guard,
+        transports: &TransportSources,
     ) -> Result<ServingReady, String> {
         let read = cfg
             .grammar
@@ -1230,13 +1233,43 @@ impl BootstrapSources {
             catalogs,
             guard,
             secrets,
+            Some(transports.clone()),
         )
+    }
+}
+
+/// Immutable physical transport authority, independent of a serving App or Registry.
+#[derive(Clone)]
+pub(crate) struct TransportSources {
+    framers: super::min3_framers::NativeFramers,
+    configured: Vec<Configured>,
+    images: std::collections::BTreeMap<String, Option<[u8; 32]>>,
+}
+
+impl TransportSources {
+    fn check(
+        &self,
+        images: &super::boot::images::FileImages,
+        instances: &[Configured],
+    ) -> Result<(), String> {
+        let transports: Vec<_> = instances
+            .iter()
+            .filter(|one| one.kind == KindCode::Transport)
+            .cloned()
+            .collect();
+        if self.images != images.transport_images() || self.configured != transports {
+            return Err(
+                "native physical transport images or settings changed; restart required".into(),
+            );
+        }
+        Ok(())
     }
 }
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
     candidate_secrets: super::min3_candidate_secrets::CandidateSecrets,
+    fixed_transports: Option<TransportSources>,
     images: Arc<super::boot::images::FileImages>,
     channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
@@ -1445,6 +1478,7 @@ pub(crate) fn prepare_serving(
         catalogs,
         guard,
         candidate_secrets,
+        None,
     )
 }
 
@@ -1455,6 +1489,7 @@ fn prepare_serving_owned(
     catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
     candidate_secrets: super::min3_candidate_secrets::CandidateSecrets,
+    fixed_transports: Option<TransportSources>,
 ) -> Result<ServingReady, String> {
     let effective_images = Arc::new(effective_images);
     let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
@@ -1617,8 +1652,17 @@ fn prepare_serving_owned(
             return Err("effective configuration introduces a new bootstrap dependency".into());
         }
     }
+    if let Some(fixed) = &fixed_transports {
+        fixed.check(&effective_images, &instances)?;
+    }
     let reserved = rest
         .into_iter()
+        .filter(|index| {
+            fixed_transports.is_none()
+                || instances
+                    .get(*index as usize)
+                    .is_none_or(|one| one.kind != KindCode::Transport)
+        })
         .map(|index| {
             let (_, spec) = specs
                 .get(index as usize)
@@ -1665,6 +1709,7 @@ fn prepare_serving_owned(
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
         candidate_secrets,
+        fixed_transports,
         images: effective_images,
         channel_accounts,
         hook_plan,
@@ -1784,6 +1829,7 @@ pub(super) async fn finish_with_store(
     };
     let ServingReady {
         candidate_secrets,
+        fixed_transports,
         images,
         channel_accounts,
         hook_plan,
@@ -2181,7 +2227,22 @@ pub(super) async fn finish_with_store(
         crate::root::dispatch::dispatcher().budgets().call,
         Arc::clone(&environment.app.request_id_counter),
     )?;
-    let transports = transports::table(transports::opened(&walked.opened, &specs))?;
+    let framers = match fixed_transports {
+        Some(fixed) => fixed.framers,
+        None => super::min3_framers::NativeFramers::new(transports::table(transports::opened(
+            &walked.opened,
+            &specs,
+        ))?),
+    };
+    let transport_sources = TransportSources {
+        framers: framers.clone(),
+        configured: instances
+            .iter()
+            .filter(|one| one.kind == KindCode::Transport)
+            .cloned()
+            .collect(),
+        images: images.transport_images(),
+    };
     let secrets = steps.prefix();
     let core = core_secrets;
     let seats = steps
@@ -2210,7 +2271,8 @@ pub(super) async fn finish_with_store(
         resolver: Arc::clone(candidate_secrets.resolver()),
         registry: built.registry,
         _bootstrap_registry,
-        framers: super::min3_framers::NativeFramers::new(transports),
+        framers,
+        transport_sources,
         inventories,
         _native_invocations: invocations,
         _opened: walked.opened,
