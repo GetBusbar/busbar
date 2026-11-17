@@ -68,6 +68,10 @@ name = "sdk_surface"
 path = "tests/sdk_surface.rs"
 
 [[test]]
+name = "auth_record_host"
+path = "tests/auth_record_host.rs"
+
+[[test]]
 name = "store_no_growth_case"
 path = "tests/store_no_growth_case.rs"
 

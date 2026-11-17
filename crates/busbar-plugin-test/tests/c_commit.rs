@@ -5,7 +5,8 @@
 //! predicate applies nothing.
 //!
 //! W1-K5: both arms run on the kernel's own plugin records (`StoreRecords`, IF §12.5) over core's in-tree
-//! in-memory store, the contract busbar-store-memory serves; FakeNeeds answers COMMIT Invalid on purpose.
+//! in-memory store, the contract busbar-store-memory serves. The separate auth_record_host test exercises
+//! FakeNeeds' in-memory CAS fixture; it does not replace these native record-custody assertions.
 
 #[path = "../../busbar-kernel/src/tests/memory_backend.rs"]
 mod memory_backend;
