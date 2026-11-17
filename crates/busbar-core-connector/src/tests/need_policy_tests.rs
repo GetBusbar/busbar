@@ -112,3 +112,33 @@ fn the_refusal_log_is_once_per_instance_and_endpoint() {
     assert!(r.first(1, "db:5432"), "a forgotten instance reports again");
     assert!(!r.first(2, "db:5432"));
 }
+
+/// #359 SEC-L2 (DES-359 r3): admissions under an acceptance are counted per (kind, instance,
+/// accept). Verified TLS is never counted, the same configured name in two kinds keeps two
+/// cells, and an unbound instance's cells go.
+#[test]
+fn admitted_insecure_needs_are_counted_per_kind_instance_and_acceptance() {
+    let admitted = Admitted::default();
+    admitted.count("secret", 1, "vault", Admit::Verified);
+    assert!(
+        admitted.slots.read().unwrap().is_empty(),
+        "verified TLS is not counted"
+    );
+
+    admitted.count("secret", 1, "vault", Admit::Plain);
+    admitted.count("secret", 1, "vault", Admit::Plain);
+    admitted.count("secret", 1, "vault", Admit::Waived);
+    admitted.count("hook", 2, "vault", Admit::Plain);
+    let slots = admitted.slots.read().unwrap().clone();
+    assert_eq!(slots.len(), 3, "one cell per (instance, acceptance)");
+    let plain = slots[&(1, Accept::PLAINTEXT)];
+    assert_ne!(plain, slots[&(1, Accept::UNVERIFIED_TLS)]);
+    assert_ne!(
+        plain,
+        slots[&(2, Accept::PLAINTEXT)],
+        "the same name in another kind is its own series"
+    );
+
+    admitted.forget(1);
+    assert_eq!(admitted.slots.read().unwrap().len(), 1);
+}

@@ -132,6 +132,7 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | One per Closed→Open trip (reopens don't count). A spike means a backend just went down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout`, `connect`, `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. A high rate on one pool indicates a flapping member. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. Useful for auditing unexpected protocol conversion. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency including failover hops. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`plane` is `mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the ledger, each request priced at the card in force when it was served, plus the flat fee. |
