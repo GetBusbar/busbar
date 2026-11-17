@@ -430,6 +430,11 @@ version = "1.11.1@git:5b1c5189a69c701c70221b04ff0f0a2fbcb4574c"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Native serializer attribution binds actual bytes to response identity and release barriers. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
+[[exemptions.hyper]]
+version = "1.11.1@git:c140435f43477ca3ffbdb2078a5994e9dfb11969"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor c140435f: exactly 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+
 [[exemptions.hyper-rustls]]
 version = "0.27.9"
 criteria = "safe-to-run"
