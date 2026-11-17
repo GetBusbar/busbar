@@ -70,6 +70,8 @@ const FILLER: u8 = 0xA5;
 const TEXT_FILLER: u8 = b'.';
 /// The 64 characters a text canary is drawn from.
 const TEXT: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+/// Alphanumeric-only canaries also survive URL/form encoding unchanged.
+const ALPHANUMERIC: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// 32 random bytes held as `masked ^ mask`, so the plaintext is never at rest in this struct.
 #[derive(Clone)]
@@ -80,32 +82,27 @@ struct Pattern {
 
 impl Pattern {
     fn random() -> Self {
-        let mut plain = [0_u8; CANARY_LEN];
-        let mut mask = [0_u8; CANARY_LEN];
-        fill_random(&mut plain);
-        fill_random(&mut mask);
-        let mut masked = [0_u8; CANARY_LEN];
-        for ((m, p), k) in masked.iter_mut().zip(&plain).zip(&mask) {
-            *m = p ^ k;
-        }
-        plain.fill(0);
-        std::hint::black_box(&mut plain);
-        Self { masked, mask }
+        Self::random_from(None)
     }
 
-    /// 32 characters drawn from [`TEXT`], so the canary can stand in a `String` (192 random bits).
-    fn random_text() -> Self {
+    fn random_from(alphabet: Option<&[u8]>) -> Self {
         let mut draw = [0_u8; CANARY_LEN];
         let mut mask = [0_u8; CANARY_LEN];
         fill_random(&mut draw);
         fill_random(&mut mask);
         let mut masked = [0_u8; CANARY_LEN];
         for ((m, d), k) in masked.iter_mut().zip(&draw).zip(&mask) {
-            *m = TEXT[usize::from(*d) % TEXT.len()] ^ k;
+            let plain = alphabet.map_or(*d, |chars| chars[usize::from(*d) % chars.len()]);
+            *m = plain ^ k;
         }
         draw.fill(0);
         std::hint::black_box(&mut draw);
         Self { masked, mask }
+    }
+
+    /// 32 characters drawn from [`TEXT`], so the canary can stand in a `String` (192 random bits).
+    fn random_text() -> Self {
+        Self::random_from(Some(TEXT))
     }
 
     /// Whether every canary byte is one of [`TEXT`] (the pattern was drawn by [`Self::random_text`]).
@@ -219,6 +216,14 @@ impl WipeProof {
         Self::with_canary(Pattern::random_text())
     }
 
+    /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and
+    /// controls as [`Self::new`]. Write it directly into guarded ASCII staging with [`Self::write_canary`].
+    /// [`Self::payload`] still has binary filler and is not a UTF-8 payload.
+    #[must_use]
+    pub fn new_text() -> Self {
+        Self::with_canary(Pattern::random_from(Some(ALPHANUMERIC)))
+    }
+
     fn with_canary(canary: Pattern) -> Self {
         let sentinel = Pattern::random();
         let control = Pattern::random();
@@ -250,7 +255,7 @@ impl WipeProof {
     /// before [`Self::assert_absent`].
     ///
     /// # Panics
-    /// If the proof was made by [`Self::new`] (its canary is not text); use [`Self::text`].
+    /// If the canary contains non-text bytes; use [`Self::text`] or [`Self::new_text`].
     #[must_use]
     pub fn text_payload(&self) -> SecureString {
         assert!(
