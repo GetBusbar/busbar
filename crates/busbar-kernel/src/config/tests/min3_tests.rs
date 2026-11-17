@@ -6,6 +6,49 @@ use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
+fn issued_kind_grants_are_explicit_per_configured_provider() {
+    let cfg = deploy("providers: {}\nmodels: {}\nidentity-providers:\n  none: {module: verifier}\n  empty: {module: verifier, issued_kinds: []}\n  allowed: {module: verifier, issued_kinds: [signed]}\n");
+    let parsed = parse_min3(&cfg).unwrap();
+    assert!(!parsed.issued_kinds.contains_key("none"));
+    assert!(parsed.issued_kinds.get("empty").unwrap().is_empty());
+    assert_eq!(
+        parsed
+            .issued_kinds
+            .get("allowed")
+            .unwrap()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&str>>(),
+        ["signed"]
+    );
+    let authored =
+        serde_json::to_value(cfg.identity_providers["allowed"].authoring(&crate::seal::acquire()))
+            .unwrap();
+    assert_eq!(authored["issued_kinds"], serde_json::json!(["signed"]));
+    assert!(authored["settings"].get("issued_kinds").is_none());
+}
+
+#[test]
+fn issued_kind_grants_reject_null_nontext_blank_and_duplicates() {
+    for value in ["null", "signed", "[null]", "[1]", "{}"] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nidentity-providers:\n  verifier: {{module: verifier, issued_kinds: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "{value}"
+        );
+    }
+    for value in ["['']", "['  ']", "[signed, signed]"] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nidentity-providers:\n  verifier: {{module: verifier, issued_kinds: {value}}}\n");
+        let errors = parse_min3(&deploy(&yaml))
+            .err()
+            .expect("invalid grant refused");
+        assert!(errors
+            .iter()
+            .any(|why| why.contains("identity-providers.verifier.issued_kinds")));
+    }
+}
+
+#[test]
 fn verdict_cache_policy_uses_adopted_defaults_and_explicit_overrides() {
     let defaults = parse_min3(&deploy("providers: {}\nmodels: {}\n")).unwrap();
     assert_eq!(
