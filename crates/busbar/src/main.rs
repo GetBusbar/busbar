@@ -1701,6 +1701,8 @@ async fn run(
             stop,
         )));
     } else {
+        // Validate every physical factory before any worker starts accepting sockets.
+        let mut native_listeners = Vec::with_capacity(listener_plan.binds().len());
         for bind in listener_plan.binds() {
             let supplier = listener_plan
                 .supplier(&bind.at)
@@ -1723,6 +1725,11 @@ async fn run(
                     class,
                     Arc::new(root::serve::native_slot),
                     root::listener_native::NativeLimits {
+                        max_connections: native_bind_limits(
+                            bind.max_conns,
+                            native_handshake_timeout,
+                        )
+                        .max_conns,
                         body_bytes: req_body_max,
                         stall_ms: None,
                         handshake_timeout: native_handshake_timeout,
@@ -1735,7 +1742,11 @@ async fn run(
                 )
                 .unwrap_or_else(|error| die(format!("native listener {}: {error:?}", bind.at))),
             );
+            native_listeners.push((bind, native, native_alpn));
+        }
+        for (bind, native, native_alpn) in native_listeners {
             let addr = bind.listen.to_string();
+            #[cfg(unix)]
             let limits = native_bind_limits(bind.max_conns, native_handshake_timeout);
             if bind.at == "admin_listen" {
                 #[cfg(unix)]
