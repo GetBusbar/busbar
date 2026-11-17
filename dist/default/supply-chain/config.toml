@@ -867,6 +867,11 @@ version = "0.23.46@git:a33d40bc1e034c617f566a7e2d70fef8422f43ba"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for the exact adopted TLS-OUTPUT-STORAGE-392-r2 and TLS-TICKET-STORAGE-392-r2 source, including original wire progress and charged resumption buffers. Trusted imported audits do not cover these deltas. Preserve verified TLS, actual custody, remote qualification and owner review before upstream PR publication. No self-audit is claimed."
 
+[[exemptions.rustls]]
+version = "0.23.46@git:02181ad51e81f9cb33a0648117b03039274716a3"
+criteria = "safe-to-deploy"
+notes = "DEP-5 coordinator exemption for the adopted fork successor 02181ad5: exactly a33d40bc plus one compile fix (rustls/src/client/ech.rs propagates the fallible PSK binder; rustls/src/server/server_conn.rs restores the server builder); manifest unchanged. Same TLS-OUTPUT-STORAGE-392-r2 / TLS-TICKET-STORAGE-392-r2 source record as a33d40bc; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"
 criteria = "safe-to-deploy"
