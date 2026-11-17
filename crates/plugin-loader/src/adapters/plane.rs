@@ -1342,6 +1342,25 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         })
     }
 
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        self.live()?;
+        let (answer, len) = s
+            .piece_fixed(out, from, exchange, flags, bytes)
+            .map_err(PortError::Call)?;
+        // Same whole-answer validation and failure translation as pooled piece. No effect escapes
+        // until the caller classifies the validated fixed backing and admits its complete answer.
+        self.finish(Call::Piece(from), &answer, &mut |_| {})?;
+        Ok(len)
+    }
+
     fn rewrite(
         &self,
         s: &mut PlaneSession,
