@@ -221,7 +221,14 @@ impl DestAppend for Disk {
 }
 
 fn open(port: Arc<Double>, disk: Arc<Disk>) -> Arc<PortDoor> {
-    PortDoor::open("export.test", port, disk, &InstanceLimits::default()).expect("the pump starts")
+    PortDoor::open(
+        "export.test",
+        port,
+        disk,
+        &InstanceLimits::default(),
+        Arc::new(Observations::default()),
+    )
+    .expect("the pump starts")
 }
 
 fn send(door: &PortDoor, stream: u32, line: &str) {
@@ -243,6 +250,7 @@ fn prepared_export_does_not_start_delivery_until_publication() {
         port,
         Arc::new(Disk::default()),
         &InstanceLimits::default(),
+        Arc::new(Observations::default()),
     );
     assert!(door.pump.lock().unwrap().is_none());
     send(&door, x::STREAM_LOGS, "held");
@@ -498,7 +506,7 @@ fn draining_rejects_new_lines_and_finishes_the_accepted_queue() {
     release.send(()).unwrap();
     let report = door.stop_until(deadline);
     assert!(report.worker_stopped);
-    assert_eq!((report.queued, report.in_flight, report.dropped), (0, 0, 0));
+    assert_eq!((report.queued, report.in_flight, report.dropped), (0, 0, 1));
     assert_eq!(door.delivered(), 2);
     assert_eq!(next(&rx).lines, vec![b"queued".to_vec()]);
     assert!(rx.try_recv().is_err());
@@ -514,7 +522,8 @@ fn stop_cancels_a_pending_call_without_an_unbounded_join() {
     }
     let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
     Arc::get_mut(&mut port).unwrap().pending = true;
-    let door = open(port, Arc::new(Disk::default()));
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.start().unwrap();
     let (released, custody) = channel();
     assert_eq!(
         door.deliver(
@@ -537,6 +546,13 @@ fn stop_cancels_a_pending_call_without_an_unbounded_join() {
     let report = door.stop_until(std::time::Instant::now() + WAIT);
     assert_eq!(report.dropped, 1);
     assert_eq!(door.delivered(), 0);
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[busbar_contract::export_calls::ExportObservation::Dropped {
+            reason: busbar_contract::export_calls::ExportDropReason::Stopped,
+            lines: 1,
+        },]
+    );
     assert!(calls.try_recv().is_err(), "no offer after cancellation");
 }
 
@@ -615,6 +631,7 @@ fn declared_scopes_are_get_routes_before_the_pump_starts() {
         port,
         Arc::new(Disk::default()),
         &InstanceLimits::default(),
+        Arc::new(Observations::default()),
     );
     let paths: Vec<_> = door
         .routes()
@@ -832,4 +849,33 @@ fn observer_reports_stopping_inflight_bytes_once() {
             lines: 2
         },]
     );
+}
+
+#[test]
+fn observer_records_one_drop_after_zero_ack_exhausts_attempts() {
+    use busbar_contract::export_calls::{ExportDropReason, ExportObservation};
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    for _ in 0..super::DELIVER_ATTEMPTS {
+        port.answer(Ok(Delivered::Acked {
+            accepted: 0,
+            custody: ACCEPTED,
+        }));
+    }
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    door.shared
+        .deliver_set(x::STREAM_LOGS as u8, &retained_lines(2));
+    assert_eq!(
+        observer.0.lock().unwrap().as_slice(),
+        &[ExportObservation::Dropped {
+            reason: ExportDropReason::AttemptsExhausted,
+            lines: 2
+        },]
+    );
+    let attempts: Vec<_> = calls.try_iter().collect();
+    assert_eq!(attempts.len(), super::DELIVER_ATTEMPTS as usize);
+    assert!(attempts
+        .iter()
+        .all(|call| call.delivery == attempts[0].delivery));
+    assert_eq!(door.delivered(), 0);
+    assert_eq!(door.dropped(), 2);
 }
