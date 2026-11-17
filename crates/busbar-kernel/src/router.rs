@@ -1209,6 +1209,16 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Complete root-owned routes and their authentication declarations together before publication.
+    pub fn with_core_routes(
+        mut self,
+        mount: impl FnOnce(crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter,
+    ) -> Self {
+        let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
+        (self.router, self.core_routes) = mount(routes).into_parts();
+        self
+    }
+
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()
