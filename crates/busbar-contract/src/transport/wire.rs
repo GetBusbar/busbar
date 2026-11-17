@@ -8,6 +8,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::response_delivery::CarrierProgressReader;
+
 /// Which way bytes are moving.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Direction {
@@ -453,10 +455,27 @@ impl fmt::Debug for Conn {
 pub trait RawIo: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin {}
 impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo for T {}
 
+/// A raw stream paired with read-only progress from its actual carrier boundary.
+///
+/// Host assembly supplies the genuine pair. Arbitrary byte-stream implementations or publicly
+/// constructed observations do not establish physical writes.
+pub struct ConnectionIo {
+    /// The stream at the supported raw carrier boundary.
+    pub io: Box<dyn RawIo>,
+    /// Observations maintained by that same carrier's private write producer.
+    pub progress: Arc<dyn CarrierProgressReader>,
+}
+
+impl fmt::Debug for ConnectionIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionIo").finish_non_exhaustive()
+    }
+}
+
 /// The core↔transport connection-security seam (DECISIONS #40): an opaque wrap a binding's
 pub trait ConnectionSecurity: Send + Sync {
     /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
-    fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a>;
+    fn wrap<'a>(&'a self, io: ConnectionIo) -> SecuredIoFut<'a>;
 }
 
 /// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
@@ -468,6 +487,11 @@ pub struct SecuredIo {
     pub io: Box<dyn RawIo>,
     /// Verified peer leaf certificate bytes, or empty when no peer certificate is supplied.
     pub peer_certificate: Box<[u8]>,
+    /// Logical protocol-byte progress maintained by the returned stream's carrier producer.
+    ///
+    /// A TLS implementation supplies its post-handshake plaintext reader, not the raw
+    /// ciphertext reader received by [`ConnectionSecurity::wrap`].
+    pub progress: Arc<dyn CarrierProgressReader>,
 }
 
 impl fmt::Debug for SecuredIo {
@@ -480,10 +504,11 @@ impl fmt::Debug for SecuredIo {
 
 impl SecuredIo {
     /// Wrap a secured stream whose handshake supplies no peer certificate to the caller.
-    pub fn anonymous(io: Box<dyn RawIo>) -> Self {
+    pub fn anonymous(io: ConnectionIo) -> Self {
         Self {
-            io,
+            io: io.io,
             peer_certificate: Box::default(),
+            progress: io.progress,
         }
     }
 }
