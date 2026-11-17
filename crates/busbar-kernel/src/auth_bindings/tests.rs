@@ -38,6 +38,7 @@ fn member<'a>(plane: &'a str, provider: &'a str) -> MemberView<'a> {
         plane,
         image: "llm",
         provider,
+        dialect: None,
     }
 }
 
@@ -418,4 +419,30 @@ fn scoped_bindings_keep_credential_mode_and_stdio_refusals() {
         stdio: true,
     }];
     assert!(bind_upstreams_for("plane", &stdio, &styles(), &[], &flags).is_err());
+}
+
+#[test]
+fn configured_member_dialect_selects_its_own_image_local_auth_row() {
+    let providers = [provider("p", "openai")];
+    let members = [
+        member("llm1", "p"),
+        MemberView {
+            dialect: Some("anthropic"),
+            ..member("llm1", "p")
+        },
+    ];
+    let (rows, styles) = (rows(), styles());
+    let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
+    assert_eq!(got.by_attempt.len(), 2);
+    assert_eq!(
+        got.by_attempt
+            .get(&("llm1".into(), "p".into(), "anthropic".into()))
+            .map(AsRef::as_ref),
+        Some("p-anthropic-outbound")
+    );
+    assert!(got
+        .implicit
+        .iter()
+        .any(|instance| instance.name.as_ref() == "p-anthropic-outbound"
+            && instance.style.as_ref() == "api-key"));
 }
