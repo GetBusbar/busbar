@@ -18,15 +18,53 @@ use busbar_kernel_ledger::cost::{Money, MoneyError};
 #[derive(Clone)]
 pub(crate) struct AdminRequest {
     snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
+    binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
+    physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
     pub unit: u64,
 }
+
+#[derive(Debug)]
+pub(crate) struct AdminHeadersInvalid;
 
 impl AdminRequest {
     pub(crate) fn from_snapshot(
         snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
         unit: u64,
     ) -> Self {
-        Self { snapshot, unit }
+        Self {
+            snapshot,
+            unit,
+            binding: None,
+            physical: None,
+        }
+    }
+    pub(crate) fn from_binding(
+        binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
+    ) -> Result<Self, busbar_kernel::inbound::request_snapshot::SnapshotError> {
+        let snapshot = binding.snapshot()?;
+        Ok(Self {
+            snapshot,
+            unit: binding.invocation().request_id().get(),
+            binding: Some(binding),
+            physical: None,
+        })
+    }
+    pub(crate) fn attach_physical(
+        &mut self,
+        physical: Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>,
+    ) -> Result<(), ReasonCode> {
+        if !self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| Arc::ptr_eq(binding, physical.binding()))
+        {
+            return Err(ReasonCode::Unauthenticated);
+        }
+        physical
+            .check_executing()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+        self.physical = Some(physical);
+        Ok(())
     }
     pub(crate) fn snapshot(
         &self,
@@ -70,12 +108,13 @@ impl AdminRequest {
                     .filter(|credential| !credential.is_empty())
             })
     }
-    pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, ()> {
+    pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
         let mut headers = axum::http::HeaderMap::new();
         for (name, value) in self.headers() {
             headers.append(
-                axum::http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?,
-                axum::http::HeaderValue::from_bytes(value).map_err(|_| ())?,
+                axum::http::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| AdminHeadersInvalid)?,
+                axum::http::HeaderValue::from_bytes(value).map_err(|_| AdminHeadersInvalid)?,
             );
         }
         Ok(headers)
@@ -1682,6 +1721,7 @@ pub(crate) struct AdminWalk {
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    physical_pending: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1698,6 +1738,7 @@ impl AdminWalk {
             principal: None,
             claim: None,
             execution: None,
+            physical_pending: None,
             answer: None,
         }
     }
@@ -1963,6 +2004,12 @@ pub(crate) async fn authenticate(
 }
 
 pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    if let Some(pending) = &walk.physical_pending {
+        pending
+            .binding()
+            .check_live()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+    }
     if let Some(admission) = &walk.admission {
         if !admission.claim_admin_replay().await {
             return Err(ReasonCode::Unauthenticated);
@@ -1975,7 +2022,7 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             }
             walk.execution = Some(execution);
         }
-        return Ok(());
+        return complete_physical(walk);
     }
     if let Some(pending) = walk.claim.take() {
         let execution = Arc::new(
@@ -1991,7 +2038,34 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
         }
         walk.execution = Some(execution);
     }
-    Ok(())
+    complete_physical(walk)
+}
+
+fn complete_physical(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    match walk.physical_pending.take() {
+        Some(pending) => {
+            let execution = walk.execution.as_ref().ok_or(ReasonCode::Unauthenticated)?;
+            let physical = Arc::new(
+                pending
+                    .complete_admin(execution.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
+            if let Some(context) = &mut walk.effect_context {
+                context
+                    .attach_physical(physical.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?;
+            }
+            walk.request.attach_physical(physical)
+        }
+        None if walk
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.native().is_some()) =>
+        {
+            Err(ReasonCode::Unauthenticated)
+        }
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn verify(walk: &mut AdminWalk, principal: &PrincipalId) -> Result<(), ReasonCode> {
@@ -2044,6 +2118,11 @@ pub(crate) async fn route(
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     walk: &mut AdminWalk,
 ) -> Result<(), ReasonCode> {
+    if let Some(physical) = &walk.request.physical {
+        physical
+            .check_executing()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+    }
     let verb = walk
         .verb
         .as_ref()

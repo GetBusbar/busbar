@@ -126,4 +126,4 @@ impl AuthSet {
 
 #[cfg(test)]
 #[path = "tests/min3_auth.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -533,19 +533,52 @@ pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> supe
                     busbar_kernel::auth::AdminDoor::Denied.into(),
                 ));
             };
-            let snapshot = app.load();
-            // The root unit already owns this host request id; zero is never replaced by a wire value.
-            let Some(request_id) = std::num::NonZeroU64::new(request.unit) else {
-                return Box::pin(std::future::ready(
-                    busbar_kernel::auth::AdminDoor::Denied.into(),
-                ));
+            let (handle, snapshot, id, cx) = if let Some(binding) = &request.binding {
+                if !Arc::ptr_eq(binding.handle(), &app)
+                    || binding.check_live().is_err()
+                    || binding.invocation().request_id().get() != request.unit
+                    || !binding
+                        .snapshot()
+                        .is_ok_and(|original| Arc::ptr_eq(&original, request.snapshot()))
+                {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Denied.into(),
+                    ));
+                }
+                let id = binding.invocation();
+                let mut cx = busbar_kernel::auth::admin_call_context(id);
+                if let Some(deadline) = binding.deadline() {
+                    cx.deadline = cx.deadline.min(deadline);
+                }
+                (binding.handle().clone(), binding.app().clone(), id, cx)
+            } else {
+                let selected = app.load();
+                if selected.native_admin.is_some() {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Unavailable(
+                            busbar_kernel::auth::VerifierUnavailable::NoVerdict,
+                        )
+                        .into(),
+                    ));
+                }
+                let Some(request_id) = std::num::NonZeroU64::new(request.unit) else {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Denied.into(),
+                    ));
+                };
+                let id = busbar_kernel::state::InvocationId::from_request_id(request_id);
+                (
+                    app.clone(),
+                    selected,
+                    id,
+                    busbar_kernel::auth::admin_call_context(id),
+                )
             };
-            let id = busbar_kernel::state::InvocationId::from_request_id(request_id);
             let invocation = busbar_kernel::auth::native_admin::Invocation {
-                handle: Arc::clone(&app),
+                handle,
                 selected: snapshot,
                 id,
-                cx: busbar_kernel::auth::admin_call_context(id),
+                cx,
                 request: Arc::clone(request.snapshot()),
             };
             Box::pin(
