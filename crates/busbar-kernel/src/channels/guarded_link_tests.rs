@@ -40,6 +40,30 @@ async fn saturated_general_capacity_still_enqueues_one_owned_reply() {
     assert_eq!(process.used(), Claim::default());
 }
 
+#[test]
+fn general_messages_leave_the_actual_writer_cell_for_a_protected_reply() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    let (link, queue) = Link::new(false, Framing::Ndjson, budget.clone());
+    assert!(link.attach(1));
+    for _ in 0..63 {
+        link.send_owned(
+            1,
+            GuardedWrite::new(&unit, &budget, Framing::Ndjson, b"x", false).unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(GuardedWrite::new(&unit, &budget, Framing::Ndjson, b"x", false).is_err());
+    let storage = ReplyStorage::new(&unit).unwrap();
+    link.send_owned(1, storage.into_write(24..25, &budget).unwrap())
+        .unwrap();
+    assert_eq!(unit.used().messages, 64);
+    drop(queue);
+    assert_eq!(process.used(), Claim::default());
+}
+
 #[tokio::test]
 async fn serial_asks_retain_metadata_and_move_waiting_payload_only_once() {
     let process = ChannelBudget::new();
