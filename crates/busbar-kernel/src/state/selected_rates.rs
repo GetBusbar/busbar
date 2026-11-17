@@ -6,8 +6,12 @@
 use std::sync::Arc;
 
 use crate::governance::selected_policy::SelectedPolicyRefusal;
-use crate::governance::selected_resource::{RateRejected, RateReservation};
-use crate::plane_driver::PreparedRateAttempt;
+use crate::governance::selected_resource::{
+    RateRefusal, RateRejected, RateReservation, RateSnapshot,
+};
+use crate::plane_driver::{
+    NativeAttempt, NativeCommitError, NativeRequestMoney, PreparedRateAttempt,
+};
 
 use super::AppHandle;
 
@@ -28,6 +32,20 @@ pub(crate) enum SelectedRateRejected {
     Rate(RateRejected),
 }
 
+pub(crate) enum SelectedCommitRejected {
+    Policy {
+        reason: SelectedPolicyRefusal,
+        prepared: PreparedRateAttempt,
+    },
+    Rate(RateRejected),
+    Money(NativeCommitError),
+}
+
+pub(crate) enum SelectedHeadroomRejected {
+    Policy(SelectedPolicyRefusal),
+    Rate(RateRefusal),
+}
+
 impl AppHandle {
     pub fn selected_rate_admission(self: &Arc<Self>) -> SelectedRateAdmission {
         SelectedRateAdmission {
@@ -37,6 +55,87 @@ impl AppHandle {
 }
 
 impl SelectedRateAdmission {
+    /// Replaces only provisional capacity, retaining the same prepared exchange. Publication
+    /// cannot change the current policy between this decision and the real monetary commit.
+    pub(crate) fn commit(
+        &self,
+        money: &NativeRequestMoney,
+        reservation: RateReservation,
+    ) -> Result<NativeAttempt, SelectedCommitRejected> {
+        let now = crate::store::now();
+        if let Some(governance) = &self.handle.load().governance {
+            governance.refresh_current_credential(now);
+        }
+        let _admission = self
+            .handle
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let current = self.handle.current.load_full();
+        let prepared = reservation.cancel();
+        let Some(policy) = &current.selected_policy else {
+            return Err(SelectedCommitRejected::Policy {
+                reason: SelectedPolicyRefusal::CurrentAuthority,
+                prepared,
+            });
+        };
+        let resolved = match policy.resolve_current(&current, &prepared, now) {
+            Ok(resolved) => resolved,
+            Err(reason) => return Err(SelectedCommitRejected::Policy { reason, prepared }),
+        };
+        let Some(governance) = &current.governance else {
+            return Err(SelectedCommitRejected::Policy {
+                reason: SelectedPolicyRefusal::CurrentAuthority,
+                prepared,
+            });
+        };
+        let current_reservation = governance
+            .selected_rates()
+            .reserve(&resolved, prepared)
+            .map_err(SelectedCommitRejected::Rate)?;
+        money
+            .commit(current_reservation)
+            .map_err(SelectedCommitRejected::Money)
+    }
+
+    pub(crate) fn headroom(
+        &self,
+        receipt: &crate::plane_driver::request_admission::AdmittedRequest,
+        origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
+        candidate: &crate::plane_driver::port_upstream::Candidate,
+        definition: &crate::upstreams::UpstreamDef,
+    ) -> Result<Vec<RateSnapshot>, SelectedHeadroomRejected> {
+        let now = crate::store::now();
+        if let Some(governance) = &self.handle.load().governance {
+            governance.refresh_current_credential(now);
+        }
+        let _admission = self
+            .handle
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let current = self.handle.current.load_full();
+        let policy = current
+            .selected_policy
+            .as_ref()
+            .ok_or(SelectedHeadroomRejected::Policy(
+                SelectedPolicyRefusal::CurrentAuthority,
+            ))?;
+        let resolved = policy
+            .resolve_headroom(&current, receipt, origin, candidate, definition, now)
+            .map_err(SelectedHeadroomRejected::Policy)?;
+        let governance = current
+            .governance
+            .as_ref()
+            .ok_or(SelectedHeadroomRejected::Policy(
+                SelectedPolicyRefusal::CurrentAuthority,
+            ))?;
+        governance
+            .selected_rates()
+            .headroom(&resolved)
+            .map_err(SelectedHeadroomRejected::Rate)
+    }
+
     pub(crate) fn reserve(
         &self,
         prepared: PreparedRateAttempt,
