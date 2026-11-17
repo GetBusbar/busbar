@@ -14,8 +14,6 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use serde::Deserialize as _;
-
 use super::grammar::{Grammar, ItemKind};
 use super::DeployCfg;
 

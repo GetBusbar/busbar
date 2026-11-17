@@ -1860,6 +1860,15 @@ async fn build_app_native(
 
     admitted_pin(&cfg, plugin_registry.as_ref())?;
 
+    // The protected resources are the audiences of the recognized plane instances whose admitted
+    // images serve HTTP routes (r3 section 2.3); the grammar carries that judgement. Taken here,
+    // while `cfg` is whole.
+    let protected_resources: Vec<String> =
+        config::recognizer::plane_audiences(&cfg.instance_sections(), |instance| {
+            cfg.grammar()
+                .is_ok_and(|grammar| grammar.serves_http(instance))
+        });
+
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
@@ -2489,14 +2498,6 @@ async fn build_app_native(
                         .map_err(|e| format!("{path}: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-
-            // The protected resources are the audiences of the recognized plane instances whose
-            // admitted images serve HTTP routes (r3 section 2.3); the grammar carries that judgement.
-            let protected_resources: Vec<String> =
-                config::recognizer::plane_audiences(&cfg.instance_sections(), |instance| {
-                    cfg.grammar()
-                        .is_ok_and(|grammar| grammar.serves_http(instance))
-                });
 
             let store = governance
                 .as_ref()
