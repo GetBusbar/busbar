@@ -300,9 +300,19 @@ async fn callback_rollback_owns_only_original_admission_until_handoff_commits() 
             ExhaustionMode::FinishUnit,
         )
         .unwrap();
-    let (foreign, _, _, _foreign_lease, _) = selected_fixture(79, true).await;
+    let (foreign, _, _, _foreign_lease, foreign_request) = selected_fixture(79, true).await;
+    let other = foreign
+        .admit_existing(
+            foreign_request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
     assert!(foreign.admission_rollback(&admitted).is_err());
     let guard = money.admission_rollback(&admitted).unwrap();
+    assert!(guard.accepts(&admitted));
+    assert!(!guard.accepts(&other));
     assert_eq!(money.open_units(), 1);
     drop(guard);
     assert_eq!(money.open_units(), 0);
