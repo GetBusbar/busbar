@@ -287,6 +287,13 @@ struct LeaseInner {
 pub struct RequestLease(Arc<LeaseInner>);
 
 impl RequestLease {
+    /// Whether two owners retain the same original process admission.
+    /// Equal class or budget does not make independently admitted requests interchangeable.
+    #[must_use]
+    pub fn same_request(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     #[must_use]
     pub fn class(&self) -> AdmissionClass {
         self.0.class
