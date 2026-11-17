@@ -827,7 +827,7 @@ mod metrics_scrape {
                 &busbar_kernel::seal::acquire(),
             ),
         )
-        .with_logs(crate::root::linked::logs())
+        .with_logs(crate::root::boot::plugin_logs())
         .with_conns(crate::root::connector::admit(
             crate::root::connector::the().clone(),
         ));
