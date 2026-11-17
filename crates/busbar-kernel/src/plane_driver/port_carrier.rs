@@ -423,6 +423,7 @@ impl CarrierSession {
                 }
             };
             Self::apply(task, answer, ran, resolver, effects, books)?;
+            effects.observed_usage(task.usage());
             if !hand_out(effects, &mut ran.client) {
                 if ran.detach.is_none() {
                     return Ok(());

@@ -126,6 +126,9 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
     let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
     let mut signals = super::view::signals(&input.projection.facts, call);
+    if !content {
+        signals.retain(|(key, _)| *key != busbar_plugin_abi::fail::fact::PJ_TEXT_COMPLETE);
+    }
     signals.push((abi::S_POOL, FactRef::Text(input.selection.pool)));
     signals.push((
         abi::S_INGRESS_PROTOCOL,
@@ -135,12 +138,22 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         signals.push((abi::S_ROUTING_POLICY, FactRef::Text(strategy)));
     }
     if identity {
+        if let Some(principal) = input.selection.principal {
+            signals.push((abi::S_USER_SUBJECT, FactRef::Text(principal)));
+        }
         if let Some(key) = &input.selected.key {
             signals.push((abi::S_KEY_ID, FactRef::Text(&key.id)));
             signals.push((abi::S_KEY_NAME, FactRef::Text(&key.name)));
         }
     }
     for (key, value) in input.stage {
+        if *key == abi::S_RESPONSE_TOKENS_OUT
+            && !call
+                .signals
+                .wants(busbar_contract::signal::Signal::ResponseTokensOut)
+        {
+            continue;
+        }
         signals.push((
             *key,
             match value {
@@ -264,11 +277,12 @@ async fn invoke(call: &Call, point: u32, input: &Input<'_>) -> Result<HookAnswer
         request_id: input.selection.request_id,
         stack: Default::default(),
     };
-    match call.port.on(cx, point, &view) {
+    let answer = match call.port.on(cx, point, &view) {
         HookCall::Done(result) => result,
         HookCall::Io(future) => future.await,
     }
-    .map_err(|_| Failed::Port)
+    .map_err(|_| Failed::Port);
+    answer
 }
 
 pub(super) fn record(call: &Call, answer: Option<&HookAnswer>) -> HookApplied {
@@ -291,29 +305,19 @@ pub(super) async fn chain(
     point: u32,
     input: &Input<'_>,
     ran: &mut Vec<HookApplied>,
-) -> (Arc<Call>, HookAnswer) {
+) -> Result<(Arc<Call>, HookAnswer), Failed> {
     for attempted in std::iter::once(call).chain(call.fallbacks.iter()) {
         let answer = one(attempted, point, input).await;
         ran.push(record(attempted, answer.as_ref().ok()));
         if let Ok(answer) = answer {
-            return (Arc::clone(attempted), answer);
+            return Ok((Arc::clone(attempted), answer));
         }
-        if matches!(answer, Err(Failed::Unconfirmed | Failed::Unprojected)) {
-            return (
-                Arc::clone(attempted),
-                HookAnswer {
-                    verb: abi::VERB_REJECT,
-                    reject_status: Some(503),
-                    order: Vec::new(),
-                    restrict: Vec::new(),
-                    message: None,
-                    rewrite: None,
-                },
-            );
+        if let Err(error @ (Failed::Unconfirmed | Failed::Unprojected)) = answer {
+            return Err(error);
         }
     }
     let (verb, order) = match call.on_error {
-        crate::config::PolicyOnError::Reject => (abi::VERB_REJECT, Vec::new()),
+        crate::config::PolicyOnError::Reject => return Err(Failed::Port),
         crate::config::PolicyOnError::First if point == abi::POINT_ROUTE => (
             abi::VERB_PREFER,
             input
@@ -324,15 +328,15 @@ pub(super) async fn chain(
         ),
         _ => (abi::VERB_ABSTAIN, Vec::new()),
     };
-    (
+    Ok((
         Arc::clone(call),
         HookAnswer {
             verb,
-            reject_status: Some(503),
+            reject_status: None,
             order,
             restrict: Vec::new(),
             message: None,
             rewrite: None,
         },
-    )
+    ))
 }

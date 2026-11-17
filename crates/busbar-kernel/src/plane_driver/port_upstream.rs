@@ -313,6 +313,7 @@ fn step<K: Calls + ?Sized>(
     // An item for the client means the plane decided (the attempt rule: it writes the response or it fails the
     // attempt with nothing for the client), so it goes out at once when a sink takes it.
     fed.began |= !fed.client.is_empty();
+    effects.observed_usage(task.usage());
     if !hand_out(effects, &mut fed.client) {
         fed.gone = true;
         return Ok(false);

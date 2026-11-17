@@ -73,9 +73,9 @@ impl Projection {
         }
     }
 
-    fn rewritten(&mut self, bytes: Vec<u8>, answer: &Answer) {
+    fn rewritten(&mut self, bytes: SecureVec, answer: &Answer) {
         use busbar_plugin_abi::fail::fact::*;
-        self.conversation = Some(SecureVec::from(bytes));
+        self.conversation = Some(bytes);
         self.facts.retain(|(key, _)| {
             !matches!(
                 *key,

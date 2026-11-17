@@ -348,6 +348,7 @@ pub trait Effects {
     ) {
     }
     fn response(&self, _status: u16) {}
+    fn observed_usage(&self, _usage: &super::usage::SessionUsage) {}
 
     /// Execution context supplied by the root's admitted dispatch. Open/check and
     /// health-only operations have no nested execution authority.

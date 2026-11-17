@@ -227,8 +227,8 @@ async fn an_unconfirmed_content_read_cannot_escape_through_weighted_fallback() {
         context: &fixture.context,
     };
     let mut ran = Vec::new();
-    let (_, answer) = call::chain(&call, abi::POINT_ROUTE, &input, &mut ran).await;
-    assert_eq!(answer.verb, abi::VERB_REJECT);
+    let answer = call::chain(&call, abi::POINT_ROUTE, &input, &mut ran).await;
+    assert!(matches!(answer, Err(call::Failed::Unconfirmed)));
     assert!(spy.seen.lock().unwrap().is_empty());
     assert_eq!(ran.len(), 1);
     assert!(ran[0].failed);
@@ -246,7 +246,7 @@ fn rewrites_drop_stale_shape_and_overlay_only_actual_plane_facts() {
     ]);
     let mut answer = Answer::default();
     answer.facts = vec![(PJ_TOTAL_CHARS, FactVal::U(3))];
-    projected.rewritten(b"new".to_vec(), &answer);
+    projected.rewritten(b"new".to_vec().into(), &answer);
     assert_eq!(projected.conversation.as_deref(), Some(&b"new"[..]));
     assert!(projected.facts.contains(&(PJ_TOTAL_CHARS, FactVal::U(3))));
     assert!(!projected

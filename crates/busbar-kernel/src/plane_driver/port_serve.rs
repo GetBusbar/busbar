@@ -323,6 +323,7 @@ fn drive_answers<K: Calls + ?Sized>(
     let written = write_channels(task, &answers, drive.resolver, drive.effects)?;
     absorb(&mut ran, &mut forward, answers, drive.books);
     absorb(&mut ran, &mut None, written, drive.books);
+    drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
     if let Some(forward) = forward {
         let (Some(members), Some(send)) = (drive.members.as_deref_mut(), drive.send.as_deref_mut())
@@ -357,6 +358,7 @@ fn drive_answers<K: Calls + ?Sized>(
                 ..
             } => {
                 ran.client.extend(client);
+                drive.effects.observed_usage(task.usage());
                 hand_out(drive.effects, &mut ran.client);
                 ran.member = Some(member);
                 ran.attempts = attempts;
@@ -379,6 +381,7 @@ fn drive_answers<K: Calls + ?Sized>(
     }
     absorb(&mut ran, &mut None, vec![last], drive.books);
     ran.usage = task.usage().clone();
+    drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
     drive.books.ended(Ending::End, &ran.usage);
     Ok(ran)
