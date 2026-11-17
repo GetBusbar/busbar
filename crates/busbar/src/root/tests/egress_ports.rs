@@ -216,7 +216,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     crate::dist_root_install::install();
     let empty = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+        "store: {module: memory}\nauth: {chain: []}\nproviders: {}\nmodels: {}\n",
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the serving deployment parses");
@@ -448,28 +448,6 @@ async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
             .expect("the slot was handed over");
         assert_eq!(got.0, A);
     }
-}
-
-#[test]
-fn latency_reservoir_p95_is_nearest_rank_and_bounded() {
-    use crate::root::model_egress::LatencyReservoir;
-    let ring = LatencyReservoir::default();
-    assert_eq!(ring.p95_ms(), None);
-    for ms in 1..=100u32 {
-        ring.record(f64::from(ms));
-    }
-    assert_eq!(ring.p95_ms(), Some(95));
-    ring.record(f64::NAN);
-    ring.record(0.0);
-    ring.record(-3.0);
-    assert_eq!(ring.p95_ms(), Some(95));
-    let tiny = LatencyReservoir::default();
-    tiny.record(0.2);
-    assert_eq!(tiny.p95_ms(), Some(1));
-    for _ in 0..1000 {
-        ring.record(7.0);
-    }
-    assert_eq!(ring.p95_ms(), Some(7));
 }
 
 fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {

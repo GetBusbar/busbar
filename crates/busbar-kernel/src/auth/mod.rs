@@ -1084,11 +1084,6 @@ fn sender_constraint_response(
     reason: dpop::Refusal,
 ) -> Response {
     let ingress = ingress_for_path(app, path);
-    auth_completion_taps(
-        app,
-        crate::ingress::native::envelope_dialect(ingress),
-        Some(StatusCode::UNAUTHORIZED.as_u16()),
-    );
     let description = reason.description(app.oauth_as.is_none());
     if let Some(resource_metadata) = resource_metadata {
         return challenge::refuse(
@@ -1224,10 +1219,8 @@ async fn run_admin_chain(
     carried: &mut AdminCarried,
     invocation: Option<&native_admin::Invocation>,
 ) -> AdminChainAnswer {
-    if app.admin_chain.is_empty() {
-        return (ChainVerdict::Open, None);
-    }
-
+    // No anonymous admin posture (ADMIN-API-1.6-ONE-MODEL §8.1): an empty chain identifies no one,
+    // so it falls through to the closed verdict below. Boot refuses `admin_auth: []` (§8.1.1).
     let candidate = carried_named(
         app.admin_modules
             .operator
@@ -1436,9 +1429,8 @@ pub fn dry_run_admin_scope(
     if app.admin_chain.is_empty() {
         diag_warn!(
             ADMIN_AUTH_CHAIN_EMPTY,
-            "admin-scope dry-run evaluated an EMPTY admin_auth chain: the open (anonymous, \
-             full-authority) dev posture earns THIS caller no credential-based scope and is \
-             reported as no-grant, never full"
+            "admin-scope dry-run evaluated an EMPTY admin_auth chain: it identifies no one, so \
+             THIS caller earns no scope (1.6.0 has no open admin posture)"
         );
         return busbar_contract::authz::Grants::default();
     }
@@ -1450,10 +1442,9 @@ fn admin_scope_from_door(door: &AdminDoor) -> busbar_contract::authz::Grants {
     match door {
         AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => *grants,
 
-        AdminDoor::Open
-        | AdminDoor::Denied
-        | AdminDoor::Rejected(_)
-        | AdminDoor::Unavailable(_) => busbar_contract::authz::Grants::default(),
+        AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => {
+            busbar_contract::authz::Grants::default()
+        }
     }
 }
 
@@ -1463,8 +1454,6 @@ fn admin_scope_from_door(door: &AdminDoor) -> busbar_contract::authz::Grants {
 /// dry-run, and the root's admin loop — so there is one admin chain, read live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdminDoor {
-    /// The explicit `admin_auth: []` open posture: anonymous, full authority.
-    Open,
     /// Identified: who the chain identified, and the grants it earns (empty = authenticated, not
     /// authorized).
     Identified(Principal, busbar_contract::authz::Grants),
@@ -1585,7 +1574,6 @@ pub fn admin_door_admits(door: &AdminDoor, method: &str, target: &str) -> bool {
     let path = target.split_once('?').map_or(target, |(path, _)| path);
     let required = crate::admin::scope::admin_required_scope(method, path);
     match door {
-        AdminDoor::Open => true,
         AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => false,
         AdminDoor::Identified(_, grants) => grants.allows(required),
         AdminDoor::Listed(_, grants, list) => {
@@ -1653,8 +1641,9 @@ fn admin_door_from_bindings(
     rung_of: impl Fn(&str) -> Option<busbar_contract::authz::Scope>,
 ) -> AdminDoor {
     match verdict {
-        ChainVerdict::Open => AdminDoor::Open,
-        ChainVerdict::Denied => AdminDoor::Denied,
+        // No anonymous admin posture (ADMIN-API-1.6-ONE-MODEL §8.1): a verdict that identifies no
+        // one opens no admin door.
+        ChainVerdict::Open | ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
             module,
             principal,
@@ -1693,7 +1682,7 @@ fn admin_door_from_bindings(
 pub struct AdminWho {
     /// The door the credential opens: the grants and verbs `/whoami` reports.
     pub door: AdminDoor,
-    /// `operator`, `key`, `identity_provider` or `open`.
+    /// `operator`, `key` or `identity_provider`.
     pub kind: &'static str,
     /// The credential's id: the key id for `key`, the principal id for `identity_provider`.
     pub id: Option<String>,
@@ -1744,8 +1733,7 @@ fn admin_who_of(
     native_expiry: Option<u64>,
 ) -> Option<AdminWho> {
     let (kind, id, provider, expires_at) = match &verdict {
-        ChainVerdict::Denied => return None,
-        ChainVerdict::Open => ("open", None, None, None),
+        ChainVerdict::Open | ChainVerdict::Denied => return None,
         ChainVerdict::Identified {
             module, resolved, ..
         } if module == crate::config::KEYS_MODULE => (
@@ -2028,47 +2016,12 @@ pub(crate) fn scoped_unauthorized_with_completion_taps(
     admission: Option<&crate::plane_driver::dispatch::PlaneAdmission>,
     client_token_present: bool,
 ) -> Response {
-    let proto = crate::ingress::native::envelope_dialect(ingress_for_path(app, path));
-    auth_completion_taps(
-        app,
-        proto,
-        Some(auth_failure_status_and_kind(proto).0.as_u16()),
-    );
     identity_refusal_response(
         IdentityRefusal::Denied,
         admission,
         client_token_present,
         || unauthorized_response(app, path, door),
     )
-}
-
-/// Fire auth rejection completion taps using the selected plane's declared dialect.
-pub fn auth_completion_taps(
-    app: &std::sync::Arc<crate::state::App>,
-    proto: &str,
-    status: Option<u16>,
-) {
-    if !app.tap_hooks_response.is_empty() {
-        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
-
-        let host = crate::plane_driver::engine_host_value(app);
-        let host: &dyn crate::plane_driver::EngineHost = &host;
-        crate::hooks::taps::fire_stage_taps_where(
-            &app.tap_hooks_response,
-            &shape,
-            &busbar_contract::hook_wire::HookStageProjection {
-                at: "response",
-                model: None,
-                attempt_number: None,
-                remaining_candidates: None,
-                previous_failure: None,
-                outcome: Some("rejected_by_auth"),
-                status,
-            },
-            Default::default(),
-            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
-        );
-    }
 }
 
 pub(crate) fn verifier_unavailable_response() -> Response {
@@ -2120,12 +2073,11 @@ pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RE
 /// THE TRUST DECISION AUTHORITY this admission verdict grants (TRUST-ADMIN-PRODUCER-DESIGN r3
 /// §4.2a, condition B-C1): `approve`/`revoke` exactly when the door admits `POST /trust/approve` /
 /// `POST /trust/revoke` under the gate's own rules (full scope; a non-empty verb list must name the
-/// verb). An open door is `anonymous`; a refused door, or one admitting neither, grants none.
+/// verb). A refused door, or one admitting neither, grants none.
 pub(crate) fn trust_decision_authority(
     door: &AdminDoor,
 ) -> Option<crate::host_services::TrustDecisionAuthority> {
     let principal = match door {
-        AdminDoor::Open => busbar_kernel_identity::principal::ANONYMOUS.to_string(),
         AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
             principal.id.clone()
         }
@@ -2140,12 +2092,9 @@ pub(crate) fn trust_decision_authority(
     })
 }
 
-fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box<Response>> {
+fn admin_principal_or_response(door: AdminDoor) -> Result<Principal, Box<Response>> {
     match door {
-        AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
-            Ok(Some(principal))
-        }
-        AdminDoor::Open => Ok(None),
+        AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => Ok(principal),
         AdminDoor::Denied => Err(Box::new(admin_unauthorized_response())),
         AdminDoor::Rejected(reason) => Err(Box::new(admin_rejected_response(reason))),
         AdminDoor::Unavailable(_) => Err(Box::new(admin_unavailable_response())),
@@ -2826,10 +2775,7 @@ pub(crate) async fn auth_middleware(
                     busbar_contract::caps::ReasonCode::ScopeDenied,
                 );
             }
-            let actor = principal
-                .as_ref()
-                .map(|p| p.id.as_str())
-                .unwrap_or("anonymous");
+            let actor = principal.id.as_str();
             if let crate::ratelimit::RateCheck::Denied {
                 first_in_window: true,
             } =
@@ -2862,10 +2808,7 @@ pub(crate) async fn auth_middleware(
                 .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(path);
             let class = crate::ratelimit::classify_mutation(rel);
-            let actor = principal
-                .as_ref()
-                .map(|p| p.id.as_str())
-                .unwrap_or("anonymous");
+            let actor = principal.id.as_str();
             if let crate::ratelimit::RateCheck::Denied { first_in_window } =
                 app.mutation_limiter.check(actor, class, now)
             {
@@ -2881,7 +2824,7 @@ pub(crate) async fn auth_middleware(
                 return Err(rate_limited_response());
             }
         }
-        req.extensions_mut().insert(AuthPrincipal(principal));
+        req.extensions_mut().insert(AuthPrincipal(Some(principal)));
         if let Some(authority) = trust_authority {
             req.extensions_mut().insert(authority);
         }

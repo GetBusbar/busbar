@@ -57,11 +57,7 @@ fn scratch(tag: &str, body: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let config = dir.join("config.yaml");
-    std::fs::write(
-        &config,
-        format!("models: {{}}\nauth:\n  admin_auth: []\n{body}"),
-    )
-    .expect("config");
+    std::fs::write(&config, format!("models: {{}}\n{body}")).expect("config");
     config
 }
 

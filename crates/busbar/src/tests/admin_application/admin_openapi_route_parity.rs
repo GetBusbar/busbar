@@ -260,7 +260,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
         let req = client
             .request(method.clone(), format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok");
+            .header("authorization", "Bearer admintok");
 
         let req = if method == reqwest::Method::GET {
             req

@@ -10,15 +10,6 @@ pub trait PlaneSlots {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-pub trait ContainerGateSink: PlaneSlots {
-    fn reresolve_container_gates(
-        &mut self,
-        plane_key: &str,
-        containers: &[(&str, &[String])],
-        section_hooks: &[String],
-    );
-}
-
 impl<P> PlaneSlots for P
 where
     P: Deref,

@@ -15,8 +15,6 @@ pub(crate) mod export_axis;
 pub(crate) mod export_door;
 pub(crate) mod ffi_thread;
 pub(crate) mod highwater;
-pub(crate) mod hook_door;
 pub(crate) mod host;
 pub(crate) mod observe;
 pub(crate) mod rows;
-pub(crate) mod secret_calls;

@@ -71,7 +71,7 @@ mod record_op_source;
 mod spdx;
 
 /// Checks over core's own tree: with no argument every one runs.
-const CHECKS: [&str; 18] = [
+const CHECKS: [&str; 19] = [
     "no-getrandom",
     "no-known-red",
     "spdx-headers",
@@ -804,3 +804,6 @@ mod known_red_tests;
 
 #[cfg(test)]
 mod record_op_source_tests;
+
+#[cfg(test)]
+mod release_targets_tests;

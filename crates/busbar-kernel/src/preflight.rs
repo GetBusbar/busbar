@@ -62,13 +62,6 @@ pub enum BuildNote<'r> {
 pub type EndpointLocate =
     fn(&Arc<dyn PluginRows>, &str) -> Result<crate::config_validate::ProviderDestination, String>;
 
-pub type SecretAdmit = for<'a> fn(
-    &'a Arc<dyn PluginRows>,
-    &'a config::PluginsCfg,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>,
->;
-
 pub struct RegistryIn<'a> {
     pub linked: Vec<LinkedRow>,
 
@@ -134,24 +127,9 @@ pub struct RootInstall {
     pub endpoint_locate: Option<EndpointLocate>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
-    /// The hook axis the root builds over a registry: every `kind:
-    /// hook` row, compiled in or dropped in, opened on the
-    /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
-    pub hook_axis: Option<HookAxisBuild>,
-    /// The printed name of each hook row this build LINKS, in manifest order (the root's
-    /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
-    /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
-    pub hook_names: &'static [&'static str],
-    /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
-    /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
+    /// The root's secret axis: the native secret images it admitted, linked or dropped in, resolved
+    /// through custody (WP3 step 2; `None`: no secret image resolves outside a resolver's own source).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
-    /// The root's secret admission ([`SecretAdmit`]): what puts a build's dropped-in secret
-    /// plugins on [`Self::secret_axis`]. `None` = no dropped-in secret plugin joins the axis.
-    pub secret_admit: Option<SecretAdmit>,
-    /// The root's snapshot of the dropped-in secret set [`Self::secret_admit`] replaces: taken
-    /// before a config transaction, restored when the transaction ends without publishing, so an
-    /// unpublished generation's set never stays on the live axis. `None` = nothing to restore.
-    pub secret_snapshot: Option<SecretSnapshotTake>,
     /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
     /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
     /// apply (a build with no root ledger).
@@ -172,10 +150,10 @@ pub struct RootInstall {
     /// The ONE durable-write primitive ([`crate::durable`]). `None` = no durable write: every write
     /// through the seam answers an error naming the missing root.
     pub durable: Option<&'static dyn crate::durable::DurableFs>,
-    /// Whether a DROPPED-IN `kind: hook` row of a registry answers a word by the rule the hook axis
-    /// opens it by (its signed Statement's names and hook words beside the manifest's). `None` =
-    /// only the registry's own words answer.
-    pub hook_answers: Option<HookAnswers>,
+    /// The admitted native hook images' facts (WP3 hook step): what config validation reads of hooks (the names
+    /// and aliases a hook image answers to, which are linked, and the D_WORD words they declare). `None` = no hook
+    /// image is admitted.
+    pub hook_facts: Option<&'static dyn busbar_contract::hook_calls::HookImageFacts>,
     /// Whether a linked auth door's Statement declares an INBOUND auth-chain module.
     /// `None` = no linked row is an auth-chain module.
     pub auth_chain_module: Option<AuthChainModule>,
@@ -204,21 +182,7 @@ pub struct RootInstall {
 pub type AdmittedGrammar =
     fn(&dyn PluginRows) -> Result<Option<config::Grammar>, config::GrammarRefusal>;
 
-/// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs
-/// from it (by name, version and image). An unchanged set is left alone, with its cached checkers.
-pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
-
-/// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
-pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
-
-pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
-
 pub type AuthChainModule = fn(busbar_contract::abi::mechanism::door::DoorFn) -> bool;
-
-pub type HookAxisBuild =
-    fn(
-        &std::sync::Arc<dyn PluginRows>,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 static ROOT_ROWS: std::sync::RwLock<Option<RootInstall>> = std::sync::RwLock::new(None);
 
@@ -343,131 +307,33 @@ pub fn linked_rows() -> Vec<LinkedRow> {
         .collect()
 }
 
-fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
-    let build = root_rows().hook_axis?;
-    build(&linked().ok()?).ok()
+/// The admitted native hook images' facts (WP3 hook step).
+fn hook_facts() -> Option<&'static dyn busbar_contract::hook_calls::HookImageFacts> {
+    root_rows().hook_facts
 }
 
+/// Whether `name` is a ranking strategy: a D_WORD some admitted native hook image declares.
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| ranking_settings(axis.as_ref(), name).is_ok())
+    hook_facts().is_some_and(|facts| facts.declares_word(name))
 }
 
-fn ranking_settings(
-    axis: &dyn busbar_contract::hook_calls::HookAxis,
-    name: &str,
-) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
-    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
-        serde_json::json!({ "policy": name }),
-    );
-    ranking_settings_from(name, axis.probe(name, name, &settings))
-}
-
-pub(crate) fn ranking_settings_from(
-    name: &str,
-    probed: Option<busbar_contract::hook_calls::Probed>,
-) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
-    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
-        serde_json::json!({"policy":name}),
-    );
-    let (facts, problems) =
-        probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
-    let Some(facts) = facts else {
-        return Err(if problems.is_empty() {
-            format!("ranking strategy '{name}' has no hook metadata")
-        } else {
-            format!("ranking strategy '{name}': {}", problems.join("; "))
-        });
-    };
-    if facts.class != busbar_contract::abi::hook::CLASS_GATE
-        || !facts.words.iter().any(|word| word == name)
-    {
-        return Err(format!(
-            "ranking strategy '{name}' must be a declared word of a gate hook"
-        ));
-    }
-    if !problems.is_empty() {
-        return Err(format!(
-            "ranking strategy '{name}': {}",
-            problems.join("; ")
-        ));
-    }
-    Ok(settings)
-}
-
-pub(crate) fn ranking_on_axis(
-    axis: &dyn busbar_contract::hook_calls::HookAxis,
-    name: &str,
-) -> Result<
-    (
-        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-        std::time::Duration,
-    ),
-    String,
-> {
-    let settings = ranking_settings(axis, name)?;
-    let budget = axis.call_budget();
-    let (calls, _) = open_ranked(
-        name,
-        &settings,
-        budget,
-        |module, label, settings, budget| axis.open(module, label, settings, budget),
-    )?;
-    Ok((
-        crate::plane_driver::hooks::policy::HookPolicy::ranking(calls, name),
-        budget,
-    ))
-}
-
-pub(crate) fn open_ranked<T>(
-    name: &str,
-    settings: &busbar_contract::plugin_settings::ResolvedSettings,
-    budget: std::time::Duration,
-    open: impl FnOnce(
-        &str,
-        &str,
-        &busbar_contract::plugin_settings::ResolvedSettings,
-        std::time::Duration,
-    ) -> Result<T, String>,
-) -> Result<(T, std::time::Duration), String> {
-    open(name, name, settings, budget).map(|opened| (opened, budget))
-}
-
-pub(crate) fn validate_pool_strategies(
-    cfg: &config::RootCfg,
-    registry: &Arc<dyn PluginRows>,
-) -> Result<(), String> {
-    if !cfg
-        .pools
-        .values()
-        .any(|pool| pool.policy.native_name().is_some())
-    {
-        return Ok(());
-    }
-    let build = root_rows()
-        .hook_axis
-        .ok_or("no hook axis is installed for pool strategies")?;
-    let axis = build(registry)?;
+/// Every pool ranking strategy is a D_WORD of an admitted native hook image.
+pub(crate) fn validate_pool_strategies(cfg: &config::RootCfg) -> Result<(), String> {
     for (pool_name, pool) in &cfg.pools {
         if let Some(name) = pool.policy.native_name() {
-            ranking_settings(axis.as_ref(), name)
-                .map_err(|e| format!("pool '{pool_name}': {e}"))?;
+            if !builtin_ranking_known(name) {
+                return Err(format!(
+                    "pool '{pool_name}': ranking strategy '{name}' has no admitted hook plugin"
+                ));
+            }
         }
     }
     Ok(())
 }
 
+/// Whether `module` names a linked native hook image.
 pub(crate) fn linked_hook_answers(module: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| axis.linked(module))
-}
-
-pub(crate) fn builtin_ranking(
-    name: &str,
-) -> Option<(
-    std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-    std::time::Duration,
-)> {
-    let axis = linked_hook_axis()?;
-    ranking_on_axis(axis.as_ref(), name).ok()
+    hook_facts().is_some_and(|facts| facts.linked(module))
 }
 
 /// Operator remedy shared by the store refusals.
@@ -715,10 +581,7 @@ pub fn plugins_preflight(
     }
 
     for hook_ref in &hook_plugin_refs {
-        if root_rows()
-            .hook_answers
-            .is_some_and(|answers| answers(rows, hook_ref))
-        {
+        if hook_facts().is_some_and(|facts| facts.answers(hook_ref)) {
             continue;
         }
         require_plugin(

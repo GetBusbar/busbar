@@ -388,7 +388,7 @@ pub struct AdminServe<'a> {
     pub headers: &'a axum::http::HeaderMap,
     /// The credentials the auth gate consumed; `None` = a route the gate did not judge.
     pub consumed: Option<&'a ConsumedCredentials>,
-    /// The principal the gate admitted; `None` = the open admin posture.
+    /// The principal the gate admitted; `None` = a route the gate did not judge.
     pub principal: Option<&'a AuthPrincipal>,
     /// The trust decision authority the admin gate built from its admission verdict and the
     /// caller's verb grant; `None` = the plane may not decide trust (r3 §4.2a, B-C1).

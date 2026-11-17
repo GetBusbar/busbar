@@ -480,7 +480,7 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -771,7 +771,7 @@ async fn one_seal_after_two_reloads() {
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

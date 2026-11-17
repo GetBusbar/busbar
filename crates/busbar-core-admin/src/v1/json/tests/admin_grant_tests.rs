@@ -92,7 +92,6 @@ fn whoami_matches_gate() {
         AdminDoor::Listed(principal(), reach, VerbAllowList { rungs, named })
     };
     let doors = [
-        AdminDoor::Open,
         AdminDoor::Denied,
         AdminDoor::Identified(principal(), Grants::of(Scope::Full)),
         AdminDoor::Identified(principal(), Grants::of(Scope::ReadOnly)),

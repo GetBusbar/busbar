@@ -29,7 +29,7 @@ async fn far_end_app() -> busbar_kernel::state::App {
     let module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": module, "settings": {}}
         }),
         &crate::root::boot::axis_test_grammar(),

@@ -31,7 +31,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -127,7 +127,7 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -256,7 +256,7 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -337,7 +337,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             serde_json::json!({
                 "providers": {},
                 "models": {},
-                "auth": { "chain": [], "admin_auth": [] },
+                "auth": { "chain": [] },
                 "store": { "module": module, "settings": settings },
                 "advanced": {  },
             }),

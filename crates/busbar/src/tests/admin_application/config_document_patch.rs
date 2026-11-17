@@ -148,9 +148,11 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let signing_key = directory.join("hidden-signing-reference");
     std::fs::write(&signing_key, hex::encode([9u8; 32])).unwrap();
     let plugin_config = plugins::trusted_config(&directory);
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": [], "signing_key": {"file": signing_key}},
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": {"chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key}},
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
@@ -273,7 +275,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await.unwrap() });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let endpoint = format!("http://{addr}/api/v1/admin/config/settings");
     let before = get(&client, &endpoint).await;
     let initial_version = before["config_version"].as_u64().unwrap();
@@ -938,9 +940,11 @@ async fn configured_admin_in_directory(
     );
     std::fs::write(directory.join("store.tar.gz"), archive).unwrap();
     let plugin_config = plugins::trusted_config(&directory);
+    let operator = crate::root::test_plugins::bind_operator();
     let document = serde_json::json!({
         "providers": {}, "models": {},
-        "auth": {"chain": [], "admin_auth": []},
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": {"chain": [], "admin_auth": [operator]},
         "store": {"module": module, "settings": plugins::application_store_settings(&directory)},
         "plugins": plugins::config_document(&plugin_config),
         "limits": {"request_body_max_bytes": BASE_CAP},
@@ -1054,7 +1058,7 @@ async fn test_admin_v1_config_document_live_edit_not_blamed_for_config_yaml_expo
         return;
     }
     let fixture = ephemeral_admin("admin-document-ephemeral-export", |rules| rules).await;
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let addr = fixture.addr;
     let endpoint = format!("http://{addr}/api/v1/admin/config/settings");
     let mut document = fixture.document.clone();
@@ -1151,7 +1155,7 @@ async fn test_admin_v1_config_settings_unopened_plane_write_refused_on_ephemeral
         Arc::new(PlaneOnMarker { inner }) as Arc<dyn busbar_kernel::appbuild::RootRules>
     })
     .await;
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let endpoint = format!("http://{}/api/v1/admin/config/settings", fixture.addr);
     for (form, body) in [
         (

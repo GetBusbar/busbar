@@ -497,12 +497,6 @@ plane_behaviour! {
     /// no named-definition map.
     registry_contains: Option<RegistryContainsHook>,
 
-    /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
-    /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
-    /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
-    /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
-    reresolve_gates: Option<fn(&PlaneDecl, &mut dyn crate::plane_driver::slots::ContainerGateSink)>,
-
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
     /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body

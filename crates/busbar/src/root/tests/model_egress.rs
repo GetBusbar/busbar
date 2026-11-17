@@ -30,7 +30,7 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -86,7 +86,6 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         app: LiveApp::fixed(Arc::clone(&app)),
         names: Arc::default(),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
-        reservoirs: Arc::default(),
     };
     let previous = make();
     let current = make();
@@ -161,7 +160,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let models = "{m-z: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -226,7 +225,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let models = "{m-a: {provider: wire}, m-z: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -291,7 +290,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let models = "{m-a: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -351,13 +350,11 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         app: cells.live.clone(),
         names: Arc::clone(&cells.plan.names),
         permits: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
-        reservoirs: Arc::default(),
     };
     let telemetry = ModelTelemetry {
         app: cells.live.clone(),
         names: Arc::clone(&cells.plan.names),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
-        reservoirs: Arc::default(),
     };
     let token = busbar_kernel::test_hooks::tokens::pass();
     let destination = DestinationId::new(0);
@@ -418,7 +415,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let models = "{m-z: {provider: wire, max_requests: 2}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -484,7 +481,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             "{m-a: {provider: wire, max_requests: 11}, m-z: {provider: wire, max_requests: 7}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -588,7 +585,7 @@ async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         let models = "{m0: {provider: wire}}";
         let pools = "{first: {members: [m0]}, second: {members: [m0]}, third: {members: [m0]}}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -675,7 +672,7 @@ async fn a_success_is_recorded_on_the_walks_clock() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -773,7 +770,7 @@ async fn a_probe_success_joins_the_walks_window() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -876,7 +873,7 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
             let models = "{m0: {provider: wire}}";
             let pools = "{p: {members: [m0]}}";
             let yaml = format!(
-                "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+                "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
             );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(
                 &yaml,
@@ -1017,7 +1014,7 @@ async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         let models = "{m0: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -1112,7 +1109,7 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -1206,7 +1203,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -1278,7 +1275,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,
@@ -1383,7 +1380,7 @@ async fn a_keyless_lane_is_not_probed() {
             let models = "{}";
             let pools = "{}";
             let yaml = format!(
-                "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+                "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
             );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(
                 &yaml,
@@ -1460,7 +1457,7 @@ async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
+            "store: {{module: memory}}\nauth: {{chain: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\n"
         );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             &yaml,

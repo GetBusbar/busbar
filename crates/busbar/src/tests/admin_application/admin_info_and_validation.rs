@@ -49,7 +49,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 
     let resp = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -69,7 +69,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         .get(format!(
             "http://{addr}/api/v1/admin/kinds/core/instances/durability"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -145,7 +145,7 @@ async fn test_admin_v1_auth_read() {
     let client = reqwest::Client::new();
     let body = client
         .get(format!("http://{addr}/api/v1/admin/auth"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -205,7 +205,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
             client.patch(format!("http://{addr}{path}"))
         };
         let resp = req
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", busbar_contract::protocol::APPLICATION_JSON)
             .body(malformed.clone())
             .send()
@@ -253,7 +253,7 @@ async fn admin_read(
 ) -> (u16, json::Value) {
     let resp = client
         .get(format!("http://{addr}/api/v1/admin{path}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

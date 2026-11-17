@@ -99,7 +99,7 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
     let module = crate::root::test_plugins::linked_store_module();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         &json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": module},
         }),
         &crate::root::boot::axis_test_grammar(),

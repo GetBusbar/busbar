@@ -34,12 +34,8 @@ macro_rules! renamed {
         }
     };
 }
-renamed!(secret, crate::neutral_secret::door);
 renamed!(auth, crate::neutral_auth::door);
-renamed!(
-    hook,
-    crate::hook_door_conformance_tests::hook_door_plugin::conforming::door
-);
+renamed!(hook, crate::hook_door_plugin::conforming::door);
 renamed!(export, crate::neutral_export::door);
 renamed!(transport, crate::neutral_transport::door);
 renamed!(plane, crate::neutral_plane::door);
@@ -110,15 +106,12 @@ fn lifecycle_with_settings<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Vec<
 #[test]
 fn renaming_neutral_implementations_preserves_every_kind_capability_and_lifecycle() {
     use crate::dispatch::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
     };
-    compare::<Secret>(crate::neutral_secret::door, secret, lifecycle);
     compare::<Auth>(crate::neutral_auth::door, auth, lifecycle);
-    compare::<Hook>(
-        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
-        hook,
-        |plugin| lifecycle_with_settings(plugin, br#"{"reject_over_messages":3}"#),
-    );
+    compare::<Hook>(crate::hook_door_plugin::conforming::door, hook, |plugin| {
+        lifecycle_with_settings(plugin, br#"{"reject_over_messages":3}"#)
+    });
     compare::<Export>(crate::neutral_export::door, export, lifecycle);
     compare::<Transport>(crate::neutral_transport::door, transport, lifecycle);
     compare::<Plane>(crate::neutral_plane::door, plane, |plugin| {

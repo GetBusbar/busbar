@@ -6,7 +6,6 @@
 use busbar_contract::abi::mechanism::call::{AbiStr, Op};
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::rendering::{RenderError, Unreadable};
-use busbar_contract::abi::mechanism::route::Route;
 
 use crate::dispatch::load::LoadError;
 
@@ -35,12 +34,6 @@ pub(crate) fn unrendered(e: RenderError) -> LoadError {
 #[cold]
 pub(crate) fn no_door(e: &libloading::Error) -> LoadError {
     LoadError::NoDoor(crate::stage::loader_error(e))
-}
-
-/// A hook's routes, read once at admission.
-#[cold]
-pub(crate) fn routes(routes: &[Route]) -> Vec<Route> {
-    routes.to_vec()
 }
 
 /// A measurement class the legacy plane billing tail also declares.

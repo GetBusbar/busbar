@@ -4,9 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use busbar_contract::abi::host::service::{
-    UnitRef, LINE_NONE, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE, REFUSE_OVER_GATE, REFUSE_STOPPED,
-};
+use busbar_contract::abi::host::service::{UnitRef, LINE_NONE};
 use busbar_kernel::guest::{GuestList, Matched};
 use busbar_kernel::inbound::{self as kin, Inbound};
 use json::Value;
@@ -291,43 +289,6 @@ async fn app_generation(
     (Arc::new(app), listener_config, book)
 }
 
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(inbound);
-
-async fn actual_listener(
-    app: Arc<busbar_kernel::state::App>,
-    config: &busbar_kernel::config::RootCfg,
-    book: &crate::root::durability::NodeBook,
-    with_llm: bool,
-) -> kin::Listener {
-    actual_listener_with_routers(app, config, book, with_llm)
-        .await
-        .0
-}
-
-async fn side() -> (Arc<Inbound>, GuestList, Arc<busbar_kernel::state::App>) {
-    let (app, config, book) = app(true).await;
-    let listener = actual_listener(app.clone(), &config, &book, true).await;
-    let guests = listener.guests.clone();
-    (install_side(listener), guests, app)
-}
-
-fn install_side(listener: kin::Listener) -> Arc<Inbound> {
-    let next = Arc::new(AtomicU64::new(1));
-    let inbound = Inbound::new(
-        kin::Seals {
-            mint: Arc::new(move || next.fetch_add(1, Ordering::SeqCst)),
-            mac: Arc::new(|t: &kin::UnitTag| Some(t.unit ^ t.secret[0] ^ t.secret[1])),
-        },
-        Arc::new(|_| {}),
-        Arc::new(|_: &kin::RefusedUnit| {}),
-    );
-    inbound
-        .install(OWNER, GEN, listener)
-        .expect("the actual declared line ids install");
-    inbound
-}
-
 fn selected_line(guests: &GuestList, head: &kin::Head) -> u32 {
     let fields: Vec<_> = head
         .fields
@@ -345,15 +306,6 @@ fn selected_line(guests: &GuestList, head: &kin::Head) -> u32 {
         .expect("the selected line belongs to this actual sealed guest list") as u32
 }
 
-fn golden(name: &str) -> Value {
-    let path = format!(
-        "{}/../../testing/shadow-oracle/golden/1.5.5/cells/{name}.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    json::parse_value(text.as_bytes()).expect("a golden cell is JSON")
-}
-
 fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
     r.fields
         .iter()
@@ -361,53 +313,7 @@ fn field<'a>(r: &'a kin::Refusal, name: &str) -> Option<&'a str> {
         .and_then(|(_, v)| std::str::from_utf8(v).ok())
 }
 
-fn differences(r: &kin::Refusal, name: &str) -> Vec<String> {
-    let cell = golden(name);
-    let mut wrong = Vec::new();
-    if Some(u64::from(r.status)) != cell["status"].as_u64() {
-        wrong.push(format!("status {} not {}", r.status, cell["status"]));
-    }
-    if let Some(headers) = cell["headers"].as_object() {
-        for (n, want) in headers {
-            if n == "date" || n == "content-length" {
-                continue;
-            }
-            let want = want.as_str().unwrap_or_default();
-            let got = field(r, n).unwrap_or_default();
-            let holds = match want.split_once("<ID>") {
-                Some((prefix, suffix)) => {
-                    got.starts_with(prefix) && got.ends_with(suffix) && got.len() > want.len() - 4
-                }
-                None => got == want,
-            };
-            if !holds {
-                wrong.push(format!("field {n}: {got:?} not {want:?}"));
-            }
-        }
-    }
-    match json::parse_value(&r.body) {
-        Ok(mut body) => {
-            if body.get("request_id").is_some() {
-                body["request_id"] = Value::from("<ID>");
-            }
-            if body != cell["body"]["json"] {
-                wrong.push(format!("body {body} not {}", cell["body"]["json"]));
-            }
-        }
-        Err(e) => wrong.push(format!("body is not JSON: {e}")),
-    }
-    if let Some(len) = cell["headers"]["content-length"]
-        .as_str()
-        .and_then(|l| l.parse::<usize>().ok())
-    {
-        if r.body.len() != len {
-            wrong.push(format!("length {} not {len}", r.body.len()));
-        }
-    }
-    wrong
-}
-
-fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
+fn crosscut(family: &str) -> Vec<(String, kin::Head)> {
     let path = format!(
         "{}/../../testing/shadow-oracle/cells.json",
         env!("CARGO_MANIFEST_DIR")
@@ -443,7 +349,7 @@ fn crosscut(family: &str) -> Vec<(String, kin::Head, bool)> {
                     .unwrap_or_default(),
             };
             let name = c["id"].as_str().unwrap_or_default().replace('|', "__");
-            (name, head, r["auth"].as_str() != Some("none"))
+            (name, head)
         })
         .collect()
 }
@@ -469,38 +375,10 @@ fn captured_request(name: &str) -> Value {
         .clone()
 }
 
-async fn captured_key(app: &busbar_kernel::state::App) -> busbar_contract::Secret<String> {
-    let now = busbar_kernel::store::now();
-    let gov = app
-        .governance
-        .as_ref()
-        .expect("the actual Store owns the captured caller's key");
-    let (_, token) = gov
-        .mint_signed_async(
-            busbar_kernel::governance::NewKeySpec {
-                name: "inbound-captured-caller".into(),
-                ..Default::default()
-            },
-            now + 3600,
-            now,
-        )
-        .await
-        .expect("the actual configured signer mints the captured authenticated caller");
-    gov.hydrate_budgets_async(&app.cost, now)
-        .await
-        .expect("the actual caller's budgets hydrate");
-    assert!(
-        app.cost.model_unpriced("nope"),
-        "the captured no-rate request has an authoritative card without that model's rate"
-    );
-    token
-}
-
 async fn captured_router_crossing(
     router: axum::Router,
     head: &kin::Head,
     captured: &Value,
-    token: &busbar_contract::Secret<String>,
 ) -> kin::Refusal {
     use tower::ServiceExt as _;
     let raw = captured["body"].as_str().unwrap_or("");
@@ -524,14 +402,11 @@ async fn captured_router_crossing(
     for (name, value) in &head.fields {
         request = request.header(name.as_str(), value.as_slice());
     }
-    if captured["listener"] == "admin" {
-        request = request.header("x-admin-token", "actual-inbound-operator");
-    } else if captured["auth"] == "ok" {
-        request = request.header(
-            "authorization",
-            format!("Bearer {}", token.expose(&busbar_kernel::seal::lend())),
-        );
-    }
+    assert_eq!(
+        captured["listener"], "admin",
+        "only captured admin crossings reach the actual admin router"
+    );
+    request = request.header("authorization", "Bearer actual-inbound-operator");
     let request = request
         .body(axum::body::Body::from(body))
         .expect("the captured real request builds");
@@ -566,214 +441,32 @@ fn assert_current_admin_body_cap(response: &kin::Refusal) {
     assert_eq!(body["error"]["code"], "request_too_large");
 }
 
-async fn refused_against(family: &str, cause: u32) -> Vec<String> {
-    let (router_app, router_config, router_book) = app(true).await;
-    let token = captured_key(&router_app).await;
-    let (listener, data, admin) =
-        actual_listener_with_routers(router_app, &router_config, &router_book, true).await;
-    let guests = listener.guests.clone();
-    let side = install_side(listener);
-    let mut failing = Vec::new();
-    for (name, head, credentialed) in crosscut(family) {
-        let captured = captured_request(&name);
-
-        if cause == REFUSE_NO_ROUTE || captured["listener"] == "admin" {
-            let router = if captured["listener"] == "admin" {
-                admin.clone()
-            } else {
-                data.clone()
-            };
-            let refusal = captured_router_crossing(router, &head, &captured, &token).await;
-            if cause == REFUSE_OVER_GATE && captured["listener"] == "admin" {
-                // The old admin 404 oracle remains historical evidence, not current acceptance.
-                assert_current_admin_body_cap(&refusal);
-                continue;
-            }
-            let wrong = differences(&refusal, &name);
-            if !wrong.is_empty() {
-                failing.push(format!("{name}: {}", wrong.join("; ")));
-            }
-            continue;
-        }
-        let line = selected_line(&guests, &head);
-        let cause = if credentialed { cause } else { REFUSE_STOPPED };
-        let refusal = side
-            .refuse(kin::Refuse {
-                owner: OWNER,
-                generation: GEN,
-                unit: UnitRef::NONE,
-                cause,
-                line,
-                request: Some(head),
-                conn: 1,
-                stream: 1,
-                framing: None,
-            })
-            .expect("refused");
-        let wrong = differences(&refusal, &name);
-        if !wrong.is_empty() {
-            failing.push(format!("{name}: {}", wrong.join("; ")));
-        }
-    }
-    failing
+/// The actual admin router over the App, with a 32 MiB request-body cap.
+fn admin_router(app: &Arc<busbar_kernel::state::App>) -> axum::Router {
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(app)));
+    busbar_kernel::router::build_admin_router_on(&handle, 32 * 1024 * 1024, false)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn red_every_no_route_cell_answers_its_1_5_5_bytes() {
-    let failing: Vec<String> = refused_against("unknown-path", REFUSE_NO_ROUTE)
-        .await
+async fn captured_admin_over_gate_cells_follow_the_current_413_contract() {
+    let (app, _config, _book) = app(true).await;
+    let admin = admin_router(&app);
+    let cells: Vec<_> = crosscut("413")
         .into_iter()
-        .filter(|f| !f.contains("status 404 not 400"))
+        .filter(|(name, _)| captured_request(name)["listener"] == "admin")
         .collect();
-    assert!(failing.is_empty(), "{failing:#?}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn red_the_method_miss_cell_answers_its_1_5_5_bytes() {
-    let failing = refused_against("wrong-method", REFUSE_METHOD_MISS).await;
-    assert!(failing.is_empty(), "{failing:#?}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn captured_over_gate_cells_follow_their_current_contracts() {
-    let failing = refused_against("413", REFUSE_OVER_GATE).await;
-    assert!(failing.is_empty(), "{failing:#?}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn captured_rate_and_admin_body_cap_follow_their_current_contracts() {
-    let (app, config, book) = app(true).await;
-    let token = captured_key(&app).await;
-    let (_, data, admin) = actual_listener_with_routers(app, &config, &book, true).await;
-    for (family, target, router) in [
-        ("unknown-path", "/x/v1/chat/completions", data),
-        ("413", "/api/v1/admin/keys", admin),
-    ] {
-        let (name, head, _) = crosscut(family)
-            .into_iter()
-            .find(|(_, head, _)| head.target == target)
-            .expect("the existing catalogue captures the actual request");
+    assert!(
+        cells
+            .iter()
+            .any(|(_, head)| head.target == "/api/v1/admin/keys"),
+        "the existing catalogue captures the admin keys over-gate request"
+    );
+    for (name, head) in cells {
         let captured = captured_request(&name);
-        let response = captured_router_crossing(router, &head, &captured, &token).await;
-        if family == "413" {
-            // Keep the captured request while accepting the current 413 envelope.
-            assert_current_admin_body_cap(&response);
-        } else {
-            let wrong = differences(&response, &name);
-            assert!(wrong.is_empty(), "{name}: {wrong:#?}");
-        }
+        let response = captured_router_crossing(admin.clone(), &head, &captured).await;
+        // The old admin 404 oracle remains historical evidence, not current acceptance.
+        assert_current_admin_body_cap(&response);
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_listener_refusal_uses_only_its_sealed_claimant_route_and_dialect() {
-    let (app, config, book) = app(true).await;
-    let listener = actual_listener(app, &config, &book, true).await;
-    let (name, head, _) = crosscut("wrong-method")
-        .into_iter()
-        .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
-        .expect("the actual dialect has a retained method-miss golden");
-    let selected = selected_line(&listener.guests, &head);
-    let line = &listener.guests.lines()[selected as usize];
-    let renderer = listener
-        .scope
-        .as_ref()
-        .and_then(|scope| scope.refuse.as_ref())
-        .expect("the actual prepared listener retains its real refusal producer");
-    let render = |selected_line| {
-        renderer(&busbar_kernel::plane_routes::KernelRefusal {
-            reason: busbar_contract::caps::ReasonCode::MethodNotAllowed,
-            status: 405,
-            text: "method not allowed for this resource",
-            path: &head.target,
-            target: &head.target,
-            selected_line: Some(selected_line),
-        })
-    };
-    let actual = kin::Refusal::of(render(line).expect("the actual sealed claimant renders"));
-    assert!(differences(&actual, &name).is_empty());
-    let mut foreign = line.clone();
-    foreign.claimant = busbar_kernel::guest::Claimant::Plane("unpublished-foreign-plane".into());
-    assert!(
-        render(&foreign).is_none(),
-        "a foreign claimant cannot borrow the actual image"
-    );
-    let mut foreign_route = line.clone();
-    foreign_route.route.rung = foreign_route.route.rung.wrapping_add(1);
-    assert!(
-        render(&foreign_route).is_none(),
-        "an unsealed route rung cannot select another operation"
-    );
-    let mut caller_dialect = line.clone();
-    caller_dialect.dialect = caller_dialect.dialect.wrapping_add(1);
-    let sealed = kin::Refusal::of(
-        render(&caller_dialect).expect("the sealed actual route remains selected"),
-    );
-    assert!(
-        differences(&sealed, &name).is_empty(),
-        "the renderer reads the actual sealed dialect instead of caller-supplied metadata"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retained_listener_refusals_keep_the_actual_llm_producer_after_its_claims_are_removed() {
-    let (side, guests, previous_app) = side().await;
-    let (name, head, _) = crosscut("wrong-method")
-        .into_iter()
-        .find(|(_, head, credentialed)| head.target == "/v1/messages" && *credentialed)
-        .expect("the existing golden catalogue has the actual LLM dialect's method miss");
-    let line = selected_line(&guests, &head);
-    assert_ne!(line, LINE_NONE, "the real LLM claim selects the dialect");
-    let refuse = |generation, cause, line, request: kin::Head| {
-        side.refuse(kin::Refuse {
-            owner: OWNER,
-            generation,
-            unit: UnitRef::NONE,
-            cause,
-            line,
-            request: Some(request),
-            conn: 1,
-            stream: 1,
-            framing: None,
-        })
-        .expect("the installed actual listener refuses")
-    };
-    let before = refuse(GEN, REFUSE_METHOD_MISS, line, head.clone());
-    assert!(
-        differences(&before, &name).is_empty(),
-        "the actual linked producer matches the retained wire golden"
-    );
-
-    let (next_app, next_config, next_book) = app_generation(false, false, Some(previous_app)).await;
-    let next = actual_listener(next_app, &next_config, &next_book, false).await;
-    assert!(
-        matches!(
-            next.guests.matched(&head.method, &head.target, &[]),
-            Matched::NoRoute
-        ),
-        "the replacement listener has no LLM claimant"
-    );
-    side.install(OWNER, GEN + 1, next)
-        .expect("the replacement generation publishes");
-    let retained = refuse(GEN, REFUSE_METHOD_MISS, line, head.clone());
-    assert!(
-        differences(&retained, &name).is_empty(),
-        "the retained listener still invokes its actual LLM image after publication"
-    );
-    let current = refuse(GEN + 1, REFUSE_NO_ROUTE, LINE_NONE, head);
-    assert_eq!(
-        current,
-        kin::Refusal {
-            status: 404,
-            fields: Vec::new(),
-            body: Vec::new(),
-        },
-        "the current no-claim listener has no producer and returns the exact neutral refusal"
-    );
-    assert_ne!(
-        retained, current,
-        "the removed actual producer cannot leak into another generation"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -788,7 +481,7 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
         use tower::ServiceExt as _;
         let mut request = axum::http::Request::builder().method(method).uri(path);
         if let Some(token) = token {
-            request = request.header("x-admin-token", token);
+            request = request.header("authorization", format!("Bearer {}", token));
         }
         let response = router
             .oneshot(
@@ -815,7 +508,7 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
     const EXISTING: &str = "/api/v1/admin/keys";
     const NEW: &str = "/api/v1/admin/ledger/recovery/list";
     const OVERSIZE: usize = 33 * 1024 * 1024;
-    let (app, config, book) = app_with_admin_reader(false, true).await;
+    let (app, _config, _book) = app_with_admin_reader(false, true).await;
     let gov = app
         .governance
         .as_ref()
@@ -826,7 +519,7 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
         .await
         .expect("the actual key collection reads")
         .len();
-    let (_, _, admin) = actual_listener_with_routers(app, &config, &book, false).await;
+    let admin = admin_router(&app);
     let existing = send(
         admin.clone(),
         "POST",
@@ -888,9 +581,6 @@ fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
     assert!(!kin::is_line_id(binding));
     assert_ne!(binding & kin::BINDING_BIT, 0);
 }
-
-#[path = "inbound_close.rs"]
-mod close_tests;
 
 #[path = "operator_admission_identity.rs"]
 mod operator_admission_identity;

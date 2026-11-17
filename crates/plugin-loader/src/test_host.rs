@@ -66,7 +66,7 @@ use busbar_contract::conn::InstanceId;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
 };
 use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::Done as Settled;
@@ -395,32 +395,6 @@ impl Host {
         })
     }
 
-    /// A secret image opened as the loader's typed [`LoadedSecret`](crate::secret_calls::LoadedSecret).
-    pub fn secret(
-        &self,
-        img: Image<Secret>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::secret_calls::LoadedSecret, Refused> {
-        let plugin = self.bind(&img, name)?;
-        crate::secret_calls::LoadedSecret::open(plugin, Arc::clone(&self.dispatcher), settings, &[])
-            .map_err(Refused::Open)
-    }
-
-    /// A hook image opened as the loader's typed [`HookInstance`](crate::hook_door::HookInstance).
-    pub fn hook(
-        &self,
-        img: Image<Hook>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::hook_door::HookInstance, Refused> {
-        let plugin = self.bind(&img, name)?;
-        crate::hook_door::HookInstance::open(plugin, Arc::clone(&self.dispatcher), settings, || {
-            Err(String::from("the test host does not rebind"))
-        })
-        .map_err(Refused::Open)
-    }
-
     /// An export image opened as the loader's typed [`ExportInstance`](crate::export_door::ExportInstance).
     pub fn export(
         &self,
@@ -576,7 +550,7 @@ pub trait Openable: Kind + Sized + sealed::Sealed {
 macro_rules! openable {
     ($($k:ty),+) => {$( impl sealed::Sealed for $k {} impl Openable for $k {} )+};
 }
-openable!(Transport, Secret, Auth, Hook, Export);
+openable!(Transport, Auth, Hook, Export);
 impl sealed::Sealed for Plane {}
 impl Openable for Plane {
     fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {

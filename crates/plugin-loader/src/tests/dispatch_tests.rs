@@ -4580,7 +4580,7 @@ fn another_layout_is_refused<K: Kind>(kind: KindCode) {
 #[test]
 fn invalid_layout_is_refused_before_statement_dependent_slots() {
     use crate::dispatch::kinds::hook::Hook;
-    use crate::hook_door_conformance_tests::hook_door_plugin::ordering;
+    use crate::hook_door_plugin::ordering;
     use busbar_contract::abi::hook;
 
     let base = ordering::door();
@@ -4609,7 +4609,7 @@ fn invalid_layout_is_refused_before_statement_dependent_slots() {
         assert_eq!(
             validate_door::<Hook>(&invalid).err(),
             Some(LoadError::KindLayout {
-                plugin: crate::hook_door_conformance_tests::hook_door_plugin::ORDERING_NAME.into(),
+                plugin: crate::hook_door_plugin::ORDERING_NAME.into(),
                 kind: KindCode::Hook,
                 stated: layout,
                 host: base.layout(),
@@ -4622,11 +4622,6 @@ fn invalid_layout_is_refused_before_statement_dependent_slots() {
         validate_door::<Hook>(&missing_required).err(),
         Some(LoadError::NullSlot(hook::slot::DECIDE))
     );
-}
-
-#[test]
-fn a_secret_door_built_against_another_layout_is_refused() {
-    another_layout_is_refused::<crate::dispatch::kinds::secret::Secret>(KindCode::Secret);
 }
 
 #[test]

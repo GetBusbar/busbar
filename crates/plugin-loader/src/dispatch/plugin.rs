@@ -1462,10 +1462,9 @@ impl Instance {
     }
 
     fn instance_free(&self, s: u32) -> bool {
-        (self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK)
-            || (self.kind == KindCode::Transport
-                && s == busbar_contract::abi::transport::slot::LOCATE
-                && !self.is_open())
+        self.kind == KindCode::Transport
+            && s == busbar_contract::abi::transport::slot::LOCATE
+            && !self.is_open()
     }
 
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
@@ -2704,9 +2703,9 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
 
 /// A validated binding. Its implementation cannot be replaced by another kind.
 /// ```compile_fail,E0616
-/// use busbar_plugin_loader::dispatch::{Plugin, kinds::{secret::Secret, auth::Auth}};
-/// fn swap(secret: &mut Plugin<Secret>, auth: &Plugin<Auth>) {
-///     secret.inner = auth.inner.clone();
+/// use busbar_plugin_loader::dispatch::{Plugin, kinds::{export::Export, auth::Auth}};
+/// fn swap(export: &mut Plugin<Export>, auth: &Plugin<Auth>) {
+///     export.inner = auth.inner.clone();
 /// }
 /// ```
 pub struct Plugin<K: Kind> {

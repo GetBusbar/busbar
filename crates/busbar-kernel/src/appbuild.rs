@@ -14,7 +14,7 @@ use crate::preflight::resolve_signing_key;
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-use crate::{admin, config, config_validate, governance, hooks, ratelimit, state, telemetry};
+use crate::{admin, config, config_validate, governance, ratelimit, state, telemetry};
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
@@ -1869,6 +1869,14 @@ async fn build_app_native(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    // #359 SEC-L1: a root listener served in the clear under its acceptance is bannered and audited
+    // (before `cfg.models` moves out below).
+    crate::config::listener_acceptance::announce(&cfg);
+    let plaintext_listeners: Vec<&'static str> = crate::config::listener_acceptance::accepted(&cfg)
+        .into_iter()
+        .map(|(listener, _)| listener.setting)
+        .collect();
+
     let llm_configured = !cfg.providers.is_empty() || !cfg.models.is_empty();
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2241,118 +2249,13 @@ async fn build_app_native(
     );
     let auth_instances = auth_instances.sealed();
 
-    let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
-
-    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
-    let hook_route_decls = hook_env.route_decls(&cfg.hooks)?;
-
-    hook_env.preopen_gate_hooks(&cfg.hooks)?;
-
     if prior.is_none() {
         accepted_operator(&auth_cfg, &admin_modules.operator);
     }
     let admin_modules = Arc::new(admin_modules);
 
-    let rewrite_hooks =
-        hooks::resolve_rewrite_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
-
-    let tap_hooks = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Request,
-    );
-    let tap_hooks_candidate = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Candidate,
-    );
-    let tap_hooks_routing = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Routing,
-    );
-    let tap_hooks_response = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Response,
-    );
-
-    let global_gates =
-        hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
-
-    let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
-    let mut pool_orderings = std::collections::HashMap::new();
-    let mut pool_decision_gates = std::collections::HashMap::new();
-    let mut pool_rewrite_chains = std::collections::HashMap::new();
-    for (pool_name, pool_cfg) in &cfg.pools {
-        if let Some(policy) = hooks::try_resolve_pool_ordering(
-            pool_cfg,
-            &cfg.hooks,
-            &hook_env,
-            default_hook.as_deref(),
-            app_config_version,
-        )
-        .map_err(|e| format!("pool '{pool_name}': {e}"))?
-        {
-            pool_orderings.insert(pool_name.clone(), policy);
-        }
-        let gates = hooks::resolve_pool_gates(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
-        if !gates.is_empty() {
-            pool_decision_gates.insert(pool_name.clone(), gates);
-        }
-        let rewrites =
-            hooks::resolve_pool_rewrites(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
-        if !rewrites.is_empty() {
-            pool_rewrite_chains.insert(pool_name.clone(), rewrites);
-        }
-    }
-
-    let mut plane_gates = std::collections::BTreeMap::new();
-    let mut plane_rewrites = std::collections::BTreeMap::new();
-    for (section, defs) in &cfg.plane_defs {
-        let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(section)
-        else {
-            continue;
-        };
-        let g = defs.container_gates();
-        let containers = || {
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice()))
-        };
-        plane_gates.insert(
-            decl.key,
-            hooks::resolve_container_gates(
-                containers(),
-                &g.section_hooks,
-                &cfg.hooks,
-                &hook_env,
-                app_config_version,
-            ),
-        );
-        plane_rewrites.insert(
-            decl.key,
-            hooks::resolve_container_rewrites(
-                containers(),
-                &g.section_hooks,
-                &cfg.hooks,
-                &hook_env,
-                app_config_version,
-            ),
-        );
-    }
-
-    let (mut route_decls, withheld_public_exports) =
+    let (route_decls, withheld_public_exports) =
         crate::export::route_projection(&cfg_export, prior.map(|app| app.exports.as_ref()));
-    route_decls.extend(hook_route_decls);
     let plugin_routes = std::sync::Arc::new(
         crate::plugin_routes::build_route_table(route_decls)?
             .with_withheld_public_exports(withheld_public_exports),
@@ -2464,6 +2367,7 @@ async fn build_app_native(
                     protected_resources,
                     prior.and_then(state::App::oauth_as_any).cloned(),
                     store,
+                    checked.admin_origin.clone(),
                 )
                 .await?,
             )
@@ -2509,10 +2413,8 @@ async fn build_app_native(
         .collect();
     let auth = auth_mw.clone();
 
-    let hook_env = hook_env.clone();
+    let plugin_registry = plugin_registry.clone();
     let hook_registry = cfg.hooks.clone();
-    let requested_signals = hooks::requested_signals(&cfg.hooks);
-    let any_content_hook = hooks::any_content_hook(&cfg.hooks);
     let export_projections = cfg.export.projection_union();
     let global_hooks = cfg.global_hooks.clone();
     let groups_registry = cfg.groups.clone();
@@ -2635,21 +2537,8 @@ async fn build_app_native(
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             global_hooks,
             groups_registry,
             base_group_names,
@@ -2701,6 +2590,7 @@ async fn build_app_native(
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;
+    app.plaintext_listeners = plaintext_listeners;
     if let Some(preparation) = preparation {
         preparation.finish(&mut app).await?;
     }

@@ -59,8 +59,6 @@ fn table(
     transports: &[(&str, DoorFn)],
 ) -> Result<(Table, Vec<Stated>, Vec<Stated>), String> {
     let mut doors: Vec<(DoorFn, Vec<&str>)> = Vec::new();
-    doors.extend(linked.secrets.iter().map(|d| (*d, Vec::new())));
-    doors.extend(linked.hook_doors.iter().map(|d| (*d, Vec::new())));
     doors.extend(
         linked
             .export_doors

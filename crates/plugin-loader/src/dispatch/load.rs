@@ -226,13 +226,14 @@ pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
 
 pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     use super::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, transport::Transport,
     };
     let (_, kind) = read_door(p, None)?;
     match kind {
         // A store is a MIN-3 image only: no door of kind store is served (WP3).
         KindCode::Store => Err(LoadError::UnknownKind(KindCode::Store as u32)),
-        KindCode::Secret => validate_door::<Secret>(p),
+        // WP3 step 2: the door secret kind is retired; secret plugins are native (MIN-3) images.
+        KindCode::Secret => Err(LoadError::UnknownKind(KindCode::Secret as u32)),
         KindCode::Auth => validate_door::<Auth>(p),
         KindCode::Hook => validate_door::<Hook>(p),
         KindCode::Export => validate_door::<Export>(p),
@@ -838,21 +839,6 @@ pub(crate) struct AdmittedImage<K: Kind> {
 impl<K: Kind> AdmittedImage<K> {
     pub(crate) fn bind(self, bind: Bind) -> Result<Plugin<K>, LoadError> {
         Plugin::bind(self.validated, self.lib, bind)
-    }
-}
-
-impl AdmittedImage<super::kinds::hook::Hook> {
-    pub(crate) fn routes(
-        &self,
-    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
-        Ok(self
-            .validated
-            .context
-            .as_deref()
-            .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
-            .map_or_else(Vec::new, |context| {
-                crate::cold::dispatch::load::routes(&context.routes)
-            }))
     }
 }
 

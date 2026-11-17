@@ -69,7 +69,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
         .unwrap();
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             &json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {}
             }),
@@ -129,7 +129,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
             .unwrap();
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 &json::json!({
-                    "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                    "providers": {}, "models": {}, "auth": {"chain": []},
                     "store": {"module": module, "settings": settings},
                     "advanced": {}
                 }),
@@ -241,7 +241,7 @@ async fn absent_custody_stays_refused_and_complete_custody_retains_no_app_owner(
         .unwrap();
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             &json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {}
             }),
