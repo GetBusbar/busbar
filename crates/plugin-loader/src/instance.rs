@@ -932,6 +932,18 @@ impl Registry {
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
     ) -> BoxFut<'_, Result<Arc<dyn HookPort>, OpenError>> {
+        let opened = self.open_hook_reserved_with_limits(prepared, needs, refs);
+        Box::pin(async move { opened.await.map(|(port, _)| port) })
+    }
+
+    /// The root freezes hook policy after open, including the instance's settled call limit.
+    /// Return that immutable metadata with the port rather than a later registry lookup.
+    pub fn open_hook_reserved_with_limits<N: Needs>(
+        &self,
+        prepared: PreparedInstance,
+        needs: &Arc<N>,
+        refs: &Arc<dyn RefSource>,
+    ) -> BoxFut<'_, Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -942,6 +954,7 @@ impl Registry {
                 .await?;
             let proxy =
                 busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let limits = proxy.instance().limits;
             let points = opened
                 .described
                 .items
@@ -960,7 +973,7 @@ impl Registry {
                 points,
                 opened.errors,
             ));
-            Ok(port)
+            Ok((port, limits))
         })
     }
 

@@ -1396,13 +1396,30 @@ impl std::ops::Deref for DataRoutes {
 impl DataRoutes {
     pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
         let snapshot = Arc::new(snapshot);
-        let generation = match snapshot.served.planes.first() {
-            Some(plane) => {
+        let kernel = snapshot
+            .served
+            .planes
+            .first()
+            .map(|plane| Arc::clone(&plane.kernel))
+            .or_else(|| {
+                snapshot
+                    .served
+                    .ports
+                    .first()
+                    .map(|seat| Arc::clone(seat.driver.core()))
+            });
+        let generation = match kernel {
+            Some(kernel) => {
                 if snapshot
                     .served
                     .planes
                     .iter()
-                    .any(|other| !Arc::ptr_eq(&plane.kernel, &other.kernel))
+                    .any(|other| !Arc::ptr_eq(&kernel, &other.kernel))
+                    || snapshot
+                        .served
+                        .ports
+                        .iter()
+                        .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
                 {
                     return Err("listener planes do not share the same core services".into());
                 }
@@ -1418,7 +1435,7 @@ impl DataRoutes {
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
                     busbar_kernel::host_services::ServingGeneration::new(
-                        Arc::clone(&plane.kernel),
+                        kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
                             runtime,
@@ -1433,6 +1450,59 @@ impl DataRoutes {
             snapshot,
             generation,
         }))
+    }
+
+    /// Register the actual billed native unit against this selected immutable dispatch snapshot.
+    /// The exact driver Caller and checked unit record jointly create execution authority.
+    pub(crate) fn native_unit(
+        self: &Arc<Self>,
+        seat: &busbar_kernel::plane_driver::port::PortSeat,
+        unit: &busbar_kernel::plane_driver::port::Unit,
+        ctx: &PlaneReqCtx,
+    ) -> Result<NativeUnit, &'static str> {
+        let generation = self
+            .generation
+            .as_ref()
+            .ok_or("native route has no complete generation")?;
+        let app = Arc::clone(&ctx.engine)
+            .downcast::<busbar_kernel::state::App>()
+            .map_err(|_| "native invocation needs its selected App snapshot")?;
+        let key = ctx
+            .gov
+            .as_ref()
+            .and_then(|gov| gov.key.clone())
+            .ok_or("native billed invocation has no verified key")?;
+        if !Arc::ptr_eq(generation.core(), seat.driver.core()) {
+            return Err("native invocation belongs to another core services owner");
+        }
+        let id = unit.ctx.key.get();
+        if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
+            return Err("native unit is already registered");
+        }
+        generation.core().units().admitted_for(
+            id,
+            seat.driver.caller(),
+            busbar_kernel::host_units::UnitRecord {
+                principal: Some(key),
+                depth: 0,
+            },
+        );
+        let context = match seat.driver.invocation(Arc::clone(generation), id) {
+            Ok(context) => context,
+            Err(why) => {
+                generation.core().units().ended(id);
+                return Err(why);
+            }
+        };
+        if let Some(credential) = &ctx.caller_credential {
+            generation.core().units().lend(id, credential.clone());
+        }
+        generation.core().units().ticketed(id, ctx.ticket.clone());
+        self.frames_lock().insert(id, app);
+        Ok(NativeUnit {
+            context,
+            routes: Arc::clone(self),
+        })
     }
 
     fn invocation_owner(
@@ -1471,6 +1541,19 @@ pub(crate) struct DispatchSnapshot {
 pub(crate) struct UnitFrame<'r> {
     pub(crate) routes: &'r DataRoutes,
     pub(crate) unit: u64,
+}
+
+pub(crate) struct NativeUnit {
+    pub(crate) context: busbar_kernel::host_services::InvocationContext,
+    routes: Arc<DataRoutes>,
+}
+
+impl Drop for NativeUnit {
+    fn drop(&mut self) {
+        let id = self.context.unit();
+        self.context.generation().core().units().ended(id);
+        self.routes.frames_lock().remove(&id);
+    }
 }
 
 impl Drop for UnitFrame<'_> {

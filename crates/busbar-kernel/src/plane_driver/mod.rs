@@ -12,6 +12,7 @@ mod govern;
 pub(crate) mod hooks;
 pub mod host;
 mod money;
+pub mod native_hook_bindings;
 pub mod plane_judge;
 pub mod port;
 pub mod port_admin;
