@@ -226,6 +226,7 @@ fn walk_secret_refs_with_boot_token<'a>(
     if let Some(crate::oauth_as::seam::CheckedAsBlock {
         block: _,
         secret_refs,
+        admin_origin: _,
     }) = oauth_as
     {
         refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));

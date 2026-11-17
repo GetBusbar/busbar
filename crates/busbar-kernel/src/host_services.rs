@@ -3928,8 +3928,8 @@ impl HostServices for KernelServices {
             Err(Unjudged::UnknownCounterparty) => return Stored::refused(NOT_A_COUNTERPARTY),
         };
         let sigs = match sigs {
-            [] => serde_json::Value::Null,
-            json => match serde_json::from_slice(json) {
+            [] => busbar_contract::json::Value::new(),
+            json => match busbar_contract::json::parse_value(json) {
                 Ok(v) => v,
                 Err(_) => return Stored::refused(SIGNATURES_NOT_JSON),
             },

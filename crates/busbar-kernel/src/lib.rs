@@ -637,6 +637,23 @@ pub fn base_data_core_lines(
     .collect()
 }
 
+/// The core routes the ADMIN listener declares, with their bars: the admin listener's counterpart
+/// of [`base_data_core_lines`].
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn admin_core_lines() -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    off_path::router::admin_routes(&crate::plugin_routes::PluginRouteTable::default())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.method, r.auth))
+        .collect()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
     app.boot_route_paths.iter().cloned().collect()
