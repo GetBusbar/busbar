@@ -212,6 +212,9 @@ fn judge_with_plugins(
     if let Err(security_errors) = validate_bootstrap_security(cfg) {
         errors.extend(security_errors);
     }
+    // #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener with neither TLS nor its explicit
+    // acceptance refuses, loopback included, with the one-line remedy. Nothing writes the acceptance.
+    errors.extend(crate::config::listener_acceptance::refusals(cfg));
     if cfg.auth.is_none() {
         errors.push(open_relay_by_omission(&cfg.listen));
     }
