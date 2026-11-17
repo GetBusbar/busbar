@@ -24,11 +24,12 @@ use crate::guest::{Claimant, GuestList, Line, Matched};
 use crate::limits::process_admission::{AdmissionClass, ByteCredit, RequestLease};
 use crate::plane_driver::port_routes::Mounted;
 use crate::router::PreparedListener;
-use crate::state::{App, AppHandle, InvocationId};
+use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
     Missing,
+    Generation,
     Slot,
     Transport,
     Routes,
@@ -729,6 +730,48 @@ impl CompletingPhysicalRequest {
         &self.binding
     }
 
+    /// Complete only a canonical core route explicitly declared unauthenticated. The actual
+    /// publication gate still decides which generation owns this operation; no plane class
+    /// or absent credential can enter this path.
+    pub fn complete_public(mut self) -> Result<PhysicalPublicExecution, ArrivalRefusal> {
+        if !matches!(
+            self.binding.route.target(),
+            RouteTarget::Core(RouteAuth::None)
+        ) {
+            return Err(ArrivalRefusal::Class);
+        }
+        self.binding.check_live()?;
+        let lease = self
+            .binding
+            .handle
+            .admit_current(self.binding.app(), self.binding.invocation(), |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .map_err(|_| ArrivalRefusal::Binding(BindError::Generation))?;
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Executing {
+                deadline: self.binding.deadline,
+            };
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalPublicExecution {
+            binding: self.binding.clone(),
+            lease,
+        })
+    }
+
     fn check_admin_route(&self) -> Result<(), ArrivalRefusal> {
         if self.binding.request.class() != AdmissionClass::Operator
             || !matches!(
@@ -880,6 +923,28 @@ impl PhysicalAdminExecution {
     }
 }
 impl Drop for PhysicalAdminExecution {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
+    }
+}
+
+/// A public core operation's actual physical/publication custody; no principal or plane proof.
+pub struct PhysicalPublicExecution {
+    binding: Arc<RequestBinding>,
+    lease: AdmissionLease,
+}
+impl PhysicalPublicExecution {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+    pub fn lease(&self) -> &AdmissionLease {
+        &self.lease
+    }
+    pub fn check_executing(&self) -> Result<(), ArrivalRefusal> {
+        self.binding.check_executing()
+    }
+}
+impl Drop for PhysicalPublicExecution {
     fn drop(&mut self) {
         self.binding.state.cancel();
     }

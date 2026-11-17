@@ -692,7 +692,11 @@ fn native_physical_admin_carrier_clone_shares_one_pending_right() {
 
 fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {
     let credit = request.binding().request().try_reserve(0).unwrap();
-    request.finish_input(SecureVec::new(), credit).unwrap().begin_completion().unwrap()
+    request
+        .finish_input(SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
 }
 
 #[test]
@@ -701,7 +705,10 @@ fn native_physical_public_completion_requires_exact_public_core_class() {
         let f = fixture_for(AdmissionClass::Data, auth);
         let conn = f.listener.connect(accepted());
         let (request, _owner) = arrive(&f, &conn, 1);
-        assert!(matches!(complete_input(request).complete_public(), Err(ArrivalRefusal::Class)));
+        assert!(matches!(
+            complete_input(request).complete_public(),
+            Err(ArrivalRefusal::Class)
+        ));
     }
 }
 
@@ -712,7 +719,10 @@ async fn native_physical_public_completion_obeys_actual_publication_gate() {
     let (request, _owner) = arrive(&f, &conn, 1);
     let pending = complete_input(request);
     f.listener.handle.swap(Arc::new((*f.app).clone())).await;
-    assert!(matches!(pending.complete_public(), Err(ArrivalRefusal::Binding(_))));
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Binding(_))
+    ));
 }
 
 #[tokio::test]
@@ -738,5 +748,8 @@ fn native_physical_public_completion_cannot_follow_reset() {
     let (request, owner) = arrive(&f, &conn, 1);
     let pending = complete_input(request);
     conn.cancel(&owner);
-    assert!(matches!(pending.complete_public(), Err(ArrivalRefusal::Cancelled)));
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Cancelled)
+    ));
 }
