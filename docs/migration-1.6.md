@@ -260,6 +260,39 @@ Add it after stopping 1.5.5, which does not understand the new field. Store DSN 
 implementation-specific error codes belong to the selected kind's own documentation; do not
 assume a code emitted by one implementation applies to another.
 
+## HTTP endpoints and spend refusals
+
+Configure clients to call a declared endpoint, including any explicitly configured prefix.
+1.6.0 does not infer an inference endpoint from an arbitrary path suffix or an Anthropic
+header. For example, `/v1/chat/completions` is declared; `/x/v1/chat/completions` returns404
+when `/x` is not configured. Unknown paths return the ordinary audited404 without an
+upstream request. Deliberately declared named-pool and provider/model paths remain routes;
+their path parameters do not establish a general catch-all. A missing model or price on a
+declared route remains a separate request error.
+
+When an operator-configured monetary spend cap is exhausted, the LLM plane uses the caller's
+native error contract:
+
+| Caller API | HTTP status | Error body |
+|---|---:|---|
+| Anthropic Messages | 400 | `invalid_request_error` |
+| OpenAI Chat Completions | 429 | `insufficient_quota` |
+| OpenAI Responses | 429 | `insufficient_quota` |
+| Gemini | 429 | `RESOURCE_EXHAUSTED` |
+| Cohere | 402 | Native message envelope |
+| Bedrock Runtime | 400 | `ServiceQuotaExceededException` |
+
+Anthropic's spend-cap status changes from429 to400 and Cohere's from429 to402. The
+Anthropic error type is `invalid_request_error`; a local operator cap is distinct from an
+upstream payment failure. These are caller API conventions: HTTP itself reserves402 for
+future use and does not require it for every monetary limit.
+
+Request/token/concurrency quota limits remain429. For a spend refusal, review the configured
+limit and its reset period before retrying. Busbar supplies `Retry-After` only when the
+policy provides a known wait; a429 alone does not promise that a short retry will succeed.
+Refusals retain the normal audit and no-upstream-call behavior. Correlated policy detail is
+available through authorized operational diagnostics, without new proprietary client fields.
+
 ## Administrative clients
 
 Paths below are relative to `/api/v1/admin`, unless written in full. Use the running
@@ -312,6 +345,11 @@ Card history follows the Store's durability. An ephemeral Store loses it on rest
 rely on the retired host journal for rate-card recovery.
 
 ## Release-candidate checks
+
+- Exercise the HTTP spend-cap matrix above through the actual listener and live policy.
+  Confirm declared routes and configured prefixes, unknown/unconfigured paths returning404,
+  and refusal audit/no-upstream-call behavior. Renderer-only tests do not establish these
+  end-to-end guarantees.
 
 This section records required checks while 1.6.0 is in development. These are **not instructions
 to add pre-release keys**. Replace this section with verified final behavior before release:
