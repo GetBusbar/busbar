@@ -130,7 +130,6 @@ impl AdminService {
                 .app
                 .config_generation
                 .load(std::sync::atomic::Ordering::Acquire),
-            config_persistence: self.app.overlay_path.is_some(),
             warnings,
         })
     }

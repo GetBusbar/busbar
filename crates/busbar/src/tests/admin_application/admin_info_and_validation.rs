@@ -61,7 +61,30 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "info must report the build version"
     );
 
-    assert_eq!(body["config_persistence"], true);
+    assert!(
+        body.get("config_persistence").is_none(),
+        "config_persistence moved to the core/durability state store.persistence (section 10.1): {body:?}"
+    );
+    let durability = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/kinds/core/instances/durability"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(durability.status().as_u16(), 200);
+    let durability = json::parse_value(&durability.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        durability["state"],
+        json::json!({"store": {"persistence": true}}),
+        "whether API config changes survive restart is the core/durability state: {durability:?}"
+    );
+    assert_eq!(
+        durability["state_schema"]["properties"]["store"]["properties"]["persistence"]["type"],
+        "boolean",
+        "core/durability states its own state schema: {durability:?}"
+    );
     assert_eq!(
         body["warnings"],
         json::json!([]),
@@ -289,7 +312,6 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
         members,
         [
             "config_generation",
-            "config_persistence",
             "deployment_id",
             "incarnation",
             "node_id",
