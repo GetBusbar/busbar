@@ -374,7 +374,7 @@ pub(super) async fn prepare(
     };
     let lease = snapshot.request().clone();
     let now_s = snapshot.now_s();
-    let (head_tx, head_rx) = oneshot::channel();
+    let (head_tx, mut head_rx) = oneshot::channel();
     let (body_tx, body_rx) = mpsc::channel(1);
     let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let sink = Arc::new(Sink {
@@ -427,7 +427,26 @@ pub(super) async fn prepare(
         state.body.take();
         ran
     });
-    let head = head_rx.await;
+    // The listener retains this future until completion. On cancellation we close the
+    // unpublished response receivers, then join the actual blocking Task before settling.
+    // Dropping a JoinHandle cannot establish that an upstream effect stopped.
+    let head = tokio::select! {
+        biased;
+        head = &mut head_rx => Some(head),
+        () = binding.cancelled() => None,
+        () = tokio::time::sleep_until(deadline.into()) => None,
+    };
+    let Some(head) = head else {
+        drop(head_rx);
+        drop(body_rx);
+        let ran = work.await.unwrap_or(false);
+        if let Some(admitted) = pending.admitted() {
+            billing
+                .settle_admitted(&admitted.request, end_of(502, ran))
+                .map_err(|_| InputError::Invalid)?;
+        }
+        return Err(InputError::Invalid);
+    };
     let (response, status, ran, work) = match head {
         Ok((status, headers, credit)) => {
             let mut response = Response::new(Body::new(DataBody {
