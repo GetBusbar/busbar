@@ -508,7 +508,8 @@ impl NativeDataAllocation {
             plan.cost.clone(),
             authorization.prepared.snapshot().now_s(),
         )
-        .map_err(|_| DataRefused::Unit)?;
+        .map_err(|_| DataRefused::Unit)?
+        .with_selection(Arc::clone(&authorization.selected));
         let audit = crate::teller::native_data_audit::NativeAuditState::new(
             registration.context.clone(),
             authorization.key.clone(),

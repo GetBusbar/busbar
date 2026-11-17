@@ -616,10 +616,38 @@ impl SelectedResources {
     pub fn inventory(&self) -> &Arc<ResourceInventory> {
         &self.inventory
     }
+    /// Every selected tuple is within the key's grant. An empty selection never admits (K1).
     pub fn scope_allowed(&self, key: &VirtualKey) -> bool {
-        self.scopes
-            .iter()
-            .all(|(kind, value)| key.scope_allowed(kind, value))
+        !self.scopes.is_empty()
+            && self
+                .scopes
+                .iter()
+                .all(|(kind, value)| key.scope_allowed(kind, value))
+    }
+    /// The admitted descriptors of the selected tuples only.
+    fn selected_descriptors(&self) -> impl Iterator<Item = &AdmittedForwardDescriptor> {
+        self.inventory
+            .descriptors
+            .values()
+            .filter(|descriptor| {
+                self.scopes.iter().any(|(kind, value)| {
+                    *kind == descriptor.scope.kind && *value == descriptor.scope.value
+                })
+            })
+            .map(Arc::as_ref)
+    }
+    /// A keyed walk grant: the walk `pool` member `member` is one of the selected tuples'
+    /// own resolved targets (K2). Selection names the walk; it never widens it.
+    pub fn grants_member(&self, pool: &str, member: &str) -> bool {
+        self.selected_descriptors().any(|descriptor| {
+            descriptor.candidate.pool.as_ref() == pool
+                && descriptor.candidate.qualified_member.as_ref() == member
+        })
+    }
+    /// A registration W_UPSTREAM is admitted only when a selected tuple resolves to it (K2).
+    pub fn grants_upstream(&self, upstream: &str) -> bool {
+        self.selected_descriptors()
+            .any(|descriptor| descriptor.candidate.upstream.as_ref() == upstream)
     }
     /// Resolve the actual host-selected target before the plane encodes exchange zero.
     /// Method/path cannot select authority: two admitted descriptors with the same

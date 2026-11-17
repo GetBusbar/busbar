@@ -15,6 +15,7 @@ use super::provider_catalog::{CatalogPlan, RouteKind};
 use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
+use crate::resource_admission::SelectedResources;
 
 #[path = "request_registration.rs"]
 mod registration;
@@ -114,13 +115,35 @@ impl RequestRoutes {
         })
     }
 
+    /// Whether `key` may use the operator domain `name` (K2). A declared kind checks the
+    /// key's grant of that kind. With no declared kind, a keyed unit is admitted only by an
+    /// unrestricted key or by its own non-empty authorized selection, which then narrows
+    /// the walk to the selected tuples; `None` never means allow.
+    fn scope_admits(
+        &self,
+        key: &VirtualKey,
+        selection: Option<&SelectedResources>,
+        name: &str,
+    ) -> bool {
+        if selection.is_some_and(|selected| !selected.scope_allowed(key)) {
+            return false;
+        }
+        match &self.scope_kind {
+            Some(kind) => key.scope_allowed(kind, name),
+            None => selection.is_some() || key.allowed_scopes.is_none(),
+        }
+    }
+
     // These resolved producers describe ordinary pool/direct scope. A descriptor requiring
     // member-granted semantics needs its typed producer before root can assemble this path.
-    fn member_grants(&self, key: &VirtualKey) -> BTreeMap<String, Vec<String>> {
-        let allowed = |name: &str| {
-            self.scope_kind
-                .as_ref()
-                .is_none_or(|kind| key.scope_allowed(kind, name))
+    fn member_grants(
+        &self,
+        key: &VirtualKey,
+        selection: Option<&SelectedResources>,
+    ) -> BTreeMap<String, Vec<String>> {
+        let allowed = |name: &str| self.scope_admits(key, selection, name);
+        let selected = |walk: &str, member: &str| {
+            selection.is_none_or(|selected| selected.grants_member(walk, member))
         };
         let mut grants = BTreeMap::new();
         if let Some(catalog) = &self.catalog {
@@ -136,6 +159,7 @@ impl RequestRoutes {
                     .members
                     .iter()
                     .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.name()))
+                    .filter(|member| selected(walk.as_str(), member.as_str()))
                     .collect();
                 if !members.is_empty() {
                     grants.insert(walk.clone(), members);
@@ -148,6 +172,7 @@ impl RequestRoutes {
                     .members
                     .iter()
                     .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.upstream))
+                    .filter(|member| selected(registration.pool.as_str(), member.as_str()))
                     .collect();
                 if !members.is_empty() {
                     grants.insert(registration.pool.clone(), members);
@@ -216,6 +241,7 @@ pub struct RequestAllocation {
     key: Arc<VirtualKey>,
     cost: Arc<CostModel>,
     arrived: u64,
+    selection: Option<Arc<SelectedResources>>,
     armed: bool,
 }
 impl RequestAllocation {
@@ -237,11 +263,18 @@ impl RequestAllocation {
             key,
             cost,
             arrived,
+            selection: None,
             armed: true,
         })
     }
     pub fn context(&self) -> &InvocationContext {
         &self.context
+    }
+    /// Bind this native unit's authorized resource selection: its walk grants become the
+    /// selected tuples' own targets, and a registration outside them is refused (K2).
+    pub fn with_selection(mut self, selected: Arc<SelectedResources>) -> Self {
+        self.selection = Some(selected);
+        self
     }
     pub fn forward(
         self,
@@ -274,7 +307,7 @@ impl RequestAllocation {
             RequestDomain::Local => "",
         };
         let grants = if let Some((_, walk_key)) = &walk {
-            let grants = routes.member_grants(&self.key);
+            let grants = routes.member_grants(&self.key, self.selection.as_deref());
             if !grants.contains_key(walk_key) {
                 return Err(AdmissionError::Scope);
             }

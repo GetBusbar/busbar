@@ -637,3 +637,118 @@ fn undeclared_scope_kind_never_admits_a_scoped_key_registration() {
         .registration(&routes, None, "command")
         .is_ok());
 }
+
+/// One selected-route rig: registration upstreams `a` and `b` walk as seat pool `seat`, and
+/// the inventory maps `(pool, a)` and `(pool, b)` to exactly those members.
+fn selected_rig(selected: &str) -> (RequestRoutes, Arc<SelectedResources>) {
+    use crate::resource_admission::{ForwardFact, FrozenRequest, ResourceFact, ResourceInventory};
+    use crate::upstreams::Upstreams;
+    use busbar_contract::records::ScopeRef;
+    let upstreams = table(&[
+        definition("a", false),
+        definition("b", false),
+        definition("command", true),
+    ]);
+    let registration = Arc::new(SeatPool::of("seat", &upstreams).unwrap());
+    let routes = RequestRoutes::new("seat", None, None, Some(registration))
+        .unwrap()
+        .with_registrations(Arc::clone(&upstreams))
+        .unwrap();
+    let fact = |value: &str, descriptor: u32| ResourceFact {
+        scope: ScopeRef::pool(value),
+        forwards: vec![ForwardFact {
+            descriptor,
+            pool: "seat".into(),
+            member: format!("seat{PLANE_LANE_SEP}{value}").into(),
+            upstream: value.into(),
+            dialect: "".into(),
+            model: "".into(),
+            method: "POST".into(),
+            target: "/generate".into(),
+        }],
+    };
+    let inventory = ResourceInventory::build(
+        &Caller::for_test(Arc::from("seat"), KindCode::Plane),
+        7,
+        vec!["pool".into()],
+        vec![fact("a", 1), fact("b", 2)],
+        Arc::clone(&upstreams) as Arc<dyn Upstreams>,
+        crate::plane_driver::port_egress::upstream_targets("seat", upstreams),
+        1 << 20,
+    )
+    .unwrap();
+    let mounted = crate::plane_driver::port_routes::Mounted {
+        route: 3,
+        methods: 4,
+        flags: 0,
+        auth: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        effective: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        pattern: "/requests".into(),
+        cred_header: None,
+        catalog: false,
+        resource_kinds: vec!["pool".into()],
+    };
+    let mut wire = busbar_plugin_abi::records::Reply::new();
+    busbar_plugin_abi::resource_admission::write_selection(
+        &mut wire,
+        &[busbar_plugin_abi::resource_admission::Scope {
+            kind: "pool",
+            value: selected,
+        }],
+    )
+    .unwrap();
+    let request = FrozenRequest::new(
+        crate::state::InvocationId::from_request_id(std::num::NonZeroU64::new(1).unwrap()),
+        3,
+        "POST".into(),
+        "/requests".into(),
+        "".into(),
+        vec![],
+        b"request".to_vec(),
+    );
+    let selected = inventory
+        .select_wire(request, &mounted, wire.as_bytes())
+        .unwrap();
+    (routes, Arc::new(selected))
+}
+
+/// Test 3, green half (K2): a native keyed walk is granted the selected tuples' members only.
+#[test]
+fn a_selection_narrows_the_keyed_walk_to_the_selected_tuples() {
+    let (routes, selected) = selected_rig("a");
+    let (ctx, _lease) = context_with_key(47, pool_scoped("scoped", &["a"]));
+    let walk = RequestWalk::new(&ctx).unwrap();
+    let receipt = allocation(ctx)
+        .with_selection(Arc::clone(&selected))
+        .forward(&routes, &walk, None)
+        .unwrap();
+    assert_eq!(
+        receipt.member_grants(),
+        &BTreeMap::from([("seat".to_owned(), vec![format!("seat{PLANE_LANE_SEP}a")])]),
+        "the walk must not reach the unselected member b"
+    );
+    // The same selection never admits a key that does not hold it.
+    let (ctx, _lease) = context_with_key(48, pool_scoped("other", &["b"]));
+    let walk = RequestWalk::new(&ctx).unwrap();
+    assert_eq!(
+        allocation(ctx)
+            .with_selection(selected)
+            .forward(&routes, &walk, None)
+            .err(),
+        Some(AdmissionError::Scope)
+    );
+}
+
+/// Test 3, green half (K2): W_UPSTREAM outside the selection is refused, for any key.
+#[test]
+fn a_selection_refuses_a_registration_outside_it() {
+    let (routes, selected) = selected_rig("a");
+    let (ctx, _lease) = context(49);
+    assert_eq!(
+        allocation(ctx)
+            .with_selection(selected)
+            .registration(&routes, None, "command")
+            .err(),
+        Some(AdmissionError::Scope)
+    );
+}
