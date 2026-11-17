@@ -694,6 +694,48 @@ mod inspect_tests {
         assert!(stated.settings_schema.is_none());
     }
 
+    /// #443 (DES-443 r3, A-F3): inspecting a Trusted native image that is never installed leaves no resident
+    /// mapping: it is described, closed on a worker and unloaded (or pinned), never admitted for life.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_inspected_image_is_not_left_resident() {
+        use crate::root::loader::sign::{sign, PublisherKey, PublisherTrust, SigningKey};
+        let path = crate::root::test_plugins::native_schema_bomb_path().unwrap_or_else(|| {
+            crate::root::test_plugins::missing(
+                "native_schema_bomb",
+                crate::root::test_plugins::BUILD_LOADER_EXAMPLES,
+            )
+        });
+        let lib = std::fs::read(&path).expect("the bomb image reads");
+        let key = SigningKey::from_bytes(&[0x44; 32]);
+        let manifest = crate::root::test_plugins::native_manifest("store", &path, "acme");
+        let name = manifest.name.clone();
+        let manifest = sign(&key, manifest, &lib);
+        let tarball = crate::root::loader::tarball::package(&manifest, "lib.so", &lib)
+            .expect("the signed bomb packs");
+        let mut policy = TrustPolicy::default();
+        policy.publishers.insert(
+            "acme".into(),
+            PublisherTrust {
+                plugins: [name].into_iter().collect(),
+                keys: vec![PublisherKey {
+                    key: key.verifying_key(),
+                    revoked: false,
+                }],
+            },
+        );
+        let refused = inspect_with_policy(&tarball, &policy);
+        assert!(
+            refused.is_err(),
+            "the Trusted bomb is described and refused"
+        );
+        let sha256 = busbar_contract::crypto::sha256(&lib);
+        assert!(
+            !crate::root::loader::admit::is_resident(&sha256),
+            "an inspected image that is never installed is not left resident"
+        );
+    }
+
     #[test]
     fn a_rejected_candidate_is_shown_from_its_manifest_and_never_loaded() {
         let (tarball, _) = bomb_tarball();

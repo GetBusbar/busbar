@@ -313,6 +313,16 @@ fn resident() -> &'static Mutex<HashMap<[u8; 32], Resident>> {
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Whether the image with this SHA-256 is resident: admitted, and never unloaded (I13).
+#[cfg(unix)]
+#[must_use]
+pub fn is_resident(sha256: &[u8; 32]) -> bool {
+    resident()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(sha256)
+}
+
 /// The manifest's signed `former_names`, joined as the header states them.
 #[cfg(unix)]
 fn joined(manifest: &SignedManifest) -> String {
