@@ -11,6 +11,7 @@ mod far_end;
 mod govern;
 pub(crate) mod hooks;
 pub mod host;
+pub mod image_identity;
 mod money;
 pub mod native_hook_bindings;
 pub mod plane_judge;
