@@ -303,6 +303,7 @@ struct InputSlot {
     stream: u64,
     deadline: Option<Instant>,
     body_started: tokio::time::Instant,
+    body_deadline: Instant,
     pending: Option<PhysicalRequest>,
     body: Option<InputBody>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
@@ -312,6 +313,16 @@ struct InputSlot {
     held: Option<serving::HeldRequest>,
 }
 impl InputSlot {
+    fn next_deadline(&self) -> Option<Instant> {
+        if self.pending.is_some() {
+            Some(
+                self.deadline
+                    .map_or(self.body_deadline, |at| at.min(self.body_deadline)),
+            )
+        } else {
+            self.deadline
+        }
+    }
     fn body_bounds_exceeded(&self) -> bool {
         let elapsed = u64::try_from(self.body_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let bytes = self.body.as_ref().map_or(0, |body| body.bytes.len() as u64);
@@ -383,7 +394,6 @@ impl NativeIngress {
                 let total_deadline = Instant::now()
                     .checked_add(crate::root::listener::total_body_deadline())
                     .ok_or(InputError::Capacity)?;
-                let deadline = Some(deadline.map_or(total_deadline, |at| at.min(total_deadline)));
                 // Host stream identities are monotone and never recycled, including refused heads.
                 if stream <= self.last_head {
                     return Err(InputError::Invalid);
@@ -410,6 +420,7 @@ impl NativeIngress {
                     stream,
                     deadline,
                     body_started,
+                    body_deadline: total_deadline,
                     pending: Some(pending),
                     body: Some(body),
                     owner: Arc::new(owner),

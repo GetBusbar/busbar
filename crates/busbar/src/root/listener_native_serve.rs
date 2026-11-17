@@ -269,7 +269,11 @@ async fn supervise(
         if driver_done && preparing.is_empty() && responses.is_empty() {
             break;
         }
-        let request_deadline = ingress.slots.iter().filter_map(|slot| slot.deadline).min();
+        let request_deadline = ingress
+            .slots
+            .iter()
+            .filter_map(super::InputSlot::next_deadline)
+            .min();
         tokio::select! {
             biased;
             () = async {
