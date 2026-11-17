@@ -112,6 +112,35 @@ impl Drop for SelectedTerminalReceipt {
 }
 
 impl NativeRequestMoney {
+    /// Root binds the actual registered response to its original checkpoint attachment. This
+    /// loan first proves the journal uses the same real Store as the original governor; root
+    /// then compares its captured audit node/incarnation/nonce against the same registered ACK.
+    pub fn checkpoint_for_response(
+        &self,
+        journal: &crate::persistence::journal::runtime::RuntimeJournal,
+    ) -> Result<Arc<UnitCheckpoint>, NativeAdmissionError> {
+        let core = self
+            .money
+            .gov
+            .core_store_handle()
+            .map_err(NativeAdmissionError::Custody)?;
+        if !journal.is_bound_to(&core) {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let all = self.money.shard(self.request.unit());
+        let open = all
+            .get(&self.request.unit())
+            .ok_or(NativeAdmissionError::NotLive)?;
+        self.check_open_identity(open)
+            .map_err(|_| NativeAdmissionError::NotLive)?;
+        Ok(open
+            .native
+            .as_ref()
+            .ok_or(NativeAdmissionError::Declaration)?
+            .checkpoint()
+            .clone())
+    }
+
     /// Root lends both values from the same privately registered response owner. That owner
     /// binds the full ACK key to the original admission and captured audit identity before output.
     /// This consumer additionally checks the exact retained admission and requires a frozen
