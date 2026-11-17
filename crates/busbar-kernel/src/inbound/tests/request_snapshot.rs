@@ -26,6 +26,67 @@ fn input<'a>(
 }
 
 #[test]
+fn http_header_values_and_uri_share_original_backing_through_clones() {
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let headers = [
+        ("x-token", b"first".as_slice()),
+        ("x-other", b"".as_slice()),
+        ("x-token", b"second".as_slice()),
+    ];
+    let snapshot = ChargedRequestSnapshot::capture(input(&headers), &request).unwrap();
+    let charged = budget.used();
+    let mut projected = snapshot.header_values();
+    assert_eq!(projected.len(), headers.len());
+    for ((name, bytes), (original_name, original_value)) in
+        projected.clone().zip(snapshot.headers())
+    {
+        assert_eq!(name, original_name);
+        assert_eq!(bytes.as_ref(), original_value);
+        if !bytes.is_empty() {
+            assert_eq!(bytes.as_ptr(), original_value.as_ptr());
+        }
+    }
+    let first = http::HeaderValue::from_maybe_shared(projected.next().unwrap().1).unwrap();
+    assert_eq!(
+        first.as_bytes().as_ptr(),
+        snapshot.headers().next().unwrap().1.as_ptr()
+    );
+    let retained_value = first.clone();
+    let target = snapshot.target_bytes();
+    assert_eq!(target.as_ptr(), snapshot.target().as_ptr());
+    let uri = http::Uri::from_maybe_shared(target).unwrap();
+    assert_eq!(uri.path_and_query().unwrap().as_str(), "/original?");
+    assert_eq!(
+        uri.path_and_query().unwrap().as_str().as_ptr(),
+        snapshot.target().as_ptr()
+    );
+    let retained_uri = uri.clone();
+    drop(projected);
+    drop((snapshot, request, first, uri));
+    assert_eq!(budget.used(), charged);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(retained_value);
+    assert_eq!(budget.used(), charged);
+    drop(retained_uri);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn invalid_http_header_projection_releases_its_snapshot_share() {
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let headers = [("x-token", b"bad\r\nvalue".as_slice())];
+    let snapshot = ChargedRequestSnapshot::capture(input(&headers), &request).unwrap();
+    let bytes = snapshot.header_values().next().unwrap().1;
+    drop((snapshot, request));
+    assert!(http::HeaderValue::from_maybe_shared(bytes).is_err());
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
 fn native_snapshot_preserves_all_original_fields_and_duplicate_header_order() {
     let budget = ProcessAdmission::with_limits(2, 4096, 0);
     let request = budget.try_enter(AdmissionClass::Data).unwrap();
