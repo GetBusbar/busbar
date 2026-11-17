@@ -19,7 +19,11 @@ fn handshake_metadata_retains_actual_optional_values_and_original_storage() {
     assert_eq!(absent.alpn(), None);
     assert_eq!(absent.server_name(), None);
     let binary = HandshakeInfo::capture(&source, Some(&[255]), None).unwrap();
-    assert_eq!(binary.alpn(), Some([255].as_slice()), "transport validation owns UTF8 refusal");
+    assert_eq!(
+        binary.alpn(),
+        Some([255].as_slice()),
+        "transport validation owns UTF8 refusal"
+    );
 }
 
 use std::collections::VecDeque;
