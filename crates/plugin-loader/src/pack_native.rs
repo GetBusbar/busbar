@@ -36,6 +36,9 @@ pub fn complete(
     mut manifest: Manifest,
     abi_assertion: Option<u32>,
 ) -> Result<Manifest, String> {
+    if bytes.len() as u64 > crate::admit::MAX_IMAGE_BYTES {
+        return Err("pack image exceeds 256 MiB".into());
+    }
     let stamp = crate::sign::native_stamp(bytes)?.ok_or("native image has no stamp")?;
     let kind = crate::admit::compatible(&stamp, &crate::admit::CryptoFacts::FACADE)
         .map_err(|e| e.to_string())?;

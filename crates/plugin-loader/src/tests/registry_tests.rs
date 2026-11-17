@@ -46,6 +46,20 @@ fn native_archives_are_not_legacy_supersession_candidates() {
         assert!(scan_and_validate(&dir, &policy(&release)).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    let dir = tmpdir("native-invalid-is-not-outdated");
+    let mut invalid = native;
+    invalid.abi_version += 1;
+    let invalid = crate::sign::seal_test_artifact(&release, invalid, &bytes);
+    write_tarball(&dir, "native.tar.gz", &invalid, &bytes);
+    write_tarball(&dir, "legacy.tar.gz", &legacy, legacy_bytes);
+    assert!(matches!(
+        examine(&dir.join("native.tar.gz"), &policy(&release)),
+        FileOutcome::Invalid { .. }
+    ));
+    assert!(inventory(&dir, &policy(&release))
+        .iter()
+        .all(|row| row.signature != "superseded"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

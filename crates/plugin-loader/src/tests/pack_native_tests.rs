@@ -59,6 +59,17 @@ fn the_real_native_image_supplies_signed_metadata_and_closes_on_the_worker() {
         &crate::test_host::test_trust("native-pack-fixture")
     )
     .is_err());
+    #[cfg(target_os = "linux")]
+    {
+        let signed_wrong_order = crate::test_host::test_sign(forged, &bytes);
+        let refused = crate::admit::admit_bytes(
+            &bytes,
+            &signed_wrong_order,
+            &crate::test_host::test_trust("native-pack-fixture"),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, crate::refusal::RefusalCode::DoorStampMismatch);
+    }
     assert!(crate::sign::evaluate(
         &bytes,
         &signed,
