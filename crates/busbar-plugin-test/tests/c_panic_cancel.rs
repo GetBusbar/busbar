@@ -31,6 +31,7 @@ fn drop_panic_in_cancel_or_close_faults_and_quarantines() {
 mod fixture {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, PoisonError};
 
     use busbar_plugin_abi::fail::refused::R_CONFIG;
     use busbar_plugin_abi::fail::Fail;
@@ -48,19 +49,62 @@ mod fixture {
     /// `release` calls the rig saw.
     pub static RELEASED: AtomicU32 = AtomicU32::new(0);
 
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Event {
+        Cancel {
+            expected: Option<u32>,
+            observed: Option<u32>,
+            watched: bool,
+        },
+        Release,
+    }
+
+    static EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
+
+    pub fn take_events() -> Vec<Event> {
+        std::mem::take(&mut *EVENTS.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
     pub fn released() {
+        EVENTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Event::Release);
         RELEASED.fetch_add(1, Ordering::SeqCst);
     }
 
     struct Fuse {
         armed: bool,
+        slot: Option<u32>,
+        panics: bool,
     }
 
     impl Drop for Fuse {
         fn drop(&mut self) {
             if self.armed {
-                FUSES_BLOWN.fetch_add(1, Ordering::SeqCst);
-                panic!("C-PANIC-CANCEL: a chain future's Drop panics during cancel");
+                use busbar_plugin_abi::host_side::watch;
+                let watched = std::cell::Cell::new(false);
+                watch::scan(
+                    |slot, entry| {
+                        if Some(slot) == self.slot && entry == watch::ENTRY_CANCEL {
+                            watched.set(true);
+                        }
+                        (u32::MAX, 0)
+                    },
+                    |_, _, _, _| {},
+                );
+                EVENTS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(Event::Cancel {
+                        expected: self.slot,
+                        observed: watch::current_slot(),
+                        watched: watched.get(),
+                    });
+                if self.panics {
+                    FUSES_BLOWN.fetch_add(1, Ordering::SeqCst);
+                    panic!("C-PANIC-CANCEL: a chain future's Drop panics during cancel");
+                }
             }
         }
     }
@@ -87,6 +131,31 @@ mod fixture {
     impl Open for Fused {
         async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
             let close_panics = config.with(close_panics)?;
+            let cancel_open = config
+                .with(|bytes| {
+                    busbar_contract::json::parse::<HashMap<String, String>>(bytes)
+                        .map(|map| map.get("open").is_some_and(|v| v == "cancel-panic"))
+                })
+                .map_err(|_| Fail::refused_because(R_CONFIG, "config must be an object"))?;
+            if cancel_open {
+                let mut fuse = Fuse {
+                    armed: true,
+                    slot: busbar_plugin_abi::host_side::watch::current_slot(),
+                    panics: true,
+                };
+                let req = Fetch {
+                    method: "GET",
+                    url: "https://sink.test/open",
+                    headers: &[],
+                    body: &[],
+                    max_body: 64,
+                    trust: TrustHandle::NONE,
+                    cert: None,
+                    egress: egress::OPEN_WEB,
+                };
+                let _ = need::fetch(&req).await;
+                fuse.armed = false;
+            }
             Ok(Fused { close_panics })
         }
 
@@ -110,10 +179,14 @@ mod fixture {
             _h: &'static Host,
             _stream: u32,
             _delivery: u64,
-            _attempt: u32,
+            attempt: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
-            let mut fuse = Fuse { armed: true };
+            let mut fuse = Fuse {
+                armed: true,
+                slot: busbar_plugin_abi::host_side::watch::current_slot(),
+                panics: attempt != 2,
+            };
             let req = Fetch {
                 method: "POST",
                 url: "https://sink.test/batch",
@@ -245,4 +318,237 @@ fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
         1,
         "a finished chain's fuse is disarmed"
     );
+}
+
+fn assert_guarded_cancel_before_release() {
+    let events = fixture::take_events();
+    assert_eq!(
+        events.len(),
+        2,
+        "one cancellation, then one Needs release: {events:?}"
+    );
+    match &events[0] {
+        fixture::Event::Cancel {
+            expected,
+            observed,
+            watched,
+        } => {
+            assert!(expected.is_some(), "the started chain had an entry owner");
+            assert_eq!(
+                observed, expected,
+                "cancellation retains the chain's caller slot"
+            );
+            assert!(
+                *watched,
+                "the scanner sees ENTRY_CANCEL for the original slot"
+            );
+        }
+        other => panic!("cancel must precede release: {other:?}"),
+    }
+    assert_eq!(events[1], fixture::Event::Release);
+    assert_eq!(
+        busbar_plugin_abi::host_side::watch::current_slot(),
+        None,
+        "entry owner restored after cancel"
+    );
+}
+
+fn assert_one_cancel_fault(capture: &crate::min3_store::Capture, name: &str, image_owned: bool) {
+    let events = capture.with_message("plugin_fault: a plugin entry broke the interface contract");
+    assert_eq!(
+        events.len(),
+        1,
+        "cancellation reports exactly one fault: {events:?}"
+    );
+    assert_eq!(events[0].field("instance"), Some(name));
+    assert_eq!(
+        events[0].field("image_owned"),
+        Some(if image_owned { "true" } else { "false" })
+    );
+    assert_eq!(events[0].field("reason"), Some("Panic"));
+}
+
+/// The C-CANCEL-MIGRATE arm uses the real native OPEN chain; migration is owned by OPEN.
+pub(crate) fn assert_open_cancel_fault() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let healthy = open(
+        &registry,
+        &needs,
+        &identity,
+        "healthy-during-open-cancel",
+        b"{}",
+    );
+    let capture = crate::min3_store::Capture::default();
+    let _capture = capture.install();
+    fixture::take_events();
+    let (waker, _) = counting_waker();
+    let spec = spec(
+        &identity,
+        "cancel-open-fault",
+        br#"{"open":"cancel-panic"}"#,
+    );
+    let mut future = registry.open_export(
+        &spec,
+        &needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
+    assert!(
+        poll_once(&mut future, &waker).is_pending(),
+        "OPEN parked at its real FETCH"
+    );
+    drop(future);
+    assert_guarded_cancel_before_release();
+    assert_one_cancel_fault(&capture, "cancel-open-fault", true);
+
+    let lines: [&[u8]; 1] = [b"healthy"];
+    let mut served = healthy.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 1, 1, &lines);
+    assert!(poll_once(&mut served, &waker).is_pending());
+    assert!(
+        matches!(
+            poll_once(&mut served, &waker),
+            Poll::Ready(Ok(Delivered::Acked { accepted: 1, .. }))
+        ),
+        "an image-owned cancellation fault quarantines no existing instance"
+    );
+}
+
+#[test]
+fn a_panicking_chain_cancel_is_watched_and_quarantines_its_instance() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let port = open(&registry, &needs, &identity, "cancel-instance-fault", b"{}");
+    let capture = crate::min3_store::Capture::default();
+    let _capture = capture.install();
+    fixture::take_events();
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"one line"];
+    let mut future = port.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 1, 1, &lines);
+    assert!(poll_once(&mut future, &waker).is_pending());
+    drop(future);
+    assert_guarded_cancel_before_release();
+    assert_one_cancel_fault(&capture, "cancel-instance-fault", false);
+    let mut next = port.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 2, 1, &lines);
+    assert!(
+        matches!(
+            poll_once(&mut next, &waker),
+            Poll::Ready(Err(busbar_ports::PortError::Call(
+                busbar_plugin_abi::fail::CallError::Quarantined
+            )))
+        ),
+        "the faulted instance refuses its next call before plugin entry"
+    );
+    assert!(
+        fixture::take_events().is_empty(),
+        "the terminal refusal creates no second cancellation"
+    );
+}
+
+/// Occupy the entire real output-loan stack, then cancel an independently parked chain.
+/// Cancellation has no output, so it must retain and restore the enclosing entry at this boundary.
+fn nested_output_entries(depth: usize, call: impl FnOnce()) {
+    if depth == 0 {
+        call();
+        return;
+    }
+    let mut output = busbar_plugin_abi::host_side::pool::Pool::global().acquire(4096);
+    busbar_plugin_abi::host_side::entry::guard(0x00FF_FFFE, 7, &mut output, |_| {
+        nested_output_entries(depth - 1, call);
+    })
+    .expect("the declared ACTIVE depth fits");
+}
+
+#[test]
+fn cancel_at_full_output_depth_restores_the_enclosing_watch_on_success_and_fault() {
+    use busbar_plugin_abi::host_side::watch;
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"nested cancellation"];
+    for (attempt, name) in [(2, "nested-cancel-ok"), (1, "nested-cancel-panic")] {
+        let port = open(&registry, &needs, &identity, name, b"{}");
+        fixture::take_events();
+        let mut future = port.deliver(
+            cx(),
+            busbar_plugin_abi::export::STREAM_LOGS,
+            1,
+            attempt,
+            &lines,
+        );
+        assert!(poll_once(&mut future, &waker).is_pending());
+        nested_output_entries(busbar_ffi::host::DEPTH, || {
+            drop(future);
+            assert_eq!(
+                watch::current_slot(),
+                Some(0x00FF_FFFE),
+                "cancel restores the enclosing owner"
+            );
+            let restored = std::cell::Cell::new(false);
+            watch::scan(
+                |slot, entry| {
+                    if slot == 0x00FF_FFFE && entry == 7 {
+                        restored.set(true);
+                    }
+                    (u32::MAX, 0)
+                },
+                |_, _, _, _| {},
+            );
+            assert!(
+                restored.get(),
+                "cancel restores the enclosing watch at full depth"
+            );
+        });
+        assert_guarded_cancel_before_release();
+    }
+}
+
+#[test]
+fn native_cancellation_preserves_an_enclosing_fixed_output_loan() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (waker, _) = counting_waker();
+    let lines: [&[u8]; 1] = [b"fixed loan cancellation"];
+    for (attempt, name) in [(2, "fixed-cancel-ok"), (1, "fixed-cancel-panic")] {
+        let port = open(&registry, &needs, &identity, name, b"{}");
+        fixture::take_events();
+        let mut future = port.deliver(
+            cx(),
+            busbar_plugin_abi::export::STREAM_LOGS,
+            1,
+            attempt,
+            &lines,
+        );
+        assert!(poll_once(&mut future, &waker).is_pending());
+        let mut backing = [0; 32];
+        let address = backing.as_ptr();
+        busbar_ffi::host::OutLease::with_fixed(&mut backing, |lease| {
+            assert!(
+                busbar_ffi::raw::Out::new(lease.arm(), &busbar_plugin_abi::host_side::HOST)
+                    .append(b"before")
+            );
+            drop(future);
+            lease.with_answer(|bytes| {
+                assert_eq!(
+                    bytes.as_ptr(),
+                    address,
+                    "cancellation retains the original lender"
+                );
+                assert_eq!(
+                    bytes, b"before",
+                    "cancellation leaves borrowed output intact"
+                );
+            });
+            assert!(
+                busbar_ffi::host::grow(lease.arm(), 1),
+                "the enclosing ACTIVE registration is restored"
+            );
+            assert!(
+                busbar_ffi::raw::Out::new(lease.arm(), &busbar_plugin_abi::host_side::HOST)
+                    .append(b"-after")
+            );
+        })
+        .expect("fixed output loan");
+        assert_eq!(&backing[..12], b"before-after");
+        assert_guarded_cancel_before_release();
+    }
 }

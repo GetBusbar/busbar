@@ -1311,6 +1311,32 @@ crate::kind! {
                     })
                 }
 
+                /// One piece on previously charged fixed output storage. The input is borrowed for this call;
+                /// this does not select a command or establish admission/lease authority.
+                pub fn piece_fixed<'o>(
+                    &mut self,
+                    buf: &'o mut [u8],
+                    from: u32,
+                    exchange: u32,
+                    flags: u32,
+                    bytes: &[u8],
+                ) -> Result<(crate::host_side::answer::Answer<'o>, usize), crate::fail::CallError> {
+                    use crate::plugin::__rt::Arg;
+                    use crate::types::Bytes;
+                    crate::host_side::proxy::sync_fixed(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
+                        self.session.call4(
+                            |vt| &vt.piece,
+                            (
+                                Arg::u32(from),
+                                Arg::u32(exchange),
+                                Arg::u32(flags),
+                                Arg::bytes(Bytes::new(bytes)),
+                            ),
+                            lease,
+                        )
+                    })
+                }
+
                 /// The consuming method: the plugin removes the session whatever it answers, so `Drop` has nothing
                 /// left to cancel.
                 pub fn end<'o>(
