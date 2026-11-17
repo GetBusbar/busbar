@@ -391,6 +391,7 @@ name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "axum-core",
  "base64 0.22.1",
  "busbar-artifact-metadata",
  "busbar-count",

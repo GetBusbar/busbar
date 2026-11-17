@@ -56,6 +56,8 @@ tracing-core = { workspace = true }
 tracing-log = { workspace = true }
 
 [dev-dependencies]
+# `json::Body`'s responder test (tests/json_facade.rs, feature `axum`) names axum-core's IntoResponse.
+axum-core = { workspace = true }
 busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
 libc = { workspace = true }
 stats_alloc = { workspace = true }

@@ -1238,7 +1238,7 @@ crate::kind! {
                     use crate::records::{Records, RecErr, tag};
                     if !self.inst.is_live() { return Err(CallError::Quarantined); }
                     let pure = crate::host_side::entry::Pure::enter();
-                    let status=crate::host_side::driver::step(self.inst.slot,
+                    let status=crate::host_side::entry::guard(self.inst.slot,
                         crate::host_side::proxy::entry(M_SELECT_RESOURCES), buf, |lease| {
                             self.live.call3(|vt| &vt.select_resources,
                                 (Arg::u32(mode), Arg::view(req), Arg::bytes(Bytes::new(body))), lease)
@@ -1295,7 +1295,7 @@ crate::kind! {
                     use crate::records::{Records, RecErr, tag};
                     if !self.inst.is_live() { return Err(CallError::Quarantined); }
                     let pure = crate::host_side::entry::Pure::enter();
-                    let status = crate::host_side::driver::step(self.inst.slot,
+                    let status = crate::host_side::entry::guard(self.inst.slot,
                         crate::host_side::proxy::entry(M_CHANNEL), buf, |lease| {
                             self.session.call1(|vt| &vt.channel, Arg::view(target), lease)
                         }).ok_or(CallError::Fault(FaultReason::BadInstance))?;
