@@ -46,6 +46,27 @@ async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay(
     assert_eq!(action["effect"], "mutation");
     assert_eq!(action["source"]["pointer"], "/store/settings");
     assert_ne!(action["etag"], description["etag"]);
+    let openapi: Value = client
+        .get(format!("http://{}/api/v1/admin/openapi.json", fixture.addr))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let operation = &openapi["paths"]["/api/v1/admin/config/settings"]["put"];
+    assert_eq!(operation["operationId"], action["operation_id"]);
+    assert_eq!(operation["x-busbar-verb"], action["verb"]);
+    assert_eq!(
+        operation["x-busbar-required-scope"],
+        action["required_scope"]
+    );
+    assert!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .contains(&action["input_schema"])
+    );
     let endpoint = format!(
         "http://{}{}",
         fixture.addr,
@@ -147,7 +168,7 @@ async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay(
         .header("If-Match", etag)
         .header("Idempotency-Key", "instance-accepted")
         .header("Content-Type", "application/json")
-        .body(body)
+        .body(body.clone())
         .send()
         .await
         .unwrap();
@@ -176,6 +197,23 @@ async fn instance_settings_uses_one_config_transaction_and_retains_exact_replay(
         after["actions"][0]["etag"],
         committed_etag.to_str().unwrap()
     );
+    if let Some(path) = std::env::var_os("BUSBAR_INSTANCE_MANAGEMENT_FIXTURE") {
+        // The artifact contains the actual producer descriptor and sanitized outcome, no
+        // credentials or arbitrary private draft. The submitted setting is this fixed test input.
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "operation":operation,
+                "before":description,
+                "request":serde_json::from_str::<Value>(&body).unwrap(),
+                "response":outcome,
+                "response_etag":committed_etag.to_str().unwrap(),
+                "after":after
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
     println!("{WITNESS}");
 }
 
