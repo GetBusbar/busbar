@@ -6,6 +6,7 @@ use crate::upstreams::{ConfiguredUpstreams, ProgramPin, StdioCommand, UpstreamDe
 fn definition(name: &str, command: bool) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
         name: name.into(),
+        resource: None,
         allow_private: false,
         url: (!command).then(|| "https://upstream.example".into()),
         command: command.then(|| StdioCommand {

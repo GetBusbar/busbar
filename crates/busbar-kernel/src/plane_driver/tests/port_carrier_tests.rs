@@ -399,7 +399,7 @@ impl UpstreamChannels for FakeChannels {
                 1,
                 u64::from(req.exchange),
                 true,
-                Box::default(),
+                bytes::Bytes::new(),
                 rx,
             )
         })

@@ -15,9 +15,9 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
-// The serving App owns provider credential custody several layers deep (serve tables, seats, native
-// bindings, their credential cache, outbound answers). Proving a future over it Send/Sync walks that
-// whole finite chain, which exceeds the default depth of 128 (self_keys group provisioning).
+// The serving App graph (App -> PortSeat -> SeatPool -> auth bindings -> credential flights,
+// and the KernelServices it reaches) is deeper than the default 128 auto-trait steps when an
+// async fn proves its future Send. The graph is acyclic; the limit only admits its depth.
 #![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;

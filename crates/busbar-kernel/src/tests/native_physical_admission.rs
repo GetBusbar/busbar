@@ -103,11 +103,10 @@ fn line(path: &str) -> Line {
 }
 
 fn head(path: &str) -> Head {
-    Head {
-        method: "POST".into(),
-        target: path.into(),
-        ..Head::default()
-    }
+    let mut head = Head::default();
+    head.method = "POST".into();
+    head.target = path.into();
+    head
 }
 
 pub(crate) fn app() -> Arc<App> {

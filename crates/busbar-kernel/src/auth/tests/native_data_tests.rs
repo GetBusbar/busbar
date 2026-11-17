@@ -8,7 +8,9 @@ use crate::config::groups::{ExhaustionMode, GroupCfg};
 use crate::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use crate::host_services::{KernelServices, NativeInvocationAdmission, Nest, NestDone, NestRoute};
 use crate::inbound::native::tests::{accepted, app, Transport};
-use crate::inbound::native::{PhysicalConnection, PhysicalListener, PhysicalPlan, StreamOwner};
+use crate::inbound::native::{
+    CompletingPhysicalRequest, PhysicalConnection, PhysicalListener, PhysicalPlan, StreamOwner,
+};
 use crate::issued::IssuedCredentials;
 use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use crate::plane_driver::port_intents::Namespace;

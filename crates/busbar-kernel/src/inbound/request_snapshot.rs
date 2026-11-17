@@ -309,7 +309,7 @@ impl ChargedRequestSnapshot {
     /// Original name/value spans for the maintained HTTP projection, with no field-array copy.
     pub fn header_fields(
         self: &Arc<Self>,
-    ) -> impl Clone + ExactSizeIterator<Item = (bytes::Bytes, bytes::Bytes)> {
+    ) -> impl Clone + ExactSizeIterator<Item = (bytes::Bytes, bytes::Bytes)> + '_ {
         let mut offset = self.headers.start;
         self.headers().map(move |(name, value)| {
             let name_start = offset + 16;

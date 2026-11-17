@@ -2916,7 +2916,7 @@ pub(crate) async fn auth_middleware(
                 return Err(unauthorized_response(
                     &app,
                     path,
-                    door(req.method()).as_ref(),
+                    door(&parts.method).as_ref(),
                 ));
             };
             let request = signed_request(&parts, &body_bytes);
