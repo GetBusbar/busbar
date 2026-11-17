@@ -307,13 +307,6 @@ impl WriterRetirements {
                 retry_at_ms: closable_ms,
             });
         }
-        let mark_address = super::scoped::migration_address(
-            true,
-            INSTANCE,
-            NODE_SCHEMA,
-            &predecessor_seal::fenced_key(epoch, writer),
-        )
-        .map_err(error)?;
         let fence = super::fences::writer(
             core.next_id().map_err(error)?,
             writer,

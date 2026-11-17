@@ -15,6 +15,28 @@ use super::selected_resource::RateMetric;
 
 const MAX_APPLICABLE: usize = 32;
 
+/// Metadata from the composition root's actual admitted image proof. This carries no
+/// credential, request or dispatch authority; original-route custody is established separately.
+/// A missing digest identifies a compiled linked image, fixed for this process lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaneImageIdentity {
+    canonical: Box<str>,
+    digest: Option<[u8; 32]>,
+}
+
+impl PlaneImageIdentity {
+    pub fn new(canonical: Box<str>, digest: Option<[u8; 32]>) -> Result<Self, &'static str> {
+        if canonical.is_empty() || canonical.chars().any(char::is_control) {
+            return Err("selected route requires the admitted image's canonical identity");
+        }
+        Ok(Self { canonical, digest })
+    }
+
+    pub fn compatible_with(&self, current: &Self) -> bool {
+        self == current
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SelectedTargetKind {
     Registration,
