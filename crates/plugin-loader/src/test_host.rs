@@ -396,30 +396,6 @@ impl Host {
         })
     }
 
-    /// A store image opened as the loader's typed [`LoadedPersistence`](crate::store_v4::LoadedPersistence).
-    pub async fn store(
-        &self,
-        img: Image<StoreV4>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::store_v4::LoadedPersistence, Refused> {
-        let limits = crate::store_v4::Limits {
-            descriptor_bytes: 1 << 20,
-            output_items: 1024,
-            output_bytes: 1 << 20,
-            decode_bytes: 1 << 20,
-        };
-        let plugin = self.bind(&img, name)?;
-        crate::store_v4::LoadedPersistence::open(
-            plugin,
-            Arc::clone(&self.dispatcher),
-            settings,
-            limits,
-        )
-        .await
-        .map_err(Refused::Open)
-    }
-
     /// A secret image opened as the loader's typed [`LoadedSecret`](crate::secret_calls::LoadedSecret).
     pub fn secret(
         &self,

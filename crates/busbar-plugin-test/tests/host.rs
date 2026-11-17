@@ -13,8 +13,6 @@ mod media_door;
 mod native_store;
 #[path = "fixtures/secret_door.rs"]
 mod secret_door;
-#[path = "fixtures/store_door.rs"]
-mod store_door;
 #[path = "fixtures/transport_door.rs"]
 mod transport_door;
 
@@ -24,8 +22,7 @@ use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
     slot, DatagramLane, EmitIn, FramerOut, LocateIn, LocateOut, WriteIn,
 };
-use busbar_contract::persistence::{DatasetId, PersistenceBackend};
-use busbar_plugin_loader::dispatch::kinds::{store_v4::StoreV4, transport::Transport};
+use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::LoadError;
 use busbar_plugin_test::{both, Buf, Called, Host, Image, Loans, Mutant, Opened, Pending, Refused};
 
@@ -33,33 +30,12 @@ fn host() -> Host {
     Host::new(busbar_contract::services::test_caller_binding())
 }
 
-#[test]
-fn the_store_fixture_opens_through_both_images() {
-    both::<StoreV4>("store_fixture", store_door::door, |image, img| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("a runtime");
-        rt.block_on(async {
-            let store = host()
-                .store(img, "host-fixture-store", b"{}")
-                .await
-                .unwrap_or_else(|e| panic!("{image}: {e:?}"));
-            let info = store.info();
-            assert_eq!(info.dataset, DatasetId([1; 16]), "{image}");
-            let clock = store
-                .clock(info.dataset)
-                .await
-                .unwrap_or_else(|e| panic!("{image}: {e:?}"));
-            assert_eq!(clock.unix_seconds, 41, "{image}");
-        });
-    });
-}
-
 /// The MIN-3 store fixture, linked and as its cdylib, opened through `Registry::open_store`: both images
 /// answer the same dataset and clock (the port of the old door store's both-images case).
 #[cfg(unix)]
 #[test]
 fn the_native_store_fixture_opens_through_both_images() {
+    use busbar_contract::persistence::DatasetId;
     use busbar_plugin_loader::test_host::{admit_bytes, cdylib_bytes, test_manifest};
     use busbar_plugin_test::fake_needs::FakeNeeds;
     use busbar_plugin_test::store::{StoreCase, StoreHarness};
