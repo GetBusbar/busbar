@@ -252,6 +252,38 @@ fn names(calls: &[Arc<Call>]) -> Vec<&str> {
     calls.iter().map(|c| c.name.as_ref()).collect()
 }
 
+fn fixture_tables(
+    calls: &Calls<'_>,
+    global: &[String],
+    section: &[String],
+    pool: Option<&crate::config::PoolCfg>,
+) -> Result<WalkTables, String> {
+    let walks = pool
+        .map(|config| WalkBinding::Registration {
+            pool: "fixture-pool".into(),
+            config: config.clone(),
+        })
+        .into_iter()
+        .collect();
+    WalkPlan::new(global.to_vec(), section.to_vec(), walks)?.bind(
+        calls.hooks,
+        calls.opened,
+        calls.words,
+    )
+}
+
+impl WalkTables {
+    fn select(
+        &self,
+        group: Option<&str>,
+        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
+        with_pool: bool,
+    ) -> Chosen {
+        self.select_scope(group, tree, if with_pool { "fixture-pool" } else { "" }, "")
+            .unwrap()
+    }
+}
+
 #[test]
 fn scope_priority_and_group_selection_are_frozen_without_candidate_scope_guessing() {
     let mut hooks = HookRegistry::new();
@@ -274,7 +306,7 @@ fn scope_priority_and_group_selection_are_frozen_without_candidate_scope_guessin
         gates: vec!["pool".into()],
         ..Default::default()
     };
-    let tables = Tables::build(
+    let tables = fixture_tables(
         &Calls {
             hooks: &hooks,
             opened: &ports,
@@ -352,7 +384,7 @@ fn rewrites_keep_scope_order_and_taps_keep_declared_phases() {
         gates: vec!["pool".into()],
         ..Default::default()
     };
-    let tables = Tables::build(
+    let tables = fixture_tables(
         &Calls {
             hooks: &hooks,
             opened: &ports,
@@ -382,10 +414,10 @@ fn no_attachment_allocates_no_hook_stage_and_missing_name_does_not_disappear() {
         opened: &ports,
         words: &words,
     };
-    let tables = Tables::build(&calls, &[], &[], None).unwrap();
+    let tables = fixture_tables(&calls, &[], &[], None).unwrap();
     assert!(!tables.active());
     assert!(!tables.enforcing());
-    let failure = Tables::build(&calls, &[], &["missing".into()], None)
+    let failure = fixture_tables(&calls, &[], &["missing".into()], None)
         .err()
         .unwrap();
     assert!(failure.contains("missing"));
@@ -444,7 +476,7 @@ fn fallback_group_scope_is_checked_without_replacing_its_final_terminal() {
         .map(|name| (name.into(), opened(1 << POINT_ROUTE, 0, &[])))
         .collect();
     let words = BTreeMap::new();
-    let tables = Tables::build(
+    let tables = fixture_tables(
         &Calls {
             hooks: &hooks,
             opened: &ports,
@@ -492,11 +524,11 @@ fn configured_strategy_disambiguates_by_admitted_identity_and_default_does_not_o
     );
     let pool = crate::config::PoolCfg::default();
     assert_eq!(
-        Tables::build(&calls, &[], &[], Some(&pool))
+        fixture_tables(&calls, &[], &[], Some(&pool))
             .unwrap()
+            .select(None, &BTreeMap::new(), true)
             .policy
             .unwrap()
-            .call
             .strategy,
         None
     );
@@ -504,8 +536,9 @@ fn configured_strategy_disambiguates_by_admitted_identity_and_default_does_not_o
         base_named: true,
         ..pool
     };
-    assert!(Tables::build(&calls, &[], &[], Some(&pool))
+    assert!(fixture_tables(&calls, &[], &[], Some(&pool))
         .unwrap()
+        .select(None, &BTreeMap::new(), true)
         .policy
         .is_none());
 }
@@ -756,4 +789,64 @@ fn typed_walk_plan_refuses_duplicate_or_empty_authority() {
     ] {
         assert!(WalkPlan::new(Vec::new(), Vec::new(), walks).is_err());
     }
+}
+
+#[test]
+fn one_frozen_plan_opens_and_selects_each_pools_own_strategy_port() {
+    let plan = WalkPlan::new(
+        Vec::new(),
+        Vec::new(),
+        ["fast", "slow"]
+            .into_iter()
+            .map(|name| WalkBinding::NamedPool {
+                name: name.into(),
+                config: crate::config::PoolCfg {
+                    policy: crate::config::PoolPolicy::Named(name.into()),
+                    base_named: true,
+                    ..Default::default()
+                },
+            })
+            .collect(),
+    )
+    .unwrap();
+    let hooks = HookRegistry::new();
+    let words = ["fast", "slow"]
+        .into_iter()
+        .map(|name| (name.into(), vec![Box::from(name)]))
+        .collect();
+    let planned = plan
+        .implicit_strategies(&hooks, &BTreeMap::new(), &words)
+        .unwrap();
+    assert_eq!(
+        planned,
+        [
+            ("fast".into(), "fast".into()),
+            ("slow".into(), "slow".into())
+        ]
+        .into_iter()
+        .collect()
+    );
+    let ports = planned
+        .iter()
+        .map(|(name, image)| {
+            let mut port = opened(1 << POINT_ROUTE, 0, &[name]);
+            port.image = Arc::from(image.as_str());
+            (name.clone(), port)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let tables = plan.bind(&hooks, &ports, &words).unwrap();
+    for name in ["fast", "slow"] {
+        let policy = tables
+            .select_scope(None, &BTreeMap::new(), name, name)
+            .unwrap()
+            .policy
+            .unwrap();
+        assert_eq!(policy.strategy.as_deref(), Some(name));
+        assert!(Arc::ptr_eq(&policy.port, &ports[name].port));
+    }
+    assert!(tables
+        .select_scope(None, &BTreeMap::new(), "", "")
+        .unwrap()
+        .policy
+        .is_none());
 }
