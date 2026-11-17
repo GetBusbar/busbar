@@ -282,6 +282,27 @@ impl PreparedBatch<'_> {
 }
 
 impl DeliveryLedger {
+    /// Quote requested separately allocated backing using the actual private element layouts.
+    ///
+    /// This covers the retained span deque and entry/scratch vectors, including spare capacity.
+    /// The admitted fixed control-cell count is separate. Self-owning Arc/control layouts and
+    /// allocator overhead are outside the shared storage contract; this is not an RSS estimate.
+    /// A quote alone reserves nothing: the actual StorageSource must fund it before allocation.
+    pub fn required_storage(
+        max_pending_spans: NonZeroUsize,
+        max_live_responses: NonZeroUsize,
+    ) -> Result<usize, ResponseStop> {
+        let spans = max_pending_spans
+            .get()
+            .checked_mul(std::mem::size_of::<Span>());
+        let responses = std::mem::size_of::<Entry>()
+            .checked_add(std::mem::size_of::<Shadow>())
+            .and_then(|bytes| bytes.checked_mul(max_live_responses.get()));
+        spans
+            .and_then(|bytes| responses.and_then(|other| bytes.checked_add(other)))
+            .ok_or(ResponseStop::Capacity)
+    }
+
     /// Allocate finite metadata storage from real admission allowances, without a default cap.
     ///
     /// The runtime separately reserves callback staging bytes/descriptors before copying callback
@@ -290,6 +311,7 @@ impl DeliveryLedger {
         max_pending_spans: NonZeroUsize,
         max_live_responses: NonZeroUsize,
     ) -> Result<Self, ResponseStop> {
+        Self::required_storage(max_pending_spans, max_live_responses)?;
         let max_spans = max_pending_spans.get();
         let max_responses = max_live_responses.get();
         let max_events = max_responses

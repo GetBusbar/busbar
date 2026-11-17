@@ -285,3 +285,11 @@ fn carrier_fault_prevents_new_admission_and_pending_release_before_retirement() 
     ledger.retire_carrier(last, ResponseStop::Carrier(CarrierFault::Io));
     assert_eq!(ledger.next_control(), Some(DeliveryControl::Settled { stream: 1 }));
 }
+
+#[test]
+fn metadata_quote_refuses_overflow_before_any_allocation() {
+    let one = NonZeroUsize::new(1).unwrap();
+    let huge = NonZeroUsize::new(usize::MAX).unwrap();
+    assert_eq!(DeliveryLedger::required_storage(huge, one), Err(ResponseStop::Capacity));
+    assert_eq!(DeliveryLedger::required_storage(one, huge), Err(ResponseStop::Capacity));
+}
