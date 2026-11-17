@@ -2629,6 +2629,9 @@ async fn build_app_native(
         login_methods,
         login_guard,
     );
+    if let Some(prior) = prior {
+        app.config_generation = Arc::clone(&prior.config_generation);
+    }
     rules.check_built(&mut app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);
@@ -2684,9 +2687,6 @@ async fn build_app_native(
     }
     app.config_pending_restart.sort();
     app.config_pending_restart.dedup();
-    if let Some(prior) = prior {
-        app.config_generation = Arc::clone(&prior.config_generation);
-    }
     app.require_if_match = cfg
         .auth
         .as_ref()
