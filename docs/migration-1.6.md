@@ -128,8 +128,12 @@ backup or recovery procedure.
 
 ### Environment inputs
 
-Serving no longer uses these launch overrides. Write their intended values into configuration;
-there is no separate conversion command to run.
+Serving no longer uses these launch overrides. Before the first development upgrade boot, write
+their intended values into configuration; there is no separate conversion command to run.
+The current boot reports ignored launch variables with `BUSBAR-3029`, but neither imports their
+values nor refuses startup solely because they are set. In particular,
+an HTTP/1-only upstream setting can otherwise be lost. Automatic capture or an explained refusal
+remains required before the final upgrade procedure is qualified.
 
 | Retired variable | Current configuration |
 |---|---|
@@ -262,7 +266,8 @@ to add pre-release keys**. Replace this section with verified final behavior bef
 - Recheck optional rate-card units and the final unpriced-unit behavior; an old requirement to
   populate every `units` map must not be carried into the release procedure.
 - Reconcile first-boot providers-catalog selection with the removal of serving environment
-  overrides. Verify exactly which old variables the final migrator consumes.
+  overrides. Verify preservation or an explained refusal for each retired launch variable;
+  a warning followed by different worker-count or upstream-protocol behavior is not sufficient.
 - Recheck the final administrative resource model; a proposed replacement for `/config/settings`,
   `/config/apply`, RPC roots and instance `ops` must not be documented as implemented before it lands.
 

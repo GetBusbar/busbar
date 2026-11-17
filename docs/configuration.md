@@ -80,8 +80,19 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are read once by the first-boot upgrade of a 1.5.5 config, which copies their values into the upgraded config before serving. Startup does not import or apply them. Serving reads `providers_file:` (or `--providers`) and the corresponding `advanced` keys. The old `BUSBAR_CONFIG_OVERLAY` file is folded into `config.yaml` on that same upgrade boot; runtime config is persisted through the Store. `BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the `TOKIO_WORKER_THREADS` fallback remain supported. See [the 1.6 upgrade instructions](migration-1.6.md#retired-environment-variables).
-<!-- docs-truth: code gap #329 (audit-1.6): the design (MIGRATE-ON-BOOT retired-inputs pass) captures these variables on the upgrade boot, but dev only reports a set one as ignored (crates/busbar/src/root/migrate_environment.rs; capture is test-only). Until #329 lands, write `providers_file:` and the `advanced` keys by hand. -->
+**Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
+(or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
+`BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
+The current development boot only warns that those variables are ignored; it does not copy
+their values into configuration. Automatic capture or an explained upgrade refusal remains
+an open migration requirement. Before trying a development upgrade, write the intended values
+into configuration using [the environment-input mappings](migration-1.6.md#environment-inputs).
+Do not treat the warning as confirmation that the old settings were preserved.
+
+`BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
+folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.
+`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
+`TOKIO_WORKER_THREADS` fallback remain supported.
 
 ### `config`
 
@@ -395,7 +406,13 @@ auth:
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
 | `key_ttl` | duration string | no | `90d` | The lifetime of a key minted by the self-serve token exchange (`POST /auth/token`): the key expires `key_ttl` after it is minted. Read at every apply/reload. |
-| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. <!-- docs-truth: ruling 23:15Z renames `auth.policy.require_if_match` to `auth.require_if_match`; no rename MR exists yet (dev still reads `auth.policy.require_if_match`). Re-check at the release-candidate pass. --> |
+| `require_if_match` | bool | no | `false` | When `true`, a guarded config mutation through the admin API that carries no `If-Match` header is refused `428` (`invalid_request` / `if_match_required`). Absent or `false` accepts a missing `If-Match`. See the development-status note below. |
+
+> **Development status:** `auth.require_if_match` is the intended 1.6.0 spelling. The current
+> development parser still reads `auth.policy.require_if_match`; the rename and migration of
+> existing configuration remain outstanding. Do not move this key in a running deployment
+> until its build supports the new spelling. The [release-candidate checks](migration-1.6.md#release-candidate-checks)
+> must establish the final schema and migration before release.
 
 **The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
@@ -1853,9 +1870,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each (was the tokio pool size pre-1.6.0; old BUSBAR_WORKER_THREADS values are captured by the first 1.6.0 boot); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (old BUSBAR_UPSTREAM_HTTP1_ONLY values are captured by the first 1.6.0 boot)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (old BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE values are captured by the first 1.6.0 boot)
+  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each; omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
@@ -1884,7 +1901,9 @@ refused with `503 durability_unavailable` and `Retry-After: 1` until the backlog
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings`. A change takes effect on the next restart. The
-`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time (the first 1.6.0 boot on a 1.5.5 config copies them into config); `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
+`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
+see the [development migration limitation](#environment-variables) before upgrading a launcher
+that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
