@@ -70,6 +70,28 @@ mod tests {
     }
 
     #[test]
+    fn retired_launch_settings_refuse_instead_of_silently_changing_behavior() {
+        for retired in &RETIRED_LAUNCH_ENV {
+            let refusal = check_launch_env(env_of(&[(retired.name, "launch-setting-canary")]))
+                .expect_err("a retired setting must block startup");
+            assert!(refusal.contains(retired.name), "{refusal}");
+            assert!(refusal.contains(retired.use_instead), "{refusal}");
+            assert!(refusal.contains("refused"), "{refusal}");
+            assert!(!refusal.contains("launch-setting-canary"), "{refusal}");
+        }
+    }
+
+    #[test]
+    fn retired_launch_check_preserves_the_empty_provider_and_presence_rules() {
+        assert!(check_launch_env(env_of(&[])).is_ok());
+        assert!(check_launch_env(env_of(&[("BUSBAR_PROVIDERS", "")])).is_ok());
+        assert!(check_launch_env(env_of(&[("TOKIO_WORKER_THREADS", "3")])).is_ok());
+        for retired in &RETIRED_LAUNCH_ENV[1..] {
+            assert!(check_launch_env(env_of(&[(retired.name, "")])).is_err());
+        }
+    }
+
+    #[test]
     fn ignored_launch_env_reports_each_set_variable_once_in_table_order() {
         let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner();
         let lines = ignored_launch_env(env_of(&[
