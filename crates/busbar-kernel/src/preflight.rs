@@ -917,8 +917,14 @@ impl RelendStreak {
         }
         self.reported = Some(now);
         let level = match refused.cause {
-            RelendCause::Unresolvable => tracing::Level::WARN,
-            RelendCause::Refused | RelendCause::ReopenFailed => tracing::Level::ERROR,
+            RelendCause::Unresolvable
+            | RelendCause::Unstable
+            | RelendCause::ReloadRequired
+            | RelendCause::RestartRequired => tracing::Level::WARN,
+            RelendCause::Refused
+            | RelendCause::ReopenFailed
+            | RelendCause::Deadline
+            | RelendCause::ShapeChanged => tracing::Level::ERROR,
         };
         report.diag(
             &crate::diagnostics::PLUGIN_CREDENTIAL_ROTATION_FAILED,
@@ -960,6 +966,12 @@ impl RelendStreak {
 
 /// The audit action a re-lend writes.
 pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
+
+/// DES-454 §6: core's text for a rotation cause, the 8028 `error` field. Never a value, a digest or plugin text.
+pub(crate) fn rotation_text(cause: busbar_contract::secret::RelendCause) -> &'static str {
+    let _ = cause;
+    ""
+}
 
 #[cfg(test)]
 impl Source {
@@ -1177,3 +1189,7 @@ impl std::fmt::Debug for Fetched {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/rotation_degrade_tests.rs"]
+mod rotation_degrade_tests;
