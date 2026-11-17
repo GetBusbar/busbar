@@ -33,6 +33,7 @@ fn delta(amount: i128) -> UsageDelta {
 
 fn metering(amount: i128) -> MeteringRow {
     MeteringRow {
+        pricing: None,
         scale: 6,
         key_id: "key".into(),
         model: "m".into(),

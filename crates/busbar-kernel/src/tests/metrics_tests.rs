@@ -195,6 +195,7 @@ async fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
                 parent: None,
                 enabled: true,
                 limits: vec![crate::config::groups::LimitCfg {
+                    selected: None,
                     metric: crate::config::groups::LimitMetric::Requests,
                     amount: 100,
                     per: Some(crate::config::groups::LimitWindow::Minute),
@@ -258,6 +259,7 @@ async fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
             parent: None,
             enabled: true,
             limits: vec![crate::config::groups::LimitCfg {
+                selected: None,
                 metric: crate::config::groups::LimitMetric::Budget,
                 amount: 1_000,
                 per: Some(crate::config::groups::LimitWindow::Total),

@@ -14,6 +14,16 @@ fn compiled(name: &str) -> jsonschema::Validator {
 }
 
 #[test]
+fn auth_form_places_require_if_match_at_the_auth_level() {
+    let auth = compiled("Auth");
+    assert!(auth.is_valid(&json!({"require_if_match":true})));
+    assert!(auth.is_valid(&json!({"require_if_match":false})));
+    assert!(auth.is_valid(&json!({"require_if_match":null})));
+    assert!(!auth.is_valid(&json!({"policy":{"require_if_match":true}})));
+    assert!(!auth.is_valid(&json!({"require_if_match":"true"})));
+}
+
+#[test]
 fn secret_and_identity_forms_match_owning_parsers_and_scope_ceiling() {
     use busbar_kernel::config::IdentityProviderCfg;
     let secret = compiled("SecretRef");
@@ -95,6 +105,11 @@ fn auth_role_forms_match_owned_grammar_and_policy_prepass() {
         json!({}),
         json!({"chain":["keys"],"admin_auth":[]}),
         json!({"chain":null}),
+        json!({"require_if_match":true}),
+        json!({"require_if_match":false}),
+        json!({"require_if_match":null}),
+        json!({"require_if_match":"true"}),
+        json!({"policy":{"require_if_match":true}}),
         json!({"chain":[{"module":"keys"}]}),
         json!({"policy":{"self_mint":false,"binding_modes":["both"]}}),
         json!({"policy":null}),

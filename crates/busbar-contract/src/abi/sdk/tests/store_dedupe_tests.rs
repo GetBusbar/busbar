@@ -69,6 +69,7 @@ fn count_scale_is_part_of_operation_identity_and_never_matches_a_legacy_receipt(
 
 fn metering(tokens_input: i128) -> MeteringDelta {
     MeteringDelta {
+        pricing: None,
         scale: 0,
         key_id: "k".into(),
         bucket: 20_000,

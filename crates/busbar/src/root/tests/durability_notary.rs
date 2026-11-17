@@ -206,6 +206,7 @@ async fn stage_line_moves_the_record() {
 #[test]
 fn the_book_holds_no_signing_capability() {
     trait NoSigner {}
+    impl NoSigner for busbar_kernel_wal::JournalRecord {}
     impl NoSigner for u64 {}
     impl NoSigner for bool {}
     impl NoSigner for String {}
@@ -237,6 +238,7 @@ fn the_book_holds_no_signing_capability() {
             audit_hints,
             head,
             resumed_head_node_seq,
+            boot_records,
         } = book;
         no_signer(journal);
         no_signer(record);
@@ -252,6 +254,7 @@ fn the_book_holds_no_signing_capability() {
         no_signer(audit_hints);
         no_signer(head);
         no_signer(resumed_head_node_seq);
+        no_signer(boot_records);
     }
 }
 

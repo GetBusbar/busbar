@@ -76,6 +76,8 @@ const GROUPS: &[(&str, &str)] = &[
     ("hooks_count", "hooks"),
     ("children_count", "children"),
     ("attempts_count", "attempts"),
+    ("billing_partitions_count", "billing_partitions"),
+    ("billing_classes_count", "billing_classes"),
     ("labels_count", "labels"),
 ];
 
@@ -250,6 +252,12 @@ pub fn head_body(chain: &AuditChain) -> String {
 /// recipe this build seals under; every record names its own.
 #[must_use]
 pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
+    if records
+        .iter()
+        .any(|r| r.seq >= from && r.seq <= to && !crate::record::billing::record_valid(r))
+    {
+        return "{\"error\":\"invalid audit billing representation\"}".into();
+    }
     let mut out = String::new();
     out.push('{');
     member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
@@ -279,6 +287,12 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
 /// The records of a bounded range, using the same lossless digest-field wire format.
 #[must_use]
 pub fn range_records_body(records: &[AuditRecord], from: u64, to: u64) -> String {
+    if records
+        .iter()
+        .any(|r| r.seq >= from && r.seq <= to && !crate::record::billing::record_valid(r))
+    {
+        return "{\"error\":\"invalid audit billing representation\"}".into();
+    }
     let mut out = String::new();
     push_records(&mut out, records, from, to);
     out

@@ -329,15 +329,7 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: vec![native::Mutation::Put {
-                address: control_address,
-                value: Secret::new(
-                    permanently_closed
-                        .encode()
-                        .ok_or("invalid permanent fence")?
-                        .to_vec(),
-                ),
-            }],
+            mutations: body.mutations.clone(),
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,
@@ -795,6 +787,7 @@ impl BootIdentity {
                     {
                         return Ok(TakenNode {
                             id: assignment.id,
+                            taken_at_ms: now,
                             lease: Some(NodeLease {
                                 owner: self.clone(),
                                 host: host.into(),
@@ -882,6 +875,7 @@ impl BootIdentity {
             if self.records.decide(predicates, mutations).await? {
                 return Ok(TakenNode {
                     id,
+                    taken_at_ms: now,
                     lease: Some(NodeLease {
                         owner: self.clone(),
                         host: host.into(),
@@ -1328,6 +1322,7 @@ pub struct PredecessorFence {
     identity: Arc<BootIdentity>,
     host: String,
     retirements: WriterRetirements,
+    seals: BootRecords,
 }
 
 /// What one F5 pass did, for its Info line.
@@ -1344,6 +1339,7 @@ impl PredecessorFence {
     pub fn new(core: Arc<CoreStore>, host: &str) -> Result<Arc<Self>, String> {
         Ok(Arc::new(Self {
             identity: Arc::new(BootIdentity::new(core.clone())?),
+            seals: predecessor_seal::seal_records(core.clone())?,
             core,
             host: host.into(),
             retirements: WriterRetirements::default(),
@@ -1477,17 +1473,43 @@ impl PredecessorFence {
     /// The seal phase's fence settle: re-drives what this task left retained, submits nothing.
     pub async fn settle(&self) {
         self.retirements.settle(&self.core).await;
+        if let Err(error) = self.seals.resume().await {
+            crate::diag_warn!(crate::diagnostics::AUDIT_PREDECESSOR_SEAL_FAILED,
+                %error, "a retained predecessor seal remains unresolved");
+        }
     }
 
     /// Attempts this task still retains.
     #[must_use]
     pub fn retained(&self) -> usize {
         self.retirements.retained()
+            + usize::from(
+                self.seals
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some(),
+            )
     }
 }
 
+#[path = "predecessor_seal.rs"]
+mod predecessor_seal;
+#[path = "retire_error.rs"]
+mod retire_error;
+pub use predecessor_seal::{
+    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
+    SealState, TailView,
+};
+pub use retire_error::RetireError;
+
+#[cfg(test)]
+#[path = "tests/predecessor_seal_tests.rs"]
+mod predecessor_seal_tests;
+
 pub struct TakenNode {
     pub id: u64,
+    pub taken_at_ms: u64,
     pub lease: Option<NodeLease>,
 }
 #[derive(Clone)]

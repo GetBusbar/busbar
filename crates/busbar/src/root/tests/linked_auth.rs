@@ -858,15 +858,17 @@ async fn through_the_loop(
         .map(|(n, v)| (n.parse().unwrap(), v.parse().unwrap()))
         .collect();
     let answer = node
-        .answer(crate::root::units_admin::AdminRequest {
-            method: method.to_string(),
-            path: path.to_string(),
-            credential: crate::root::units_admin::presented_credential(&map),
-            headers,
-            body: Vec::new(),
-            at: 1_700_000_000,
-            unit: node.next_unit(),
-        })
+        .answer(crate::root::units_admin::AdminRequest::test_fixture(
+            crate::root::units_admin::TestAdminRequest {
+                method: method.to_string(),
+                path: path.to_string(),
+                credential: crate::root::units_admin::presented_credential(&map),
+                headers,
+                body: Vec::new(),
+                at: 1_700_000_000,
+                unit: node.next_unit(),
+            },
+        ))
         .await;
     (answer.status, String::from_utf8(answer.body).unwrap())
 }
@@ -963,15 +965,17 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
     .await;
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
     async fn ask(node: &crate::root::units_admin::AdminNode) -> u16 {
-        node.answer(crate::root::units_admin::AdminRequest {
-            method: INFO.0.to_string(),
-            path: INFO.1.to_string(),
-            credential: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            at: 1_700_000_000,
-            unit: node.next_unit(),
-        })
+        node.answer(crate::root::units_admin::AdminRequest::test_fixture(
+            crate::root::units_admin::TestAdminRequest {
+                method: INFO.0.to_string(),
+                path: INFO.1.to_string(),
+                credential: None,
+                headers: Vec::new(),
+                body: Vec::new(),
+                at: 1_700_000_000,
+                unit: node.next_unit(),
+            },
+        ))
         .await
         .status
     }

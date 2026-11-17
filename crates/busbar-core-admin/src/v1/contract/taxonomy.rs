@@ -528,6 +528,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
 
         (Get, "/groups") => de![Validation / MalformedCursor],
         (Get, "/audit") => de![Validation / MalformedCursor],
+        (Get, "/audit/keys") => de![Validation / MalformedCursor],
         (Get, "/config/versions") => de![Validation / MalformedCursor],
         (Get, "/config/tree") => {
             de![Validation / InvalidQueryValue, NotFound / UnknownResource]

@@ -63,6 +63,10 @@ struct State {
 pub struct DeliveryWatch(Arc<Cell>);
 
 impl DeliveryWatch {
+    /// Borrow the immutable admitted identity from this watch's actual private cell.
+    pub fn key(&self) -> ResponseKey {
+        self.0.key
+    }
     /// Read the monotone facts without acquiring write authority.
     pub fn snapshot(&self) -> DeliverySnapshot {
         lock(&self.0.state).snapshot
@@ -84,6 +88,9 @@ impl DeliveryWatch {
 }
 
 impl DeliveryReader for DeliveryWatch {
+    fn key(&self) -> ResponseKey {
+        self.key()
+    }
     fn snapshot(&self) -> DeliverySnapshot {
         self.snapshot()
     }

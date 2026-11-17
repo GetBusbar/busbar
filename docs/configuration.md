@@ -83,11 +83,11 @@ See [Operations → Process configuration](operations.md#process-configuration).
 **Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
 (or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
 `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
-The current development boot only warns that those variables are ignored; it does not copy
-their values into configuration. Automatic capture or an explained upgrade refusal remains
-an open migration requirement. Before trying a development upgrade, write the intended values
-into configuration using [the environment-input mappings](migration-1.6.md#environment-inputs).
-Do not treat the warning as confirmation that the old settings were preserved.
+Boot and `--validate` refuse a set retired launch variable with `BUSBAR-3029`, naming its
+replacement without echoing the value. Write the intended values into configuration using
+[the environment-input mappings](migration-1.6.md#environment-inputs), then remove the variables
+from the launcher before validating or starting Busbar. An empty `BUSBAR_PROVIDERS` selects
+nothing and counts as unset; the other retired variables refuse even when empty.
 
 `BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
 folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.
@@ -1887,7 +1887,7 @@ BUSBAR-4036: **set `trusted_proxies` when an ingress fronts busbar**, or every u
 ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. It is a **boot-time** knob.
 <!-- docs-truth: depends on !2676 (unmerged), which deletes `advanced.forwarded_header` (fixed `x-forwarded-for`) -->
 
-The shutdown drain budget (20 s, first signal to exit) and the cap on finished governed requests
+The shutdown drain budget (20 s, starting when listener draining begins) and the cap on finished governed requests
 awaiting settlement (20,000) are fixed engine constants, not configuration. A quarter of the drain
 is a reserve: requests are cut at three quarters, then spend is settled, the audit tail sealed, the
 journal flushed and the writer retired inside the reserve. A second signal ends the drain at once.
@@ -1896,7 +1896,27 @@ running requests were cut (each listed on stderr as `open_at_exit`), and `70` wh
 spend is not durable (listed on stderr as evidence). At the pending cap, a new governed request is
 refused with `503 durability_unavailable` and `Retry-After: 1` until the backlog falls
 (`busbar_unit_checkpoints_terminal`); running requests never count.
-<!-- docs-truth: depends on !2658 (unmerged), which deletes `advanced.shutdown.drain_timeout` and `advanced.governance.max_pending_checkpoints` -->
+
+`advanced.shutdown.deregister_delay` is the readiness propagation allowance before that drain:
+
+```yaml
+advanced:
+  shutdown:
+    deregister_delay: 5s
+```
+
+It defaults to `5s` and accepts duration strings from `0s` through `300s` inclusive (`5m` is also
+300 seconds). Invalid values are refused, never clamped. `0s` begins listener draining immediately.
+The value is captured at boot. Edit it through the configuration document; a stored change is
+reported under `/advanced/shutdown/deregister_delay` as pending restart and leaves the running
+process's allowance unchanged. `PUT /config/settings` does not expose this field.
+
+An operator signal or released admin restart first marks `/readyz` unready while listeners and
+credential refresh continue through the allowance, then begins the full fixed 20-second drain.
+Persistence safety shutdown bypasses the allowance; a second signal also expires the drain.
+Repeated operator requests cannot extend either interval. Reserve at least
+`deregister_delay + 20s + 6s + operator margin` in the process supervisor: with the default, at
+least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are

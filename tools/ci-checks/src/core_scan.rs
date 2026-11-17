@@ -3,7 +3,7 @@
 
 //! The §15.8 core scan (IF §15 rule 8, rounds 8, 27): no first-party plugin name or former name at an
 //! identity site in `busbar-migrate`, `plugin-loader`, `busbar-plugin-abi`, `busbar-kernel`,
-//! `busbar-contract` and every `busbar-core-*` crate. No exemption. The word list is generated from
+//! `busbar-contract`, `busbar-count` and every `busbar-core-*` crate. No exemption. The word list is generated from
 //! `plugins.yaml` (repo, manifest name, alias, former names) plus the enterprise stamps read from release
 //! manifests (`--words <file>`, one word per line); it is never checked into core.
 //!
@@ -37,6 +37,7 @@ fn scanned(name: &str) -> bool {
             | "busbar-plugin-abi"
             | "busbar-kernel"
             | "busbar-contract"
+            | "busbar-count"
     ) || name.starts_with("busbar-core-")
 }
 

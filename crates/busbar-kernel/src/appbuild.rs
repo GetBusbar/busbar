@@ -109,6 +109,8 @@ const SESSION_STORE_TTL_MS: u64 = 60 * 60 * 1_000;
 
 pub struct LoadedConfig {
     pub deploy: config::DeployCfg,
+    /// Names in the composed source before any typed overlay is applied.
+    pub resource_ownership: config::ResourceOwnership,
     pub defs: HashMap<String, config::ProviderDef>,
 
     pub providers_path: std::path::PathBuf,
@@ -133,12 +135,13 @@ impl LoadedConfig {
     /// `POST /plugins/rollback`): the overlay's root applied to config.yaml's deploy, then resolved.
     /// A disk rebuild re-reads config.yaml, so config.yaml's operator definitions, before any
     /// patch, become the file-policy reference (OPERATOR-FROM-ADMITTED-AUTH §3.6.1): editing them
-    /// and reloading is how the operator credential rotates. The caller merges the overlay's named
-    /// maps after it records the base names.
+    /// and reloading is how the operator credential rotates. Resource ownership was captured before
+    /// typed overlays; callers carry those names and merge the resolved hook/group overlay.
     #[cold]
     #[inline(never)]
     pub fn disk_candidate(&mut self) -> Result<config::RootCfg, String> {
         if let Some(doc) = self.overlay_doc.as_ref() {
+            self.resource_ownership.validate_named_maps(doc)?;
             config::overlay::apply_root_to_deploy(&mut self.deploy, doc)?;
         }
         let mut cfg = config::resolve(&self.deploy, &self.defs)
@@ -268,8 +271,8 @@ pub fn load_config_from_disk_compacting_document_patches(
         rules,
         edits,
     )?;
-    let grammar = raw.own_grammar()?;
-    raw.typed(&grammar)
+    let read = Arc::new(raw.own_read()?);
+    raw.typed_prepared(read)
 }
 
 /// THE BOOT POST-STORE RECOMPUTE (SECRET-SHORTHAND-BOOT §3.7): once the Store is open, the
@@ -298,8 +301,8 @@ pub fn load_config_under_store(
             admission: None,
         },
     )?;
-    let grammar = raw.grammar_with_pins(&doc.plugin_versions)?;
-    raw.typed(&grammar)
+    let read = Arc::new(raw.read_with_pins(&doc.plugin_versions)?);
+    raw.typed_prepared(read)
 }
 
 /// The deployment document as one read sees it before its typed parse: read, normalized,
@@ -333,6 +336,38 @@ struct ReadInputs<'a> {
 }
 
 impl RawDocuments<'_> {
+    /// The complete admission of this effective document, before parsing its typed fields.
+    pub fn own_read(&self) -> Result<config::grammar::PreparedConfigRead, String> {
+        self.read_with_pins(&Default::default())
+    }
+
+    pub fn read_with_pins(
+        &self,
+        pins: &std::collections::BTreeMap<String, String>,
+    ) -> Result<config::grammar::PreparedConfigRead, String> {
+        let plugins = self.plugins_block()?;
+        config::grammar::prepare_read_for(
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: std::path::Path::new(&plugins.dir),
+                pins,
+                fetch: config::grammar::Fetch::None,
+            },
+            self.inputs.rules,
+        )
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
+    }
+
+    /// Parse and retain the exact image/descriptor owner. No admission is repeated here.
+    pub fn typed_prepared(
+        self,
+        read: Arc<config::grammar::PreparedConfigRead>,
+    ) -> Result<LoadedConfig, String> {
+        read.check_plugins(&self.plugins_block()?)?;
+        let mut loaded = self.typed(read.grammar())?;
+        read.attach(&mut loaded.deploy)?;
+        Ok(loaded)
+    }
     /// The read's effective `plugins:` block, typed without a grammar: it holds no secret
     /// reference (G18). An absent block is the default (`enabled: false`). A document that does not
     /// read as YAML at all has no block here; the typed parse reports it.
@@ -355,25 +390,6 @@ impl RawDocuments<'_> {
         let plugins = self.plugins_block()?;
         config::grammar::grammar_for(
             &config::grammar::PhaseOneIn::of(&plugins),
-            self.inputs.rules,
-        )
-        .map_err(|refusal| format!("config.yaml: {refusal}"))
-    }
-
-    /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
-    /// post-Store recompute (SECRET-SHORTHAND-BOOT §3.7). No fetch: bootstrap already fetched.
-    pub(crate) fn grammar_with_pins(
-        &self,
-        pins: &std::collections::BTreeMap<String, String>,
-    ) -> Result<config::Grammar, String> {
-        let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(
-            &config::grammar::PhaseOneIn {
-                plugins: &plugins,
-                dir: std::path::Path::new(&plugins.dir),
-                pins,
-                fetch: config::grammar::Fetch::None,
-            },
             self.inputs.rules,
         )
         .map_err(|refusal| format!("config.yaml: {refusal}"))
@@ -428,8 +444,10 @@ impl RawDocuments<'_> {
             &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
         Ok(LoadedConfig {
             deploy,
+            resource_ownership,
             defs,
             providers_path,
             overlay_path: None,
@@ -771,6 +789,26 @@ pub async fn read_disk_candidate(
 }
 
 impl DiskRead {
+    /// Carry the exact admission through the second document read. Changed plugin inputs refuse.
+    pub fn typed_prepared(
+        self,
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        env_mode: config::EnvSubst,
+        rules: &dyn RootRules,
+        read: Arc<config::grammar::PreparedConfigRead>,
+    ) -> Result<LoadedConfig, String> {
+        let grammar = read.grammar().clone();
+        self.typed_inner(
+            config_path,
+            providers_override,
+            env_mode,
+            rules,
+            &grammar,
+            Some(read),
+        )
+    }
+
     /// The documents typed under `grammar` (the read's phase 1), with the Store's durable patches
     /// applied and its overlay attached, as [`load_config_from_disk_with_store`] reads them.
     pub fn typed(
@@ -780,6 +818,25 @@ impl DiskRead {
         env_mode: config::EnvSubst,
         rules: &dyn RootRules,
         grammar: &config::Grammar,
+    ) -> Result<LoadedConfig, String> {
+        self.typed_inner(
+            config_path,
+            providers_override,
+            env_mode,
+            rules,
+            grammar,
+            None,
+        )
+    }
+
+    fn typed_inner(
+        self,
+        config_path: &std::path::Path,
+        providers_override: Option<&std::path::Path>,
+        env_mode: config::EnvSubst,
+        rules: &dyn RootRules,
+        grammar: &config::Grammar,
+        read: Option<Arc<config::grammar::PreparedConfigRead>>,
     ) -> Result<LoadedConfig, String> {
         let DiskRead {
             overlay, mut doc, ..
@@ -798,7 +855,10 @@ impl DiskRead {
                 admission: None,
             },
         )?;
-        let mut loaded = raw.typed(grammar)?;
+        let mut loaded = match read {
+            Some(read) => raw.typed_prepared(read)?,
+            None => raw.typed(grammar)?,
+        };
         // A stored patch from an earlier binary that moves the operator credential is refused at
         // every re-read, as at boot: never applied or dropped silently.
         if let Some(patch) = doc.as_ref().and_then(|doc| doc.document_patch.as_ref()) {
@@ -988,7 +1048,49 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
+/// Root-owned early resolver and late completion of one unpublished candidate.
+/// The containing transaction owns this object across awaits; response detachment does not abort it.
+pub trait CandidatePreparation: Send + 'static {
+    fn secret_resolver(&self) -> Arc<config::secret::SecretResolver>;
+
+    fn finish<'a>(
+        self: Box<Self>,
+        app: &'a mut App,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>;
+}
+
 pub trait RootRules: Send + Sync {
+    /// Retain the actual read's native admission. Metadata-only readers need no opaque context.
+    fn prepare_read(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::grammar::PreparedConfigRead, config::grammar::GrammarRefusal> {
+        self.grammar(input)
+            .map(config::grammar::PreparedConfigRead::new)
+    }
+
+    /// Capture the candidate before its fields move and before any dependent secret resolution.
+    /// Native reads must supply a real producer; an absent implementation cannot reuse old ports.
+    fn prepare_candidate<'a>(
+        &'a self,
+        cfg: &'a config::RootCfg,
+        _plugins: &'a config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<Box<dyn CandidatePreparation>>, String>,
+    > {
+        Box::pin(async move {
+            if cfg
+                .grammar
+                .prepared()
+                .is_some_and(|read| read.has_context() || !read.provider_planes().is_empty())
+            {
+                Err("the native read has no candidate preparation producer".into())
+            } else {
+                Ok(None)
+            }
+        })
+    }
     /// Phase one uses this reader's owned process and image admission context.
     fn grammar(
         &self,
@@ -1662,6 +1764,9 @@ async fn build_app_native(
     judged: Option<config_validate::Judged>,
     opened_secrets: Option<Arc<config::secret::SecretResolver>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    if let Some(read) = cfg.grammar.prepared() {
+        read.check_plugins(&plugins_cfg)?;
+    }
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
     // other build carries the running generation's unchanged.
@@ -1758,9 +1863,19 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let secret_resolver = match opened_secrets {
-        Some(resolver) => resolver,
-        None => rules.secret_resolver(&cfg, &plugins_cfg).await?,
+    let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
+    let prepared_resolver = preparation
+        .as_ref()
+        .map(|preparation| preparation.secret_resolver());
+    let secret_resolver = match (prepared_resolver, opened_secrets) {
+        (Some(resolver), opened) => {
+            if opened.is_some_and(|opened| !Arc::ptr_eq(&opened, &resolver)) {
+                return Err("the candidate resolver differs from its opened secret owner".into());
+            }
+            resolver
+        }
+        (None, Some(resolver)) => resolver,
+        (None, None) => rules.secret_resolver(&cfg, &plugins_cfg).await?,
     };
 
     let mut lanes_data = Vec::new();
@@ -2632,6 +2747,12 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.configured_view = Some(configured_view);
+    app.operator_file_defs = operator_file_defs;
+    app.grammar = grammar;
+    if let Some(preparation) = preparation {
+        preparation.finish(&mut app).await?;
+    }
     rules.check_built(&mut app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);
@@ -2643,9 +2764,6 @@ async fn build_app_native(
         }
     }
 
-    app.configured_view = Some(configured_view);
-    app.operator_file_defs = operator_file_defs;
-    app.grammar = grammar;
     // Existing direct builders pass an explicit providers path. The executable replaces this
     // initial default with its actual CLI/env provenance; subsequent generations inherit it.
     if let Some(prior) = prior {
@@ -2690,7 +2808,7 @@ async fn build_app_native(
     app.require_if_match = cfg
         .auth
         .as_ref()
-        .and_then(|a| a.policy.require_if_match)
+        .and_then(|a| a.require_if_match)
         .unwrap_or(false);
     Ok((
         app,

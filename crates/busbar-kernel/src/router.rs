@@ -550,6 +550,7 @@ pub(crate) fn mount_plane_route(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -577,6 +578,7 @@ pub(crate) fn mount_plane_route(
                     headers,
                     body,
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
@@ -616,6 +618,7 @@ pub(crate) fn mount_plane_session(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -642,6 +645,7 @@ pub(crate) fn mount_plane_session(
                     headers,
                     body: axum::body::Bytes::new(),
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
                     slot,
@@ -692,6 +696,7 @@ fn apply_common_layers_for_mounts(
     observe_mounts: bool,
 ) -> Router {
     let core_routes = std::sync::Arc::new(core_routes);
+    let auth_handle = handle.clone();
     let router = router
         .layer(axum::middleware::from_fn_with_state(
             handle.clone(),
@@ -699,7 +704,18 @@ fn apply_common_layers_for_mounts(
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
                 let core_routes = core_routes.clone();
-                async move { auth::auth_middleware(app, &core_routes, req, next).await }
+                let auth_handle = auth_handle.clone();
+                async move {
+                    auth::auth_middleware(
+                        app,
+                        auth_handle,
+                        request_body_max_bytes,
+                        &core_routes,
+                        req,
+                        next,
+                    )
+                    .await
+                }
             },
         ))
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
@@ -1190,6 +1206,7 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
+    pub(crate) physical: Option<std::sync::Arc<crate::inbound::native::PhysicalPlan>>,
     pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     pub(crate) router: Router<std::sync::Arc<state::AppHandle>>,
     pub(crate) core_routes: crate::core_routes::CoreRouteTable,
@@ -1209,6 +1226,16 @@ impl std::fmt::Debug for PreparedListener {
 }
 
 impl PreparedListener {
+    /// Complete root-owned routes and their authentication declarations together before publication.
+    pub fn with_core_routes(
+        mut self,
+        mount: impl FnOnce(crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter,
+    ) -> Self {
+        let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
+        (self.router, self.core_routes) = mount(routes).into_parts();
+        self
+    }
+
     /// The refusal producer captured with this prepared listener's route snapshot.
     pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
         self.refuse_by_path.clone()

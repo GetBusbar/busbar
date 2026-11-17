@@ -75,7 +75,21 @@ impl Wants {
 
 /// One member the walk picked, as the plane's `Target` states it (operator vocabulary, never a plugin).
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetIdentity {
+    /// A declared registration uses the requesting plane's dialect and request model.
+    Registration,
+    /// A provider model always uses the values resolved in this generation's catalog.
+    Model { dialect: Box<str>, model: Box<str> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
+    /// Exact pool and member returned by the admitted walk, before display-name conversion.
+    pub pool: Box<str>,
+    pub qualified_member: Box<str>,
+    pub identity: TargetIdentity,
+    /// Frozen configured rate-resource label; descriptive data, never admission authority.
+    pub resource: Option<Box<str>>,
     /// The configured upstream (member) name.
     pub upstream: Box<str>,
     /// The plane-owned provider keys as one canonical JSON object (`{}` when none).
@@ -96,6 +110,21 @@ impl Candidate {
         model: &str,
         f: impl FnOnce(&TargetIn<'_>) -> R,
     ) -> R {
+        self.with_admission_target(attempt, dialect, model, &[], f)
+    }
+
+    pub(crate) fn with_admission_target<R>(
+        &self,
+        attempt: u32,
+        dialect: &str,
+        model: &str,
+        admission: &[u8],
+        f: impl FnOnce(&TargetIn<'_>) -> R,
+    ) -> R {
+        let (dialect, model) = match &self.identity {
+            TargetIdentity::Registration => (dialect, model),
+            TargetIdentity::Model { dialect, model } => (dialect.as_ref(), model.as_ref()),
+        };
         let params: Vec<Pair<'_>> = self
             .params
             .iter()
@@ -113,6 +142,7 @@ impl Candidate {
             upstream: &self.upstream,
             provider: &self.provider,
             params: &params,
+            admission,
         })
     }
 }
@@ -130,6 +160,40 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn request_walk(&self) -> Option<&super::request_admission::RequestWalk> {
+        None
+    }
+    fn select_request(
+        &mut self,
+        _receipt: &super::request_admission::RequestPoolReceipt,
+        _wants: &Wants,
+    ) -> bool {
+        false
+    }
+    fn admit_request(&mut self, _request: &super::request_admission::AdmittedRequest) -> bool {
+        false
+    }
+    fn hook_remaining(&self) -> Option<usize> {
+        None
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        None
+    }
+
+    /// Inspect the same configured walk that will choose the first member.
+    fn hook_candidates(&mut self, _wants: &Wants) -> Option<super::hooks::Candidates> {
+        None
+    }
+    fn hook_scope(&mut self, _wants: &Wants) -> Option<super::RoutedScope> {
+        None
+    }
+    fn hook_lane(&mut self, _wants: &Wants, _index: usize) -> Option<String> {
+        None
+    }
+    /// False means no enforcing constraint was installed; core must not dial.
+    fn hook_constrain(&mut self, _wants: &Wants, _constraint: super::hooks::Constraint) -> bool {
+        false
+    }
     /// The next member to try, `None` when the walk is exhausted. `wants.upstream` pins one member.
     fn next(&mut self, wants: &Wants) -> Option<Candidate>;
     /// The plane will not send to this member; it was never dialled.
@@ -292,6 +356,7 @@ fn step<K: Calls + ?Sized>(
     // An item for the client means the plane decided (the attempt rule: it writes the response or it fails the
     // attempt with nothing for the client), so it goes out at once when a sink takes it.
     fed.began |= !fed.client.is_empty();
+    effects.observed_usage(task.usage());
     if !hand_out(effects, &mut fed.client) {
         fed.gone = true;
         return Ok(false);
@@ -366,12 +431,23 @@ pub fn run_attempts<K: Calls + ?Sized>(
     send: &mut dyn UpSend,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
+    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
+    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
+    if task.selected_attempts() || task.data().is_some() {
+        return Err(SessionError::NotDriven);
+    }
     let mut attempts = 0_u32;
     loop {
         let Some(member) = members.next(wants) else {
             return Ok(Attempted::Exhausted { attempts });
         };
         attempts += 1;
+        effects.routing(
+            attempts,
+            &member.upstream,
+            members.hook_remaining(),
+            members.hook_failure(),
+        );
         let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
         if answer
             .attempt

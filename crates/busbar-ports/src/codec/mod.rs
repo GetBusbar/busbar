@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod export;
+pub mod fallback_usage;
 pub mod hook;
 pub mod plane;
 pub mod secret;

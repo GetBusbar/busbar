@@ -790,7 +790,8 @@ impl PlaneAuditLog {
     }
 }
 
-const MAX_PENDING_AUDIT: usize = 256;
+/// Shared bound for native audit originals and logical export first-loss reservations.
+pub const MAX_PENDING_AUDIT: usize = 256;
 
 /// Confirmation observers for one administrative execution, independent of queue custody.
 #[derive(Default)]

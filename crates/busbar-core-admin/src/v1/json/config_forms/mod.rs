@@ -115,8 +115,7 @@ pub(super) fn schema_document() -> Value {
         object(json!({
             "self_mint":nullable(json!({"type":"boolean"})), "binding_modes":modes,
             "max_ttl":nullable(json!({"type":"string"})),
-            "mint_ceilings":dictionary(reference("MintCeiling")),
-            "require_if_match":nullable(json!({"type":"boolean"}))
+            "mint_ceilings":dictionary(reference("MintCeiling"))
         })),
     );
     let verb_names: Vec<_> = crate::verb::admin_grant_rows()
@@ -143,7 +142,8 @@ pub(super) fn schema_document() -> Value {
     let mut auth = object(json!({
         "signing_key":nullable(reference("SecretRef")),"chain":chain,"admin_auth":admin_names,
         "role_bindings":dictionary(dictionary(reference("RoleBinding"))),
-        "key_ttl":nullable(json!({"type":"string"})),"policy":reference("AuthPolicy")
+        "key_ttl":nullable(json!({"type":"string"})),"policy":reference("AuthPolicy"),
+        "require_if_match":nullable(json!({"type":"boolean"}))
     }));
     auth["x-busbar-runtime-validation"] = json!([
         "provider names and signing key requirements",
