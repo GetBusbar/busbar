@@ -236,7 +236,13 @@ pub(crate) fn early_cli_flags_of(argv: &Argv) -> Option<i32> {
     }
     match argv.words.first().map(String::as_str) {
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
-            println!("busbar {}", env!("CARGO_PKG_VERSION"));
+            // CRYPTO-SEAM §2.4, ENT-AUDIT-A8 §2.1 (#287): the backend NAME and its module identity, verbatim.
+            println!(
+                "busbar {} (crypto: {}; module: {})",
+                env!("CARGO_PKG_VERSION"),
+                busbar_contract::crypto::BACKEND,
+                busbar_contract::crypto::module_version()
+            );
             println!("build: {}", build_info_line());
             Some(EXIT_SUCCESS)
         }
