@@ -356,6 +356,8 @@ impl ResourceInventory {
             || mounted.resource_kinds.is_empty()
             || mounted.resource_kinds.len() > MAX_KINDS
             || mounted.flags != 0
+            || mounted.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
+            || mounted.effective != busbar_plugin_abi::plane::AUTH_PRINCIPAL
         {
             return Err(ResourceError::Binding);
         }
