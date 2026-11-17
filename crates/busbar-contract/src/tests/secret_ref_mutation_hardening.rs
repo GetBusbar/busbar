@@ -3,7 +3,7 @@
 
 //! Mutation-hardening additions for `busbar_contract::secret_ref` (the former `busbar-secret-ref`
 
-use crate::json::JsonValueTrait as _;
+use crate::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use crate::SecretRef;
 
 /// Source settings may contain credentials even when they look like descriptors.
