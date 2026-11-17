@@ -71,14 +71,18 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
         "cancel-deadline",
         br#"{"tag":"cancel-deadline","hold":true,"loop":1}"#,
     );
-    let timed_out = rt.block_on(tokio::time::timeout(
-        Duration::from_millis(200),
-        registry.open_secret(
-            &spec,
-            &needs,
-            &busbar_plugin_test::suites::harness::no_refs(),
-        ),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let timed_out = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            registry.open_secret(
+                &spec,
+                &needs,
+                &busbar_plugin_test::suites::harness::no_refs(),
+            ),
+        )
+        .await
+    });
     assert!(timed_out.is_err(), "the parked open never finished");
     assert_eq!(needs.parked(), 1, "the open parked on its SECRET");
     cancelled_once("cancel-deadline");
@@ -222,7 +226,8 @@ fn buffers_are_released_zeroed_after_cancel_returns_and_the_lease_last() {
         &needs,
         &busbar_plugin_test::suites::harness::no_refs(),
     );
-    let polled = rt.block_on(tokio::time::timeout(Duration::from_millis(200), &mut boot));
+    let polled =
+        rt.block_on(async { tokio::time::timeout(Duration::from_millis(200), &mut boot).await });
     assert!(polled.is_err(), "the parked open never finished");
     let parked = fx::trace();
     let (at_park, slot) = parked
