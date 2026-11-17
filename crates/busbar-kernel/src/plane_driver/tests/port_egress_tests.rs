@@ -131,6 +131,9 @@ fn exchange() -> UpExchange {
 
 fn candidate() -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
         upstream: "a".into(),
         provider: "{}".into(),
         base_path: "".into(),
@@ -139,8 +142,10 @@ fn candidate() -> Candidate {
     }
 }
 
-fn target_for(name: &str) -> Option<MemberTarget> {
+fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
     (name != "skip").then(|| MemberTarget {
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        registered_upstream: None,
         provider: "{\"k\":1}".into(),
         base_path: "/v1".into(),
         flags: 2,
@@ -159,7 +164,9 @@ fn target_lookup_preserves_the_selected_member_qualification() {
     let tok = token();
     let cell = Mutex::new(Some(fake));
     let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
-    let targets = |name: &str| (name == "seat\u{1f}model").then(MemberTarget::bare);
+    let targets = |pool: &str, name: &str| {
+        (pool == "pool" && name == "seat\u{1f}model").then(MemberTarget::bare)
+    };
     let handle = rt.handle().clone();
     let walk = EgressWalk::new(&make, &tok, &handle, &targets);
     let got = walk.members().next(&Wants::default());
@@ -168,6 +175,45 @@ fn target_lookup_preserves_the_selected_member_qualification() {
         "the exact configured member must reach its target record"
     );
     assert_eq!(&*got.unwrap().upstream, "model");
+}
+
+#[test]
+fn the_same_member_in_two_pools_uses_each_pools_resolved_target() {
+    let fake = Fake::default();
+    for pool in ["fast", "careful"] {
+        fake.picks.lock().unwrap().push_back(Pick::Member {
+            name: "seat\u{1f}model".into(),
+            pool: pool.into(),
+            passthrough: false,
+            provider: "configured".into(),
+        });
+    }
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(fake));
+    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let targets = |pool: &str, member: &str| {
+        if member != "seat\u{1f}model" {
+            return None;
+        }
+        let mut target = MemberTarget::bare();
+        target.identity = crate::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: format!("{pool}-dialect").into(),
+            model: format!("{pool}-wire").into(),
+        };
+        Some(target)
+    };
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
+    for pool in ["fast", "careful"] {
+        let picked = walk.members().next(&Wants::default()).unwrap();
+        assert_eq!(&*picked.pool, pool);
+        assert_eq!(&*picked.qualified_member, "seat\u{1f}model");
+        picked.with_target(1, "caller-dialect", "alias", |target| {
+            assert_eq!(target.dialect, format!("{pool}-dialect"));
+            assert_eq!(target.model, format!("{pool}-wire"));
+        });
+    }
 }
 
 #[test]
