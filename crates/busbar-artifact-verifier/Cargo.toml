@@ -1,0 +1,28 @@
+[package]
+name = "busbar-artifact-verifier"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Standalone artifact metadata, archive and release verification with compile-selected cryptography."
+license = "Apache-2.0"
+
+[features]
+test-support = []
+
+[dependencies]
+busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
+busbar-json = { path = "../busbar-json" }
+busbar-crypto = { path = "../busbar-crypto" }
+busbar-plugin-abi = { path = "../busbar-plugin-abi", default-features = false }
+serde = { workspace = true }
+hex = { workspace = true }
+time = { workspace = true, features = ["macros", "parsing"] }
+olpc-cjson = { workspace = true }
+# Existing release-document canonical formatter, not a second JSON parser.
+sonic-rs = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+
+[lints]
+workspace = true

@@ -5,14 +5,10 @@
 //! (DEPENDENCY-LADDER C10). Both directions saturate at the calendar `time` carries, years -9999
 //! to 9999: RFC 3339 has no spelling for a five-digit year.
 
-use time::format_description::well_known::Rfc3339;
-use time::{Date, OffsetDateTime};
+use time::Date;
 
 /// The Julian day number of 1970-01-01, the Unix epoch.
 const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
-
-/// The last second RFC 3339 can spell, 9999-12-31T23:59:59Z.
-const LAST_RFC3339_SECOND: i64 = 253_402_300_799;
 
 /// Days since the Unix epoch → the proleptic-Gregorian calendar date, saturating at
 /// [`Date::MIN`] and [`Date::MAX`].
@@ -35,16 +31,7 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     )
 }
 
-/// Whole seconds since the Unix epoch → an RFC3339 UTC instant, `YYYY-MM-DDTHH:MM:SSZ`, saturating
-/// at 9999-12-31T23:59:59Z.
-#[must_use]
-pub fn rfc3339_from_secs(secs: u64) -> String {
-    let secs = i64::try_from(secs).map_or(LAST_RFC3339_SECOND, |s| s.min(LAST_RFC3339_SECOND));
-    OffsetDateTime::from_unix_timestamp(secs)
-        .map_err(time::Error::from)
-        .and_then(|at| at.format(&Rfc3339).map_err(time::Error::from))
-        .expect("a whole UTC second in 1970..=9999 always has an RFC 3339 spelling")
-}
+pub use busbar_artifact_metadata::civil::rfc3339_from_secs;
 
 #[cfg(test)]
 #[path = "tests/civil_tests.rs"]

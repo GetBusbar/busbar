@@ -557,7 +557,7 @@ pub enum LoadError {
     Entropy(String),
 }
 
-pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
+pub use busbar_artifact_verifier::REBUILD;
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
