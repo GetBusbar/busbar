@@ -7,8 +7,9 @@
 //! `{file: <path>}` reference. The first boot writes it back and re-executes, and the restarted
 //! boot reads the key through the built-in file secret. The ledger is the deleted
 //! `migrate_door_tests` file cases: a symlink is followed, the path is kept verbatim (spaces
-//! included), and a directory, a device or an over-bound file is refused, now with
-//! busbar_secret_file's own reason on the restarted boot.
+//! included); a directory or a device is refused at the first boot's write-back (core's leak
+//! guard, LEGACY-KEYFILE-MARKER r2 A-M2), and an over-bound file by busbar_secret_file on the
+//! restarted boot.
 
 #![cfg(unix)]
 #![cfg(all(linked_section_pools, linked_every_auth))]
@@ -100,32 +101,64 @@ fn a_1_5_5_key_file_name_with_spaces_is_kept_verbatim_and_serves() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Each refused source converts (the classification reads only the path) and is then refused by
-/// the restarted boot with busbar_secret_file's reason; no credential content is echoed.
+/// An over-bound regular file passes the write-back (it is an existing regular file), converts and is
+/// then refused by the restarted boot with busbar_secret_file's reason (A-M2); no key text is echoed.
 fn assert_refused_after_restart(tag: &str, key_path: &Path, reason: &str) {
     let dir = workdir(tag);
     let mut gateway = boot_1_5_5(&dir, key_path);
     let log = gateway
         .ready()
         .expect_err("the restarted boot refuses the unreadable key file");
-    assert!(log.contains(reason), "secret-file's reason {reason:?}; log:\n{log}");
-    assert!(!log.contains("BEGIN PRIVATE KEY"), "no key text is echoed; log:\n{log}");
+    assert!(
+        log.contains(reason),
+        "secret-file's reason {reason:?}; log:\n{log}"
+    );
+    assert!(
+        !log.contains("BEGIN PRIVATE KEY"),
+        "no key text is echoed; log:\n{log}"
+    );
+    drop(gateway);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// LEGACY-KEYFILE-MARKER r2 condition A-M2: a source that names no existing regular file (a
+/// directory, a device) is refused at the first boot's write-back by core's leak guard, before
+/// anything is written; config.yaml keeps its 1.5.5 text and no key text is echoed.
+fn assert_refused_at_write_back(tag: &str, key_path: &Path) {
+    let dir = workdir(tag);
+    let mut gateway = boot_1_5_5(&dir, key_path);
+    let log = gateway
+        .ready()
+        .expect_err("the first boot refuses a credential that is not an existing key file");
+    assert!(
+        log.contains("was not converted to an existing key file"),
+        "the leak guard's refusal; log:\n{log}"
+    );
+    assert!(
+        !log.contains("BEGIN PRIVATE KEY"),
+        "no key text is echoed; log:\n{log}"
+    );
+    let kept = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    assert!(
+        kept.contains("SA_PATH") && !kept.contains("file:"),
+        "nothing was written back:\n{kept}"
+    );
     drop(gateway);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn a_1_5_5_key_file_that_is_a_directory_is_refused_after_the_restart() {
+fn a_1_5_5_key_file_that_is_a_directory_is_refused_at_the_write_back() {
     let holder = workdir("directory-holder");
     let directory = holder.join("keys");
     std::fs::create_dir_all(&directory).unwrap();
-    assert_refused_after_restart("directory", &directory, "is not a regular file");
+    assert_refused_at_write_back("directory", &directory);
     let _ = std::fs::remove_dir_all(&holder);
 }
 
 #[test]
-fn a_1_5_5_key_file_that_is_a_device_is_refused_after_the_restart() {
-    assert_refused_after_restart("device", Path::new("/dev/zero"), "is not a regular file");
+fn a_1_5_5_key_file_that_is_a_device_is_refused_at_the_write_back() {
+    assert_refused_at_write_back("device", Path::new("/dev/zero"));
 }
 
 #[test]
