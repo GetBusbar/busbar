@@ -74,7 +74,10 @@ impl PlaneMoney {
             ));
         }
         for (index, class) in money.classes.iter().enumerate() {
-            if money.fee.is_fee(u32::try_from(index).map_err(|_| refused("selected class index exceeds its domain"))?) {
+            if money.fee.is_fee(
+                u32::try_from(index)
+                    .map_err(|_| refused("selected class index exceeds its domain"))?,
+            ) {
                 if parts.attempt_classes.contains(class) {
                     return Err(refused(
                         "an original fee class cannot be an attempt quantity",
