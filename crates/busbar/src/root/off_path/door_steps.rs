@@ -539,6 +539,7 @@ pub(crate) struct Rules {
     reader: Arc<dyn busbar_kernel::appbuild::RootRules>,
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
     pub(crate) listeners: Option<Arc<crate::root::serve::ListenerPlan>>,
+    native_listeners: Option<Arc<crate::root::min3_listener_plan::NativeListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     pub(crate) owned_anchors: Mutex<Vec<&'static str>>,
     /// The declaring sections of the door planes the boot bound but did not open (their section
@@ -583,6 +584,7 @@ impl Rules {
             reader,
             member_tls_sections: Mutex::new(Vec::new()),
             listeners: None,
+            native_listeners: None,
             owned_anchors: Mutex::new(Vec::new()),
             unopened: Mutex::new(Vec::new()),
             guard,
@@ -593,6 +595,23 @@ impl Rules {
     /// Construct the rules retained by a completed serving generation. No candidate can
     /// install listener state into rules already retained by a different generation.
     pub(crate) fn with_listeners(&self, listeners: Arc<crate::root::serve::ListenerPlan>) -> Self {
+        let mut next = self.copy_rules();
+        next.listeners = Some(listeners);
+        next.native_listeners = None;
+        next
+    }
+
+    pub(crate) fn with_native_listeners(
+        &self,
+        listeners: Arc<crate::root::min3_listener_plan::NativeListenerPlan>,
+    ) -> Self {
+        let mut next = self.copy_rules();
+        next.listeners = None;
+        next.native_listeners = Some(listeners);
+        next
+    }
+
+    fn copy_rules(&self) -> Self {
         Self {
             reader: Arc::clone(&self.reader),
             member_tls_sections: Mutex::new(
@@ -601,7 +620,8 @@ impl Rules {
                     .unwrap_or_else(|p| p.into_inner())
                     .clone(),
             ),
-            listeners: Some(listeners),
+            listeners: self.listeners.clone(),
+            native_listeners: self.native_listeners.clone(),
             owned_anchors: Mutex::new(
                 self.owned_anchors
                     .lock()
@@ -622,6 +642,53 @@ impl Rules {
                     .clone(),
             ),
         }
+    }
+
+    /// The async native producer supplies fresh owners and the actual reserved publication
+    /// epoch. This seals only the exclusively owned candidate; no live owner is replaced.
+    pub(crate) fn prepare_native_candidate(
+        &self,
+        app: &mut App,
+        served: &crate::root::serve::Served,
+        owners: &crate::root::min3_physical::SlotOwners,
+    ) -> Result<(), String> {
+        let plan = self
+            .native_listeners
+            .as_ref()
+            .ok_or("candidate has no native listener plan")?;
+        self.check_native_topology(app, plan)?;
+        let native = served
+            .native
+            .as_ref()
+            .ok_or("candidate has no freshly prepared native owners")?;
+        if native.config_version != app.config_version
+            || !Arc::ptr_eq(&native.auth, &owners.auth)
+            || !Arc::ptr_eq(&native.inventories, &owners.inventories)
+        {
+            return Err("native listener owners belong to another serving candidate".into());
+        }
+        crate::root::min3_admin_auth::install(app, Arc::clone(&owners.auth), owners.epoch)?;
+        let slots = plan.assemble(app, served, owners)?;
+        crate::root::serve::install_native_slots(app, slots)
+    }
+
+    fn check_native_topology(
+        &self,
+        app: &App,
+        plan: &crate::root::min3_listener_plan::NativeListenerPlan,
+    ) -> Result<(), String> {
+        let config = app
+            .config_projection
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<DoorConfig>())
+            .ok_or("native candidate has no root configuration projection")?;
+        let needs = config.listeners.as_ref().map_err(Clone::clone)?;
+        if !needs.needs.is_empty() || needs.binds.as_slice() != plan.binds() {
+            return Err(
+                "native listener topology changed; write the configuration file and restart".into(),
+            );
+        }
+        Ok(())
     }
 
     /// Rules whose destination guard hears each committed configuration's destinations.
@@ -779,6 +846,29 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             .and_then(|c| c.downcast_ref::<DoorConfig>())
         {
             config.sections.as_ref().map_err(Clone::clone)?;
+        }
+        if let Some(plan) = &self.native_listeners {
+            self.check_native_topology(app, plan)?;
+            let config = app
+                .config_projection
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<DoorConfig>())
+                .ok_or("native candidate has no root configuration projection")?;
+            let required: std::collections::BTreeSet<_> =
+                plan.binds().iter().map(|bind| bind.at.as_str()).collect();
+            if config.native_slots.len() != required.len()
+                || plan.binds().iter().any(|bind| {
+                    config
+                        .native_slots
+                        .get(&bind.at)
+                        .is_none_or(|slot| slot.slot() != bind.at)
+                })
+            {
+                return Err(
+                    "native candidate has no complete freshly prepared listener map".into(),
+                );
+            }
+            return Ok(());
         }
         match self.listeners.as_ref() {
             Some(listeners) => listeners.prepare(app),
