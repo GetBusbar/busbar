@@ -343,7 +343,7 @@ diagnostics! {
     CONFIG_OPEN_ADMIN_MINT = 3012, Config, Actionable, "config-open-admin-mint", "1.6.0", false,
         "auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)",
         "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.",
-        "Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.";
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     /// An auth plugin states the operator credential but is not first-party; nothing references it.
     CONFIG_OPERATOR_INERT = 3030, Config, Actionable, "config-operator-inert", "1.6.0", false,
@@ -1037,7 +1037,7 @@ diagnostics! {
     ADMIN_AUTH_CHAIN_EMPTY = 4026, Auth, Actionable, "admin-auth-chain-empty", "1.6.0", false,
         "admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture)",
         "An EMPTY admin_auth chain was seen. 1.6.0 has no anonymous admin posture: an empty chain identifies no one, so it admits no admin request and earns no scope. Boot and `busbar --validate` refuse `auth.admin_auth: []`, and the live `PUT /api/v1/admin/admin-auth` refuses an empty chain.",
-        "Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.";
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys], where <operator> is the name of your identity-providers entry for the first-party operator credential plugin (module: admin-tokens). Give that entry `settings: {sha256: \"<digest>\"}`, where <digest> is the SHA-256 of your admin token as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the token as a secret and send it as `Authorization: Bearer` followed by the token. Or list the admin providers you use in auth.admin_auth.";
 
     ADMIN_CREATEKEY_MALFORMED_BODY = 4027, Auth, BenignRecurring, "admin-createkey-malformed-body", "1.6.0", false,
         "create_key request body failed to parse (client 400)",
