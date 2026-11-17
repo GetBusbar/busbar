@@ -284,3 +284,22 @@ fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
     assert_eq!(view.0[3].quantity, None);
     assert!(!view.0[3].authoritative);
 }
+
+#[test]
+fn spill_member_scope_does_not_replace_original_request_pool() {
+    let grants = BTreeMap::from([
+        ("seat\u{1f}p".to_owned(), vec!["seat\u{1f}a".to_owned()]),
+        ("seat\u{1f}q".to_owned(), vec!["seat\u{1f}b".to_owned()]),
+    ]);
+    assert!(super::member_granted(&grants, "seat\u{1f}q", "seat\u{1f}b"));
+    assert!(!super::member_granted(
+        &grants,
+        "seat\u{1f}q",
+        "seat\u{1f}a"
+    ));
+    assert!(!super::member_granted(
+        &grants,
+        "seat\u{1f}other",
+        "seat\u{1f}b"
+    ));
+}
