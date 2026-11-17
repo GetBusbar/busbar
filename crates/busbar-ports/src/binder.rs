@@ -101,6 +101,13 @@ pub trait ConfigBinder: Send + Sync + 'static {
         source: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<busbar_contract::secure::SecureVec, BindError>>;
     fn unbind(&self, instance: u64);
+    /// DES-454 §2.2 step 3 (I1): the SHA-256 of each D_REF_PATH value `resolve_refs` wrote for `instance`, in
+    /// binding order (the ordinal `RefSource::resolve` receives). A rotation poll compares a re-read with it, and a
+    /// successor's bindings outside the rotation must equal it. None: an unknown instance, a binding not resolved
+    /// yet, or a binder that keeps no digests.
+    fn committed(&self, _instance: u64) -> Option<Vec<[u8; 32]>> {
+        None
+    }
     /// Round 31: `open` on an **unstamped boot only** (§7.2, §11.2), where the plugin may receive a 1.x bag
     /// whose older positions no current describe declares; every other load path uses `bind`. Every declared
     /// path is bound exactly as `bind` binds it (D_TRUST_PATH, D_DEST_PATH, and D_REF_PATH recorded in `refs` and
