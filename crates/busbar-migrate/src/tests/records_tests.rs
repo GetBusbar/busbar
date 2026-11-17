@@ -62,21 +62,31 @@ impl Mem {
 }
 
 impl RecordStore for Mem {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
         self.scans.set(self.scans.get() + 1);
+        let rows = self.rows.borrow();
+        let mut after_rows = rows
+            .iter()
+            .filter(|((n, k), _)| *n == ns.0 && after.is_none_or(|a| k.as_slice() > a));
+        let page: Vec<_> = after_rows
+            .by_ref()
+            .take(limit as usize)
+            .map(|((_, k), v)| (k.clone(), SecureVec::from(v.clone())))
+            .collect();
+        // The store's own continuation: present while a row follows this page.
+        let next = match (page.last(), after_rows.next()) {
+            (Some((last, _)), Some(_)) => Some(last.clone()),
+            _ => None,
+        };
+        Ok(Page { rows: page, next })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
         Ok(self
             .rows
             .borrow()
-            .iter()
-            .filter(|((n, k), _)| *n == ns.0 && k.as_slice() > after)
-            .take(limit as usize)
-            .map(|((_, k), v)| (k.clone(), SecureVec::from(v.clone())))
-            .collect())
+            .get(&(ns.0, key.to_vec()))
+            .map(|v| SecureVec::from(v.clone())))
     }
 
     fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
@@ -776,7 +786,8 @@ fn evolve_once(mem: &Mem, steps: &[RecordStep], current: u32) -> Result<Option<u
 
 /// (h) The record-format chain: a format-1 store with 9,000 rows is admitted at 2, every row
 /// converted, manifest (2, 0), one RECORDS_EVOLVED; killed after a page it resumes from the cursor
-/// with no row converted twice; the last page and the flip are one commit.
+/// with no row converted twice. (#319 r4 §7.3: the flip is its own zero-payload commit after the
+/// last page; see `the_final_publication_is_an_empty_commit_after_the_payload`.)
 #[test]
 fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
     let mem = evolve_store(9000, 1, 0);
@@ -817,7 +828,7 @@ fn the_record_format_chain_converts_in_pages_and_flips_atomically() {
         "no row converted twice"
     );
 
-    // A fault in the flip commit (the last page): manifest still (1, 2), the last page unconverted.
+    // A fault in the last payload page: manifest still (1, 2), the last page unconverted.
     let mem = evolve_store(9000, 1, 0);
     mem.crash_at.set(Some(4));
     assert!(evolve_once(&mem, FIXTURE, 2).is_err());
@@ -973,13 +984,12 @@ impl<'a> Capped<'a> {
 }
 
 impl RecordStore for Capped<'_> {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
         self.mem.scan(ns, after, limit.min(self.cap))
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.mem.read(ns, key)
     }
 
     fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
