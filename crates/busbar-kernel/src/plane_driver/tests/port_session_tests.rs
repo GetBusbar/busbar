@@ -365,7 +365,9 @@ fn owned_selected_preparation_retains_complete_actual_estimates() {
 #[test]
 fn selected_sender_has_no_borrowed_legacy_fallback() {
     use crate::plane_driver::port_egress::OwnedPreparation;
-    use crate::plane_driver::port_upstream::{Candidate, SendFailed, TargetIdentity, UpReply, UpSend};
+    use crate::plane_driver::port_upstream::{
+        Candidate, SendFailed, TargetIdentity, UpReply, UpSend,
+    };
     struct Legacy;
     impl UpSend for Legacy {
         fn send(&mut self, _: &Candidate, _: &super::UpExchange) -> Result<UpReply, SendFailed> {
@@ -389,8 +391,13 @@ fn selected_sender_has_no_borrowed_legacy_fallback() {
         flags: 0,
         params: vec![],
     };
-    let prepared = task.prepare_selected(&candidate, 1, "dialect", "model", &effects).unwrap().unwrap();
-    assert!(Legacy.open_selected(OwnedPreparation::new(prepared, None)).is_err());
+    let prepared = task
+        .prepare_selected(&candidate, 1, "dialect", "model", &effects)
+        .unwrap()
+        .unwrap();
+    assert!(Legacy
+        .open_selected(OwnedPreparation::new(prepared, None))
+        .is_err());
 }
 
 #[test]

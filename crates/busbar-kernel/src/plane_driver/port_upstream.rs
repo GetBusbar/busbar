@@ -254,6 +254,12 @@ impl UpChunks for Whole {
 
 /// The carrier: core adds the host, the carrier's defaults and the credential and sends the exchange.
 pub trait UpSend {
+    fn open_selected<'a>(
+        &'a mut self,
+        _prepared: super::port_egress::OwnedPreparation,
+    ) -> Result<super::port_egress::SelectedOpen<'a>, SendFailed> {
+        Err(SendFailed)
+    }
     /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
     /// buffering; a carrier that does not stream implements this one and gets `open` for free.
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed>;

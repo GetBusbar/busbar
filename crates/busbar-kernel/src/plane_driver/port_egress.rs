@@ -52,6 +52,10 @@ use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
 use crate::teller::Kernel;
 use crate::upstreams::UpstreamDef;
 
+#[path = "port_selected_send.rs"]
+mod selected_send;
+pub use selected_send::{OwnedPreparation, SelectedHandoff, SelectedOpen};
+
 /// The actual immutable definition retained by the route materializer.
 #[derive(Clone)]
 pub struct TargetDefinition(Arc<UpstreamDef>);
@@ -541,6 +545,14 @@ fn open_on<'a, F: FarEnd>(
     if !handle.block_on(far.send(token, request)) {
         return Err(SendFailed);
     }
+    read_open(far, token, handle)
+}
+
+fn read_open<'a, F: FarEnd>(
+    far: &'a F,
+    token: &'a Pass<Route>,
+    handle: &'a Handle,
+) -> Result<UpOpen<'a>, SendFailed> {
     let first = handle.block_on(far.next(token)).ok_or(SendFailed)?;
     // The walk's own status table failed this attempt over before the plane could see it.
     if first.fail_over || (first.last && first.cut) {
@@ -572,6 +584,50 @@ fn open_on<'a, F: FarEnd>(
 }
 
 impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
+    fn open_selected<'a>(
+        &'a mut self,
+        owned: OwnedPreparation,
+    ) -> Result<SelectedOpen<'a>, SendFailed> {
+        let pending = Arc::clone(self.0.pending.as_ref().ok_or(SendFailed)?);
+        let selection = self
+            .take_selected(owned.prepared.target(), owned.prepared.attempt())
+            .ok_or(SendFailed)?;
+        let prepared = match owned.data {
+            Some(data) => owned
+                .prepared
+                .bind_resource(&selection, data)
+                .map_err(|_| SendFailed)?,
+            None => owned.prepared,
+        };
+        let money = pending
+            .admitted()
+            .and_then(|unit| unit.selected.as_ref())
+            .ok_or(SendFailed)?;
+        let prepared = money.prepare(selection, prepared).map_err(|_| SendFailed)?;
+        let mut handoff = SelectedHandoff::new(pending, prepared)?;
+        let s = self.0;
+        let far = s.far.get().ok_or(SendFailed)?;
+        let request = request_of(
+            &s.member.borrow(),
+            &s.pool.borrow(),
+            s.picks.get(),
+            handoff.exchange().ok_or(SendFailed)?,
+        )
+        .ok_or(SendFailed)?;
+        let sent = s
+            .handle
+            .block_on(far.send_selected(s.token, request, &mut handoff));
+        let attempt = handoff.take_committed().ok_or(SendFailed)?;
+        Ok(SelectedOpen {
+            opened: if sent {
+                read_open(far, s.token, s.handle)
+            } else {
+                Err(SendFailed)
+            },
+            attempt,
+        })
+    }
+
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
         let mut open = self.open(member, exchange)?;
         let mut body = Vec::new();
