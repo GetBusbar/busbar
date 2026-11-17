@@ -723,6 +723,15 @@ pub struct Harness {
 }
 
 impl Harness {
+    /// Publish the test's explicit deployment through the real host's keep-once slot.
+    ///
+    /// This is process-wide, not per harness: use an isolated test process for each different
+    /// identity. Repeating the same nonzero ID is valid; zero or a different second ID panics.
+    /// No default is published, so tests can observe the pre-bootstrap pending state.
+    pub fn set_deployment(&self, id: [u8; 16]) {
+        busbar_plugin_abi::host_side::host_vt::set_deployment(id);
+    }
+
     /// Admit `plugin` (the `&'static Plugin` a plugin crate's `PLUGIN.plugin()` hands the frozen suite
     /// signatures; `LinkedPlugin::plugin`) into a fresh registry over `needs`, the real `HOST` static and a
     /// `MemBinder`, with `Ceilings::DEFAULT`. Admission runs every step `admit_linked` runs (null and stamp
