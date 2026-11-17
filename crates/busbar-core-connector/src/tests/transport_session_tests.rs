@@ -1232,6 +1232,78 @@ fn rig() -> Rig {
 }
 
 #[tokio::test]
+async fn abandoned_registration_ack_retires_unexposed_input_after_protocol_settlement() {
+    let s = scripted(
+        Box::new(|call| match call {
+            Seen::Emit {
+                stream: 1,
+                piece: E_RESET,
+                ..
+            } => vec![Out::Quiescent(1)],
+            _ => Vec::new(),
+        }),
+        None,
+        false,
+    );
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (admitted, acknowledged) = oneshot::channel();
+    drop(acknowledged);
+    registration
+        .send(RegisterResponse {
+            key: ResponseKey {
+                node: 1,
+                incarnation: 1,
+                unit: None,
+                connection_generation: 1,
+                stream: 1,
+            },
+            admitted,
+        })
+        .await
+        .unwrap();
+    drop(registration);
+    drop(r.feeds);
+    let (peer, server) = tokio::io::duplex(64);
+    drop(peer);
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        drive(s.conn, Vec::new(), server, r.wiring),
+    )
+    .await
+    .expect("an unexposed response must not retain a ledger input slot forever");
+    assert!(
+        matches!(
+            outcome,
+            Outcome::PeerClosed | Outcome::CoreClosed(CR_NORMAL)
+        ),
+        "{outcome:?}"
+    );
+    let calls = seen(&s.seen);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(call, Seen::Emit { piece: E_RESET, .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| matches!(
+                call,
+                Seen::Emit {
+                    piece: wire::E_DELIVERY_SETTLED,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn actual_owner_releases_held_output_then_retains_close_until_input_join() {
     use busbar_contract::response_delivery::DeliveryTerminal;
     let mut s = scripted(
