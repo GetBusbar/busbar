@@ -87,6 +87,12 @@ path = "../../dist/default/tests/plane_blackbox.rs"
 name = "oracle_store_ports"
 path = "../../dist/default/tests/oracle_store_ports.rs"
 
+# THE HOUSE (H01-H04): the actual product binary with the signed pilot cohort this job packs, booted from
+# the Memory configuration. It reads the cohort from launch.env (ORACLE_CORE, ORACLE_PLUGINS, ORACLE_FETCH).
+[[test]]
+name = "house_runtime"
+path = "../../dist/default/tests/house_runtime.rs"
+
 # THE BUNDLED SET: dist/default's own tables, verbatim, so build.rs derives the same `linked_*` cfgs and
 # BUSBAR_LINKED_* values the product build had (the same cells apply). These say what the subject must
 # serve; they link nothing. testing/oracle/bundle lists the same set as the packages ci/qa.yml loads.
