@@ -22,6 +22,7 @@ use std::sync::Arc;
 use busbar_contract::persistence::PersistenceBackend;
 use busbar_contract::secret_ref::Sugars;
 use busbar_core_connector::guard::Guard;
+use busbar_core_connector::need::network::{BootstrapConnector, NetworkInputs};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 use busbar_plugin_abi::host_side::caller::InstanceLimits;
 use busbar_plugin_abi::types::KindCode;
@@ -39,7 +40,9 @@ pub(crate) struct KitStore {
 impl KitStore {
     /// Over `images`, which must hold one store image. The registry's binder knows no secret
     /// shorthand and no reference schema, because a kit config names no secret. `guard` judges the
-    /// store's outbound connections as the deployment's guard does.
+    /// store's outbound connections as the deployment's guard does, through one bootstrap network
+    /// owner (#298) on `runtime`, the runtime the kit drives the store on: default outbound TLS, the
+    /// process proxy choice and the system resolver.
     ///
     /// # Errors
     /// No store image, or more than one.
@@ -47,6 +50,7 @@ impl KitStore {
         process: &ProcessResources,
         guard: Guard,
         images: Images,
+        runtime: tokio::runtime::Handle,
     ) -> Result<Self, String> {
         let stores: Vec<String> = images
             .identities()
@@ -72,13 +76,23 @@ impl KitStore {
             Arc::clone(&binder),
             Arc::clone(process.ids()),
         ));
+        let network = super::NetworkOwner::Bootstrap(BootstrapConnector::new(NetworkInputs {
+            runtime,
+            guard: guard.freeze(),
+            resolver: Arc::new(busbar_core_connector::guard::SystemResolver),
+            trust: super::super::connector::trust_store_of(&Default::default())
+                .map_err(|errors| errors.join("\n"))?,
+            proxy: busbar_core_connector::proxy::from_env()?,
+            resolution: Default::default(),
+            observations: Arc::default(),
+        }));
         Ok(Self {
             built: Built {
                 registry,
                 sugars,
                 secrets,
                 binder,
-                guard,
+                network,
             },
             identity,
         })

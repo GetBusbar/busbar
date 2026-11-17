@@ -423,6 +423,7 @@ impl Harness {
             limits: InstanceLimits::default(),
             public_url: None,
             caller_upstreams: &[],
+            store_migration: None,
         };
         self.registry
             .open_secret(&spec, &self.needs, &self.refs)

@@ -462,11 +462,13 @@ fn prepare(args: Args) -> Result<Prepared, String> {
             ..busbar_kernel::config::sections::Destinations::default()
         },
     )?;
-    let store = KitStore::new(&process, guard, builder.finish())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("a runtime: {error}"))?;
+    // The store's native Needs run on this runtime, the one the kit drives it on (#298: an explicit
+    // stage runtime, never the process reactor fallback).
+    let store = KitStore::new(&process, guard, builder.finish(), runtime.handle().clone())?;
     Ok(Prepared {
         runtime,
         fixture: KitFixture::new(store, template),
