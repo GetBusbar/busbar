@@ -214,6 +214,7 @@ impl Served {
     pub(crate) fn spawn_work_recovery(
         &self,
         app: Arc<busbar_kernel::state::AppHandle>,
+        admission: Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
         mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
@@ -270,7 +271,7 @@ impl Served {
                     .unwrap_or_default();
                 let cycle = async {
                     for routes in live {
-                        routes.recover_work(app.load()).await;
+                        routes.recover_work(app.load(), &admission).await;
                     }
                     if let Some(native) = &native {
                         crate::root::min3_boot::recover_ports(native, app.load()).await;
@@ -4118,6 +4119,7 @@ impl DataRoutes {
     pub(crate) async fn recover_work(
         self: &Arc<Self>,
         app: Arc<busbar_kernel::state::App>,
+        admission: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
     ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
@@ -4179,6 +4181,11 @@ impl DataRoutes {
                     body: bytes::Bytes::new(),
                     carrier: 0,
                 };
+                let Ok(request) = admission
+                    .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+                else {
+                    continue;
+                };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();
                 let routes = self.clone();
@@ -4194,6 +4201,7 @@ impl DataRoutes {
                             arrival,
                             None,
                             None,
+                            &request,
                         )
                         .await
                 };

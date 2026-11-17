@@ -165,7 +165,7 @@ impl NativeDataRoute {
             }
             Ok(())
         }).map_err(|_| DataRefused::Capacity)??;
-        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Credential)?;
+        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Unavailable)?;
         binding.check_live().map_err(|_| DataRefused::Cancelled)?;
         let NativePreparedAnswer::Identity(prepared) = prepared else {
             return Err(DataRefused::Credential);
@@ -693,6 +693,7 @@ impl NativeDataAllocation {
             refusal: None,
         }));
         let commit_custody = custody.clone();
+        let commit_audit = audit.clone();
         let pending = build(
             allocation,
             routes,
@@ -706,7 +707,7 @@ impl NativeDataAllocation {
                     let mut custody = commit_custody.lock().map_err(|_| refuse())?;
                     let bundle = custody.bundle.as_ref().ok_or_else(refuse)?;
                     if custody.phase != DataCommitPhase::Awaiting
-                        || !audit.node_ready()
+                        || !commit_audit.node_ready()
                         || bundle.authorization.binding.check_live().is_err()
                         || !bundle.registration.context.is_live()
                         || Instant::now() >= bundle.authorization.deadline
@@ -741,7 +742,7 @@ impl NativeDataAllocation {
                     {
                         return Err(refuse());
                     }
-                    audit.bind_money(&admitted).map_err(|_| refuse())?;
+                    commit_audit.bind_money(&admitted).map_err(|_| refuse())?;
                     let bundle = custody.bundle.take().ok_or_else(refuse)?;
                     custody.phase = DataCommitPhase::ExecutingTransferred;
                     bundle
@@ -755,13 +756,14 @@ impl NativeDataAllocation {
                 if proof.physical.start_execution(&proof).is_err() {
                     return Err(refuse());
                 }
-                audit.executing().map_err(|_| refuse())?;
+                commit_audit.executing().map_err(|_| refuse())?;
                 retained.set(proof).map_err(|_| refuse())?;
                 gate.ready.store(true, Ordering::Release);
                 Ok(admitted)
             }),
         );
         NativeDataPending {
+            audit,
             custody,
             pending: Arc::new(configure(pending)),
             execution,
@@ -811,6 +813,7 @@ type DataCommit<D> =
     Box<dyn FnOnce(RequestPoolReceipt, D) -> Result<AdmittedUnit, ClientRefusal> + Send>;
 
 pub struct NativeDataPending {
+    audit: Arc<crate::teller::native_data_audit::NativeAuditState>,
     binding: Arc<RequestBinding>,
     deadline: Instant,
     route: Arc<NativeDataRoute>,
@@ -868,7 +871,8 @@ impl NativeDataPending {
         driver: &crate::plane_driver::port::PortDriver,
         route: u32,
     ) -> bool {
-        self.is_live()
+        self.audit.node_ready()
+            && self.is_live()
             && self.route.caller.same_incarnation(driver.caller())
             && Arc::ptr_eq(self.route.owners.generation.core(), driver.core())
             && self.route.binding.line().route.rung == route

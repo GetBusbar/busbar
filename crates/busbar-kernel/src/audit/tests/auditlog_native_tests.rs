@@ -306,3 +306,38 @@ async fn cancelled_export_loss_drain_replays_one_original_and_keeps_receipt_pend
     assert_eq!(rows[0].request_id, None);
     assert_eq!(rows[0].idempotency_key, None);
 }
+
+#[tokio::test]
+async fn native_refusal_attachment_requires_exact_ready_core_store() {
+    let (_, store, native, _) = fixture().await;
+    let (_, foreign, _, _) = fixture().await;
+    assert!(super::native_refusal::validate_attachment(&native, &store).is_ok());
+    assert!(super::native_refusal::validate_attachment(&native, &foreign).is_err());
+    native.storage.ready.store(false, Ordering::Release);
+    assert!(super::native_refusal::validate_attachment(&native, &store).is_err());
+}
+
+#[tokio::test]
+async fn native_refusal_confirmation_tracks_original_unknown_operation() {
+    let (backend, _, native, log) = fixture().await;
+    let queue = PendingAuditQueue::new(1);
+    let confirmed = Arc::new(AtomicBool::new(false));
+    let mut pending = event(73, "request.refused");
+    pending.confirmation = Some(confirmed.clone());
+    queue.try_enqueue_background(pending).unwrap();
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert!(drain_native(&queue, &log, native.clone()).await.is_err());
+    assert!(!confirmed.load(Ordering::Acquire));
+    let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
+    assert!(queue
+        .try_enqueue_background(event(74, "request.refused"))
+        .is_err());
+    assert!(!confirmed.load(Ordering::Acquire));
+    drain_native(&queue, &log, native).await.unwrap();
+    assert!(confirmed.load(Ordering::Acquire));
+    let sent = backend.state.lock().unwrap().sent.clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].candidate().id, original.candidate().id);
+    assert_eq!(sent[1].fingerprint(), original.fingerprint());
+    assert_eq!(log.list_filtered(0, 10, None, None).len(), 1);
+}

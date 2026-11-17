@@ -67,7 +67,7 @@ impl NativeMoney {
         self.accepted.revision
     }
 
-    fn publish_incurred(
+    pub(super) fn publish_incurred(
         &mut self,
         gov: &crate::governance::GovState,
         snapshot: UnitCheckpoint,
@@ -95,6 +95,23 @@ pub struct NativeRequestMoney {
 }
 
 impl NativeRequestMoney {
+    pub(super) fn capture_checkpoint_facts(
+        &self,
+        snapshot: &mut UnitCheckpoint,
+    ) -> Result<(), NativeAttemptError> {
+        snapshot.audit = Some(
+            self.money
+                .post
+                .checkpoint_facts(self.request.unit())
+                .ok_or_else(|| {
+                    NativeAttemptError::Custody(busbar_contract::records::RecordStoreError(
+                        "selected request lost its original audit capture owner".into(),
+                    ))
+                })?,
+        );
+        Ok(())
+    }
+
     pub fn request(&self) -> &AdmittedRequest {
         &self.request
     }
@@ -138,6 +155,7 @@ impl NativeRequestMoney {
         }
         let before = &native.accepted;
         let mut snapshot = before.as_ref().clone();
+        self.capture_checkpoint_facts(&mut snapshot)?;
         let parts = snapshot
             .partitions
             .as_mut()

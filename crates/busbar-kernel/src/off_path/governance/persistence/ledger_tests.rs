@@ -542,10 +542,8 @@ async fn correction_guards_complete_selection_and_usage_prestate() {
         enabled: true,
         ..Default::default()
     };
-    backend.0.lock().unwrap().rows.insert(
-        super::super::identity::key_address("key").unwrap(),
-        Secret::new(encode(&key).unwrap()),
-    );
+    store.identity().put_key(&key).await.unwrap();
+    backend.0.lock().unwrap().attempts.clear();
     let mut replacement = UsageLedger::default();
     replacement.checked_apply_delta(&delta(50)).unwrap();
     let request = correction::Request {

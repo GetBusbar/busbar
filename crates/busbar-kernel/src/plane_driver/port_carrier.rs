@@ -306,13 +306,18 @@ impl CarrierSession {
         &self,
         detach: &Detach,
         subject: Option<[u8; 32]>,
-    ) -> (Registered, mpsc::Receiver<Signalled>) {
+    ) -> Result<(Registered, mpsc::Receiver<Signalled>), SessionError> {
         let (tx, rx) = mpsc::channel(SIGNAL_QUEUE);
-        (
-            self.registry
+        let registered = match self.host.command().map_err(|_| SessionError::NotDriven)? {
+            Some(authority) => self
+                .registry
+                .register_command(self.instance, &authority, &detach.key, tx)
+                .map_err(|_| SessionError::NotDriven)?,
+            None => self
+                .registry
                 .register(self.instance, &detach.key, subject, tx),
-            rx,
-        )
+        };
+        Ok((registered, rx))
     }
 
     /// The next event of a held session, blocking on the runtime.
@@ -405,7 +410,7 @@ impl CarrierSession {
             if let (false, Some(detach)) = (registered, ran.detach.clone()) {
                 registered = true;
                 expires = started + Duration::from_secs(detach.ttl_s).min(HELD_MAX);
-                signals = Some(self.register(&detach, resolver.subject()));
+                signals = Some(self.register(&detach, resolver.subject())?);
             }
             if task.held.is_empty() && ran.wake_at.is_none() && signals.is_none() {
                 return Ok(());

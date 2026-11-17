@@ -327,7 +327,12 @@ fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
     assert_eq!(secret.name, "probe");
     assert_eq!(secret.identity, "fixture-secret");
     assert_eq!(secret.config, b"{}");
-    assert_eq!(ref_schemas(&cfg).unwrap()[0].0.as_ref(), "probe");
+    assert_eq!(
+        crate::root::min3_candidate_secrets::reference_schemas(cfg.grammar().unwrap())[0]
+            .0
+            .as_ref(),
+        "probe"
+    );
 }
 
 #[test]

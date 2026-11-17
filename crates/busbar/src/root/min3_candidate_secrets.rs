@@ -112,7 +112,15 @@ impl CandidateSecrets {
 /// The single binder construction used by bootstrap and serving candidate owners. The grammar
 /// already contains canonical explicit and implicit instance names from the document reader.
 pub(crate) fn new_binder(grammar: &Grammar) -> Arc<dyn ConfigBinder> {
-    let schemas = grammar
+    Arc::new(Binder::new(
+        Arc::new(grammar.sugars.clone()),
+        reference_schemas(grammar),
+    ))
+}
+
+/// Reference schemas retain the configured or implicit instance name used by the binder.
+pub(crate) fn reference_schemas(grammar: &Grammar) -> Vec<(Arc<str>, Box<str>)> {
+    grammar
         .secret_instances
         .iter()
         .map(|(name, source)| {
@@ -121,8 +129,7 @@ pub(crate) fn new_binder(grammar: &Grammar) -> Arc<dyn ConfigBinder> {
                 Box::from(source.ref_schema.as_str()),
             )
         })
-        .collect();
-    Arc::new(Binder::new(Arc::new(grammar.sugars.clone()), schemas))
+        .collect()
 }
 
 fn bound_read_grammar(

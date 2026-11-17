@@ -205,6 +205,7 @@ pub(crate) struct Booted {
     _bootstrap_registry: Arc<MinRegistry>,
     _channel_accounts: Arc<ChannelAccounts>,
     pub(crate) framers: super::min3_framers::NativeFramers,
+    pub(crate) transport_sources: TransportSources,
     pub(crate) inventories: Arc<super::min3_physical::Inventories>,
     _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
@@ -236,6 +237,12 @@ impl std::fmt::Debug for Booted {
 }
 
 impl Booted {
+    pub(crate) fn has_exports(&self) -> bool {
+        self._opened
+            .iter()
+            .any(|(_, _, port)| matches!(port, Some(OpenedPort::Export(_))))
+    }
+
     /// The boot's one summary line: what ran, never a value.
     fn describe(&self) -> String {
         let held = |secret: &Option<SecureVec>| {
@@ -408,6 +415,7 @@ fn admit_dropped_images(
 }
 
 /// One configured instance, owned until the plan borrows it.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Configured {
     pub(crate) kind: KindCode,
     pub(crate) identity: String,
@@ -1144,19 +1152,130 @@ where
 
 /// S6 owners. No serving instance has opened when this value is returned.
 pub(crate) struct BootstrapReady {
-    candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets,
-    channel_accounts: Arc<ChannelAccounts>,
-    built: Built,
-    instances: Vec<Configured>,
-    bootstrap: super::boot::walk::Bootstrap<Option<OpenedPort>>,
+    sources: Arc<BootstrapSources>,
     pub(crate) core: Arc<CoreSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
 }
 
+/// Only the immutable S5/S6 authorities survive across serving generations.
+/// No request-serving Registry, App, resolved core credential or worker is retained here.
+pub(crate) struct BootstrapSources {
+    candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets,
+    channel_accounts: Arc<ChannelAccounts>,
+    registry: Arc<MinRegistry>,
+    instances: Vec<Configured>,
+    leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
+}
+
+impl BootstrapSources {
+    fn leases(&self) -> Result<super::boot::walk::BootstrapLeases<Option<OpenedPort>>, String> {
+        let opened = self
+            .leases
+            .opened
+            .iter()
+            .map(|(index, phase, port)| {
+                let port = match port {
+                    Some(OpenedPort::Store(store)) => {
+                        Some(OpenedPort::Store(busbar_ports::store::StoreHandle {
+                            backend: Arc::clone(&store.backend),
+                        }))
+                    }
+                    Some(OpenedPort::Secret(secret)) => {
+                        Some(OpenedPort::Secret(Arc::clone(secret)))
+                    }
+                    None => None,
+                    _ => return Err("bootstrap custody contains a serving instance".into()),
+                };
+                Ok((*index, *phase, port))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(super::boot::walk::BootstrapLeases {
+            opened,
+            deployment: self.leases.deployment,
+        })
+    }
+}
+
+impl BootstrapSources {
+    /// Capture one runtime candidate before kernel fields move. The resolver returned
+    /// by ServingReady is the exact prefix used later for its native opens.
+    pub(crate) async fn prepare_next(
+        self: &Arc<Self>,
+        process: &busbar_plugin_loader::process::ProcessResources,
+        cfg: &RootCfg,
+        guard: Guard,
+        transports: &TransportSources,
+    ) -> Result<ServingReady, String> {
+        let read = cfg
+            .grammar
+            .prepared()
+            .ok_or("native candidate has no retained read")?;
+        let images = read
+            .context::<super::boot::images::FileImages>()
+            .ok_or("native candidate read has no admitted image owner")?;
+        let catalogs = cfg
+            .grammar
+            .provider_catalogs()
+            .ok_or("native candidate has no resolved provider catalogs")?;
+        let secrets = super::min3_candidate_secrets::CandidateSecrets::prepare(
+            &self.candidate_secrets,
+            images,
+            cfg,
+            process,
+        )?;
+        // Resolve candidate core references through this exact new binder/prefix.
+        // Bootstrap protects the sources, not the previous generation's resolved values.
+        let core = Arc::new(core_secrets_of(cfg, secrets.prefix()).await?);
+        prepare_serving_owned(
+            BootstrapReady {
+                sources: Arc::clone(self),
+                core,
+                converting: false,
+                normalization_source: None,
+            },
+            (*images).clone(),
+            cfg,
+            catalogs,
+            guard,
+            secrets,
+            Some(transports.clone()),
+        )
+    }
+}
+
+/// Immutable physical transport authority, independent of a serving App or Registry.
+#[derive(Clone)]
+pub(crate) struct TransportSources {
+    framers: super::min3_framers::NativeFramers,
+    configured: Vec<Configured>,
+    images: std::collections::BTreeMap<String, Option<[u8; 32]>>,
+}
+
+impl TransportSources {
+    fn check(
+        &self,
+        images: &super::boot::images::FileImages,
+        instances: &[Configured],
+    ) -> Result<(), String> {
+        let transports: Vec<_> = instances
+            .iter()
+            .filter(|one| one.kind == KindCode::Transport)
+            .cloned()
+            .collect();
+        if self.images != images.transport_images() || self.configured != transports {
+            return Err(
+                "native physical transport images or settings changed; restart required".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
     candidate_secrets: super::min3_candidate_secrets::CandidateSecrets,
+    fixed_transports: Option<TransportSources>,
     images: Arc<super::boot::images::FileImages>,
     channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
@@ -1197,6 +1316,10 @@ impl ServingReady {
 }
 
 impl BootstrapReady {
+    pub(crate) fn sources(&self) -> Arc<BootstrapSources> {
+        Arc::clone(&self.sources)
+    }
+
     pub(crate) fn converting(&self) -> bool {
         self.converting
     }
@@ -1291,16 +1414,18 @@ pub(crate) async fn prepare_bootstrap(
     let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
     Ok(Some((
         BootstrapReady {
-            candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets::new(
-                Arc::clone(&prefix),
-                protected_images,
-                protected_instances,
-                runtime,
-            ),
-            channel_accounts: Arc::new(ChannelAccounts::new()),
-            built,
-            instances,
-            bootstrap,
+            sources: Arc::new(BootstrapSources {
+                candidate_secrets: super::min3_candidate_secrets::BootstrapSecrets::new(
+                    Arc::clone(&prefix),
+                    protected_images,
+                    protected_instances,
+                    runtime,
+                ),
+                channel_accounts: Arc::new(ChannelAccounts::new()),
+                registry: built.registry,
+                instances,
+                leases: bootstrap.into_leases(),
+            }),
             core,
             converting,
             normalization_source,
@@ -1338,26 +1463,51 @@ fn specifications<'a>(
         .collect()
 }
 
-pub(crate) fn prepare_serving(
-    ready: BootstrapReady,
+pub(crate) async fn prepare_serving(
+    mut ready: BootstrapReady,
     process: &busbar_plugin_loader::process::ProcessResources,
     effective_images: super::boot::images::FileImages,
     cfg: &RootCfg,
     catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
 ) -> Result<ServingReady, String> {
+    let candidate_secrets = super::min3_candidate_secrets::CandidateSecrets::prepare(
+        &ready.sources.candidate_secrets,
+        &effective_images,
+        cfg,
+        process,
+    )?;
+    ready.core = Arc::new(core_secrets_of(cfg, candidate_secrets.prefix()).await?);
+    prepare_serving_owned(
+        ready,
+        effective_images,
+        cfg,
+        catalogs,
+        guard,
+        candidate_secrets,
+        None,
+    )
+}
+
+fn prepare_serving_owned(
+    ready: BootstrapReady,
+    effective_images: super::boot::images::FileImages,
+    cfg: &RootCfg,
+    catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
+    guard: Guard,
+    candidate_secrets: super::min3_candidate_secrets::CandidateSecrets,
+    fixed_transports: Option<TransportSources>,
+) -> Result<ServingReady, String> {
     let effective_images = Arc::new(effective_images);
     let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
-        candidate_secrets: bootstrap_secrets,
-        channel_accounts,
-        built: bootstrap_built,
-        instances: before,
-        bootstrap,
+        sources,
         core,
         converting,
         normalization_source,
     } = ready;
+    let channel_accounts = Arc::clone(&sources.channel_accounts);
+    let before = &sources.instances;
     let images = effective_images.images.clone();
     let transports: Vec<String> = images
         .identities()
@@ -1379,12 +1529,6 @@ pub(crate) fn prepare_serving(
         })
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
-    let candidate_secrets = super::min3_candidate_secrets::CandidateSecrets::prepare(
-        &bootstrap_secrets,
-        &effective_images,
-        cfg,
-        process,
-    )?;
     let sugars = candidate_secrets.sugars().clone();
     let binder = Arc::clone(candidate_secrets.binder());
     let prefix = Arc::clone(candidate_secrets.prefix());
@@ -1476,7 +1620,7 @@ pub(crate) fn prepare_serving(
         let staged = provider_plan.stage(cfg, catalog, &allocations, registration, definitions)?;
         staged_catalogs.insert(name.clone(), staged);
     }
-    let mut leases = bootstrap.into_leases();
+    let mut leases = sources.leases()?;
     for (index, _, _) in &mut leases.opened {
         let old = before
             .get(*index as usize)
@@ -1515,8 +1659,17 @@ pub(crate) fn prepare_serving(
             return Err("effective configuration introduces a new bootstrap dependency".into());
         }
     }
+    if let Some(fixed) = &fixed_transports {
+        fixed.check(&effective_images, &instances)?;
+    }
     let reserved = rest
         .into_iter()
+        .filter(|index| {
+            fixed_transports.is_none()
+                || instances
+                    .get(*index as usize)
+                    .is_none_or(|one| one.kind != KindCode::Transport)
+        })
         .map(|index| {
             let (_, spec) = specs
                 .get(index as usize)
@@ -1563,6 +1716,7 @@ pub(crate) fn prepare_serving(
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
         candidate_secrets,
+        fixed_transports,
         images: effective_images,
         channel_accounts,
         hook_plan,
@@ -1584,7 +1738,7 @@ pub(crate) fn prepare_serving(
         public_url: cfg.public_url.clone(),
         converting,
         normalization_source,
-        _bootstrap_registry: bootstrap_built.registry,
+        _bootstrap_registry: Arc::clone(&sources.registry),
     })
 }
 
@@ -1615,8 +1769,74 @@ pub(crate) async fn finish(
     ),
     String,
 > {
+    let store = startup
+        .store()
+        .ok_or("S6 did not retain the admitted Store")?;
+    let (startup, workers, exports, native, policy) = finish_with_store(
+        ready,
+        store,
+        Some(startup),
+        services,
+        work_binder,
+        environment,
+        export_observers,
+    )
+    .await?;
+    Ok((
+        startup.ok_or("initial native completion lost its admitted startup owner")?,
+        workers,
+        exports,
+        native,
+        policy,
+    ))
+}
+
+/// Initial boot retains Startup for conversion/re-exec; later generations borrow the admitted
+/// CoreStore instead of reopening or reconstructing its writer. Both use the same actual opens.
+pub(super) async fn finish_with_store(
+    ready: ServingReady,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    startup: Option<Startup>,
+    services: Option<Arc<KernelServices>>,
+    work_binder: Arc<WorkBinder>,
+    environment: Option<ServingEnvironment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
+) -> Result<
+    (
+        Option<Startup>,
+        super::boot::workers::PreparedWorkers,
+        super::exports::ports::Exports,
+        Arc<Booted>,
+        busbar_kernel::governance::selected_policy::PendingSelectedPolicy,
+    ),
+    String,
+> {
+    if ready.converting && startup.is_none() {
+        return Err("configuration conversion requires the original admitted startup owner".into());
+    }
+    // Runtime completion must use the durable reservation attached by the actual
+    // configuration transaction, before any native OPEN. Initial completion runs
+    // only after root boot has installed its confirmed NodeBook generation.
+    let initial = startup.is_some();
+    let generation = match (initial, environment.as_ref()) {
+        (false, Some(environment)) => Some(
+            environment
+                .app
+                .prepared_generation()
+                .ok_or("native candidate has no reserved publication generation")?,
+        ),
+        (false, None) => return Err("serving composition has no candidate authority".into()),
+        (true, Some(environment)) => Some(
+            environment
+                .app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+        ),
+        (true, None) => None,
+    };
     let ServingReady {
         candidate_secrets,
+        fixed_transports,
         images,
         channel_accounts,
         hook_plan,
@@ -1643,7 +1863,10 @@ pub(crate) async fn finish(
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
             policy
-                .compile(Arc::clone(&environment.app.cost), None)
+                .compile(
+                    Arc::clone(&environment.app.cost),
+                    environment.app.selected_predecessor(),
+                )
                 .map_err(|errors| errors.join("\n"))?,
         ),
         (None, None) if converting => None,
@@ -1657,9 +1880,6 @@ pub(crate) async fn finish(
     if let Some(hooks) = hooks {
         hooks.check_pools(&instances)?;
     }
-    let core = startup
-        .store()
-        .ok_or("S6 did not retain the admitted Store")?;
     let specs = specifications(&instances, public_url.as_deref(), converting);
     let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
     let super::provisioning::PreparedProvisioning {
@@ -1827,7 +2047,7 @@ pub(crate) async fn finish(
         drop(opened_planes);
         let mut opened = walked.opened;
         opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
-        let admission = startup;
+        let admission = startup.ok_or("CONFIG: conversion lost its admitted startup owner")?;
         let core = admission
             .store()
             .ok_or("CONFIG: conversion has no admitted core store")?;
@@ -1901,6 +2121,18 @@ pub(crate) async fn finish(
             }
             continue;
         }
+        if !initial {
+            let authored = busbar_contract::json::parse_value(&instance.config)
+                .map_err(|_| "CONFIG: invalid candidate authoring settings")?;
+            let settled = busbar_contract::json::parse_value(answer.config_json.as_slice())
+                .map_err(|_| "CONFIG: invalid candidate normalized settings")?;
+            if authored != settled {
+                return Err(format!(
+                    "CONFIG: instance `{}` requires a new normalized configuration read",
+                    instance.name
+                ));
+            }
+        }
         if let Some(retained) = declared.get(&instance.name) {
             let visible = busbar_contract::json::parse_value(answer.config_json.as_slice())
                 .map_err(|_| "CONFIG: invalid plane CONFIG")?;
@@ -1926,6 +2158,7 @@ pub(crate) async fn finish(
     )
     .await?;
     let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let generation = generation.ok_or("serving composition has no generation authority")?;
     let selected_policy =
         selected_policy.ok_or("serving composition lost its captured selected policy")?;
     let owners = super::min3_admin_auth::owners(
@@ -1999,15 +2232,27 @@ pub(crate) async fn finish(
         &auth_policy,
         &auth,
         environment.app,
-        environment
-            .app
-            .config_generation
-            .load(std::sync::atomic::Ordering::Acquire),
+        generation,
         request_body_cap,
         crate::root::dispatch::dispatcher().budgets().call,
         Arc::clone(&environment.app.request_id_counter),
     )?;
-    let transports = transports::table(transports::opened(&walked.opened, &specs))?;
+    let framers = match fixed_transports {
+        Some(fixed) => fixed.framers,
+        None => super::min3_framers::NativeFramers::new(transports::table(transports::opened(
+            &walked.opened,
+            &specs,
+        ))?),
+    };
+    let transport_sources = TransportSources {
+        framers: framers.clone(),
+        configured: instances
+            .iter()
+            .filter(|one| one.kind == KindCode::Transport)
+            .cloned()
+            .collect(),
+        images: images.transport_images(),
+    };
     let secrets = steps.prefix();
     let core = core_secrets;
     let seats = steps
@@ -2016,10 +2261,7 @@ pub(crate) async fn finish(
         .unwrap_or_else(PoisonError::into_inner);
     let inventories = Arc::new(super::min3_physical::build_inventories(
         &seats,
-        environment
-            .app
-            .config_generation
-            .load(std::sync::atomic::Ordering::Acquire),
+        generation,
         &steps
             .inventory_inputs
             .into_inner()
@@ -2039,7 +2281,8 @@ pub(crate) async fn finish(
         resolver: Arc::clone(candidate_secrets.resolver()),
         registry: built.registry,
         _bootstrap_registry,
-        framers: super::min3_framers::NativeFramers::new(transports),
+        framers,
+        transport_sources,
         inventories,
         _native_invocations: invocations,
         _opened: walked.opened,

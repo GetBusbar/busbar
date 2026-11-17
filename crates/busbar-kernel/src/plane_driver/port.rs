@@ -699,6 +699,49 @@ pub(crate) fn refusal_of(
     refusals.for_port(route, error)
 }
 
+/// Preserve the current authority's refusal vocabulary at the original route renderer.
+fn selected_refusal(
+    route: u32,
+    failure: &super::port_egress::SelectedFailure,
+    refusals: &dyn RefusalMap,
+) -> ClientRefusal {
+    use super::port_egress::SelectedFailure;
+    use crate::governance::selected_policy::SelectedPolicyRefusal;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_plugin_abi::fail::refused::{R_NO_ROUTE, R_POLICY, R_RATE_LIMITED};
+
+    match failure {
+        SelectedFailure::Quota => return refusals.for_core(route, R_RATE_LIMITED),
+        SelectedFailure::NoSend
+        | SelectedFailure::Policy(SelectedPolicyRefusal::StalePolicyTarget) => {
+            return refusals.for_core(route, R_NO_ROUTE);
+        }
+        SelectedFailure::Policy(SelectedPolicyRefusal::CurrentAuthority(reason)) => {
+            if let Some(code) = reason.auth_code() {
+                return refusals.for_auth(route, code);
+            }
+        }
+        SelectedFailure::Policy(SelectedPolicyRefusal::CurrentGroup(
+            ReasonCode::ScopeDenied | ReasonCode::GroupFrozen,
+        )) => return refusals.for_core(route, R_POLICY),
+        _ => {}
+    }
+    refusals.for_port(
+        route,
+        &PortError::Failed {
+            code: if matches!(failure, SelectedFailure::Backend) {
+                busbar_plugin_abi::fail::failed::F_UNAVAILABLE
+            } else {
+                busbar_plugin_abi::fail::failed::F_INTERNAL
+            },
+            text: "".into(),
+            retry_after_s: None,
+            backend_status: None,
+            error: None,
+        },
+    )
+}
+
 /// Ties a request builder's two borrowed inputs to the one lifetime of the [`PlaneIn`] it returns (a closure
 /// with elided reference parameters would give each its own, and the result borrows both).
 fn one_lifetime<'a, F>(build: F) -> F
@@ -1229,7 +1272,8 @@ fn drive_blocking(
         Some(subject) => Resolver::new(intents, None).with_principal(subject, req.identity),
         None => Resolver::new(intents, None),
     }
-    .with_route(route);
+    .with_route(route)
+    .with_admission(effects.admission.as_deref());
     let session = carrier.map(|carrier| {
         carrier
             .session_with_budget(
@@ -1310,34 +1354,7 @@ fn drive_blocking(
             }))
         }
         Err(SessionError::SelectedRefused(error)) => {
-            use super::port_egress::SelectedFailure;
-            use crate::governance::selected_policy::SelectedPolicyRefusal;
-            let refusal = match &error.0 {
-                SelectedFailure::Quota => {
-                    refusals.for_core(req.route, busbar_plugin_abi::fail::refused::R_RATE_LIMITED)
-                }
-                SelectedFailure::NoSend
-                | SelectedFailure::Policy(SelectedPolicyRefusal::StalePolicyTarget) => {
-                    refusals.for_core(req.route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
-                }
-                SelectedFailure::Policy(SelectedPolicyRefusal::CurrentAuthority) => {
-                    return Err(ServeError::Session(SessionError::SelectedRefused(error)))
-                }
-                failure => refusals.for_port(
-                    req.route,
-                    &PortError::Failed {
-                        code: if matches!(failure, SelectedFailure::Backend) {
-                            busbar_plugin_abi::fail::failed::F_UNAVAILABLE
-                        } else {
-                            busbar_plugin_abi::fail::failed::F_INTERNAL
-                        },
-                        text: "".into(),
-                        retry_after_s: None,
-                        backend_status: None,
-                        error: None,
-                    },
-                ),
-            };
+            let refusal = selected_refusal(req.route, &error.0, refusals);
             Ok(Served::Refused(Refused {
                 items: refuse(port, req, &refusal, effects),
                 decision: refusal,

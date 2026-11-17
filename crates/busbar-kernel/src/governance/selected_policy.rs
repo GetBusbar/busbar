@@ -17,12 +17,6 @@ use crate::state::App;
 use super::current_credential::CurrentCredentialRefusal;
 use super::selected_resource::RateMetric;
 
-impl super::GovState {
-    pub(crate) fn selected_rates(&self) -> &Arc<super::selected_resource::SelectedRates> {
-        &self.selected_rates
-    }
-}
-
 const MAX_APPLICABLE: usize = 32;
 
 pub use crate::plane_driver::image_identity::PlaneImageIdentity;
@@ -97,6 +91,10 @@ struct CurrentRequest<'a> {
 }
 
 impl SelectedPolicy {
+    pub(crate) fn matches_cost(&self, cost: &Arc<CostModel>) -> bool {
+        Arc::ptr_eq(&self.cost, cost)
+    }
+
     /// Resolve only under AppHandle's short admission gate, from its one current App load.
     /// This borrows the original attempt; refusal leaves its monetary custody untouched.
     pub(crate) fn resolve_current(
@@ -534,6 +532,19 @@ fn compile_row(
 }
 
 impl PendingSelectedPolicy {
+    pub(crate) fn matches_candidate(
+        &self,
+        cost: &Arc<CostModel>,
+        previous: Option<&SelectedPolicy>,
+    ) -> bool {
+        Arc::ptr_eq(&self.cost, cost)
+            && match (&self.previous, previous) {
+                (None, None) => true,
+                (Some(expected), Some(actual)) => Arc::ptr_eq(expected, &actual.identity),
+                _ => false,
+            }
+    }
+
     /// Install only on the owned initial App before AppHandle exists. Reload replacement
     /// must use AppHandle's publication gate and the actual predecessor instead.
     pub fn install_initial(self, app: &mut App) -> Result<(), &'static str> {

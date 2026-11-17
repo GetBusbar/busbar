@@ -19,7 +19,8 @@ ffi:
     src/header.rs: { tokens: 2, reason: "export!'s #[unsafe(no_mangle)]; its allow" }
     src/vt.rs: { tokens: 10, reason: "the nine instance-taking entry fn-pointer aliases (EntryFn0-5, ResumeFn, CancelFn, CloseFn); its allow" }
     src/shim.rs: { tokens: 47, reason: "enter (def and block); each of the 21 instance shims' def and enter block; the session and resume slot lookups; close's drop; its allow" }
-    src/slots.rs: { tokens: 12, reason: "the slot write, get_mut (def and body), the slot take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks), the C-CLOSE-PARKED test's two blocks; its allow" }
+    src/slots.rs: { tokens: 10, reason: "the slot write, get_mut (def and body), the slot take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks); its allow" }
+    src/lifecycle.rs: { tokens: 2, reason: "the private Send callback lifetime erasure, synchronously completed before borrowed storage is released; its allow" }
     src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
     src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
     tests/loom_slots.rs: { tokens: 2, reason: "C-SLOT-STALE: the two get_mut checks under loom" }

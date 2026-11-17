@@ -205,6 +205,7 @@ async fn actual_replay_claim_is_once_per_admission_and_denied_after_exit_or_dead
         )
         .unwrap(),
         won: tokio::sync::OnceCell::new(),
+        execution: std::sync::OnceLock::new(),
     };
     let alive = AtomicBool::new(true);
     let replay = claim();
