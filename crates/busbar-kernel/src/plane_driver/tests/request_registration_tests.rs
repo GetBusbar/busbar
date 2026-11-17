@@ -641,6 +641,13 @@ fn undeclared_scope_kind_never_admits_a_scoped_key_registration() {
 /// One selected-route rig: registration upstreams `a` and `b` walk as seat pool `seat`, and
 /// the inventory maps `(pool, a)` and `(pool, b)` to exactly those members.
 fn selected_rig(selected: &str) -> (RequestRoutes, Arc<SelectedResources>) {
+    selected_rig_kind(selected, None)
+}
+
+fn selected_rig_kind(
+    selected: &str,
+    scope_kind: Option<Arc<str>>,
+) -> (RequestRoutes, Arc<SelectedResources>) {
     use crate::resource_admission::{ForwardFact, FrozenRequest, ResourceFact, ResourceInventory};
     use crate::upstreams::Upstreams;
     use busbar_contract::records::ScopeRef;
@@ -650,7 +657,7 @@ fn selected_rig(selected: &str) -> (RequestRoutes, Arc<SelectedResources>) {
         definition("command", true),
     ]);
     let registration = Arc::new(SeatPool::of("seat", &upstreams).unwrap());
-    let routes = RequestRoutes::new("seat", None, None, Some(registration))
+    let routes = RequestRoutes::new("seat", scope_kind, None, Some(registration))
         .unwrap()
         .with_registrations(Arc::clone(&upstreams))
         .unwrap();
@@ -739,16 +746,91 @@ fn a_selection_narrows_the_keyed_walk_to_the_selected_tuples() {
     );
 }
 
-/// Test 3, green half (K2): W_UPSTREAM outside the selection is refused, for any key.
+fn server_scoped(id: &str, servers: &[&str]) -> Arc<VirtualKey> {
+    Arc::new(VirtualKey {
+        id: id.into(),
+        enabled: true,
+        allowed_scopes: Some(
+            servers
+                .iter()
+                .map(|server| busbar_contract::records::ScopeRef {
+                    kind: "server".into(),
+                    value: (*server).into(),
+                })
+                .collect(),
+        ),
+        ..Default::default()
+    })
+}
+
+/// PM ruling (2) on #462: a command is never a pool member, so the pool selection does not
+/// decide it. The key's grant of the command's own kind does: an unrestricted key passes, a
+/// key granted that command passes, a key scoped without it is refused.
 #[test]
-fn a_selection_refuses_a_registration_outside_it() {
+fn a_command_registration_is_judged_by_its_own_kind_not_the_pool_selection() {
     let (routes, selected) = selected_rig("a");
     let (ctx, _lease) = context(49);
-    assert_eq!(
+    assert!(
         allocation(ctx)
-            .with_selection(selected)
+            .with_selection(Arc::clone(&selected))
             .registration(&routes, None, "command")
-            .err(),
-        Some(AdmissionError::Scope)
+            .is_ok(),
+        "an unrestricted key reaches its configured command beside a pool selection"
     );
+    let (routes, selected) = selected_rig_kind("a", Some(Arc::from("server")));
+    for (unit, key, admitted) in [
+        (51, server_scoped("granted", &["command"]), true),
+        (52, server_scoped("other", &["elsewhere"]), false),
+        (53, server_scoped("none", &[]), false),
+    ] {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let resolved = allocation(ctx)
+            .with_selection(Arc::clone(&selected))
+            .registration(&routes, None, "command");
+        assert_eq!(resolved.is_ok(), admitted, "unit {unit}");
+        if !admitted {
+            assert_eq!(resolved.err(), Some(AdmissionError::Scope));
+        }
+    }
+}
+
+/// PM ruling (1) on #462: the admitted request keeps its selection, and the current-key
+/// re-check fails closed once the key no longer holds it.
+#[test]
+fn a_key_narrowed_after_admission_loses_the_selected_walk() {
+    use crate::config::groups::ExhaustionMode;
+    use crate::governance::GovState;
+    use crate::plane_driver::{EndPost, PlaneMoney};
+    struct Posted;
+    impl EndPost for Posted {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+    }
+    let (routes, selected) = selected_rig("a");
+    let (ctx, _lease) = context_with_key(54, pool_scoped("scoped", &["a"]));
+    let walk = RequestWalk::new(&ctx).unwrap();
+    let receipt = allocation(ctx)
+        .with_selection(selected)
+        .forward(&routes, &walk, None)
+        .unwrap();
+    let store = futures::executor::block_on(crate::real_store::core());
+    let gov =
+        Arc::new(futures::executor::block_on(GovState::new_with_core(store, None, None)).unwrap());
+    let money = PlaneMoney::new(gov, Arc::new(Posted));
+    let admitted = money
+        .admit_existing(
+            receipt.begin().unwrap(),
+            Arc::from([]),
+            crate::plane_driver::money::FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let member = format!("seat{PLANE_LANE_SEP}a");
+    assert!(routes.allows_current_pair(&admitted, admitted.key(), "seat", &member));
+    for narrowed in [pool_scoped("scoped", &["b"]), pool_scoped("scoped", &[])] {
+        assert!(
+            !routes.allows_current_pair(&admitted, &narrowed, "seat", &member),
+            "a key narrowed to {:?} kept the selected walk",
+            narrowed.allowed_scopes
+        );
+    }
 }
