@@ -32,7 +32,7 @@ pub fn install_store(s: Arc<TrustStore>) {
 
 /// The host of a dial target, without userinfo, port or brackets: what a record may name (at most
 /// 256 characters of it).
-fn shown(target: &str) -> &str {
+pub(crate) fn shown(target: &str) -> &str {
     let t = target.split_once("://").map_or(target, |(_, r)| r);
     let t = t.rsplit_once('@').map_or(t, |(_, h)| h);
     let t = t.split(['/', '?', '#']).next().unwrap_or(t);

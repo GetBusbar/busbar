@@ -5,6 +5,56 @@
 
 use std::borrow::Cow;
 
+/// A native direct endpoint's authority, using the guard's host normalization and an explicit
+/// port (or the caller's web-scheme default). Reject ambiguous or credential-bearing spelling.
+pub fn canonical_network_authority(raw: &str, default_port: Option<u16>) -> Option<Box<str>> {
+    if raw.is_empty()
+        || raw
+            .bytes()
+            .any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+        || raw.contains(['@', '%', '/', '?', '#', '\\'])
+    {
+        return None;
+    }
+    let (host, port) = if raw.starts_with('[') {
+        let end = raw.find(']')?;
+        let host = &raw[..=end];
+        let rest = &raw[end + 1..];
+        (
+            host,
+            if rest.is_empty() {
+                None
+            } else {
+                Some(rest.strip_prefix(':')?)
+            },
+        )
+    } else {
+        match raw.rsplit_once(':') {
+            Some((host, port)) if !host.contains(':') => (host, Some(port)),
+            Some(_) => return None,
+            None => (raw, None),
+        }
+    };
+    let port = match port {
+        Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
+            p.parse::<u16>().ok()?
+        }
+        Some(_) => return None,
+        None => default_port?,
+    };
+    if port == 0 || is_alternate_ipv4_encoding(host.trim_end_matches('.')) {
+        return None;
+    }
+    let host = extract_normalized_authority_host(host)?;
+    let canonical = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let _: http::uri::Authority = canonical.parse().ok()?;
+    Some(canonical.into_boxed_str())
+}
+
 /// THE ADDRESS VALUE TYPES A PLUGIN NAMES, through the contract and never through `std::net`.
 pub use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,

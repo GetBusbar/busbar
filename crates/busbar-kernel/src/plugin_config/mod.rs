@@ -5,13 +5,17 @@
 //! The frozen types and the trait are below; [`Binder`] (binder.rs) is core's one implementation of the trait.
 
 mod binder;
+#[cfg(test)]
+mod network_tests;
+#[cfg(test)]
+mod network_tests;
 mod pem;
 mod pointer;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use binder::check_projection;
-pub use binder::{Binder, MAX_BINDINGS, MAX_UNIX_PATHS};
+pub use binder::{Binder, MAX_BINDINGS};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 

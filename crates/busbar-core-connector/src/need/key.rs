@@ -31,13 +31,17 @@ pub enum Tls {
 pub struct NeedKey {
     /// The owning runtime instance. Authenticated sessions never cross instance boundaries.
     pub instance: busbar_contract::conn::InstanceId,
+    /// Exact frozen CHECK endpoint within that runtime generation (zero for restrictive use).
+    pub registration: u32,
+    /// The same authority generation's final-retirement fence.
+    pub lease: busbar_ports::binder::NetworkLease,
     /// The normalised destination, `host:port` or `unix:/path`.
     pub dest: Box<str>,
     /// The effective SNI (empty when none).
     pub sni: Box<str>,
     /// The offered ALPN (empty when none).
     pub alpn: Box<str>,
-    /// `guard::judged_class(stated, configured)`, never the stated class.
+    /// The class of the checked same-generation operation authority.
     pub class: u32,
     /// The conn's TLS state.
     pub tls: Tls,
@@ -89,6 +93,9 @@ impl<V, S: BuildHasher> NeedPool<V, S> {
     /// The most recently pooled conn for exactly `key`, if any.
     pub fn take(&self, key: &NeedKey) -> Option<Pooled<V>> {
         let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        if !key.lease.live() {
+            return None;
+        }
         let slot = map.get_mut(key)?;
         let hit = slot.pop();
         if slot.is_empty() {
@@ -103,6 +110,9 @@ impl<V, S: BuildHasher> NeedPool<V, S> {
     /// The conn itself, when the key already holds `per_key` idle conns.
     pub fn put(&self, key: NeedKey, conn: Pooled<V>) -> Result<(), Pooled<V>> {
         let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        if !key.lease.live() {
+            return Err(conn);
+        }
         let slot = map.entry(key).or_default();
         if slot.len() >= self.per_key {
             return Err(conn);
@@ -119,6 +129,14 @@ impl<V, S: BuildHasher> NeedPool<V, S> {
             .values()
             .map(Vec::len)
             .sum()
+    }
+
+    /// Final retirement evicts idle conns; the shared lease fences late returns under this lock.
+    pub fn retire(&self, instance: busbar_contract::conn::InstanceId) {
+        self.map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|key, _| key.instance != instance);
     }
 }
 

@@ -348,6 +348,8 @@ impl NeedOut<'_> {
 /// No method retries (§12.3). Not dyn: `Driver`/`Registry` are generic over `N: Needs` (the binary picks
 /// HostNeeds, the test crate FakeNeeds), so no Need step is boxed (I5).
 pub trait Needs: Send + Sync + 'static {
+    /// Host-only final instance retirement after its leased root work drains. No wire ABI entry.
+    fn retire(&self, _instance: u64) {}
     /// a = conn id, b = open_flag bits, data0 = negotiated ALPN, data1 = the pooled-conn id
     /// (round 19: `res.put1(&id.to_le_bytes())`, exactly `open_flag::POOLED_ID_LEN` bytes, §6.1).
     fn open(

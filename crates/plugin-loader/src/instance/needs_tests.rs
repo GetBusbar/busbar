@@ -48,9 +48,6 @@ impl ConfigBinder for Binder {
     fn trust(&self, _: u64, _: u32) -> Option<Arc<TrustAnchor>> {
         None
     }
-    fn unix_path(&self, _: u64, _: &str) -> bool {
-        false
-    }
     fn dest(&self, _: u64, _: u32) -> Option<Arc<DestDef>> {
         None
     }

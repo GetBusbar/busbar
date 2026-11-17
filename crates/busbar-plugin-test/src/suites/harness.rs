@@ -65,6 +65,8 @@ const DEST: &str = "$dest";
 /// What one instance's `bind` replaced, in handle order (handle `n` is element `n - 1`).
 #[derive(Default)]
 struct Bound {
+    /// The production loader's frozen CHECK observations; FakeNeeds remains the I/O script owner.
+    network: Option<Vec<busbar_ports::binder::NetworkEndpoint>>,
     secrets: Vec<Value>,
     trust: Vec<Value>,
     dests: Vec<Value>,
@@ -485,6 +487,21 @@ impl MemBinder {
 }
 
 impl ConfigBinder for MemBinder {
+    fn freeze_network(
+        &self,
+        instance: u64,
+        endpoints: &[busbar_ports::binder::NetworkEndpoint],
+    ) -> Result<(), BindError> {
+        let mut table = self.table();
+        let bound = table.get_mut(&instance).ok_or(BindError::BadNetwork)?;
+        if bound.network.is_some() {
+            return Err(BindError::BadNetwork);
+        }
+        let frozen = busbar_ports::binder::NetworkEndpoint::canonical_set(endpoints)
+            .ok_or(BindError::BadNetwork)?;
+        bound.network = Some(frozen.into_vec());
+        Ok(())
+    }
     fn bind(
         &self,
         instance: u64,
@@ -558,10 +575,6 @@ impl ConfigBinder for MemBinder {
 
     fn trust(&self, _instance: u64, _handle: u32) -> Option<Arc<TrustAnchor>> {
         None
-    }
-
-    fn unix_path(&self, _instance: u64, _path: &str) -> bool {
-        false
     }
 
     fn dest(&self, _instance: u64, _handle: u32) -> Option<Arc<DestDef>> {

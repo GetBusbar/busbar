@@ -1,92 +1,89 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CLIENT TLS CONFIG OF ONE NEED DIAL: the platform roots plus the instance's own trust anchor
-//! (when the class allows one and the Need binds one), the client identity a mutual Need presents,
-//! and the ALPN it offers, built through the crypto backend (`tls::client`).
-//!
-//! The unverified config is used for exactly one reason: the caller's core-held `Accept` waives
-//! verification (`TlsPlan::waive`). A plugin never asks for it.
+//! Native TLS configurations belong to one immutable network owner and withdrawal epoch.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use busbar_contract::transport::trust::{ClientIdentity, EgressTrust};
 use busbar_plugin_abi::host_side::needs::NeedErr;
-use rustls::pki_types::pem::PemObject as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::TlsPlan;
-use crate::tls::client::{build_client_config, unverified_client_config};
+use crate::tls::store::TrustStore;
 
-/// Configs kept: one per (waived, trust anchor, ALPN). A client certificate is never cached.
 const KEPT: usize = 64;
 
-type CacheKey = (bool, [u8; 32], Vec<u8>);
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct CacheKey {
+    epoch: u64,
+    host: String,
+    waived: bool,
+    anchor: [u8; 32],
+    alpn: Vec<Vec<u8>>,
+}
 
-/// The built configs, shared by every dial of the I/O.
-#[derive(Debug, Default)]
+/// TLS configs for one network generation. Neither client identity is cached.
+#[derive(Debug)]
 pub struct Configs {
+    trust: Arc<TrustStore>,
     kept: Mutex<HashMap<CacheKey, Arc<rustls::ClientConfig>>>,
 }
 
-/// The client identity a PEM bundle of certificate chain and private key holds.
-fn identity(pem: &[u8]) -> Result<ClientIdentity, NeedErr> {
-    let chain = CertificateDer::pem_slice_iter(pem)
-        .map(|c| c.map(|c| c.as_ref().to_vec()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| NeedErr::Invalid)?;
-    if chain.is_empty() {
-        return Err(NeedErr::Invalid);
-    }
-    let key = PrivateKeyDer::from_pem_slice(pem).map_err(|_| NeedErr::Invalid)?;
-    Ok(ClientIdentity {
-        cert_chain: chain,
-        private_key: key.secret_der().to_vec().into(),
-    })
-}
-
 impl Configs {
-    /// The config for `plan` offering `alpn` (in order; empty offers none).
-    ///
-    /// # Errors
-    /// `Invalid` for a client certificate that does not parse, or one asked for under a waiver
-    /// (the unverified config presents no identity, and a Need that asked to present one does not
-    /// silently connect without it); `Tls` when the crypto backend refuses the config.
+    /// Construct from the complete operator policy for this network generation.
+    #[must_use]
+    pub fn new(trust: Arc<TrustStore>) -> Self {
+        Self {
+            trust,
+            kept: Mutex::default(),
+        }
+    }
+
+    /// Current withdrawal epoch, also used to fence native pooled connections.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.trust.withdrawal_epoch()
+    }
+
+    /// Compose TLS by logical destination, preserving exact ordered ALPN and policy epoch.
     pub fn get(
         &self,
+        host: &str,
         plan: &TlsPlan<'_>,
         alpn: &[Vec<u8>],
     ) -> Result<Arc<rustls::ClientConfig>, NeedErr> {
-        let anchor = plan.trust.as_ref().map_or([0; 32], |t| t.sha256);
-        let key = (plan.waive, anchor, alpn.concat());
-        if plan.cert.is_none() {
+        if plan.waive && plan.cert.is_some() {
+            return Err(NeedErr::Invalid);
+        }
+        let cacheable = plan.cert.is_none() && !self.trust.has_client_identity(host);
+        let epoch = self.epoch();
+        let key = CacheKey {
+            epoch,
+            host: crate::tls::store::host_only(host),
+            waived: plan.waive,
+            anchor: plan.trust.as_ref().map_or([0; 32], |anchor| anchor.sha256),
+            alpn: alpn.to_vec(),
+        };
+        if cacheable {
             let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(config) = kept.get(&key) {
-                return Ok(Arc::clone(config));
+                if self.epoch() == epoch {
+                    return Ok(Arc::clone(config));
+                }
             }
         }
-        let mut config = if plan.waive {
-            if plan.cert.is_some() {
-                return Err(NeedErr::Invalid);
-            }
-            Arc::unwrap_or_clone(unverified_client_config().map_err(|_| NeedErr::Tls)?)
-        } else {
-            let trust = EgressTrust {
-                extra_anchors: plan.trust.as_ref().map_or_else(Vec::new, |t| t.der.clone()),
-                pinned_public_keys: Vec::new(),
-                client_identity: plan
-                    .cert
-                    .as_deref()
-                    .map(|c| identity(c.as_slice()))
-                    .transpose()?,
-            };
-            build_client_config(&trust).map_err(|_| NeedErr::Tls)?
-        };
-        config.alpn_protocols = alpn.to_vec();
-        let config = Arc::new(config);
-        if plan.cert.is_none() {
-            let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let config = self
+            .trust
+            .config_for_need(host, plan, alpn)
+            .map_err(|error| match error {
+                crate::tls::store::TrustRefusal::InvalidNeed => NeedErr::Invalid,
+                _ => NeedErr::Tls,
+            })?;
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.epoch() != epoch {
+            return Err(NeedErr::Tls);
+        }
+        if cacheable {
             if kept.len() >= KEPT {
                 kept.clear();
             }
