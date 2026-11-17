@@ -517,7 +517,7 @@ pub(crate) struct PostServe<'a> {
     /// Data runtimes and transport-plugin listener threads: requests like any other.
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
-    pub(crate) generation_workers: super::boot::workers::RunningWorkers,
+    pub(crate) generation_workers: Arc<super::min3_candidate::Workers>,
     pub(crate) exports: super::exports::ports::Exports,
     pub(crate) export_captures: Arc<busbar_kernel::export::plugin::Exports>,
     pub(crate) export_observers: Arc<super::export_observer::ExportObservers>,
