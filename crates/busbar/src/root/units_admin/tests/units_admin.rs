@@ -684,6 +684,44 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
 }
 
 #[tokio::test]
+async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let door: AdminDoorFn = Arc::new(move |_: &AdminRequest| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(Scope::Full),
+            )
+            .into()
+        })
+    });
+    assert_eq!(
+        answer_at_the_closed_door(door.clone(), Some("credential"))
+            .await
+            .status,
+        200
+    );
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(true),
+        )));
+    let mut request = a_request();
+    request.credential = Some("credential".into());
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
+    assert_eq!(answer.status, 401);
+    assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     assert_eq!(
         answer_at_the_closed_door(a_door_that_identifies_the_operator(), Some("admin-token"))
