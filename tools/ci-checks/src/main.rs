@@ -679,3 +679,6 @@ mod checks_tests;
 
 #[cfg(test)]
 mod spdx_tests;
+
+#[cfg(test)]
+mod record_op_source_tests;

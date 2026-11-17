@@ -1670,3 +1670,7 @@ mod expired_writers_tests;
 #[cfg(test)]
 #[path = "tests/fence_settle_tests.rs"]
 mod fence_settle_tests;
+
+#[cfg(test)]
+#[path = "tests/record_ops_tests.rs"]
+mod record_ops_tests;
