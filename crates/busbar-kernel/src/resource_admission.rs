@@ -15,6 +15,7 @@ use busbar_contract::secure::SecureVec;
 use busbar_contract::services::{Caller, Incarnation};
 use busbar_plugin_abi::plane::{CARRIER_DEFAULT, CARRIER_HTTP, OUTBOUND_DEFAULT};
 
+use crate::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotError};
 use crate::plane_driver::port_egress::Targets;
 use crate::plane_driver::port_session::UpExchange;
 use crate::plane_driver::port_upstream::{Candidate, TargetIdentity};
@@ -413,6 +414,15 @@ impl ResourceInventory {
 pub struct FrozenRequest {
     invocation: InvocationId,
     route: u32,
+    storage: RequestStorage,
+}
+
+enum RequestStorage {
+    Legacy(LegacyRequest),
+    Native(Arc<ChargedRequestSnapshot>),
+}
+
+struct LegacyRequest {
     method: Box<str>,
     path: Box<str>,
     query: Box<str>,
@@ -443,15 +453,35 @@ impl FrozenRequest {
         Self {
             invocation,
             route,
-            method,
-            path,
-            query,
-            headers: headers
-                .into_iter()
-                .map(|(name, value)| (name, SecureVec::from(value)))
-                .collect(),
-            body: SecureVec::from(body),
+            storage: RequestStorage::Legacy(LegacyRequest {
+                method,
+                path,
+                query,
+                headers: headers
+                    .into_iter()
+                    .map(|(name, value)| (name, SecureVec::from(value)))
+                    .collect(),
+                body: SecureVec::from(body),
+            }),
         }
+    }
+
+    /// Share the complete original charged snapshot; selection makes no second payload copy.
+    pub fn from_snapshot(
+        invocation: InvocationId,
+        route: u32,
+        snapshot: Arc<ChargedRequestSnapshot>,
+    ) -> Self {
+        Self {
+            invocation,
+            route,
+            storage: RequestStorage::Native(snapshot),
+        }
+    }
+
+    /// A matching lease or equal contents cannot substitute for the exact native original.
+    pub fn matches_snapshot(&self, snapshot: &Arc<ChargedRequestSnapshot>) -> bool {
+        matches!(&self.storage, RequestStorage::Native(original) if Arc::ptr_eq(original, snapshot))
     }
     pub fn invocation(&self) -> InvocationId {
         self.invocation
@@ -460,21 +490,46 @@ impl FrozenRequest {
         self.route
     }
     pub fn method(&self) -> &str {
-        &self.method
+        match &self.storage {
+            RequestStorage::Legacy(old) => &old.method,
+            RequestStorage::Native(original) => original.method(),
+        }
     }
     pub fn path(&self) -> &str {
-        &self.path
+        match &self.storage {
+            RequestStorage::Legacy(old) => &old.path,
+            RequestStorage::Native(original) => original.path(),
+        }
     }
     pub fn query(&self) -> &str {
-        &self.query
+        match &self.storage {
+            RequestStorage::Legacy(old) => &old.query,
+            RequestStorage::Native(original) => original.query(),
+        }
     }
     pub fn headers(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.headers
-            .iter()
-            .map(|(name, value)| (name.as_slice(), value.as_slice()))
+        let (legacy, native) = match &self.storage {
+            RequestStorage::Legacy(old) => (Some(old), None),
+            RequestStorage::Native(original) => (None, Some(original)),
+        };
+        legacy
+            .into_iter()
+            .flat_map(|old| {
+                old.headers
+                    .iter()
+                    .map(|(name, value)| (name.as_slice(), value.as_slice()))
+            })
+            .chain(native.into_iter().flat_map(|original| {
+                original
+                    .headers()
+                    .map(|(name, value)| (name.as_bytes(), value))
+            }))
     }
     pub fn body(&self) -> &[u8] {
-        self.body.as_slice()
+        match &self.storage {
+            RequestStorage::Legacy(old) => old.body.as_slice(),
+            RequestStorage::Native(original) => original.body(),
+        }
     }
 
     /// Lend the exact frozen bytes to the pure selector without authenticated identity,
@@ -484,13 +539,36 @@ impl FrozenRequest {
         f: impl FnOnce(&busbar_ports::plane::PlaneIn<'_>, &[u8]) -> R,
     ) -> Result<R, ResourceError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        if let RequestStorage::Native(original) = &self.storage {
+            return original
+                .with_auth_input(|view| {
+                    let input = busbar_ports::plane::PlaneIn {
+                        route: self.route,
+                        flags: 0,
+                        auth: 0,
+                        method: view.method,
+                        path: view.path,
+                        query: view.query,
+                        headers: view.headers,
+                        identity: &[],
+                        request_id: self.invocation.request_id().get(),
+                        carrier: 0,
+                        work: "",
+                        ticket_record: &[],
+                    };
+                    f(&input, view.body)
+                })
+                .map_err(|error| match error {
+                    SnapshotError::Invalid => ResourceError::Binding,
+                    _ => ResourceError::Limit,
+                });
+        }
         let headers: Vec<Pair<'_>> = self
-            .headers
-            .iter()
+            .headers()
             .map(|(name, value)| {
                 Ok(Pair {
                     name: Str::new(core::str::from_utf8(name).map_err(|_| ResourceError::Binding)?),
-                    value: Bytes::new(value.as_slice()),
+                    value: Bytes::new(value),
                 })
             })
             .collect::<Result<_, ResourceError>>()?;
@@ -498,9 +576,9 @@ impl FrozenRequest {
             route: self.route,
             flags: 0,
             auth: 0,
-            method: &self.method,
-            path: &self.path,
-            query: &self.query,
+            method: self.method(),
+            path: self.path(),
+            query: self.query(),
             headers: &headers,
             identity: &[],
             request_id: self.invocation.request_id().get(),
