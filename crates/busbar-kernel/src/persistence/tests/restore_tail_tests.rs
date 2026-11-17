@@ -178,7 +178,8 @@ fn trusted() -> AuditVerifyingKey {
 fn cert_line(node: u64, seq: u64, prev: Fingerprint, by: [u8; 32]) -> NotaryKeyRecord {
     use busbar_contract::crypto::{LocalSigner, Signer};
     let signer = LocalSigner::from_seed(&by).unwrap();
-    let public = LocalSigner::from_seed(&[9; 32]).unwrap().public_key();
+    let delegate = LocalSigner::from_seed(&[9; 32]).unwrap();
+    let public = delegate.public_key();
     let mut certificate = busbar_kernel_audit::NotaryKeyCertificate {
         key_id: public.key_id.to_string(),
         sig_alg: public.alg.as_str().to_owned(),
