@@ -2087,12 +2087,14 @@ impl UsageRollup {
     }
 }
 
+/// The store catalog's compiled-in rows: the root's admitted compiled-in MIN-3 images of kind store.
 fn linked_store_rows() -> Vec<PluginView> {
-    let stores = busbar_kernel::preflight::root_rows().stores;
-    let row = |s: &busbar_kernel::preflight::LinkedStore| {
-        PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
-    };
-    stores.iter().map(row).collect()
+    busbar_kernel::preflight::root_rows()
+        .linked_images
+        .iter()
+        .filter(|image| image.kind == "store")
+        .map(|image| PluginView::basic(image.identity.clone(), "store", "compiled-in", None, None))
+        .collect()
 }
 
 pub(super) fn linked_plugin_view(
