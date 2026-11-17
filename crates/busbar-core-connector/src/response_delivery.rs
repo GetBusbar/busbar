@@ -14,6 +14,7 @@ use busbar_contract::response_delivery::{
     CarrierProgress, CompletionRequirement, DeliveryReader, DeliverySnapshot, DeliveryTerminal,
     ResponseKey, ResponseStop, WireClass,
 };
+use busbar_contract::storage::{StorageCredit, StorageSource};
 use futures::task::AtomicWaker;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -245,6 +246,9 @@ pub struct DeliveryLedger {
     spans: VecDeque<Span>,
     entries: Vec<Entry>,
     scratch: Vec<Shadow>,
+    // Declaration order is intentional: all three backing arrays drop before their byte credit.
+    // Fixed self-owning control/Arc layouts retain the explicitly named storage-contract exclusion.
+    storage: StorageCredit,
     slots: Arc<AtomicUsize>,
     wake: Arc<AtomicWaker>,
     max_spans: usize,
@@ -263,6 +267,7 @@ impl fmt::Debug for DeliveryLedger {
         f.debug_struct("DeliveryLedger")
             .field("pending_spans", &self.spans.len())
             .field("live_responses", &self.entries.len())
+            .field("reserved_storage_bytes", &self.storage.len())
             .field("retired", &self.retired)
             .finish_non_exhaustive()
     }
@@ -308,16 +313,22 @@ impl DeliveryLedger {
     /// The runtime separately reserves callback staging bytes/descriptors before copying callback
     /// output. Both staging and this ledger's simultaneous debt must fit its admitted allowance.
     pub fn new(
+        source: &StorageSource,
         max_pending_spans: NonZeroUsize,
         max_live_responses: NonZeroUsize,
     ) -> Result<Self, ResponseStop> {
-        Self::required_storage(max_pending_spans, max_live_responses)?;
+        let bytes = Self::required_storage(max_pending_spans, max_live_responses)?;
         let max_spans = max_pending_spans.get();
         let max_responses = max_live_responses.get();
         let max_events = max_responses
             .checked_mul(4)
             .and_then(|count| count.checked_add(max_spans))
             .ok_or(ResponseStop::Capacity)?;
+        // This binding precedes every array: on any allocation error the allocated locals drop
+        // first, then credit. Moving into Self preserves the same backing-before-credit order.
+        let storage = source
+            .try_reserve(bytes)
+            .map_err(|_| ResponseStop::Capacity)?;
         let mut spans = VecDeque::new();
         spans
             .try_reserve_exact(max_spans)
@@ -334,6 +345,7 @@ impl DeliveryLedger {
             spans,
             entries,
             scratch,
+            storage,
             slots: Arc::new(AtomicUsize::new(0)),
             wake: Arc::new(AtomicWaker::new()),
             max_spans,
