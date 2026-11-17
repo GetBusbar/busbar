@@ -12,7 +12,7 @@
 //! assertion, (c) (its removal first confirms a sealed audit line), (g), (h) and its variants
 //! v2-v7, (i), the notary, the predecessor fence cases and the slow-store backlog.
 
-use super::tests::{money_driver, Fixture, FlushGate};
+use super::tests::{coordinate_test, money_driver, Fixture, FlushGate};
 use super::*;
 
 /// A budget whose cuts these tests wait out: C1 1.5 s, C2 1.75 s, C3 1.875 s.
@@ -78,6 +78,7 @@ async fn a_held_budget_flight_detaches_the_money_driver_and_exits_70() {
     let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
     let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
     let drain = ShutdownDrain::new(clock);
+    coordinate_test(&drain, &shutdown_tx);
     let (code, _) = finished(post, &drain).await;
     assert_eq!(
         code, 70,
@@ -107,6 +108,7 @@ async fn a_held_journal_flush_is_detached_at_the_deadline_and_exits_75() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, took) = finished(post, &drain).await;
     assert_eq!(code, 75);
     assert!(drain.detached() >= 1, "the journal flush was detached");
@@ -135,6 +137,7 @@ async fn a_held_retirement_write_is_detached_and_the_writer_stays_open() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
     let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, _) = finished(post, &drain).await;
     assert_eq!(code, 75, "an unconfirmed retirement is never a clean exit");
     assert!(drain.detached() >= 1, "the retirement was detached");
@@ -178,6 +181,7 @@ async fn unflushed_metering_or_a_dirty_cell_at_the_deadline_exits_70() {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         let (post, seen) = fixture.post(true, None, &shutdown_tx, None);
         let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+        coordinate_test(&drain, &shutdown_tx);
         let (code, _) = finished(post, &drain).await;
         assert_eq!(code, 70, "budget_cell={budget_cell}");
         let custody = seen.gov.spend_custody();
@@ -211,6 +215,7 @@ async fn a_second_signal_ends_the_drain_at_once() {
     post.admin = Some(Box::pin(std::future::pending::<()>()));
     let clock = DrainClock::new(Duration::from_secs(20));
     let drain = ShutdownDrain::new(Arc::clone(&clock));
+    coordinate_test(&drain, &shutdown_tx);
     let signalled = Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let signals = {
         let clock = Arc::clone(&clock);
@@ -262,6 +267,7 @@ async fn a_stalled_work_recovery_is_cut_at_c1_and_never_cancelled() {
         std::future::pending::<()>().await;
     });
     let drain = ShutdownDrain::new(DrainClock::new(SHORT));
+    coordinate_test(&drain, &shutdown_tx);
     let (code, took) = finished(post, &drain).await;
     assert_eq!(code, 75, "work recovery that did not stop is undrained");
     assert!(drain.detached() >= 1);
@@ -288,6 +294,7 @@ async fn serving_longer_than_the_budget_cuts_nothing_before_the_first_signal() {
         tokio::time::sleep(budget + Duration::from_secs(1)).await;
     }));
     let drain = ShutdownDrain::new(DrainClock::new(budget));
+    coordinate_test(&drain, &shutdown_tx);
     let started = std::time::Instant::now();
     let code = tokio::time::timeout(budget * 3, finish(post, &drain))
         .await
@@ -324,6 +331,7 @@ async fn a_held_unit_select_detaches_the_money_driver_and_exits_70() {
         let flusher = money_driver(&fixture.seen.gov, &clock, &shutdown_tx);
         let (post, seen) = fixture.post(true, Some(flusher), &shutdown_tx, None);
         let drain = ShutdownDrain::new(clock);
+        coordinate_test(&drain, &shutdown_tx);
         let (code, _) = finished(post, &drain).await;
         assert_eq!(
             code, 70,

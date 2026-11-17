@@ -61,11 +61,12 @@ pub fn joined(items: Vec<ToClient>) -> (u16, HeadFields, Vec<u8>) {
 
 /// One admin request the admin listener's operator chain admitted.
 pub struct AdminRequest {
+    pub request: crate::limits::process_admission::RequestLease,
     pub method: String,
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<u8>)>,
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
     pub request_id: u64,
     pub now_s: u64,
 }
@@ -81,6 +82,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
             .map(|route| (seat, route.route))
     })?;
     let AdminRequest {
+        request,
         method,
         path,
         query,
@@ -90,6 +92,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         now_s,
     } = request;
     let input = ServeIn {
+        request,
         invocation: None,
         route,
         http: HttpIn {

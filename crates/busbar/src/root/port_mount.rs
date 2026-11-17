@@ -39,7 +39,9 @@ use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
 use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_admin;
-use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Presented, Principal};
+use busbar_kernel::plane_driver::port_auth::{
+    self, subject_identity, Credentials, Presented, Principal,
+};
 use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
@@ -161,6 +163,65 @@ fn response_of(items: Vec<ToClient>) -> PlaneResponse {
     with_head(status, fields, Body::from(body))
 }
 
+/// Unitless rendering has only the selected route and core's refusal. It cannot open billing,
+/// authenticate, consume replay, or obtain an invocation's effect authority.
+pub(crate) fn render_kernel_refusal(
+    seat: &PortSeat,
+    route: u32,
+    method: &str,
+    target: &str,
+    refusal: busbar_kernel::refusal::ClientRefusal,
+) -> PlaneResponse {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let http = HttpIn {
+        method: method.to_owned(),
+        path: path.to_owned(),
+        query: query.to_owned(),
+        headers: Vec::new(),
+        body: Bytes::new(),
+        request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
+    };
+    match seat.driver.render_refusal_now(route, http, refusal.clone()) {
+        Ok(items) => response_of(items),
+        Err(_) => response_of(port_auth::plain_refusal(&refusal)),
+    }
+}
+
+pub(crate) fn refusal_specs(
+    seats: &[PortSeat],
+) -> Vec<busbar_kernel::plane_routes::PlaneRefusalSpec> {
+    use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec};
+    let mut out = Vec::new();
+    for seat in seats {
+        for route in &seat.driver.routes().data {
+            if auth_of(route.effective) != RouteAuth::Key {
+                continue;
+            }
+            for method in methods_of(route.methods) {
+                let seat = seat.clone();
+                let id = route.route;
+                out.push(PlaneRefusalSpec {
+                    route: DoorRouteId {
+                        path: route.pattern.to_string(),
+                        method,
+                    },
+                    ticket_prefix: None,
+                    signed_ingress: Arc::from([]),
+                    refuse: Arc::new(move |reason, target| {
+                        let refusal = super::native_refusals::client(
+                            reason,
+                            busbar_kernel::plane_driver::refusal_status(reason) as u16,
+                            reason.as_str(),
+                        );
+                        render_kernel_refusal(&seat, id, method.as_str(), target, refusal)
+                    }),
+                });
+            }
+        }
+    }
+    out
+}
+
 fn failed(status: StatusCode) -> PlaneResponse {
     let mut response = PlaneResponse::new(Body::empty());
     *response.status_mut() = status;
@@ -177,7 +238,7 @@ fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect(),
-        body: ctx.body.to_vec(),
+        body: ctx.body.clone(),
         request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
     }
 }
@@ -371,15 +432,37 @@ fn models_of(ctx: &PlaneReqCtx) -> Vec<String> {
 
 /// A request the governance book refused to admit: the status its limit maps to, the wait it names (if any).
 pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
+    let (refusal, retry_after) = blocked_client(blocked);
+    let mut response = response_of(port_auth::plain_refusal(&refusal));
+    retry_header(&mut response, retry_after);
+    response
+}
+
+fn blocked_client(blocked: &LimitBlocked) -> (busbar_kernel::refusal::ClientRefusal, Option<u64>) {
+    use busbar_contract::caps::ReasonCode;
     let (status, _, message, retry_after) = busbar_kernel::ingress::limit_refusal("", blocked);
-    let mut response = PlaneResponse::new(Body::from(message));
-    *response.status_mut() = status;
+    let reason = match blocked {
+        LimitBlocked::Limit {
+            metric: "budget", ..
+        } => ReasonCode::OverBudget,
+        LimitBlocked::Limit { .. } => ReasonCode::RateLimited,
+        LimitBlocked::Disabled(_) => ReasonCode::GroupFrozen,
+        LimitBlocked::MissingGroup(_) => ReasonCode::ScopeDenied,
+        LimitBlocked::Draining => ReasonCode::Drain,
+        LimitBlocked::CustodyFull { .. } => ReasonCode::SessionBudget,
+    };
+    (
+        super::native_refusals::client(reason, status.as_u16(), &message),
+        retry_after,
+    )
+}
+
+fn retry_header(response: &mut PlaneResponse, retry_after: Option<u64>) {
     if let Some(seconds) = retry_after {
         if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
     }
-    response
 }
 
 /// The request as a billed unit: admitted through its resolved key's budget chain and opened on the plane money.
@@ -491,7 +574,19 @@ async fn answer(
     };
     let unit = match open_unit(seat, billing, &ctx, now_s) {
         Ok(unit) => unit,
-        Err(blocked) => return blocked_response(&blocked),
+        Err(blocked) => {
+            let (refusal, retry_after) = blocked_client(&blocked);
+            let mut response =
+                match seat
+                    .driver
+                    .render_refusal_now(route.route, http_in(&ctx), refusal)
+                {
+                    Ok(items) => response_of(items),
+                    Err(_) => blocked_response(&blocked),
+                };
+            retry_header(&mut response, retry_after);
+            return response;
+        }
     };
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
@@ -517,6 +612,7 @@ async fn answer(
         Seen::Anonymous | Seen::Rejected => (None, None),
     };
     let http = http_in(&ctx);
+    let request = ctx.request.clone();
     let signed = match ingress {
         Some(ingress) => {
             signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
@@ -552,6 +648,7 @@ async fn answer(
             signed,
         };
         let input = ServeIn {
+            request,
             invocation: invocation.as_ref().map(|owner| owner.context.clone()),
             route: route.route,
             http,

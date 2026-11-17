@@ -124,6 +124,7 @@ impl Root {
 
 #[derive(Clone)]
 pub(crate) struct Source {
+    deregister_delay: std::time::Duration,
     workers: Option<usize>,
     headers: super::ResponseHeadersCfg,
     admin_mtls: bool,
@@ -132,6 +133,7 @@ pub(crate) struct Source {
 impl Source {
     fn capture(cfg: &DeployCfg) -> Self {
         Self {
+            deregister_delay: cfg.advanced.shutdown.deregister_delay,
             workers: cfg.advanced.worker_threads,
             headers: cfg.advanced.response_headers.clone(),
             admin_mtls: cfg.admin_require_mtls,
@@ -140,6 +142,9 @@ impl Source {
 
     fn changed(&self, boot: &Self) -> Vec<String> {
         let mut paths = Vec::new();
+        if self.deregister_delay != boot.deregister_delay {
+            paths.push("/advanced/shutdown/deregister_delay".to_owned());
+        }
         if self.workers != boot.workers {
             paths.push("/advanced/worker_threads".to_owned());
         }
@@ -291,5 +296,32 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(next.changed(&boot), ["/store", "/secrets"]);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn stored_deregister_delay_changes_report_restart_without_rewriting_boot() {
+        let mut document: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
+        let boot = Source::capture(&document);
+        document.advanced.shutdown.deregister_delay = std::time::Duration::ZERO;
+        let changed = Source::capture(&document);
+        assert_eq!(
+            changed.changed(&boot),
+            ["/advanced/shutdown/deregister_delay"]
+        );
+        assert_eq!(boot.deregister_delay, std::time::Duration::from_secs(5));
+        assert!(
+            changed.changed(&changed).is_empty(),
+            "the next boot consumes the stored value"
+        );
+        document.advanced.shutdown = Default::default();
+        assert!(
+            Source::capture(&document).changed(&boot).is_empty(),
+            "reset removes the pending restart difference"
+        );
     }
 }

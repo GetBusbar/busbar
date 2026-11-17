@@ -578,6 +578,7 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/max_inbound_concurrent",
         "/advanced/response_headers",
         "/advanced/worker_threads",
+        "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
     ];
@@ -874,5 +875,24 @@ mod tests {
                 .get("configuration")
                 .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_restart_tests {
+    use super::restart_paths;
+
+    #[test]
+    fn document_deregister_delay_and_ancestor_edits_require_restart() {
+        for path in [
+            "/advanced/shutdown/deregister_delay",
+            "/advanced/shutdown",
+            "/advanced",
+            "",
+        ] {
+            let paths = vec![path.to_owned()];
+            assert_eq!(restart_paths(&paths), paths, "add/change/remove at {path}");
+        }
+        assert!(restart_paths(&["/advanced/rate_sweep_interval".to_owned()]).is_empty());
     }
 }

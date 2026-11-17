@@ -147,6 +147,13 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn hook_remaining(&self) -> Option<usize> {
+        None
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        None
+    }
+
     /// Inspect the same configured walk that will choose the first member.
     fn hook_candidates(&mut self, _wants: &Wants) -> Option<super::hooks::Candidates> {
         None
@@ -323,6 +330,7 @@ fn step<K: Calls + ?Sized>(
     // An item for the client means the plane decided (the attempt rule: it writes the response or it fails the
     // attempt with nothing for the client), so it goes out at once when a sink takes it.
     fed.began |= !fed.client.is_empty();
+    effects.observed_usage(task.usage());
     if !hand_out(effects, &mut fed.client) {
         fed.gone = true;
         return Ok(false);
@@ -403,7 +411,12 @@ pub fn run_attempts<K: Calls + ?Sized>(
             return Ok(Attempted::Exhausted { attempts });
         };
         attempts += 1;
-        effects.routing(attempts, &member.upstream);
+        effects.routing(
+            attempts,
+            &member.upstream,
+            members.hook_remaining(),
+            members.hook_failure(),
+        );
         let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
         if answer
             .attempt
