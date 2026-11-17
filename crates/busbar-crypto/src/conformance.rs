@@ -52,6 +52,10 @@ pub fn backend_const() {
     }
     // One answer for the external-plugin gate: the backend's required const (IF §5.2 round 13).
     assert_eq!(supports("EXTERNAL_PLUGINS"), EXTERNAL_PLUGINS);
+    // The one validated-mode answer (ADMIN-API-1.6-ONE-MODEL §10.1): `VALIDATED_MODE` is
+    // `VALIDATION.is_some()` and nothing else, and a stated validation says something.
+    assert_eq!(VALIDATED_MODE, VALIDATION.is_some());
+    assert!(VALIDATION.is_none_or(|v| !v.is_empty()));
 }
 
 /// SHA-2, the audit link, constant-time comparison.

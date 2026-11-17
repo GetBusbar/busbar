@@ -7,9 +7,10 @@
 //! performs no crypto: `supports` is false for MD5, RSA_OAEP_SHA1 and DTLS_SRTP and true otherwise,
 //! `EXTERNAL_PLUGINS` is false, and every operation is refused. MD5 and RSA-OAEP-SHA1 are refused on
 //! purpose, as the deny list's own answer (`DENIED`, naming the alg), whatever else is switched on.
-//! Feature `api1` keeps the pre-H0b contract number; feature `silent` leaves `EXTERNAL_PLUGINS` out.
-//! Either must fail to compile against the facade. `fill` answers what `BUSBAR_STUB_FILL` asks for:
-//! `crngt` a self-test failure, `rng` a generator failure. `BUSBAR_STUB_PCT_AFTER=N` switches on the
+//! Feature `api1` keeps the pre-H0b contract number; feature `silent` leaves `EXTERNAL_PLUGINS` out;
+//! feature `unvalidated` leaves `VALIDATION` out. Each must fail to compile against the facade.
+//! `fill` answers what `BUSBAR_STUB_FILL` asks for: `crngt` a self-test failure, `rng` a generator
+//! failure. `BUSBAR_STUB_PCT_AFTER=N` switches on the
 //! C-CRYPTO-SELFTEST schedule: `hmac_sha256` and ECDSA P-256 signing (`sign_fixed`, `sign_asn1`, one
 //! count) each succeed N times, answering bytes of 0x5a, then answer `SelfTest("pct")`; with it set
 //! `ecdsa_p256::from_pkcs8` accepts any key. Unset, both are refused like everything else.
@@ -30,6 +31,10 @@ pub const NAME: &str = "stub";
 /// A deny-list backend refuses plugins that bring their own crypto.
 #[cfg(not(feature = "silent"))]
 pub const EXTERNAL_PLUGINS: bool = false;
+
+/// The stub states no validation, so the facade reports `validated_mode = false` whatever the name.
+#[cfg(not(feature = "unvalidated"))]
+pub const VALIDATION: Option<&'static str> = None;
 
 /// A backend failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
