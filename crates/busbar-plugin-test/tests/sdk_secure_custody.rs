@@ -420,3 +420,7 @@ fn malformed_later_batch_result_drops_completed_secret_owners() {
     drop(lease);
     proof.assert_absent("completed batch secret dropped on later decoding fault");
 }
+
+#[cfg(target_os = "linux")]
+#[path = "sdk_secure_custody/store_rows.rs"]
+mod store_rows;
