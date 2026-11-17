@@ -19,6 +19,9 @@ pub(crate) struct FrozenNativeAudit {
 pub(crate) enum NativeFreezeRefusal<E> {
     /// The caller's own input building refused.
     Build(E),
+    /// The canonical line can never become a journal body at any chain position: freezing it
+    /// would leave an entry whose every stage refuses.
+    Unencodable(busbar_kernel_audit::FieldTooLong),
 }
 
 /// A refused native preparation: the caller's original, unchanged source bundle and why.
@@ -29,14 +32,16 @@ pub(crate) struct NativeFreezeRefused<S, E> {
 }
 
 impl FrozenNativeAudit {
-    /// The native preparation (native DATA audit r2, frozen input boundary): build canonical
-    /// inputs from the borrowed source bundle and bind this book's identity and journal. It has no
-    /// journal effect. A refusal returns the original bundle unchanged; success returns it too, so
-    /// the caller drops it only after the frozen inputs are installed in the entry.
+    /// The checked native preparation (native DATA audit r2, frozen input boundary): build
+    /// canonical inputs from the borrowed source bundle, bind this book's identity and journal,
+    /// and prove the line encodes as a journal body before any entry owns it. It has no journal
+    /// effect. A refusal returns the original bundle unchanged; success returns it too, so the
+    /// caller drops it only after the frozen inputs are installed in the entry. The pass is
+    /// borrowed, never consumed.
     pub(crate) fn prepare<S, E>(
         source: S,
         book: &Arc<std::sync::Mutex<Durability>>,
-        _pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         build: impl FnOnce(&S) -> Result<AuditInputs, E>,
     ) -> Result<(Self, S), NativeFreezeRefused<S, E>> {
         let inputs = match build(&source) {
@@ -48,7 +53,33 @@ impl FrozenNativeAudit {
                 })
             }
         };
-        Ok((Self::new(inputs, book), source))
+        let frozen = Self::new(inputs, book);
+        if let Err(why) = frozen.encodable(pass) {
+            return Err(NativeFreezeRefused {
+                source,
+                why: NativeFreezeRefusal::Unencodable(why),
+            });
+        }
+        Ok((frozen, source))
+    }
+
+    /// Link a copy on a scratch chain of this node and encode it as the journal body
+    /// `stage_prepared` would write. Sequence, link time and both hashes are fixed-width in the
+    /// body, so the answer holds at every real chain position; the genesis's empty predecessor is
+    /// widened to a full fingerprint. The scratch chain is dropped; the book's chain is untouched.
+    fn encodable(
+        &self,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+    ) -> Result<(), busbar_kernel_audit::FieldTooLong> {
+        let prepared = AuditChain::prepare(self.inputs.clone(), self.identity.node);
+        let mut record = AuditChain::new()
+            .sealing_as(self.identity.node)
+            .link(prepared, u64::MAX, pass)
+            .into_record();
+        if record.prev_hash.is_empty() {
+            record.prev_hash = Fingerprint::ZERO.to_string();
+        }
+        audit_body(&record).map(drop)
     }
 
     pub(crate) fn new(mut inputs: AuditInputs, book: &Arc<std::sync::Mutex<Durability>>) -> Self {
