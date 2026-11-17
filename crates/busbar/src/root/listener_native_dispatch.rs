@@ -56,6 +56,7 @@ pub(super) async fn prepare(
 ) -> Result<Prepared, InputError> {
     let binding = ready.request.binding().clone();
     let deadline = binding.deadline().ok_or(InputError::Invalid)?.into();
+    let data_request = matches!(binding.route().target(), RouteTarget::Plane(_));
     let work = async {
         let (response, authority, settlement) = match binding.route().target() {
             RouteTarget::Plane(_) => {
@@ -96,20 +97,37 @@ pub(super) async fn prepare(
             }
             RouteTarget::Core(_) => return Err(InputError::Invalid),
         };
-        let registered = RegisteredResponse::register(
+        let registered = match RegisteredResponse::register(
             &connection,
             &registrations,
             authority,
             ready.owner,
             deadline,
         )
-        .await?;
+        .await
+        {
+            Ok(registered) => registered,
+            Err(error) => {
+                // Release the unpublished receiver before joining a bounded producer that may
+                // be waiting to send into it. No registered delivery receipt is invented here.
+                drop(response);
+                if let Some(settlement) = settlement {
+                    settlement.registration_failed().await?;
+                }
+                return Err(error);
+            }
+        };
         Ok(Prepared {
             response,
             registered,
             settlement,
         })
     };
+    if data_request {
+        // DATA owns real blocking callbacks and monetary state. Its producer observes the
+        // original cancellation/deadline and joins that work; dropping this await would detach it.
+        return work.await;
+    }
     tokio::select! {
         result = work => result,
         () = binding.cancelled() => Err(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Cancelled)),
