@@ -29,6 +29,11 @@ const READ_BYTES: usize = 64 * 1024;
 const TIMER_TURN: usize = 64;
 const SHUTDOWN_TICK: Duration = Duration::from_millis(100);
 
+fn build_digest(expected: &str) -> Result<[u8; 32], Failure> {
+    let _ = expected;
+    Ok([0; 32])
+}
+
 /// Failure categories never include client payload or credential text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {

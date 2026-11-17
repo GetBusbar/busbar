@@ -5,6 +5,22 @@ use super::*;
 use busbar_plugin_abi::transport::{MSG_BINARY, MSG_FIN, MSG_TEXT};
 
 #[test]
+fn native_signed_subject_requires_complete_canonical_build_digest() {
+    for value in [
+        "",
+        "00",
+        &"0".repeat(63),
+        &"0".repeat(65),
+        &"G".repeat(64),
+        &"A".repeat(64),
+    ] {
+        assert_eq!(build_digest(value), Err(Failure::Admission));
+    }
+    assert_eq!(build_digest(&"00".repeat(32)), Ok([0; 32]));
+    assert_eq!(build_digest(&"a5".repeat(32)), Ok([0xa5; 32]));
+}
+
+#[test]
 fn native_upgrade_preserves_coalesced_leftover_after_bodyless_framing() {
     for length in ["", "Content-Length: 0\r\n", "Content-Length: 000\r\n"] {
         let input = format!("GET /echo HTTP/1.1\r\nHost: peer.test\r\n{length}\r\n");
