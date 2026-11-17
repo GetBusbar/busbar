@@ -55,28 +55,40 @@ fn lines() -> Vec<Value> {
 }
 
 fn page(lines: &[Value], from: u64, to: u64) -> Value {
-    let (grant, _) = signer().into_grants(LiveSigner::SameAsBootstrap).unwrap();
-    let stamp = Notary::new(grant)
-        .sign_stamp(Stamp {
-            node: 21,
-            from,
-            to,
-            fingerprint: Fingerprint::from_hex(lines[(to - 1) as usize]["hash"].as_str().unwrap())
-                .unwrap(),
-            kind: StampKind::Live,
-            sealer: 21,
-            host: "host-a".into(),
-            every: 1,
-            stamped_ms: 1700000000001,
-            down_from_ms: 0,
-            down_to_ms: 0,
-            crypto: String::new(),
-            sig_alg: String::new(),
-            key_id: String::new(),
-            key_cert: 0,
-            signature: Vec::new(),
-        })
-        .unwrap();
+    page_kind(lines, from, to, StampKind::Live)
+}
+
+fn page_kind(lines: &[Value], from: u64, to: u64, kind: StampKind) -> Value {
+    let (notary, bootstrap) = signer().into_grants(LiveSigner::SameAsBootstrap).unwrap();
+    let stamp = Stamp {
+        node: 21,
+        from,
+        to,
+        fingerprint: Fingerprint::from_hex(lines[(to - 1) as usize]["hash"].as_str().unwrap())
+            .unwrap(),
+        kind,
+        sealer: if kind == StampKind::AfterRestart {
+            22
+        } else {
+            21
+        },
+        host: "host-a".into(),
+        every: 1,
+        stamped_ms: 1700000000001,
+        down_from_ms: 0,
+        down_to_ms: 0,
+        crypto: String::new(),
+        sig_alg: String::new(),
+        key_id: String::new(),
+        key_cert: 0,
+        signature: Vec::new(),
+    };
+    let stamp = if kind == StampKind::AfterRestart {
+        BootstrapSigner::new(bootstrap).sign_restart_page(stamp)
+    } else {
+        Notary::new(notary).sign_stamp(stamp)
+    }
+    .unwrap();
     json::json!({"node": stamp.node, "from": stamp.from, "to": stamp.to,
         "fingerprint": stamp.fingerprint.to_string(), "kind": stamp.kind.as_str(),
         "sealer": stamp.sealer, "host": stamp.host, "every": stamp.every,
@@ -346,5 +358,87 @@ fn linked_lines_cannot_bypass_page_authority_via_a_legacy_envelope() {
         body["records"][index]["signature"] = json::json!(signer().sign_digest(&hash));
         body["records"][index]["key_id"] = json::json!(signer().key_id());
     }
+    assert!(verify(&keys(), &body, None).is_err());
+}
+
+#[test]
+fn final_and_restart_pages_report_their_actual_kind() {
+    let lines = lines();
+    let report = verify(
+        &keys(),
+        &range(&lines, vec![page_kind(&lines, 1, 3, StampKind::Final)]),
+        None,
+    )
+    .unwrap();
+    assert_eq!(report["pages"], 0);
+    assert_eq!(report["final_pages"], 1);
+    assert_eq!(report["authenticated_records"], 2);
+    let report = verify(
+        &keys(),
+        &range(
+            &lines,
+            vec![page_kind(&lines, 1, 3, StampKind::AfterRestart)],
+        ),
+        None,
+    )
+    .unwrap();
+    assert_eq!(report["pages"], 0);
+    assert_eq!(report["restart_sealed"][0]["sealer"], 22);
+    assert_eq!(report["restart_sealed"][0]["from"], 1);
+    assert_eq!(report["restart_sealed"][0]["to"], 2);
+}
+
+#[test]
+fn a_signed_break_prevents_trusted_head_completeness() {
+    let lines = lines();
+    let terminal = page(&lines, 3, 3);
+    let mut body = range(
+        &lines,
+        vec![page(&lines, 1, 1), notice(2, 2), terminal.clone()],
+    );
+    body["to"] = json::json!(3);
+    body["records"] = json::json!(lines);
+    body["cover"] = json::json!([]);
+    let head = json::json!({"recipe": LINK_RECIPE, "signature_domain": STAMP_DOMAIN,
+        "algorithm": SIGNATURE_ALGORITHM, "next_seq": 4, "head": terminal});
+    assert!(verify(&keys(), &body, Some(&head)).is_err());
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["authenticated_records"], 2);
+    assert_eq!(report["all_requested_records_authenticated"], false);
+}
+
+#[test]
+fn a_page_authenticates_only_the_returned_suffix() {
+    let lines = lines();
+    let mut body = range(&lines, vec![page(&lines, 1, 3)]);
+    body["from"] = json::json!(2);
+    body["records"] = json::json!(&lines[1..2]);
+    let report = verify(&keys(), &body, None).unwrap();
+    assert_eq!(report["from"], 2);
+    assert_eq!(report["authenticated_records"], 1);
+    assert_eq!(report["starts_at_genesis"], false);
+}
+
+#[test]
+fn signed_page_fields_cannot_be_rewritten() {
+    let lines = lines();
+    for (name, value) in [
+        ("host", json::json!("another-host")),
+        ("every", json::json!(2)),
+        ("stamped_ms", json::json!(1700000000002u64)),
+        ("down_from_ms", json::json!(1)),
+        ("down_to_ms", json::json!(1)),
+        ("crypto", json::json!("another-backend")),
+        ("from", json::json!(2)),
+    ] {
+        let mut stamp = page(&lines, 1, 3);
+        stamp[name] = value;
+        assert!(
+            verify(&keys(), &range(&lines, vec![stamp]), None).is_err(),
+            "{name}"
+        );
+    }
+    let mut body = range(&lines, vec![page(&lines, 1, 3)]);
+    body["records"][0]["linked_ms"] = json::json!("01700000000000");
     assert!(verify(&keys(), &body, None).is_err());
 }
