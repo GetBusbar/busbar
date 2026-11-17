@@ -694,8 +694,7 @@ curl -s -X DELETE -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/ho
 ### Named-definition maps: `tools`, `agents`
 
 Each plane-owned named-definition map (`name -> {url, ...}`) has the same five operations under its
-own root. They are plane operations (`x-busbar-plane`): mounted only on a node whose config carries
-that section. There is no `/identity-providers` or `/export` map: read their
+own root. They are served only on a node whose config carries that section. There is no `/identity-providers` or `/export` map: read their
 instances at `/kinds/auth/instances` and `/kinds/export/instances`, and write their sections
 through `PUT /config/settings` and `POST /config/apply`.
 
