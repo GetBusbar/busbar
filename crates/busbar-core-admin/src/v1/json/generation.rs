@@ -6,8 +6,8 @@
 //!
 //! One router layer, [`preconditions`], does all three so no handler changes: config resources
 //! carry `"<deployment_id>.<config_generation>"`; every other GET carries a weak digest ETag and
-//! answers `If-None-Match` with 304; a mutation with an `Idempotency-Key` is claimed in the Store
-//! before it runs and its answer is replayed byte for byte afterwards.
+//! answers `If-None-Match` with 304; a mutation with an `Idempotency-Key` retains its exact intent
+//! in the Store before it runs. A complete answer replays afterwards; an unknown effect stays held.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,7 +32,9 @@ const NO_DEPLOYMENT: &str = "dep_00000000000000000000000000000000";
 /// The most body bytes the layer buffers, request or response.
 const BODY_CAP: usize = 16 * 1024 * 1024;
 const REPLAYED: &str = "idempotent-replayed";
-const ANSWER_LAYOUT: u8 = 1;
+// Both layouts bind the versioned, length-framed request fingerprint producer.
+const ANSWER_LAYOUT: u8 = 2;
+const INTENT_LAYOUT: u8 = 3;
 
 /// The strong, shared ETag of every config resource: `"<deployment_id>.<config_generation>"`.
 pub(crate) fn config_etag(app: &App) -> String {
@@ -322,29 +324,20 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
-    let claim = match durable::claim_bound(&store, &claim_key, fingerprint, now).await {
-        Err(crate::idempotency::BindingMismatch) => {
-            return refusal(
-                409,
-                "conflict",
-                "idempotency_mismatch",
-                "Idempotency-Key is bound to different request bytes",
-            )
+    let claim = match durable::claim_held(&store, &claim_key, now).await {
+        Err(Refused::Answer(answer)) => return replay(&answer, &fingerprint),
+        Err(Refused::Retained(receipt)) => {
+            let Some(intent) = decode_intent(&receipt) else {
+                return unreadable_replay();
+            };
+            return if intent.fingerprint == fingerprint.as_slice() {
+                in_flight()
+            } else {
+                mismatch()
+            };
         }
-        Ok(Err(Refused::Answer(answer))) => return replay(&answer),
-        Ok(Err(Refused::InFlight | Refused::Retained(_) | Refused::Applied(_))) => {
-            let mut response = refusal(
-                409,
-                "conflict",
-                "idempotency_in_flight",
-                "a request with this Idempotency-Key is already in flight",
-            );
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-            return response;
-        }
-        Ok(Err(Refused::Unavailable(why))) => {
+        Err(Refused::InFlight | Refused::Applied(_)) => return in_flight(),
+        Err(Refused::Unavailable(why)) => {
             tracing::warn!(error = %why, "idempotency claim failed; nothing was done");
             return refusal(
                 503,
@@ -353,14 +346,28 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
                 "the Store could not record this Idempotency-Key; nothing was done",
             );
         }
-        Ok(Ok(claim)) => claim,
+        Ok(claim) => claim,
     };
+    let generation = app
+        .config_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let intent = Settled::Retained(encode_intent(now, generation, &fingerprint));
+    if let Err(why) = durable::settle(&store, &claim, now, &intent).await {
+        tracing::warn!(error = %why, "admin intent was not confirmed; nothing was dispatched");
+        return refusal(
+            503,
+            "unavailable",
+            "service_unavailable",
+            "the Store could not retain this operation's intent; nothing was dispatched",
+        );
+    }
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
     let (rparts, rbody) = response.into_parts();
     let Ok(rbytes) = axum::body::to_bytes(rbody, BODY_CAP).await else {
-        settle(&store, &claim, &Settled::Released).await;
+        // The handler may have committed. Keep its acknowledged intent and permanent
+        // exclusion; failure to collect a reply cannot authorize another execution.
         return gate::admin_error_envelope(500, "internal", "response could not be read");
     };
     let status = rparts.status;
@@ -390,8 +397,64 @@ async fn settle(
     settled: &Settled,
 ) {
     if let Err(why) = durable::settle(store, claim, busbar_kernel::store::now(), settled).await {
-        tracing::warn!(error = %why, "the Store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+        tracing::warn!(error = %why, "the Store did not confirm an Idempotency-Key's outcome; its held intent continues to exclude retries");
     }
+}
+
+fn mismatch() -> Response {
+    refusal(
+        409,
+        "conflict",
+        "idempotency_mismatch",
+        "Idempotency-Key is bound to different request bytes",
+    )
+}
+
+fn in_flight() -> Response {
+    let mut response = refusal(
+        409,
+        "conflict",
+        "idempotency_in_flight",
+        "a request with this Idempotency-Key is already in flight",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+}
+
+fn unreadable_replay() -> Response {
+    refusal(
+        503,
+        "unavailable",
+        "service_unavailable",
+        "the retained operation has an unsupported or unreadable binding; nothing was dispatched",
+    )
+}
+
+struct Intent<'a> {
+    received_at: u64,
+    generation: u64,
+    fingerprint: &'a [u8],
+}
+
+fn encode_intent(received_at: u64, generation: u64, fingerprint: &[u8; 32]) -> Vec<u8> {
+    let mut bytes = vec![INTENT_LAYOUT];
+    bytes.extend_from_slice(&received_at.to_be_bytes());
+    bytes.extend_from_slice(&generation.to_be_bytes());
+    bytes.extend_from_slice(fingerprint);
+    bytes
+}
+
+fn decode_intent(bytes: &[u8]) -> Option<Intent<'_>> {
+    if bytes.len() != 49 || bytes[0] != INTENT_LAYOUT {
+        return None;
+    }
+    Some(Intent {
+        received_at: u64::from_be_bytes(bytes[1..9].try_into().ok()?),
+        generation: u64::from_be_bytes(bytes[9..17].try_into().ok()?),
+        fingerprint: &bytes[17..],
+    })
 }
 
 /// A settled answer: layout, status, received_at, generation, request digest, content type, body.
@@ -430,6 +493,7 @@ fn decode_answer(bytes: &[u8]) -> Option<Answer<'_>> {
         return None;
     }
     let status = u16::from_be_bytes(rest[..2].try_into().ok()?);
+    StatusCode::from_u16(status).ok()?;
     let received_at = u64::from_be_bytes(rest[2..10].try_into().ok()?);
     let generation = u64::from_be_bytes(rest[10..18].try_into().ok()?);
     let fingerprint = &rest[18..50];
@@ -437,6 +501,9 @@ fn decode_answer(bytes: &[u8]) -> Option<Answer<'_>> {
     let tail = &rest[51..];
     if tail.len() < type_len {
         return None;
+    }
+    if type_len != 0 {
+        HeaderValue::from_bytes(&tail[..type_len]).ok()?;
     }
     Some(Answer {
         status,
@@ -448,10 +515,13 @@ fn decode_answer(bytes: &[u8]) -> Option<Answer<'_>> {
     })
 }
 
-fn replay(answer: &[u8]) -> Response {
+fn replay(answer: &[u8], fingerprint: &[u8; 32]) -> Response {
     let Some(answer) = decode_answer(answer) else {
-        return gate::admin_error_envelope(500, "internal", "the stored answer is unreadable");
+        return unreadable_replay();
     };
+    if answer.fingerprint != fingerprint.as_slice() {
+        return mismatch();
+    }
     let mut response = Response::new(Body::from(answer.body.to_vec()));
     *response.status_mut() = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::OK);
     if let Ok(value) = HeaderValue::from_bytes(answer.content_type) {
@@ -516,6 +586,18 @@ pub(crate) async fn get_operation(
         &busbar_contract::redacted::sha256_hex(format!("{actor}\0{key}").as_bytes())[..32]
     );
     let body = match looked {
+        Looked::Retained { receipt } => {
+            let Some(intent) = decode_intent(&receipt) else {
+                return unreadable_replay();
+            };
+            serde_json::json!({
+                "idempotency_key": key, "principal": actor, "operation_id": operation_id,
+                "state": "in_flight", "status": null,
+                "request_sha256": hex::encode(intent.fingerprint), "received_at": intent.received_at,
+                "completed_at": null, "config_generation": intent.generation, "audit_seq": null,
+                "response": null,
+            })
+        }
         Looked::InFlight {
             request_sha256,
             received_at,
