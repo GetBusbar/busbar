@@ -302,11 +302,23 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
             "admin request body exceeds the configured limit",
         );
     };
-    let mut framed = Vec::with_capacity(bytes.len() + 64);
-    framed.extend_from_slice(parts.method.as_str().as_bytes());
-    framed.extend_from_slice(parts.uri.path().as_bytes());
-    framed.extend_from_slice(parts.uri.query().unwrap_or("").as_bytes());
-    framed.extend_from_slice(&bytes);
+    let mut framed = Vec::with_capacity(bytes.len() + 96);
+    framed.extend_from_slice(b"busbar.admin.request.v2\0");
+    // Bind component boundaries as well as their bytes: moving a byte between the query and
+    // body must never turn a different request into a replay of the original operation.
+    for component in [
+        parts.method.as_str().as_bytes(),
+        parts.uri.path().as_bytes(),
+        parts.uri.query().unwrap_or("").as_bytes(),
+        bytes.as_ref(),
+    ] {
+        framed.extend_from_slice(
+            &u64::try_from(component.len())
+                .expect("request component length fits u64")
+                .to_be_bytes(),
+        );
+        framed.extend_from_slice(component);
+    }
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
