@@ -47,7 +47,7 @@ fn no_stamp_name_reaches_a_config_view_or_need_result() {
         (
             PROBE,
             "blind-b",
-            br#"{"tag":"blind-b","password":"pw-blind-5531"}"#.as_slice(),
+            br#"{"tag":"blind-b","password":{"env":"PW_BLIND"}}"#.as_slice(),
         ),
         (
             ALIAS_WORDS[0],

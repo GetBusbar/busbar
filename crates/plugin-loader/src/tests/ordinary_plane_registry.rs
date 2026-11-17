@@ -120,7 +120,11 @@ fn a_min3_plane_image_is_left_to_the_min3_registry_not_refused_at_the_door_axis(
     let lib = min3_plane_lib();
     let m = crate::sign::seal_test_artifact(
         &release,
-        plane_manifest("busbar-plane-delta", "delta", "busbar"),
+        // A native manifest lists its alias in former_names exactly once (sign.rs native rule).
+        Manifest {
+            former_names: vec!["delta".into()],
+            ..plane_manifest("busbar-plane-delta", "delta", "busbar")
+        },
         &lib,
     );
     write_plane_tarball(&dir, "plane.tar.gz", &m, &lib);

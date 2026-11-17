@@ -274,7 +274,7 @@ fn settle_block(
                 }
                 report.push(format!(
                     "{shown}: instance {index}'s old limits are not filed: the instance runs at its \
-                     kind's defaults, with the plugin's own answer applied in memory at its open"
+                     kind's defaults, with the plugin's own answer applied in-process at its open"
                 ));
             }
             section::LIFT => {
