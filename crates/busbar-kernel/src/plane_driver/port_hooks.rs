@@ -192,3 +192,6 @@ pub trait Binder: Send + Sync {
     fn enforcing(&self, route: u32) -> bool;
     fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str>;
 }
+
+#[cfg(test)]
+pub(crate) mod tests;
