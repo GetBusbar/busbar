@@ -522,3 +522,49 @@ async fn expired_invocation_deadline_refuses_before_replay_submission() {
     assert!(verdict.claim.unwrap().complete_admin().await.is_err());
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn root_router_errand_reuses_completed_native_admission_without_second_verification() {
+    use crate::root::units_admin::{AdminDispatch, AdminRequest, RouterDispatch};
+    let (handle, app, owners, port) = admin_fixture().await;
+    let headers = axum::http::HeaderMap::new();
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let unit = invocation.id.request_id().get();
+    let verdict = busbar_kernel::auth::admin_verdict_for(invocation, &headers).await;
+    let execution = Arc::new(verdict.claim.unwrap().complete_admin().await.unwrap());
+    let inner = busbar_kernel::router::build_admin_router_on(&handle, 1024, false);
+    let dispatch = RouterDispatch::new(
+        inner,
+        &tokio::runtime::Handle::current(),
+        Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
+    );
+    let request = AdminRequest {
+        method: "GET".into(),
+        path: "/api/v1/admin/audit".into(),
+        credential: None,
+        headers: vec![],
+        body: b"admin-body".to_vec(),
+        at: busbar_kernel::store::now(),
+        unit,
+    };
+    let resolved =
+        busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path).unwrap();
+    let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
+    let answer = dispatch
+        .execute_authorized(verb, &request, None, Some(&execution))
+        .await;
+    assert_eq!(answer.status, 200);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+    let mut changed = request.clone();
+    changed.body = b"different body".to_vec();
+    assert_eq!(
+        dispatch
+            .execute_authorized(verb, &changed, None, Some(&execution))
+            .await
+            .status,
+        401
+    );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
+}
