@@ -218,14 +218,11 @@ fn fixture(allowed: bool) -> Fixture {
         BTreeMap::from([(
             "reader".into(),
             crate::config::RoleBindingCfg {
-                allowed_pools: None,
+                allowed_pools: Some(vec![if allowed { "chat" } else { "other" }.into()]),
                 group: Some("g".into()),
                 admin_scope: None,
                 verbs: None,
-                plane_grants: BTreeMap::from([(
-                    "pool".into(),
-                    vec![if allowed { "chat" } else { "other" }.into()],
-                )]),
+                plane_grants: BTreeMap::new(),
             },
         )]),
     )]);
@@ -401,6 +398,19 @@ fn arrival(
     CallCx,
     StreamOwner,
 ) {
+    arrival_with_fields(f, stream, Vec::new())
+}
+
+fn arrival_with_fields(
+    f: &Fixture,
+    stream: u64,
+    fields: Vec<(String, Vec<u8>)>,
+) -> (
+    CompletingPhysicalRequest,
+    SelectedResources,
+    CallCx,
+    StreamOwner,
+) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let (request, owner) = f
         .connection
@@ -409,6 +419,7 @@ fn arrival(
             crate::inbound::Head {
                 method: "POST".into(),
                 target: "/resource".into(),
+                fields,
                 ..Default::default()
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
@@ -597,4 +608,162 @@ async fn native_data_selection_from_another_physical_request_is_refused() {
     ));
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_publication_before_final_gate_prevents_replay() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let handle = request.binding().handle().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    handle.swap(app()).await;
+    assert!(matches!(pending.complete().await, Err(DataRefused::Policy)));
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn native_data_reset_after_authorization_cannot_register_effects() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    assert!(f.connection.cancel(&owner));
+    assert!(NativeDataAllocation::register(authorized).is_err());
+    assert!(binding.check_executing().is_err());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_data_reset_after_registration_closes_the_exact_context() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    assert!(f.connection.cancel(&owner));
+    let pending = allocation.into_pending(|_| panic!("reset request must not acquire money"));
+    assert!(pending.pending().admit(None, None).is_err());
+    assert!(pending.execution().is_none());
+    assert!(!context.effects_allowed());
+    assert!(binding.check_executing().is_err());
+    drop(pending);
+    assert!(!context.is_live());
+}
+
+#[tokio::test]
+async fn native_data_uncertain_replay_cancellation_never_opens_execution() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let mut completion = Box::pin(pending.complete());
+    assert!(futures::poll!(completion.as_mut()).is_pending());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+    drop(owner);
+    assert!(matches!(completion.await, Err(DataRefused::Cancelled)));
+    assert!(binding.check_executing().is_err());
+    assert_eq!(
+        f.replay.0.load(Ordering::SeqCst),
+        1,
+        "uncertain claim is never retried"
+    );
+}
+
+#[tokio::test]
+async fn native_data_publication_after_lease_retains_original_authority() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let mut completion = Box::pin(pending.complete());
+    assert!(futures::poll!(completion.as_mut()).is_pending());
+    binding.handle().swap(app()).await;
+    let authorized = completion.await.unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    assert!(allocation.context().is_live());
+    assert!(!allocation.context().effects_allowed());
+    drop(allocation);
+    assert!(binding.check_live().is_err());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_data_final_physical_join_refuses_foreign_request() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let (authorization, _original_owner) = authorized.into_parts();
+    let (foreign, _selected, _, _foreign_owner) = arrival(&f, 2);
+    let binding = foreign.binding().clone();
+    assert!(matches!(
+        foreign.complete(authorization),
+        Err(crate::inbound::native::ArrivalRefusal::ForeignInput)
+    ));
+    assert!(binding.check_executing().is_err());
+}
+
+#[tokio::test]
+async fn native_data_scans_later_duplicate_bound_carrier_before_verification() {
+    for token in [
+        "DPoP opaque",
+        "Bearer eyJhbGciOiJub25lIn0.eyJjbmYiOnsiamt0IjoieCJ9fQ.x",
+        "Bearer bbk_not_an_external_provider_credential",
+    ] {
+        let f = fixture(true);
+        let (request, selected, cx, _owner) = arrival_with_fields(
+            &f,
+            1,
+            vec![
+                ("Authorization".into(), b"Bearer harmless-decoy".to_vec()),
+                ("authorization".into(), token.as_bytes().to_vec()),
+            ],
+        );
+        assert!(matches!(
+            f.route.prepare(request, selected, cx).await,
+            Err(DataRefused::Credential)
+        ));
+        assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let pending = allocation.into_pending(|_| panic!("cancelled before request"));
+    assert!(pending.is_live());
+    assert!(f.connection.cancel(&owner));
+    assert!(!pending.is_live());
 }
