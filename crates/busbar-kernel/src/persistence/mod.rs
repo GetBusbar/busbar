@@ -32,6 +32,7 @@ pub mod observations;
 pub(crate) mod partition;
 pub mod recovery_api;
 pub mod restore;
+pub mod restore_tail;
 pub(crate) mod scan;
 pub mod scoped;
 mod slot_seal;
