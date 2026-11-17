@@ -92,7 +92,7 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
         }
     }
     let (sender, receiver) = sync_channel(0);
-    let _worker = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("busbar-plugin-ffi".into())
         .spawn(move || {
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| worker(receiver))) {
