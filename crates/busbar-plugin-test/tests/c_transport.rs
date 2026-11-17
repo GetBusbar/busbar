@@ -32,6 +32,37 @@ const PLAINTEXT: Accept = Accept(Accept::PLAINTEXT);
 const UNVERIFIED: Accept = Accept(Accept::UNVERIFIED_TLS);
 const BOTH: Accept = Accept(Accept::PLAINTEXT | Accept::UNVERIFIED_TLS);
 
+#[test]
+fn case_spec_preserves_explicit_limits_and_endpoint_observations() {
+    use busbar_plugin_test::suites::harness::{Accept, InstanceLimits, OpenPurpose};
+
+    let h = admit(fixture::hook::PLUGIN.plugin());
+    let config = declaring(&["none 0 localhost:8080"]);
+    let mut spec = h.spec("explicit-limits", &config);
+    spec.purpose = OpenPurpose::ConvertUnstamped;
+    assert!(
+        h.check_spec(&spec).is_err(),
+        "plaintext requires explicit acceptance"
+    );
+    spec.limits = InstanceLimits {
+        accept: Accept(Accept::PLAINTEXT),
+        ..InstanceLimits::default()
+    };
+    h.check_spec(&spec).expect("explicit plaintext acceptance");
+    assert_eq!(
+        h.declared().len(),
+        1,
+        "public check keeps endpoint observations"
+    );
+    spec.purpose = OpenPurpose::Canonical;
+    drop(h.open_spec(&spec).expect("canonical hook open"));
+    spec.purpose = OpenPurpose::ConvertUnstamped;
+    assert!(
+        h.open_spec(&spec).is_err(),
+        "conversion still requires CONFIG"
+    );
+}
+
 /// One endpoint-declaring fixture per kind, with an instance name of that kind ("no kind changes the verdict").
 fn kinds() -> [(&'static str, &'static Plugin); 6] {
     [
