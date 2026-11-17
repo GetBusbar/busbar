@@ -120,6 +120,20 @@ The top-level `code` is the diagnostic banner for the error (one per `error.code
 | `internal` | 500 | An internal failure (details are logged server-side, never returned) |
 | `unavailable` | 503 | The node could not take the request into its administrative loop, or could not record what the operation would do (an administrative write that cannot be journalled is not performed). Retry later |
 
+### Declared-restore reasons
+
+A node in restore quarantine (after a store restore, see [operations](operations.md)) refuses every administrative write outside its allow-list with `503 unavailable`, reason `restore_quarantine` (`details.restore_epoch`, `details.allowed`; no `Retry-After`: quarantine ends on a declaration, not after a delay). The exported audit tail a declaration carries is refused with one of these reasons:
+
+| `reason` | HTTP | Meaning |
+|---|---|---|
+| `restore_tail_too_large` | 413 | The tail, or a chunk of it (over 8 MiB), exceeds the limit (256 MiB in total) |
+| `tail_encoding_invalid` | 422 | The tail is not in its canonical encoding, or a chunk was uploaded out of order (each upload starts at index 0) |
+| `tail_digest_mismatch` | 422 | The uploaded chunks do not hash to the declared `tail_digest`, or nothing was uploaded under it |
+| `tail_chain_broken` | 422 | A node's chain does not continue from its restored head (or from genesis), does not link record to record, or carries another history at a witnessed position |
+| `tail_seal_invalid` | 422 | An audit line, stamp, break notice or notary certificate does not decode or verify under the deployment Bootstrap key |
+| `tail_unsealed_end` | 422 | A node's audit chain does not end at a line a verified stamp covers |
+| `tail_missing_chain` | 422 | A node of the store-side witness has no chain in the tail, or its chain stops short of the witnessed position |
+
 `version_conflict` names stale revision intent. Reread and review the new proposal before resubmitting; do not automatically rebase an approved mutation. `conflict` recovery depends on the operation, never message parsing.
 
 ## Pagination
