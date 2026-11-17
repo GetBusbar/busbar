@@ -1846,3 +1846,75 @@ fn signing_from_a_fixed_seed_matches_the_rfc_8032_known_answers() {
             .expect("the RFC signature verifies strictly");
     }
 }
+
+#[test]
+fn every_verification_checkpoint_refuses_revocation_even_with_untrusted_opt_in() {
+    use crate::verification::{VerificationError, Verifier};
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    use std::cell::Cell;
+    struct Admission {
+        calls: Cell<usize>,
+        deny: usize,
+    }
+    impl Authority for Admission {
+        fn check(&self, _: Operation, _: Phase) -> Result<(), Unavailable> {
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            if call == self.deny {
+                Err(Unavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let root = test_key(51);
+    let bytes = b"authority-bound artifact";
+    let sealed = seal_test_artifact(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    let publisher = sign(&root, manifest("acme-store", "acme", "acme"), bytes);
+    for (manifest, policy) in [
+        (sealed, policy(Some(&root), &[], true)),
+        (
+            publisher,
+            policy(
+                None,
+                &[("acme", &root.verifying_key(), &["acme-store"])],
+                true,
+            ),
+        ),
+    ] {
+        let baseline = Admission {
+            calls: Cell::new(0),
+            deny: usize::MAX,
+        };
+        Verifier::new(&baseline)
+            .evaluate(bytes, &manifest, &policy)
+            .unwrap();
+        let checkpoints = baseline.calls.get();
+        assert!(
+            checkpoints > 2,
+            "verification must cross multiple primitives"
+        );
+        for deny in 1..=checkpoints {
+            let authority = Admission {
+                calls: Cell::new(0),
+                deny,
+            };
+            assert!(
+                matches!(
+                    Verifier::new(&authority).evaluate(bytes, &manifest, &policy),
+                    Err(VerificationError::Unavailable(_))
+                ),
+                "checkpoint {deny}"
+            );
+            assert_eq!(
+                authority.calls.get(),
+                deny,
+                "refusal must stop the workflow"
+            );
+        }
+    }
+}
