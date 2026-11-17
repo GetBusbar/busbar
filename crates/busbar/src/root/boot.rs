@@ -2197,6 +2197,8 @@ impl BookPreparation {
             .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
             (Arc::new(services), checkpoint)
         };
+        // SEALING-FIX §3.6.1: seal this node's own crash leftover (a same-holder re-take) from the
+        // records read at reopen, on the Bootstrap thread, before the notary or recovery runs.
         self.phase = BookPhase::SealAfterRestart;
         {
             let durability = self.durability.as_mut().unwrap();
@@ -2205,30 +2207,18 @@ impl BookPreparation {
             let key = key_hex
                 .as_deref()
                 .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
-            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
-                let sealed = super::durability::restart_seal::seal_own_node(
-                    durability, &records, &handle, &key, &host,
-                )
-                .await;
-                match sealed {
-                    super::durability::restart_seal::OwnSeal::Nothing => {
-                        tracing::debug!(node, "own-node audit tail already sealed");
-                    }
-                    super::durability::restart_seal::OwnSeal::Sealed { from, to } => {
-                        tracing::debug!(node, from, to, "own-node audit restart page committed");
-                    }
-                    super::durability::restart_seal::OwnSeal::Broken(at) => {
-                        tracing::debug!(
-                            node,
-                            last_good = at.last_good,
-                            reason = at.reason.as_str(),
-                            "own-node audit break recorded"
-                        );
-                    }
-                    super::durability::restart_seal::OwnSeal::Refused(cause) => {
-                        tracing::debug!(node, %cause, "own-node audit tail left unsealed");
-                    }
-                }
+            if let Some(handle) = audit.take_boot_handle() {
+                let pending = if let Some(key) = key {
+                    let (sealed, pending) = super::durability::restart_seal::prepare_own_node(
+                        durability, &records, &handle, &key, &host,
+                    )
+                    .await;
+                    tracing::debug!(node, ?sealed, "own-node restart seal");
+                    pending
+                } else {
+                    None
+                };
+                audit.defer_boot(handle, pending);
             }
             drop(records);
             if let Some(key_hex) = key_hex {

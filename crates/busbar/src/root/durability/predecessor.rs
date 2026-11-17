@@ -401,14 +401,16 @@ impl Sealer {
                     key: &key,
                     complete,
                 };
-                let items = match tail_items(&batch) {
-                    Ok(items) => items,
-                    Err(RecipeUnsupported) => return (walk, WalkOutcome::Unsupported),
-                };
-                for item in items.iter().rev() {
-                    let outcome = walk.push(item, &cx);
-                    if outcome != WalkOutcome::NeedMore {
-                        return (walk, outcome);
+                for record in batch.iter().rev() {
+                    let items = match tail_items(std::slice::from_ref(record)) {
+                        Ok(items) => items,
+                        Err(RecipeUnsupported) => return (walk, WalkOutcome::Unsupported),
+                    };
+                    for item in &items {
+                        let outcome = walk.push(item, &cx);
+                        if outcome != WalkOutcome::NeedMore {
+                            return (walk, outcome);
+                        }
                     }
                 }
                 let outcome = if complete {
