@@ -39,6 +39,10 @@ use super::{CallerEnd, HeadFields};
 pub trait Calls {
     type Session: Send + 'static;
 
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (0, &[], &[])
+    }
+
     /// Declared resource kinds require the separate completed resource admission producer.
     fn resource_scoped(&self, _route: u32) -> bool {
         false
