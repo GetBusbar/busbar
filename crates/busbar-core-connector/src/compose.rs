@@ -556,15 +556,6 @@ impl Drop for Connection {
     }
 }
 
-/// A TLS connection whose send buffers are the connection's own: the TLS library's default limit
-fn unbounded<C, D>(mut tls: C) -> C
-where
-    C: std::ops::DerefMut<Target = rustls::ConnectionCommon<D>>,
-{
-    tls.set_buffer_limit(None);
-    tls
-}
-
 fn failed(e: impl std::fmt::Display) -> Failure {
     Failure::Failed(crate::cold::framing::display(&e))
 }
@@ -1025,11 +1016,11 @@ impl Planned {
             .map_err(target)?;
             let config = Arc::new(config);
             offered = Some(Arc::clone(&config));
-            Some(rustls::Connection::Client(unbounded(
+            Some(rustls::Connection::Client(
                 rustls::ClientConnection::new(config, name)
                     .map_err(failed)
                     .map_err(target)?,
-            )))
+            ))
         } else {
             None
         };
@@ -1347,9 +1338,9 @@ impl Connection {
             Some(base) => {
                 let mut config = (**base).clone();
                 config.alpn_protocols.clone_from(&accept.alpn);
-                Some(rustls::Connection::Server(unbounded(
+                Some(rustls::Connection::Server(
                     rustls::ServerConnection::new(Arc::new(config)).map_err(failed)?,
-                )))
+                ))
             }
         };
         let established = Established {
@@ -1679,15 +1670,13 @@ impl Connection {
         if self.door.is_some() {
             return Err(Failure::Closed);
         }
-        match self.tls.as_mut() {
-            Some(tls) => {
-                let written = tls.writer().write_all(bytes).map_err(failed);
-                if let Err(f) = written.and_then(|()| self.tls_out()) {
-                    self.fail(f.clone());
-                    return Err(f);
-                }
+        if self.tls.is_some() {
+            if let Err(f) = self.tls_write(bytes) {
+                self.fail(f.clone());
+                return Err(f);
             }
-            None => self.queue(bytes, end)?,
+        } else {
+            self.queue(bytes, end)?;
         }
         Ok(())
     }
@@ -1765,7 +1754,6 @@ impl Connection {
             });
             let client = match server
                 .and_then(|n| rustls::ClientConnection::new(Arc::new(config), n).map_err(failed))
-                .map(unbounded)
             {
                 Ok(c) => c,
                 Err(f) => return Poll::Ready(Err(f)),
@@ -2696,14 +2684,12 @@ impl Connection {
             if spliced {
                 self.seals.splice(&mut wire).map_err(refused)?;
             }
-            match self.tls.as_mut() {
-                Some(tls) => {
-                    let written = tls.writer().write_all(&wire).map_err(failed);
-                    wire.clear();
-                    written?;
-                    self.tls_out()?;
-                }
-                None => self.queue(&wire, false)?,
+            if self.tls.is_some() {
+                let written = self.tls_write(&wire);
+                wire.clear();
+                written?;
+            } else {
+                self.queue(&wire, false)?;
             }
             wire.clear();
         }
@@ -2745,6 +2731,26 @@ impl Connection {
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);
         if y.ended {
             self.phase = Phase::Ended;
+        }
+        Ok(())
+    }
+
+    /// Seal `bytes` whole into the socket's queue. The TLS output is funded (finite prepaid
+    /// records and ciphertext, adopted TLS-OUTPUT-STORAGE-392-r2), so TLS takes a prefix and stops;
+    /// each prefix's records move into `out` before the rest is offered. TLS taking nothing with
+    /// nothing of its own left to move is a fault of the connection, never a spin.
+    fn tls_write(&mut self, mut bytes: &[u8]) -> Result<(), Failure> {
+        while !bytes.is_empty() {
+            let Some(tls) = self.tls.as_mut() else {
+                return Err(Failure::Closed);
+            };
+            let taken = tls.writer().write(bytes).map_err(failed)?;
+            let owed = tls.wants_write();
+            if taken == 0 && !owed {
+                return Err(failed(io::Error::from(io::ErrorKind::WriteZero)));
+            }
+            self.tls_out()?;
+            bytes = bytes.get(taken..).unwrap_or_default();
         }
         Ok(())
     }
