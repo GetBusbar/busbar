@@ -121,7 +121,7 @@ pub(crate) fn base_data_router_scoped(
     })
 }
 
-/// 503 for every data-listener request but `/livez`, `/readyz` and `/healthz` while this process is
+/// 503 for every data-listener request but `/livez` and `/readyz` while this process is
 /// in restore quarantine (DES-331 §B5.2).
 async fn refuse_in_restore_quarantine(
     req: axum::extract::Request,
@@ -130,7 +130,7 @@ async fn refuse_in_restore_quarantine(
     use axum::response::IntoResponse;
     let probe = matches!(
         req.uri().path(),
-        crate::auth::LIVEZ_PATH | crate::auth::READYZ_PATH | crate::auth::HEALTHZ_PATH
+        crate::auth::LIVEZ_PATH | crate::auth::READYZ_PATH
     );
     if probe || !crate::persistence::restore::gate().quarantined() {
         return next.run(req).await;

@@ -8607,29 +8607,6 @@
         "http": 409,
         "retryable": false
       },
-      "restore_quarantine": {
-        "code": "unavailable",
-        "details_schema": {
-          "properties": {
-            "allowed": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "restore_epoch": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "restore_epoch",
-            "allowed"
-          ],
-          "type": "object"
-        },
-        "http": 503,
-        "retryable": true
-      },
       "scope_insufficient": {
         "code": "forbidden",
         "details_schema": {
