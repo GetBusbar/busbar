@@ -681,7 +681,7 @@ pub use plane_input_schemas::install_plane_input_schemas;
 mod config_forms;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
-pub(crate) mod cursor;
+pub mod cursor;
 mod generation;
 mod hook_attachments;
 pub(crate) use hook_attachments::attachments_of;

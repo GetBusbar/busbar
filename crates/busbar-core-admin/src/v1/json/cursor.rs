@@ -20,7 +20,7 @@ use super::err_json_cond;
 const VERSION: &str = "k1";
 
 /// A parsed page request: resume strictly after `after`, return at most `limit` rows.
-pub(crate) struct Window {
+pub struct Window {
     pub(crate) after: Option<String>,
     pub(crate) limit: usize,
 }
@@ -72,13 +72,15 @@ pub(crate) fn encode(op: &str, filter: &str, last_key: &str) -> String {
 }
 
 fn decode(raw: &str) -> Option<(&str, &str, String)> {
-    let mut parts = raw.splitn(4, '.');
-    if parts.next()? != VERSION {
+    let rest = raw.strip_prefix(VERSION)?.strip_prefix('.')?;
+    // Instance/view operation names include dots. The last two components remain unambiguous:
+    // filter digests contain no dots, and the sort key is hex. Unfiltered lists bind to "".
+    let (bound, encoded_key) = rest.rsplit_once('.')?;
+    let (op, filter) = bound.rsplit_once('.')?;
+    if op.is_empty() {
         return None;
     }
-    let op = parts.next().filter(|s| !s.is_empty())?;
-    let filter = parts.next().filter(|s| !s.is_empty())?;
-    let key = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
+    let key = String::from_utf8(hex::decode(encoded_key).ok()?).ok()?;
     Some((op, filter, key))
 }
 
@@ -105,7 +107,7 @@ pub(crate) fn expired(oldest_available: String) -> Response {
 }
 
 /// Parses `cursor` and `limit` for operation `op` under the filter digest `filter`.
-pub(crate) fn window(
+pub fn window(
     q: &HashMap<String, String>,
     op: &str,
     filter: &str,
@@ -138,7 +140,7 @@ pub(crate) fn window(
 
 /// One keyset page of `items`, served in ascending `key` order (descending when `descending`). Rows at or before the cursor are dropped, so a row deleted
 /// between pages cannot make the next page skip or repeat another. `next_cursor` is null at the end.
-pub(crate) fn keyset<T>(
+pub fn keyset<T>(
     mut items: Vec<T>,
     w: &Window,
     op: &str,
