@@ -110,7 +110,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
-        upstreams: None,
         advanced: AdvancedCfg::default(),
         plugins: Default::default(),
         security: None,
@@ -120,6 +119,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
         records: Default::default(),
+        audit: Default::default(),
     }
 }
 
@@ -1461,7 +1461,6 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             )),
             browser_login: None,
             settings: serde_json::Map::new().into(),
-            limits: None,
             insecure_transport: None,
             provisioning: None,
         },

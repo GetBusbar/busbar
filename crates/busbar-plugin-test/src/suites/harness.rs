@@ -872,6 +872,18 @@ impl Harness {
         self.rt.block_on(future)
     }
 
+    /// Poll an owned operation once to its scripted FETCH, then drop it through the real loader cancellation
+    /// path. All preceding Needs must complete synchronously. Panics on early completion, an unrelated wait,
+    /// an already-used gate, or a gate not cancelled by dropping this operation.
+    ///
+    /// Move the operation itself (`port.login(cx, input)`), not a borrowed pinned future or a wrapper retaining
+    /// its owner elsewhere. The generic Future bound cannot enforce ownership: a borrowed operation is rejected
+    /// but its external owner still needs explicit cleanup. Borrowed inputs remain caller-owned; drop them,
+    /// the port, harness and any guarded inspector captures before a custody scan. No request bytes are copied.
+    pub fn cancel_at_fetch<F: Future>(&self, parked: &crate::fake_needs::ParkedFetch, future: F) {
+        self.block_on(async { parked.cancel(future) });
+    }
+
     /// The spec for instance `name` of the admitted image, opened with `config` (operator form, secret
     /// references included) and no limits, no `public_url`, no caller upstreams.
     pub fn spec<'a>(&'a self, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {

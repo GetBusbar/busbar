@@ -922,8 +922,8 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     let r = rig();
     ready(
         r.s.demotions
-            .get()
-            .unwrap()
+            .as_ref()
+            .expect("fixture demotion owner")
             .record
             .record("cp", "quarantined", 1),
     )

@@ -5,8 +5,8 @@
 //! (byte scripts), fetch answers, secrets and records; the kernel answers a plane suite scripts (grants,
 //! rendezvous, issued credentials, channels, trust verdicts, observation statuses) are held for the suite.
 //!
-//! Every Need is answered synchronously from the script under one lock and handed back as a ready future, so a
-//! chain never parks here and the future is `Send` whatever the arguments are. Conns are keyed by
+//! Ordinary scripts answer immediately. An explicit [`FakeNeeds::park_fetch`] script suspends until the
+//! owning operation is dropped, with no State lock held while inspecting or pending. Conns are keyed by
 //! `(instance, chain, conn id)` as the connector keys them (§13), so `release` closes only its own chain's conns;
 //! conn ids and pooled-conn ids are minted per instance from 1 and never repeat (C-POOL-STATE (a), round 19).
 //! Every OPEN and FETCH is recorded, so a suite can hold them against the ENDPOINTs a plugin's `check` declared
@@ -21,10 +21,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::needs::{
-    ConnId, DirNeed, FetchNeed, NeedErr, NeedOut, Needs, OpenNeed, RecordNeed, TlsMode,
+    ConnId, DirNeed, NeedErr, NeedOut, Needs, OpenNeed, RecordNeed, TlsMode,
 };
+use busbar_plugin_abi::secure::SecureVec;
 
+mod parked_fetch;
 mod records;
+pub use busbar_plugin_abi::host_side::needs::FetchNeed;
+pub use parked_fetch::ParkedFetch;
 
 /// Host-side record errors, exposed for fixture scripts without an internal loader dependency.
 pub use busbar_plugin_abi::host_side::needs::NeedErr as RecordError;
@@ -178,9 +182,16 @@ pub struct Kernel {
 struct Fetch {
     method: String,
     url: String,
-    status: u16,
-    headers: Vec<(String, Vec<u8>)>,
-    body: Vec<u8>,
+    reply: FetchReply,
+}
+
+enum FetchReply {
+    Ready {
+        status: u16,
+        headers: Vec<(String, Vec<u8>)>,
+        body: Vec<u8>,
+    },
+    Park(parked_fetch::Script),
 }
 
 #[derive(Default)]
@@ -189,7 +200,7 @@ struct State {
     socket_routes: std::collections::BTreeSet<(u64, u64, u64)>,
     conns: BTreeMap<String, VecDeque<ConnScript>>,
     fetches: Vec<Fetch>,
-    secrets: Vec<(String, Vec<u8>)>,
+    secrets: Vec<(String, SecureVec)>,
     denied: Vec<String>,
     kernel: Kernel,
     live: BTreeMap<(u64, u64, u64), ConnScript>,
@@ -199,6 +210,8 @@ struct State {
     record_steps: VecDeque<RecordStep>,
     record_calls: Vec<RecordCall>,
     seen: Vec<Seen>,
+    #[cfg(test)]
+    open_limits: Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)>,
     released: u64,
 }
 
@@ -262,6 +275,13 @@ impl FakeNeeds {
         self.lock().record_calls.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn open_limits(
+        &self,
+    ) -> Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)> {
+        self.lock().open_limits.clone()
+    }
+
     fn state(&mut self) -> &mut State {
         self.state.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
@@ -299,15 +319,35 @@ impl FakeNeeds {
         let fetch = Fetch {
             method: method.to_owned(),
             url: url.to_owned(),
-            status,
-            headers: headers
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), value.to_vec()))
-                .collect(),
-            body: body.to_vec(),
+            reply: FetchReply::Ready {
+                status,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), value.to_vec()))
+                    .collect(),
+                body: body.to_vec(),
+            },
         };
         self.state().fetches.push(fetch);
         self
+    }
+
+    /// Queue one FETCH that inspects borrowed request bytes and then remains pending until cancellation.
+    /// Shares ordinary FETCH matching/FIFO order. The inspector runs outside the State lock; it must not
+    /// copy credentials into unguarded owners or format request bytes in assertion messages.
+    pub fn park_fetch(
+        &mut self,
+        method: &str,
+        url: &str,
+        inspect: impl for<'a> Fn(FetchNeed<'a>) + Send + Sync + 'static,
+    ) -> ParkedFetch {
+        let (script, parked) = parked_fetch::Script::new(inspect);
+        self.state().fetches.push(Fetch {
+            method: method.to_owned(),
+            url: url.to_owned(),
+            reply: FetchReply::Park(script),
+        });
+        parked
     }
 
     /// The value custody returns for the secret the operator config holds at `pointer` (the suite binds the
@@ -318,7 +358,7 @@ impl FakeNeeds {
     pub fn secret(&mut self, pointer: &str, value: &[u8]) -> &mut Self {
         self.state()
             .secrets
-            .push((pointer.to_owned(), value.to_vec()));
+            .push((pointer.to_owned(), SecureVec::from(value)));
         self
     }
 
@@ -338,7 +378,7 @@ impl FakeNeeds {
             .secrets
             .iter()
             .find(|(at, _)| at == pointer)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| value.as_slice().to_vec())
     }
 
     /// Scripted kernel answers for plane intents (ENTITLE grants, MINT/SIGN outputs, CONNECT states, rendezvous).
@@ -468,12 +508,7 @@ impl State {
         })
     }
 
-    fn fetch(
-        &mut self,
-        cx: &Caller<'_>,
-        n: FetchNeed<'_>,
-        res: &mut NeedOut<'_>,
-    ) -> Result<(), NeedErr> {
+    fn fetch(&mut self, cx: &Caller<'_>, n: FetchNeed<'_>) -> Result<FetchReply, NeedErr> {
         if cx.chain == 0 {
             return Err(NeedErr::Invalid);
         }
@@ -491,13 +526,7 @@ impl State {
             .iter()
             .position(|f| f.method == n.method && f.url == n.url)
             .ok_or(NeedErr::Unavailable)?;
-        let answer = self.fetches.remove(at);
-        res.set(u64::from(answer.status), 0);
-        res.put0(&answer.body)?;
-        for (name, value) in &answer.headers {
-            res.pair1(name, value)?;
-        }
-        Ok(())
+        Ok(self.fetches.remove(at).reply)
     }
 
     fn record(
@@ -667,14 +696,28 @@ impl Needs for FakeNeeds {
         state.live.remove(&(cx.instance, cx.chain, c.0));
     }
 
-    fn fetch(
+    async fn fetch(
         &self,
         cx: &Caller<'_>,
         n: FetchNeed<'_>,
         res: &mut NeedOut<'_>,
-    ) -> impl Future<Output = Result<(), NeedErr>> + Send {
-        let answer = self.lock().fetch(cx, n, res);
-        ready(answer)
+    ) -> Result<(), NeedErr> {
+        let answer = self.lock().fetch(cx, n)?;
+        match answer {
+            FetchReply::Ready {
+                status,
+                headers,
+                body,
+            } => {
+                res.set(u64::from(status), 0);
+                res.put0(&body)?;
+                for (name, value) in &headers {
+                    res.pair1(name, value)?;
+                }
+                Ok(())
+            }
+            FetchReply::Park(script) => script.run(n).await,
+        }
     }
 
     fn secret(
@@ -889,6 +932,8 @@ impl FakeNeeds {
         }
         {
             let mut state = self.lock();
+            #[cfg(test)]
+            state.open_limits.push((cx.name.to_owned(), cx.limits));
             state.seen.push(Seen {
                 op: "open",
                 dest: n.dest.to_owned(),

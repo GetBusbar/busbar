@@ -97,3 +97,8 @@ pub mod sockets;
 /// Typed live store test requests and harness; never exports a production KernelSeal.
 #[cfg(feature = "test-seal")]
 pub mod store;
+
+/// Native message transport conformance; never a production listener.
+#[cfg(feature = "target-native-stream")]
+#[path = "host_target/native_stream.rs"]
+pub mod native_stream;

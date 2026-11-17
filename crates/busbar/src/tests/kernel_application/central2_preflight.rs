@@ -44,7 +44,6 @@ fn gov_with_store(store: &str) -> busbar_kernel::config::StoreCfg {
     busbar_kernel::config::StoreCfg {
         module: store.into(),
         settings: Default::default(),
-        limits: None,
         insecure_transport: None,
     }
 }

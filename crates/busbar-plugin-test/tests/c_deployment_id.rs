@@ -205,7 +205,7 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
         ],
         "the id is published and 2a then 2b re-checked before the 2c open"
     );
-    let (none, some) = (Vec::new(), ID.to_vec());
+    let (none, some) = (Vec::<u8>::new(), ID.to_vec());
     assert_eq!(probe_saw("dep-2a", "open.deployment"), [none.clone()]);
     assert_eq!(probe_saw("dep-2a", "check.deployment"), [some.clone()]);
     let store_saw = store::counts("dep-2b");

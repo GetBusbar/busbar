@@ -214,7 +214,6 @@ impl HookAxis for Axis {
 
 fn gate(plugin: &str, prompt: PromptAccess, on_error: &str) -> HookCfg {
     HookCfg {
-        child_dispatch: None,
         kind: HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms: 1000,

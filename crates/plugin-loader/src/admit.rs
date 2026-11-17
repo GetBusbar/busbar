@@ -166,8 +166,9 @@ fn engine_text(v: EngineVersion) -> String {
     format!("{}.{}.{}", v.major, v.minor, v.patch)
 }
 
-/// Steps 4 to 6 on a stamp `scan::check` passed; the refusal names the stamp's (verified) name.
-fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode, Refusal> {
+/// Steps 4 to 6 on a stamp `scan::check` passed; shared by admission and the native packer's
+/// pre-open inspection. The refusal names the structurally validated stamp's name.
+pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode, Refusal> {
     let name = scan::text(&stamp.name);
     let refuse = |code: RefusalCode,
                   field: &'static str,

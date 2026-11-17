@@ -61,6 +61,18 @@ the upgrade.
    particularly the wildcard role bindings described below. Remove retired launch variables
    once their intended settings are represented in configuration.
 
+Use the installed executable with the deployment's actual paths and environment:
+
+```sh
+busbar --config /deployment/config.yaml --validate
+busbar --config /deployment/config.yaml
+```
+
+Validation checks configuration and plugin preflight; it does not prove backend reachability
+or serving readiness. After startup, check `GET /readyz` on the configured listener and verify
+the application flows above. `GET /livez` reports liveness; `GET /healthz` is observational.
+Listener TLS and mTLS still apply. See [health and readiness](operations.md#health--readiness).
+
 The original config is retained as `<config>.1.5.5`; the accepted config is stamped
 `config_version: 1`. A matching stamp skips the one-shot file migration. A format newer than
 the executable supports is refused. The config stamp does not skip a Store's own initialization
@@ -71,6 +83,36 @@ instances open, but a later failure can follow a Store data conversion or an ove
 write. Fix the reported prerequisite and retry 1.6.0. Do not restart 1.5.5 against that Store.
 If a backup or generated catalog already exists with different bytes, preserve it and
 investigate the conflict; do not overwrite it to force the upgrade through.
+
+### Shared datasets with a changing core record format
+
+The maintenance procedure for a core record-format change requires a full stop, including
+readers. The reviewed protocol is still being integrated and qualified; these preconditions
+do not assert that a development binary can already perform that conversion. A configuration
+stamp and a plugin's physical database migration are separate from core record-format admission.
+
+- Inventory all dataset users and credentials, including read-only nodes, export, replay,
+  repair and bootstrap jobs. Withdraw traffic and new administrative writes, and settle
+  outstanding durable work through its supported recovery path before stopping the old cohort.
+  Process exit alone does not establish that work settled.
+- Stop every reader and producer. Disable old-cohort restarts, autoscaling and automatic
+  rollback for the maintenance window. Writer fencing does not stop stale reads or cached
+  responses from an old process.
+- Select one final-target executable and compatible artifact/converter cohort. Retain their
+  digests, the allowed migration contenders and evidence of dataset access exclusion. Only
+  that cohort may start during conversion; exclude intermediate-target binaries even during
+  a multi-step upgrade. The Store manifest does not authenticate the intended ultimate target.
+- Keep traffic withdrawn through conversion and recovery. After a terminal refusal, disable
+  automatic restart, preserve the evidence and resolve the reported cause. Resume only with
+  the supported target cohort; never clear a migration cursor or tail, reduce a writer epoch,
+  or point an old executable at partially converted records.
+- Release traffic only after final/current format admission with no migration cursor and
+  ordinary boot readiness. To roll back instead, restore the complete pre-upgrade snapshot
+  as described below.
+
+These are operator preconditions. A quiet writer list, socket probe or successful build cannot
+prove them. The final executable, converter and backend cohort still requires direct migration,
+interruption, recovery and rollback evidence before this procedure is qualified.
 
 ## Rolling back
 
@@ -108,6 +150,11 @@ ordering refuse the upgrade rather than guessing. Old plugin rollback pins are d
 1.6.0 cannot load their 1.5.x artifacts. The original overlay is retained byte for byte and its
 path is guarded with the marker directory described under rollback. Keep that guard while an
 old executable could still be launched against the directory.
+
+An unknown **top-level** key in an otherwise valid 1.5.5 overlay is dropped with a report naming
+the key, matching the old reader's behavior. This does not relax validation of recognized fields,
+current YAML or plugin settings. Invalid overlay JSON and unsupported overlay versions refuse
+the upgrade; review the report and retained original before accepting the fold.
 
 A stamped boot does not read that old overlay file or its environment selector. The CLI option
 `--safe-mode` is removed and returns a usage error. After migration, `--ignore-overlay` boots
@@ -176,12 +223,25 @@ reference it with `auth.signing_key: { file: /absolute/signing.key }`, then retr
 the key with the deployment's protected backups; replacing it prevents recovery of credentials
 sealed under the previous key.
 
-Automatic externalization of literal secrets from plugin settings is **not yet integrated into
-the production boot path**. The migration writer supports creating `0600` `.secret` files and
-replacing literals with references, but the current boot does not pass plugins' canonical
-settings to that writer. Do not assume the upgrade has removed literal secrets from the
-configuration or persisted a plugin's converted settings. This must be completed and verified
-before the final upgrade procedure is qualified.
+### Conversion and canonical settings
+
+An unstamped configuration selects an explicit conversion boot. Each configured instance must
+return its settled current settings; core validates and combines those answers before writing
+the configuration. Temporary conversion planes are not published for serving. After core-record
+processing and successful configuration write-back, the process closes its temporary owners and
+re-executes onto the stamped files.
+
+A stamped configuration selects canonical opens. This is not a second opportunity to fold an
+old overlay or invent historical core settings. Supported settings normalization is validated
+before guarded write-back; if that write fails, the authored file is retained and a warning is
+logged. A stamp does not bypass Store format admission or plugin initialization.
+
+The production boot now passes settled settings to the writer, including its literal-secret
+externalization path (`0600` `.secret` files and references in place of literals). This source
+integration is not complete release evidence: verify the selected artifacts' actual converted
+settings, protected files and references, restart readback and reload behavior. Do not assume
+that every literal in every configuration source has been externalized merely because boot
+succeeded. Preserve the original secret sources until the converted deployment is verified.
 
 ### Transport security
 
@@ -199,6 +259,39 @@ For encrypted transport with deliberately unverified certificates, the acceptanc
 Add it after stopping 1.5.5, which does not understand the new field. Store DSN details and
 implementation-specific error codes belong to the selected kind's own documentation; do not
 assume a code emitted by one implementation applies to another.
+
+## HTTP endpoints and spend refusals
+
+Configure clients to call a declared endpoint, including any explicitly configured prefix.
+1.6.0 does not infer an inference endpoint from an arbitrary path suffix or an Anthropic
+header. For example, `/v1/chat/completions` is declared; `/x/v1/chat/completions` returns 404
+when `/x` is not configured. Unknown paths return the ordinary audited 404 without an
+upstream request. Deliberately declared named-pool and provider/model paths remain routes;
+their path parameters do not establish a general catch-all. A missing model or price on a
+declared route remains a separate request error.
+
+When an operator-configured monetary spend cap is exhausted, the LLM plane uses the caller's
+native error contract:
+
+| Caller API | HTTP status | Error body |
+|---|---:|---|
+| Anthropic Messages | 400 | `invalid_request_error` |
+| OpenAI Chat Completions | 429 | `insufficient_quota` |
+| OpenAI Responses | 429 | `insufficient_quota` |
+| Gemini | 429 | `RESOURCE_EXHAUSTED` |
+| Cohere | 402 | Native message envelope |
+| Bedrock Runtime | 400 | `ServiceQuotaExceededException` |
+
+Anthropic's spend-cap status changes from 429 to 400 and Cohere's from 429 to 402. The
+Anthropic error type is `invalid_request_error`; a local operator cap is distinct from an
+upstream payment failure. These are caller API conventions: HTTP itself reserves 402 for
+future use and does not require it for every monetary limit.
+
+Request/token/concurrency quota limits remain 429. For a spend refusal, review the configured
+limit and its reset period before retrying. Busbar supplies `Retry-After` only when the
+policy provides a known wait; a 429 alone does not promise that a short retry will succeed.
+Refusals retain the normal audit and no-upstream-call behavior. This change adds no proprietary
+client fields exposing internal policy identifiers.
 
 ## Administrative clients
 
@@ -253,6 +346,11 @@ rely on the retired host journal for rate-card recovery.
 
 ## Release-candidate checks
 
+- Exercise the HTTP spend-cap matrix above through the actual listener and live policy.
+  Confirm declared routes and configured prefixes, unknown/unconfigured paths returning 404,
+  and refusal audit/no-upstream-call behavior. Renderer-only tests do not establish these
+  end-to-end guarantees.
+
 This section records required checks while 1.6.0 is in development. These are **not instructions
 to add pre-release keys**. Replace this section with verified final behavior before release:
 
@@ -276,9 +374,13 @@ to add pre-release keys**. Replace this section with verified final behavior bef
   refusal of live old writers and newer data, and restoration of the pre-upgrade backup.
   Keep backend qualification open until those checks pass; fixture setup failures and partial
   migration tests do not qualify a backend.
+- Qualify the restricted pre-serving admission and recovery protocol for shared core
+  record-format changes; a warning followed by ordinary startup is not sufficient.
 - Verify that plugin initialization results reach configuration write-back on the first boot,
   stamped boots and reloads, including literal-secret externalization and restart readback.
-  The current production boot does not yet connect those results to the writer.
+  The production MIN-3 boot now collects settled results and invokes the writer; this still
+  requires direct through-boot evidence with the selected artifacts. A generic SDK fixture
+  proves its own declared case, not a backend migration or real application readiness.
 - Check kind operations, authentication-token migration, exports, plane behavior, telemetry
   attribute changes and Store rollback requirements against the final core and artifact cohort.
 - Run the final docs-versus-code check at the release-candidate SHA, including every link,

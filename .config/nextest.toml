@@ -1,14 +1,15 @@
 # Setup scripts are an experimental nextest feature; it must be named here or the config does not parse.
 experimental = ["setup-scripts"]
 
-# The Q24 wipe proofs (busbar-plugin-test `canary_scan`) read freed memory back, so their test
-# process keeps freed pages mapped: jemalloc's decay is off (UNSAFE-MIN §4.4). `.cargo/config.toml`
-# sets the same variable for `cargo test`; a nextest run from an archive does not always apply a
-# cargo `[env]` table, so the binary that needs it is given it by a setup script, by its own name
-# (a per-test override has no environment key, so the variable never reached the process).
+# The Q24 wipe proofs (busbar-plugin-test `canary_scan`, and the contract and kernel wipe tests that
+# include it) read freed memory back, so their test process keeps freed pages mapped: jemalloc's
+# decay is off (UNSAFE-MIN §4.4). `.cargo/config.toml` sets the same variable for `cargo test`; a
+# nextest run from an archive does not always apply a cargo `[env]` table, so each binary that needs
+# it is given it by a setup script, by its own name (a per-test override has no environment key, so
+# the variable never reached the process).
 [scripts.setup.canary-jemalloc]
 command = ["sh", "-c", "echo _RJEM_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1 >> \"$NEXTEST_ENV\""]
 
 [[profile.default.scripts]]
-filter = 'binary(=canary_scan)'
+filter = 'binary(=canary_scan) | binary(=exchange_request_wipe) | binary(=invoke_request_wipe) | binary(=verify_request_wipe) | binary(=owned_auth_and_service_wipe) | binary(=protocol_producer_custody) | binary(=sse_frames_compaction_wipe) | binary(=host_projection_wipe)'
 setup = 'canary-jemalloc'

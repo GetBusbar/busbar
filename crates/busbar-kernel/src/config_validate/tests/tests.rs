@@ -46,7 +46,6 @@ fn make_root_cfg(
         store: Some(config::StoreCfg {
             module: "inert-store-metadata".into(),
             settings: Default::default(),
-            limits: None,
             insecure_transport: None,
         }),
         secrets: std::collections::BTreeMap::new(),

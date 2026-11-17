@@ -161,22 +161,16 @@ interim:
   crates/busbar-contract/src/plugin_settings/owned.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/allocation_observer_tests.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/allocation_observer.rs: { tokens: 18, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
-  crates/busbar-contract/src/tests/sse_frames_tests.rs: { tokens: 3, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/wipe_support.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/tests/abi_versions.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/auth_answer_validators.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/common_measurements.rs: { tokens: 9, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/exchange_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/fixtures/sdk_door_plugin.rs: { tokens: 5, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/invoke_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/owned_auth_and_service_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/plane_class_parents.rs: { tokens: 3, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/plane_streaming_media.rs: { tokens: 4, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/protocol_producer_custody.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/sdk_door_cdylib.rs: { tokens: 8, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/sdk_hyper.rs: { tokens: 11, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/signing_gate_reader.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/verify_request_wipe.rs: { tokens: 6, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/zero_declarations.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-core-admin/build.rs: { tokens: 1, by: "W3 (generated admin code)" }
   crates/busbar-core-admin/src/v1/json/handlers.rs: { tokens: 1, by: "W3 (generated admin code)" }
@@ -214,9 +208,7 @@ interim:
   crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs: { tokens: 7, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
-  crates/busbar-kernel/src/tests/alloc_gate_instrument.rs: { tokens: 5, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/src/tests/host_disk_export_tests.rs: { tokens: 14, by: "W1-U1 (§4.3, §4.4)" }
-  crates/busbar-kernel/tests/host_projection_wipe.rs: { tokens: 6, by: "W1-U1 (§4.3, §4.4)" }
   crates/busbar-kernel/tests/support/plane_driver_actual.rs: { tokens: 34, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_completion_retirement.rs: { tokens: 9, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_session_input_cases.rs: { tokens: 1, by: "W3-D-BINARY" }
