@@ -91,8 +91,9 @@ fn the_scan_distinguishes_plain_and_wiped_vectors() {
     proof.assert_absent("a SecureVec");
 }
 
-#[test]
-fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
+/// Every request buffer in turn leaves by `exit`. Each exit is its own test (its own process under
+/// nextest), so the per-case memory scans never add up past one test's deadline.
+fn request_payloads_wipe_on(exit: Exit) {
     for field in [
         Field::Method,
         Field::Target,
@@ -100,75 +101,100 @@ fn request_payloads_wipe_on_return_failure_cancel_clone_and_last_owner_drop() {
         Field::Value,
         Field::Body,
     ] {
-        for exit in [
-            Exit::Return,
-            Exit::Failure,
-            Exit::Cancel,
-            Exit::Clone,
-            Exit::Shared,
-            Exit::Transfer,
-            Exit::Panic,
-        ] {
-            let what = format!("{field:?} on {exit:?}");
-            let mut proof = WipeProof::text();
-            let staging = proof.text_payload();
-            let mut request = request(field, staging.as_bytes());
-            drop(staging);
-            if matches!(exit, Exit::Clone) {
-                let clone = request.clone();
-                drop(request);
-                request = clone;
-            }
-            match exit {
-                Exit::Panic => {
-                    let unwound = std::panic::catch_unwind(move || {
-                        let _request = request;
-                        panic!("request-owner-unwind fixture");
-                    });
-                    assert!(unwound.is_err());
-                }
-                Exit::Cancel => {
-                    let mut pending = Box::pin(async move {
-                        let request = request;
-                        std::future::pending::<()>().await;
-                        drop(request);
-                    });
-                    assert_eq!(
-                        pending
-                            .as_mut()
-                            .poll(&mut Context::from_waker(Waker::noop())),
-                        Poll::Pending
-                    );
-                    proof.assert_held("the pending future still owns the request");
-                    drop(pending);
-                }
-                Exit::Shared => {
-                    let shared = Arc::new(request);
-                    let last = Arc::clone(&shared);
-                    drop(shared);
-                    proof.assert_held("the last shared owner still holds the request");
-                    drop(last);
-                }
-                Exit::Transfer => {
-                    let final_owner = Request {
-                        method: std::mem::take(&mut request.method),
-                        target: std::mem::take(&mut request.target),
-                        fields: std::mem::take(&mut request.fields),
-                        body: std::mem::take(&mut request.body),
-                        timeout_ms: request.timeout_ms,
-                    };
-                    drop(request);
-                    proof.assert_held("the final owner still holds the request");
-                    drop(final_owner);
-                }
-                _ => {
-                    let fail = matches!(exit, Exit::Failure);
-                    assert_eq!(returned(request, fail).is_err(), fail);
-                }
-            }
-            proof.assert_absent(&what);
+        let what = format!("{field:?} on {exit:?}");
+        let mut proof = WipeProof::text();
+        let staging = proof.text_payload();
+        let mut request = request(field, staging.as_bytes());
+        drop(staging);
+        if matches!(exit, Exit::Clone) {
+            let clone = request.clone();
+            drop(request);
+            request = clone;
         }
+        match exit {
+            Exit::Panic => {
+                let unwound = std::panic::catch_unwind(move || {
+                    let _request = request;
+                    panic!("request-owner-unwind fixture");
+                });
+                assert!(unwound.is_err());
+            }
+            Exit::Cancel => {
+                let mut pending = Box::pin(async move {
+                    let request = request;
+                    std::future::pending::<()>().await;
+                    drop(request);
+                });
+                assert_eq!(
+                    pending
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Pending
+                );
+                proof.assert_held("the pending future still owns the request");
+                drop(pending);
+            }
+            Exit::Shared => {
+                let shared = Arc::new(request);
+                let last = Arc::clone(&shared);
+                drop(shared);
+                proof.assert_held("the last shared owner still holds the request");
+                drop(last);
+            }
+            Exit::Transfer => {
+                let final_owner = Request {
+                    method: std::mem::take(&mut request.method),
+                    target: std::mem::take(&mut request.target),
+                    fields: std::mem::take(&mut request.fields),
+                    body: std::mem::take(&mut request.body),
+                    timeout_ms: request.timeout_ms,
+                };
+                drop(request);
+                proof.assert_held("the final owner still holds the request");
+                drop(final_owner);
+            }
+            _ => {
+                let fail = matches!(exit, Exit::Failure);
+                assert_eq!(returned(request, fail).is_err(), fail);
+            }
+        }
+        proof.assert_absent(&what);
     }
+}
+
+#[test]
+fn request_payloads_wipe_on_return() {
+    request_payloads_wipe_on(Exit::Return);
+}
+
+#[test]
+fn request_payloads_wipe_on_failure() {
+    request_payloads_wipe_on(Exit::Failure);
+}
+
+#[test]
+fn request_payloads_wipe_on_cancel() {
+    request_payloads_wipe_on(Exit::Cancel);
+}
+
+#[test]
+fn request_payloads_wipe_on_a_clone_drop() {
+    request_payloads_wipe_on(Exit::Clone);
+}
+
+#[test]
+fn request_payloads_wipe_on_the_last_shared_owner_drop() {
+    request_payloads_wipe_on(Exit::Shared);
+}
+
+#[test]
+fn request_payloads_wipe_on_transfer() {
+    request_payloads_wipe_on(Exit::Transfer);
+}
+
+#[test]
+fn request_payloads_wipe_on_unwinding() {
+    request_payloads_wipe_on(Exit::Panic);
 }
 
 #[test]
