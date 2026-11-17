@@ -76,9 +76,9 @@ fn packed_tarball_verifies_end_to_end() {
     let mut policy = busbar_plugin_loader::sign::TrustPolicy::default();
     policy.publishers.insert(
         "acme".into(),
-        crate::sign::PublisherTrust {
+        busbar_plugin_loader::sign::PublisherTrust {
             plugins: [up.manifest.name.clone()].into_iter().collect(),
-            keys: vec![crate::sign::PublisherKey {
+            keys: vec![busbar_plugin_loader::sign::PublisherKey {
                 key: key.verifying_key(),
                 revoked: false,
             }],
@@ -404,7 +404,7 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         statement: None,
         former_names: Vec::new(),
     };
-    let signed = crate::sign::seal_test_artifact(&key, m, lib);
+    let signed = busbar_plugin_loader::sign::seal_test_artifact(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);
     busbar_plugin_loader::sign::validate_structure(
         &signed,

@@ -98,6 +98,10 @@ visit-count = []
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+# json_scanner's thread CPU clock, without `unsafe` (UNSAFE-MIN r3.1 §4.4).
+rustix = { version = "1.1", default-features = false, features = ["std", "time"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 # The source spool's directory-relative create and unlink (UNSAFE-MIN r3.1 §4.3).

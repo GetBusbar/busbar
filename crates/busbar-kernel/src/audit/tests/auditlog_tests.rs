@@ -5,7 +5,7 @@ use super::*;
 use crate::audit::{digest, frame_prelude, Framing};
 use crate::store::plane_view::decode;
 use busbar_contract::json;
-use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, out: &str, pr: &str) {
     let mut input = frame_prelude(Framing::PipeSeparated, prev_hash, None, seq);

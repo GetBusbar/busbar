@@ -25,6 +25,35 @@ use crate::min3_store::{
     PHYSICAL_VERSION,
 };
 
+#[cfg(feature = "test-seal")]
+#[test]
+fn typed_store_conversion_requires_and_retains_settled_config() {
+    use busbar_plugin_test::store::{StoreCase, StoreHarness};
+    use busbar_plugin_test::suites::harness::OpenPurpose;
+
+    let h = StoreHarness::admit(inline::PLUGIN.plugin(), FakeNeeds::new()).expect("admit");
+    let current = StoreCase::new("current", b"{}".to_vec());
+    drop(h.open(&current).expect("canonical open needs no CONFIG"));
+    let absent = StoreCase::new("missing-config", b"{}".to_vec());
+    assert!(
+        h.open_converting(&absent).is_err(),
+        "conversion requires CONFIG"
+    );
+    let converting = StoreCase::new("converted", br#"{"settle":true}"#.to_vec());
+    drop(
+        h.open_converting(&converting)
+            .expect("conversion with CONFIG"),
+    );
+    let settled = h.harness().settled("converted").expect("settled CONFIG");
+    assert_eq!(settled.config_json.as_slice(), br#"{"canonical":true}"#);
+
+    let mut spec = h.harness().spec("generic-conversion", &converting.config);
+    spec.purpose = OpenPurpose::ConvertUnstamped;
+    spec.limits = converting.limits;
+    drop(h.harness().open_spec(&spec).expect("generic conversion"));
+    assert!(h.harness().settled("generic-conversion").is_some());
+}
+
 #[test]
 fn info_once_after_instance() {
     let h = booted(inline::PLUGIN.plugin(), FakeNeeds::new());

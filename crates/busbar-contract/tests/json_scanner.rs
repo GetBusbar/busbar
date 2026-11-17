@@ -188,15 +188,9 @@ fn a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves() {
     }
 }
 
-/// The calling thread's CPU time so far.
+/// The calling thread's CPU time so far (`CLOCK_THREAD_CPUTIME_ID`, through rustix).
 fn thread_cpu() -> std::time::Duration {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid, writable timespec; the clock id is a constant the platform defines.
-    let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-    assert_eq!(rc, 0, "the thread's CPU clock reads");
+    let ts = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
     std::time::Duration::new(
         u64::try_from(ts.tv_sec).unwrap_or(0),
         u32::try_from(ts.tv_nsec).unwrap_or(0),

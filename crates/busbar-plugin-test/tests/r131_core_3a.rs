@@ -109,10 +109,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "needs Watch::armed_here and ::block (!2305)",
     ),
     (
-        "busbar-contract/tests/json_scanner.rs",
-        "needs cpu::thread_ns (!2305)",
-    ),
-    (
         "busbar-contract/tests/owned_auth_and_service_wipe.rs",
         "needs Watch::armed_here and ::block (!2305)",
     ),
