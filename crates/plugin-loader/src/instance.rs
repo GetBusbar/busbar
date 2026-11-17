@@ -1222,6 +1222,15 @@ impl Registry {
             );
     }
 
+    /// The marks [`Registry::mark_legacy`] left for instance `name`, once.
+    pub(crate) fn take_legacy(&self, name: &str) -> Vec<Box<str>> {
+        self.legacy
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name)
+            .unwrap_or_default()
+    }
+
     /// Round 6, boot only: the r6 §3 step 2 order, computed generically. `instances[i]` is configured instance i
     /// with its kind; `deps` = the kernel's existing edges, `appbuild::bootstrap_dependency_names` (appbuild.rs:770),
     /// fed with every SecretRef the binder finds in the store's bag at **any** position (`bind_any` semantics,

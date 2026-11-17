@@ -536,6 +536,106 @@ fn set_at(
     Ok(())
 }
 
+/// LEGACY-KEYFILE-MARKER r2 (IF r35 M-1): core migration vocabulary, written by core alone.
+const MIGRATED: &str = "$migrated";
+
+/// Whether `bytes` may hold the word at all (a JSON escape still spells `migrated`), so most bags skip the parse.
+fn mentions_marker(bytes: &[u8]) -> bool {
+    bytes.windows(8).any(|w| w == b"migrated")
+}
+
+/// r2 §3: an operator bag never carries `$migrated` at its top level, on any path that binds (boot, reload,
+/// admin PATCH and install, DRY_RUN); core writes it only into the bytes a marked converting open sees.
+fn refuse_operator_marker(s: &InstanceSpec<'_>) -> Result<(), OpenError> {
+    if !mentions_marker(s.config_json) {
+        return Ok(());
+    }
+    let held = json::parse_value(s.config_json)
+        .ok()
+        .is_some_and(|v| v.as_object().is_some_and(|m| m.contains_key(&MIGRATED)));
+    if held {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` is core migration vocabulary and cannot appear in a configuration",
+            s.name
+        )));
+    }
+    Ok(())
+}
+
+/// Whether D_SECRET_PATH `pattern` names the concrete `pointer` (a `*` token is any array index).
+fn declares(pattern: &str, pointer: &str) -> bool {
+    if !pointer.starts_with('/') || !pattern.starts_with('/') {
+        return false;
+    }
+    let (mut want, mut have) = (pattern.split('/'), pointer.split('/'));
+    loop {
+        match (want.next(), have.next()) {
+            (None, None) => return true,
+            (Some(w), Some(h))
+                if w == h
+                    || (w == "*" && !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit())) => {}
+            _ => return false,
+        }
+    }
+}
+
+/// r2 §3: marks are for a converting open only, and each names a declared D_SECRET_PATH slot present in the bag.
+fn check_marks(s: &InstanceSpec<'_>, marks: &[Box<str>], secret: &[&str]) -> Result<(), OpenError> {
+    if s.purpose != OpenPurpose::ConvertUnstamped {
+        return Err(plan_error(format!(
+            "{}: `{MIGRATED}` marks only a converting open",
+            s.name
+        )));
+    }
+    let doc = json::parse_value(s.config_json)
+        .map_err(|_| plan_error(format!("{}: the config is not JSON", s.name)))?;
+    for mark in marks {
+        let present = json::pointer(&doc, mark).is_some_and(|v| !v.is_null());
+        if !present || !secret.iter().any(|p| declares(p, mark)) {
+            return Err(plan_error(format!(
+                "{}: {mark} is not a secret position of module {}",
+                s.name, s.identity
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// r2 §2: `"$migrated": {"legacy": [..]}` at the top of the bound bag, the marks deduplicated in order.
+fn insert_marker(v: &mut json::Value, marks: &[Box<str>], name: &str) -> Result<(), OpenError> {
+    let mut legacy: Vec<&str> = Vec::with_capacity(marks.len());
+    for mark in marks {
+        if !legacy.contains(&&**mark) {
+            legacy.push(mark);
+        }
+    }
+    let text = json::to_string(&legacy).unwrap_or_default();
+    let marker = json::parse_value(format!(r#"{{"legacy":{text}}}"#).as_bytes())
+        .map_err(|_| plan_error(format!("{name}: core cannot write `{MIGRATED}`")))?;
+    v.as_object_mut()
+        .ok_or_else(|| plan_error(format!("{name}: a marked config is not a JSON object")))?
+        .insert(MIGRATED, marker);
+    Ok(())
+}
+
+/// r2 §4: a settled CONFIG with `$migrated` at its top level, re-encoded without it (None = nothing to strip).
+fn strip_marker(config: &[u8], name: &str) -> Result<Option<Vec<u8>>, OpenError> {
+    if !mentions_marker(config) {
+        return Ok(None);
+    }
+    let mut v = json::parse_value(config)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG is not valid JSON")))?;
+    let Some(map) = v.as_object_mut() else {
+        return Ok(None);
+    };
+    if map.remove(&MIGRATED).is_none() {
+        return Ok(None);
+    }
+    json::to_vec(&v)
+        .map(Some)
+        .map_err(|_| plan_error(format!("{name}: open CONFIG cannot be re-encoded")))
+}
+
 /// How many `{"$dest": n}` handles the bound config holds.
 fn count_dests(v: &json::Value) -> u32 {
     match v.get_type() {
@@ -585,6 +685,7 @@ impl Registry {
         id: u64,
         slot: u32,
         refs: &dyn RefSource,
+        marks: Vec<Box<str>>,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -613,6 +714,10 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
+        refuse_operator_marker(s)?;
+        if !marks.is_empty() {
+            check_marks(s, &marks, &paths(tag::D_SECRET_PATH))?;
+        }
         let bind = match s.purpose {
             OpenPurpose::Canonical => ConfigBinder::bind,
             OpenPurpose::ConvertUnstamped => ConfigBinder::bind_any,
@@ -642,10 +747,14 @@ impl Registry {
         );
         let dest_paths = paths(tag::D_DEST_PATH);
         let write_urls = s.public_url.is_some() && !urls.is_empty();
-        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() {
+        let marked = !marks.is_empty();
+        let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() || marked {
             let mut v: json::Value = json::parse_value(resolved.as_slice()).map_err(|e| {
                 plan_error(format!("{}: the bound config is not JSON: {e}", s.name))
             })?;
+            if marked {
+                insert_marker(&mut v, &marks, s.name)?;
+            }
             if let Some(url) = s.public_url {
                 for p in &urls {
                     set_at(&mut v, p, json::Value::from(url), s.name)?;
@@ -660,7 +769,7 @@ impl Registry {
                 set_at(&mut v, p, json::Value::from(names), s.name)?;
             }
             let dests = count_dests(&v);
-            if write_urls || !ups.is_empty() {
+            if write_urls || !ups.is_empty() || marked {
                 (SecureVec::from(json::to_vec(&v).unwrap_or_default()), dests)
             } else {
                 (resolved, dests)
@@ -774,7 +883,7 @@ impl Registry {
             ));
         }
         let p = self
-            .prepare_with_id(s, kind, id, lease.slot(), refs)
+            .prepare_with_id(s, kind, id, lease.slot(), refs, self.take_legacy(s.name))
             .await?;
         let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
@@ -863,9 +972,10 @@ impl Registry {
             }
             return Ok(());
         };
+        let unmarked = strip_marker(out.config, s.name)?;
         let config_json = SecureVec::from(
             self.binder
-                .unbind_refs(id, out.config)
+                .unbind_refs(id, unmarked.as_deref().unwrap_or(out.config))
                 .map_err(|e| bind_error(s.name, e))?,
         );
         json::parse_value(config_json.as_slice())
@@ -911,7 +1021,7 @@ impl Registry {
         let reserved = self.reserve(s)?;
         let lease = reserved.lease;
         let p = self
-            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs)
+            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs, Vec::new())
             .await?;
         let finished = self
             .run_open::<K, DeniedNeeds>(
