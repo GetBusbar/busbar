@@ -341,7 +341,8 @@ fn inspect_with_policy(
         && crate::root::loader::pack_native::is_native(&unpacked.lib_bytes)
             .map_err(Refusal::Validation)?
     {
-        stated.settings_schema = native_schema(&unpacked.lib_bytes, &unpacked.manifest, policy)?;
+        stated.settings_schema =
+            native_schema_bounded(&unpacked.lib_bytes, &unpacked.manifest, policy)?;
     }
     Ok((stated, judged, verification))
 }
@@ -597,9 +598,55 @@ mod store_overlay_management {
     }
 }
 
-/// Which verdicts an inspection may load (dlopen and describe) to read a native image's D_SCHEMA.
+/// Which verdicts an inspection may load (dlopen and describe) to read a native image's D_SCHEMA: Trusted only
+/// (DES-443 H1). An operator opt-in (`allow_untrusted`: Allowed) is shown from its manifest and never executed.
 fn loads_on_inspect(judged: &Judged) -> bool {
-    !matches!(judged, Judged::Rejected { .. })
+    matches!(judged, Judged::Trusted { .. })
+}
+
+/// The outer wall-clock bound on one inspection's admission and describe (DES-443 M1).
+const INSPECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One inspection loads and describes at a time (DES-443 M1). Held by the describing thread until its call
+/// returns, so a describe that never answers keeps the slot and every later inspection is refused, not queued.
+static INSPECTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`native_schema`] under the inspection cap and its outer deadline: a busy slot or a deadline passed is a
+/// typed refusal and the request thread returns; the describing thread keeps the slot until its call ends.
+fn native_schema_bounded(
+    lib: &[u8],
+    manifest: &Manifest,
+    policy: &TrustPolicy,
+) -> Result<Option<String>, Refusal> {
+    use std::sync::atomic::Ordering;
+    struct Slot;
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            INSPECTING.store(false, Ordering::Release);
+        }
+    }
+    if INSPECTING.swap(true, Ordering::AcqRel) {
+        return Err(Refusal::Conflict(
+            "another plugin inspection is loading an image; retry when it finishes".into(),
+        ));
+    }
+    let slot = Slot;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (lib, manifest, policy) = (lib.to_vec(), manifest.clone(), policy.clone());
+    std::thread::Builder::new()
+        .name("busbar-inspect".into())
+        .spawn(move || {
+            let _slot = slot;
+            let _ = tx.send(native_schema(&lib, &manifest, &policy));
+        })
+        .map_err(|e| Refusal::Conflict(format!("the plugin inspection could not start: {e}")))?;
+    rx.recv_timeout(INSPECT_DEADLINE).unwrap_or_else(|_| {
+        Err(Refusal::Conflict(format!(
+            "the plugin's describe did not answer within {} s; its inspection keeps the one inspection 
+             slot until it does",
+            INSPECT_DEADLINE.as_secs()
+        )))
+    })
 }
 
 /// DES-443 H1: inspect loads only a Trusted candidate. An operator opt-in (Allowed) or a refused one is shown from
@@ -654,5 +701,26 @@ mod inspect_tests {
             .expect("a rejected image inspects from its manifest");
         assert!(matches!(judged, Judged::Rejected { .. }), "{judged:?}");
         assert!(stated.settings_schema.is_none());
+    }
+}
+
+#[cfg(test)]
+mod inspect_cap_tests {
+    use super::*;
+
+    /// DES-443 M1: while one inspection holds the slot, another is refused at once, not queued.
+    #[test]
+    fn a_second_inspection_is_refused_while_one_loads() {
+        use std::sync::atomic::Ordering;
+        assert!(
+            !INSPECTING.swap(true, Ordering::AcqRel),
+            "the slot starts free"
+        );
+        let busy = native_schema_bounded(b"", &Manifest::default(), &TrustPolicy::default());
+        INSPECTING.store(false, Ordering::Release);
+        assert!(
+            matches!(&busy, Err(Refusal::Conflict(text)) if text.contains("another plugin inspection")),
+            "{busy:?}"
+        );
     }
 }
