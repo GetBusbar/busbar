@@ -1911,6 +1911,15 @@ diagnostics! {
         example "plugins:\n  trust:\n    operator: my-publisher",
         detail "plugins.trust.operator: reserved; 1.6.0 operator plugins must be first-party signed (Q13)";
 
+    /// A root listener would serve plaintext without its explicit acceptance (#359 SEC-L1).
+    CONFIG_PLAINTEXT_LISTENER = 3172, Config, Fatal, "config-plaintext-listener", "1.6.0", false,
+        "A listener would serve plaintext without an acceptance",
+        "The data listener (`listen`) or the admin listener (`admin_listen`) has no TLS (`tls:` / `admin_tls:`) and no explicit acceptance to serve in the clear, or an acceptance is written beside TLS. Every listener without TLS needs its acceptance, loopback included, because anything sent to it, credentials included, can be read and altered on the network path. The upgrade from 1.5.x does not write the acceptance for you. A Store overlay cannot set it; an overlay that sets TLS makes a file acceptance inert, and the boot warns that it can be removed.",
+        "Add `tls:` (or `admin_tls:`) with a certificate and key, or, to serve that listener in the clear deliberately, write `listen_insecure_transport: { accept: [plaintext], reason: \"...\" }` (or `admin_listen_insecure_transport:`) with your real reason in config.yaml. A listener that has TLS takes no acceptance."
+        => config_plaintext_listener(detail) "{detail}",
+        example "listen: 0.0.0.0:8080",
+        detail "`listen` 0.0.0.0:8080 has no TLS and no acceptance: it would serve plaintext, so anything sent to it, credentials included, could be read and altered on the network path; add `tls:` (cert and key), or to serve it in the clear deliberately add `listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }` with your real reason";
+
     /// An outbound dial was refused (destination guard, plaintext rule or trust store).
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
