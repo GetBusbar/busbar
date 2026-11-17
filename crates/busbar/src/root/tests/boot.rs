@@ -1240,3 +1240,28 @@ fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
     assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
     assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
 }
+
+/// UPG-7 (#332): the plugin anti-downgrade floor is keyed by the deployment identity the store
+/// keeps, never by the host name. A fresh k8s pod has a fresh host name, so a host-keyed floor is
+/// off for exactly the pod a rollout starts, and its rows pile up per pod name.
+#[tokio::test]
+async fn the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name() {
+    if !isolated_card_case("the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name").await
+    {
+        return;
+    }
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let authority = PLUGIN_FLOOR.get().expect("the floor authority is bound");
+    assert_eq!(authority.host, deployment);
+    assert_ne!(authority.host, crate::root::durability::host_identity());
+}
