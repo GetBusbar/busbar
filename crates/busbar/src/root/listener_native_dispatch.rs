@@ -9,7 +9,7 @@ use axum::body::Body;
 use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_core_connector::framed_stream::session::{Feed, RegisterResponse};
 use busbar_kernel::inbound::http_projection::HttpProjection;
-use busbar_kernel::inbound::native::{PhysicalAdminExecution, RouteTarget};
+use busbar_kernel::inbound::native::{PhysicalAdminExecution, PhysicalRefusalCarrier, RouteTarget};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 
@@ -56,10 +56,16 @@ pub(super) async fn prepare(
             RouteTarget::Plane(_) => {
                 let slot =
                     (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
-                let prepared = data::prepare(ready.request, slot, node).await?;
+                // Lend the same HEAD-created physical owner to Node before Task admission.
+                // Node retains it independently through registration and audit failures.
+                let prepared =
+                    data::prepare(ready.request, slot, node, ready.owner.clone()).await?;
                 (
                     prepared.response,
-                    ResponseAuthority::Data(prepared.authority),
+                    match prepared.authority {
+                        data::DataAuthority::Executing(owner) => ResponseAuthority::Data(owner),
+                        data::DataAuthority::Refused(owner) => ResponseAuthority::Refused(owner),
+                    },
                     Some(prepared.settlement),
                 )
             }
@@ -76,18 +82,29 @@ pub(super) async fn prepare(
                     .into_request(Body::from(snapshot.body_bytes()));
                 request.extensions_mut().insert(binding.app().clone());
                 request.extensions_mut().insert(ready.request.into_admin()?);
-                let response = router
+                let mut response = router
                     .oneshot(request)
                     .await
                     .unwrap_or_else(|never| match never {});
-                let authority = match response.extensions().get::<Arc<PhysicalAdminExecution>>() {
-                    Some(owner) if Arc::ptr_eq(owner.binding(), &binding) => {
+                let refused = response.extensions_mut().remove::<PhysicalRefusalCarrier>();
+                let authority = match (
+                    response.extensions().get::<Arc<PhysicalAdminExecution>>(),
+                    refused,
+                ) {
+                    (Some(owner), None) if Arc::ptr_eq(owner.binding(), &binding) => {
                         ResponseAuthority::Admin(owner.clone())
                     }
-                    Some(_) => return Err(InputError::Invalid),
+                    (None, Some(carrier)) => {
+                        let owner = carrier.take()?;
+                        if !Arc::ptr_eq(owner.binding(), &binding) {
+                            return Err(InputError::Invalid);
+                        }
+                        ResponseAuthority::Refused(owner)
+                    }
+                    (Some(_), _) => return Err(InputError::Invalid),
                     // A raw request binding is not output authority. A denied walk needs its
                     // own consumed physical refusal owner before it can register a response.
-                    None => {
+                    (None, None) => {
                         return Err(InputError::Delivery(
                             busbar_contract::response_delivery::ResponseStop::Integrity,
                         ))

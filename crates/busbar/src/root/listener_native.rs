@@ -34,7 +34,7 @@ mod response;
 #[path = "listener_native_serve.rs"]
 mod serving;
 pub(crate) use delivery::RegisteredDelivery;
-pub(crate) use serving::serve_admitted;
+pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
 pub(crate) type SelectNativeSlot = Arc<
     dyn Fn(&busbar_kernel::state::App, &str) -> Option<Arc<super::min3_physical::NativeSlot>>

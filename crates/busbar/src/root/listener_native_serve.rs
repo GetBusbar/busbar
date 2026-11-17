@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use busbar_core_connector::framed_stream::session::{self, Inbound, Wiring};
 use busbar_core_connector::listen::{Admits, Admitted};
+use busbar_kernel::inbound::native::StreamOwner;
 use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -15,6 +16,17 @@ use tokio::task::JoinSet;
 use super::{InputError, NativeListener, OpenedConnection, ReadyInput, LIVE_RESPONSES};
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
+
+/// Observation of this original carrier's completed driver and retired actual writer.
+/// Only the supervisor below constructs this; a dropped waiter or stream number cannot.
+pub(crate) struct NativeCarrierRetired {
+    owner: Arc<StreamOwner>,
+}
+impl NativeCarrierRetired {
+    pub(crate) fn owner(&self) -> &Arc<StreamOwner> {
+        &self.owner
+    }
+}
 
 pub(crate) async fn serve_admitted(
     mut admits: impl Admits,
@@ -243,6 +255,9 @@ async fn supervise(
                     failure.get_or_insert(InputError::Invalid);
                 }
                 outcome.retire();
+                for slot in &ingress.slots {
+                    node.native_carrier_retired(NativeCarrierRetired { owner: slot.owner.clone() });
+                }
             },
             prepared = preparing.join_next(), if !preparing.is_empty() => {
                 match prepared {
@@ -254,7 +269,12 @@ async fn supervise(
                     },
                     Some(Ok((owner, Err(error)))) => {
                         ingress.connection.cancel(&owner);
-                        if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
+                        // Before driver retirement keep this original slot available for the
+                        // actual writer-retired observation, including failed registration.
+                        if driver_done {
+                            node.native_carrier_retired(NativeCarrierRetired { owner: owner.clone() });
+                            if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
+                        }
                         failure.get_or_insert(error);
                         input_open = false;
                         stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
