@@ -36,14 +36,18 @@ fn host() -> Host {
 #[test]
 fn the_native_store_fixture_opens_through_both_images() {
     use busbar_contract::persistence::DatasetId;
-    use busbar_plugin_loader::test_host::{admit_bytes, cdylib_bytes, test_manifest};
+    use busbar_plugin_loader::test_host::{admit_bytes, cdylib_bytes, test_manifest, test_sign};
     use busbar_plugin_test::fake_needs::FakeNeeds;
     use busbar_plugin_test::store::{StoreCase, StoreHarness};
 
     let linked = StoreHarness::admit(native_store::PLUGIN.plugin(), FakeNeeds::new())
         .unwrap_or_else(|r| panic!("linked: {r:?}"));
     let bytes = cdylib_bytes("native_store_fixture");
-    let manifest = test_manifest(&bytes, &[]).unwrap_or_else(|r| panic!("cdylib stamp: {r:?}"));
+    // A native manifest names its alias among the header's former_names (as `busbar pack` completes it).
+    let mut manifest =
+        test_manifest(&bytes, &["native-store"]).unwrap_or_else(|r| panic!("cdylib stamp: {r:?}"));
+    manifest.alias = "native-store".into();
+    let manifest = test_sign(manifest, &bytes);
     let admitted = admit_bytes(&bytes, &manifest, "native-store-fixture")
         .unwrap_or_else(|r| panic!("cdylib admission: {r:?}"));
     let dropped = StoreHarness::admit_admitted(admitted, FakeNeeds::new())

@@ -181,22 +181,22 @@ fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> json:
     json::parse_value(&output.stdout).expect("actual principal CLI report is JSON")
 }
 
-/// A writer admitted in this process on the fixture's actual durable Store: the Store opened
-/// through its native door with the exact settings boot uses, and `Startup` advanced to
-/// `Admitted`. On a new namespace it owns the unpublished first start. Dropping it without
-/// [`busbar_kernel::persistence::first_start::FirstStart::abandon`] is a crash for that owner:
-/// nothing retires its writer row.
+/// A writer admitted in this process on the fixture's actual durable Store: the native Store image
+/// opened through `Registry::open_store` (the loader's test `NativeStores`) with the exact settings
+/// boot uses, and `Startup` advanced to `Admitted`. On a new namespace it owns the unpublished first
+/// start. Dropping it without [`busbar_kernel::persistence::first_start::FirstStart::abandon`] is a
+/// crash for that owner: nothing retires its writer row.
 pub struct Owner {
-    pub axis: busbar_plugin_loader::store_v4::DoorPersistenceAxis,
+    pub stores: busbar_plugin_loader::test_host::NativeStores,
     pub startup: busbar_kernel::persistence::startup::Startup,
     pub store: Arc<busbar_kernel::persistence::facade::CoreStore>,
 }
 
-/// Open the namespace `stage` created, through the same signed actual Store image, and admit a
-/// writer on it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its
-/// own transaction inside the call, so once this returns the owner holds no Store lock.
+/// Open the namespace `stage` created, through the same actual Store image, and admit a writer on
+/// it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its own
+/// transaction inside the call, so once this returns the owner holds no Store lock.
 pub async fn admit_in_process(directory: &Path) -> Owner {
-    use busbar_contract::persistence::axis::{PersistenceAxis as _, StoreDoor};
+    use busbar_plugin_loader::test_host::{admit_bytes, test_sign, NativeStores, TEST_PUBLISHER};
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let provenance = json::parse_value(&creation).unwrap();
     let library = PathBuf::from(
@@ -206,43 +206,36 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
     );
     let image = std::fs::read(&library).expect("the same actual Store image reads");
     assert_eq!(provenance["library_sha256"], super::plugins::sha256(&image));
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .expect("actual Store statement reads")
-        .expect("actual Store states its door");
-    let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
-        busbar_plugin_loader::dispatch::DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {
-        dispatcher,
-        logs: busbar_plugin_loader::dispatch::PluginLogConfig::from_words(
-            None,
-            None,
-            &Default::default(),
-            None,
-            None,
-        )
-        .expect("ordinary Store log defaults"),
-        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-        limits: busbar_plugin_loader::store_v4::Limits {
-            descriptor_bytes: 32 * 1024 * 1024,
-            output_items: 4096,
-            output_bytes: 32 * 1024 * 1024,
-            decode_bytes: 32 * 1024 * 1024,
-        },
+    // The native image (store-sqlite opens with no NEED: it calls only host services).
+    let manifest = test_sign(
+        super::plugins::native_manifest("store", &library, TEST_PUBLISHER),
+        &image,
+    );
+    let identity = manifest.name.clone();
+    let admitted =
+        admit_bytes(&image, &manifest, &identity).expect("the actual Store image is admitted");
+    let binder: Arc<dyn busbar_ports::binder::ConfigBinder> =
+        Arc::new(busbar_kernel::plugin_config::Binder::new(
+            Arc::new(busbar_contract::secret_ref::Sugars::default()),
+            Vec::new(),
+        ));
+    let stores = NativeStores::new(admitted, binder).expect("one registry over the Store image");
+    let config =
+        serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap();
+    let spec = busbar_plugin_loader::instance::InstanceSpec {
+        purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
+        identity: &identity,
+        name: "fixture-in-process-writer",
+        config_json: &config,
+        limits: Default::default(),
+        public_url: None,
+        caller_upstreams: &[],
     };
-    let backend = axis
-        .open(
-            StoreDoor::Dropped {
-                file: library.display().to_string(),
-                bytes: Arc::new(image),
-                stated: statement,
-            },
-            "fixture-in-process-writer",
-            &serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap(),
-        )
+    let backend = stores
+        .open(&spec, Arc::new(|| Box::new(busbar_kernel::seal::lend())))
         .await
-        .expect("the actual durable Store opens through its native door");
+        .expect("the actual durable Store opens natively")
+        .backend;
     assert_ne!(
         backend.info().durability,
         busbar_contract::persistence::Durability::Ephemeral
@@ -272,7 +265,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
     }
     let store = startup.store().expect("admitted in-process Store");
     Owner {
-        axis,
+        stores,
         startup,
         store,
     }
@@ -298,7 +291,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<json::Value, St
     );
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let witness = super::plugins::sha256(&creation).into_bytes();
-    let axis = tokio::runtime::Builder::new_current_thread()
+    let stores = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("the isolated witness writer runtime")
@@ -331,11 +324,11 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<json::Value, St
                     "the witness writer hands its first start over"
                 );
             }
-            // The Store and its writer close inside the runtime; the door axis outlives it.
-            let Owner { axis, .. } = writer;
-            axis
+            // The Store and its writer close inside the runtime; its registry outlives it.
+            let Owner { stores, .. } = writer;
+            stores
         });
-    drop(axis);
+    drop(stores);
     let receipt = json::json!({
         "version": 2,
         "witness_binding": {"instance": "busbar.fixture.principal-creation", "private": true,

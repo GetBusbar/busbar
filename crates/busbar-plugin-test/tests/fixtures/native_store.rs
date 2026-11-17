@@ -83,4 +83,4 @@ impl Store for Fixture {
     }
 }
 
-busbar_plugin_abi::plugin!(Store, Fixture, name: "native-store-fixture");
+busbar_plugin_abi::plugin!(Store, Fixture, former_names: "native-store", name: "native-store-fixture");

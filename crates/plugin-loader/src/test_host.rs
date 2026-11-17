@@ -1444,3 +1444,63 @@ impl EnvelopeSink for Tee {
         self.1.dropped(why);
     }
 }
+
+/// Native stores for tests outside a booted root (the dist fixtures): one registry over one admitted store image,
+/// opening each instance with no Needs and no reference sources. Enough for a store whose `open` makes no NEED and
+/// binds no reference (a local file store such as store-sqlite: it calls only host services). The registry
+/// outlives every handle it opened.
+pub struct NativeStores {
+    registry: crate::instance::Registry,
+}
+
+impl NativeStores {
+    /// One registry over `admitted`, binding through `binder` (the kernel's `plugin_config::Binder`).
+    ///
+    /// # Errors
+    /// The process resources or the image's admission refusal.
+    pub fn new(
+        admitted: crate::admit::Admitted,
+        binder: Arc<dyn busbar_ports::binder::ConfigBinder>,
+    ) -> Result<Self, crate::refusal::Refusal> {
+        static PROCESS: std::sync::OnceLock<Result<crate::process::ProcessResources, String>> =
+            std::sync::OnceLock::new();
+        let process = PROCESS
+            .get_or_init(crate::process::ProcessResources::new)
+            .as_ref()
+            .map_err(|error| {
+                crate::refusal::Refusal::new(
+                    crate::refusal::RefusalCode::Integrity,
+                    "process",
+                    error.clone(),
+                    "process resources",
+                )
+            })?;
+        let mut images = crate::instance::ImagesBuilder::new(
+            &busbar_plugin_abi::host_side::host_vt::HOST,
+            Arc::clone(process.slots()),
+            crate::instance::Ceilings::DEFAULT,
+        );
+        images.admit(admitted)?;
+        Ok(Self {
+            registry: crate::instance::Registry::new(
+                images.finish(),
+                binder,
+                Arc::clone(process.ids()),
+            ),
+        })
+    }
+
+    /// `Registry::open_store` for `spec` under `seal`, with every NEED denied and no reference source.
+    ///
+    /// # Errors
+    /// The open's refusal.
+    pub async fn open(
+        &self,
+        spec: &crate::instance::InstanceSpec<'_>,
+        seal: crate::instance::StoreSeal,
+    ) -> Result<busbar_ports::store::StoreHandle, crate::instance::OpenError> {
+        let needs = Arc::new(crate::chains::DeniedNeeds);
+        let refs: Arc<dyn busbar_ports::binder::RefSource> = Arc::new(crate::chains::DeniedRefs);
+        self.registry.open_store(spec, &needs, &refs, seal).await
+    }
+}
