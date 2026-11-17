@@ -276,3 +276,46 @@ async fn idempotent_replay_every_mutation() {
     s.finish();
     println!("{WITNESS}");
 }
+
+#[tokio::test]
+async fn idempotency_binding_keeps_query_and_body_boundaries() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("idempotent-request-framing", false).await;
+    let body = json::json!({"name": "user:framed", "config": {"parent": "team"}}).to_string();
+    let first = s
+        .send(reqwest::Method::POST, "/groups?marker=")
+        .header("idempotency-key", "framed-request")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success(), "{}", first.status());
+    let first_status = first.status();
+    let first_body = first.bytes().await.unwrap();
+
+    // Both requests concatenate to the same method/path/query/body bytes without framing.
+    let different = s
+        .send(reqwest::Method::POST, "/groups?marker")
+        .header("idempotency-key", "framed-request")
+        .body(format!("={body}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(different.status().as_u16(), 409);
+    assert!(different.headers().get("idempotent-replayed").is_none());
+    let refusal = json::parse_value(&different.bytes().await.unwrap()).unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
+
+    let replay = s
+        .send(reqwest::Method::POST, "/groups?marker=")
+        .header("idempotency-key", "framed-request")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), first_status);
+    assert_eq!(replay.headers()["idempotent-replayed"], "true");
+    assert_eq!(replay.bytes().await.unwrap(), first_body);
+    s.finish();
+    println!("{WITNESS}");
+}
