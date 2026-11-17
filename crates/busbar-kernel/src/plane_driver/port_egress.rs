@@ -91,7 +91,7 @@ pub type Targets = Arc<dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync>
 #[derive(Clone)]
 pub struct SessionFacts {
     pub unit: busbar_contract::UnitKey,
-    pub pending: Option<crate::host_services::InvocationContext>,
+    pub pending: Option<Arc<super::port_admission::Pending>>,
 }
 
 /// The production seam of `PortDriver::serve`: runs one session's walk. `run` gets the members and the carrier of
@@ -109,6 +109,7 @@ struct Shared<'a, F: FarEnd> {
     make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
     far: OnceCell<F>,
     request_walk: Option<RequestWalk>,
+    pending: Option<Arc<super::port_admission::Pending>>,
     admitted: OnceCell<AdmittedRequest>,
     selected: RefCell<Option<(Candidate, u32, Box<str>)>>,
     token: &'a Pass<Route>,
@@ -183,6 +184,7 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
                 make,
                 far: OnceCell::new(),
                 request_walk: None,
+                pending: None,
                 admitted: OnceCell::new(),
                 selected: RefCell::new(None),
                 token,
@@ -199,9 +201,10 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
 
     pub(crate) fn pending(
         mut self,
-        context: &crate::host_services::InvocationContext,
+        pending: Arc<super::port_admission::Pending>,
     ) -> Result<Self, super::request_admission::AdmissionError> {
-        self.shared.request_walk = Some(RequestWalk::new(context)?);
+        self.shared.request_walk = Some(RequestWalk::new(pending.context())?);
+        self.shared.pending = Some(pending);
         Ok(self)
     }
 
@@ -825,14 +828,14 @@ impl PortUpstream for PortEgress {
                 route.authorization = facts
                     .pending
                     .as_ref()
-                    .map(|context| Arc::clone(context.generation().core().units()));
+                    .map(|pending| Arc::clone(pending.context().generation().core().units()));
             }
             self.egress.unit(route)
         };
         let targets = &*self.targets;
         let mut walk = EgressWalk::new(&make, &token, &self.handle, targets);
-        if let Some(context) = &facts.pending {
-            let Ok(pending) = walk.pending(context) else {
+        if let Some(pending) = &facts.pending {
+            let Ok(pending) = walk.pending(Arc::clone(pending)) else {
                 return;
             };
             walk = pending;

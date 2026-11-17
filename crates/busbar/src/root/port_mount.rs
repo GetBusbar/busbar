@@ -595,35 +595,45 @@ async fn answer(
             let classes = seat.driver.usage_classes();
             let route_id = route.route;
             let retry_after = Arc::clone(&retry_after);
-            Some(Arc::new(Pending::new(
-                allocation,
-                Arc::clone(&seat.request_routes),
-                unit.journal.clone(),
-                move |receipt| {
-                    use busbar_kernel::refusal::RefusalMap;
-                    let unavailable = || {
-                        busbar_kernel::refusal::CoreRefusals::new()
-                            .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
-                    };
-                    let receipt = receipt.begin().map_err(|_| unavailable())?;
-                    let request = billing
-                        .admit_existing(
-                            receipt,
-                            classes,
-                            busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(Arc::from([])),
-                            busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
-                        )
-                        .map_err(|error| match error {
-                            NativeAdmissionError::Blocked(blocked) => {
-                                let (refusal, wait) = blocked_client(&blocked);
-                                *retry_after.lock().unwrap_or_else(PoisonError::into_inner) = wait;
-                                refusal
-                            }
-                            _ => unavailable(),
-                        })?;
-                    Ok(AdmittedUnit { request, unit })
-                },
-            )))
+            Some(Arc::new(
+                Pending::new(
+                    allocation,
+                    Arc::clone(&seat.request_routes),
+                    unit.journal.clone(),
+                    move |receipt| {
+                        use busbar_kernel::refusal::RefusalMap;
+                        let unavailable = || {
+                            busbar_kernel::refusal::CoreRefusals::new()
+                                .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                        };
+                        let receipt = receipt.begin().map_err(|_| unavailable())?;
+                        let request = billing
+                            .admit_existing(
+                                receipt,
+                                classes,
+                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(
+                                    Arc::from([]),
+                                ),
+                                busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                            )
+                            .map_err(|error| match error {
+                                NativeAdmissionError::Blocked(blocked) => {
+                                    let (refusal, wait) = blocked_client(&blocked);
+                                    *retry_after.lock().unwrap_or_else(PoisonError::into_inner) =
+                                        wait;
+                                    refusal
+                                }
+                                _ => unavailable(),
+                            })?;
+                        Ok(AdmittedUnit {
+                            request,
+                            unit,
+                            selected: None,
+                        })
+                    },
+                )
+                .with_channel_budget(seat.channel_budget.unit()),
+            ))
         }
         (None, None, _) => None,
         _ => return failed(StatusCode::SERVICE_UNAVAILABLE),
