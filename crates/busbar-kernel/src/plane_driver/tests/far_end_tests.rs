@@ -4366,3 +4366,114 @@ async fn native_selected_send_seals_credentials_and_requires_secure_connector() 
         .probe_selected("p", "m0", DestinationId::new(1), Duration::from_secs(1))
         .is_some());
 }
+
+#[tokio::test]
+async fn native_missing_exact_row_and_passthrough_never_fall_back_to_shared_auth() {
+    use crate::auth_bindings::native::{NativeRouteBindings, SelectedCredential};
+    for passthrough in [false, true] {
+        let mut rig = rig(
+            &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        let selected_pool = if passthrough { "p" } else { "another-pool" };
+        rig.egress.pools.get_mut("p").unwrap().members[0].passthrough = passthrough;
+        rig.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .unwrap()
+            .auth = Some(AuthBinding::Native(
+            NativeRouteBindings::new([(
+                selected_pool.into(),
+                "m0".into(),
+                DestinationId::new(1),
+                SelectedCredential::None,
+            )])
+            .unwrap(),
+        ));
+        let token = token();
+        let far = rig.egress.unit(route());
+        let _ = far.member(&token, 1).await;
+        assert!(!far.send(&token, request()).await);
+        assert!(rig.table.opened.lock().unwrap().is_empty());
+        assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn native_retry_mints_for_the_actual_second_destination() {
+    use crate::auth_bindings::native::{
+        NativeBinding, NativeBindingSpec, NativeRouteBindings, SelectedCredential, SelectedRouteKey,
+    };
+    use crate::auth_bindings::native_tests::NativePort;
+    use crate::custody::{CredCache, CredPolicy};
+    let mut rig = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"down"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    rig.table.secured.store(true, Ordering::SeqCst);
+    let ports = [
+        Arc::new(NativePort::default()),
+        Arc::new(NativePort::default()),
+    ];
+    let cache = Arc::new(CredCache::new(
+        CredPolicy::DEFAULT,
+        |_, _| crate::retry::Retry::Stop,
+        |_, _| {},
+    ));
+    for (index, port) in ports.iter().enumerate() {
+        let destination = DestinationId::new(index as u64 + 1);
+        let name = format!("m{index}");
+        let binding = Arc::new(
+            NativeBinding::new(
+                NativeBindingSpec {
+                    key: SelectedRouteKey {
+                        plane: "plane".into(),
+                        pool: "p".into(),
+                        member: name.clone().into(),
+                    },
+                    destination,
+                    upstream: "provider".into(),
+                    auth_instance: 21,
+                    credential_namespace: index as u64 + 1,
+                    style_flags: 0,
+                    mode: busbar_contract::config::UpstreamCreds::Own,
+                    cache_max_s: None,
+                },
+                port.clone(),
+                Arc::clone(&cache),
+            )
+            .unwrap(),
+        );
+        rig.egress.routes.get_mut(&destination).unwrap().auth = Some(AuthBinding::Native(
+            NativeRouteBindings::new([(
+                "p".into(),
+                name.into(),
+                destination,
+                SelectedCredential::Required(binding),
+            )])
+            .unwrap(),
+        ));
+    }
+    let token = token();
+    let far = rig.egress.unit(route());
+    for attempt in 1..=2 {
+        assert!(matches!(
+            far.member(&token, attempt).await,
+            Pick::Member { .. }
+        ));
+        assert!(far.send(&token, request()).await);
+        let _ = drain(&far, &token).await;
+    }
+    for port in ports {
+        assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    }
+    let opened = rig.table.opened.lock().unwrap();
+    assert!(opened[0].0.contains("a.test"));
+    assert!(opened[1].0.contains("b.test"));
+    assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
+}
