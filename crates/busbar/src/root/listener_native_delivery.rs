@@ -12,7 +12,7 @@ use busbar_core_connector::framed_stream::session::{Feed, Payload, Piece, Regist
 use busbar_core_connector::response_delivery::{DeliveryInput, DeliveryWatch, ResponseHandles};
 use busbar_kernel::auth::native_data::NativeDataPending;
 use busbar_kernel::inbound::native::{
-    PhysicalAdminExecution, PhysicalPublicExecution, RequestBinding, StreamOwner,
+    PhysicalAdminExecution, PhysicalPublicExecution, PhysicalRefusal, RequestBinding, StreamOwner,
 };
 use busbar_kernel::plane_driver::request_admission::AdmittedRequest;
 use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD, E_TRAILERS};
@@ -31,6 +31,7 @@ pub(super) enum ResponseAuthority {
     Data(Arc<NativeDataPending>),
     Admin(Arc<PhysicalAdminExecution>),
     Public(Arc<PhysicalPublicExecution>),
+    Refused(PhysicalRefusal),
 }
 impl ResponseAuthority {
     fn binding(&self) -> &Arc<RequestBinding> {
@@ -38,6 +39,7 @@ impl ResponseAuthority {
             Self::Data(owner) => owner.binding(),
             Self::Admin(owner) => owner.binding(),
             Self::Public(owner) => owner.binding(),
+            Self::Refused(owner) => owner.binding(),
         }
     }
     fn admission(&self) -> Result<Option<AdmittedRequest>, InputError> {
@@ -46,7 +48,7 @@ impl ResponseAuthority {
                 .execution()
                 .map(|execution| Some(execution.money().clone()))
                 .ok_or(InputError::Delivery(ResponseStop::Integrity)),
-            Self::Admin(_) | Self::Public(_) => Ok(None),
+            Self::Admin(_) | Self::Public(_) | Self::Refused(_) => Ok(None),
         }
     }
 }
@@ -127,11 +129,12 @@ impl RegisteredResponse {
             return Err(InputError::Delivery(ResponseStop::Integrity));
         }
         let admission = authority.admission()?;
+        let unit = match &authority {
+            ResponseAuthority::Refused(owner) => owner.unit(),
+            _ => admission.as_ref().map(AdmittedRequest::unit),
+        };
         let key = connection
-            .key(
-                binding.stream(),
-                admission.as_ref().map(AdmittedRequest::unit),
-            )
+            .key(binding.stream(), unit)
             .map_err(InputError::FinalIntent)?;
         let (ack, admitted) = oneshot::channel();
         let mut admitted = RegistrationAck { receiver: admitted };
