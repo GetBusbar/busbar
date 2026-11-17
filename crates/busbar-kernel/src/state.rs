@@ -81,6 +81,9 @@ pub struct App {
     pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
+    /// The root listener settings this generation serves in the clear under their explicit acceptance
+    /// (#359 SEC-L1), named in the `node.boot` posture as `plaintext_listener`.
+    pub plaintext_listeners: Vec<&'static str>,
     pub(crate) boot_restart_root: Option<Arc<crate::config::restart::Root>>,
     pub(crate) boot_restart_source: Option<Arc<crate::config::restart::Source>>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
@@ -830,6 +833,7 @@ impl App {
             grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
+            plaintext_listeners: Vec::new(),
             boot_restart_root: None,
             boot_restart_source: None,
             plane_refresh: activation::PlaneRefreshReport::default(),

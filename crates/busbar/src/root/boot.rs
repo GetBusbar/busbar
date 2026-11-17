@@ -2147,13 +2147,14 @@ impl BookPreparation {
         );
         // ADMIN-API-1.6 17: the node announces itself in the audit feed, naming the explicit open
         // posture (`auth: { chain: [] }`) it booted in (#358).
-        let posture: &[&str] = if app.auth.is_open() {
-            &["open_relay"]
-        } else {
-            &[]
-        };
+        let mut posture: Vec<&str> = Vec::new();
+        if app.auth.is_open() {
+            posture.push("open_relay");
+        }
+        // #359 SEC-L1: each root listener served in the clear under its acceptance, once per setting.
+        posture.extend(app.plaintext_listeners.iter().map(|_| "plaintext_listener"));
         busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(
-            posture,
+            &posture,
         ));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
