@@ -183,6 +183,9 @@ impl RequestDeclaration {
     pub fn declaration(&self) -> Declaration<'_> {
         self.declaration.declaration()
     }
+    pub fn classes(&self) -> &[UsageClass] {
+        &self.declaration.classes
+    }
     pub(crate) fn accepts(&self, prepared: &PreparedExchange) -> bool {
         Arc::ptr_eq(&self.declaration, &prepared.declaration)
     }
