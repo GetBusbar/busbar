@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Physical arrival custody for the native listener. None of these pending values grants
-//! authenticated execution: final data/admin completion owns that separate transition.
+//! Physical request custody for the native listener. Arrival alone grants no execution;
+//! final data transitions consume the actual authorization and allocation proofs.
 
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Instant;
@@ -15,7 +15,9 @@ use busbar_ports::transport::TransportPort;
 use foldhash::HashMap;
 use tokio_util::sync::CancellationToken;
 
+use super::request_snapshot::{ChargedRequestSnapshot, SnapshotError, SnapshotInput};
 use super::Head;
+use crate::auth::native_data::{DataAuthorization, DataExecutionAdmission};
 use crate::guest::{Claimant, GuestList, Line, Matched};
 use crate::limits::process_admission::{AdmissionClass, ByteCredit, RequestLease};
 use crate::plane_driver::port_routes::Mounted;
@@ -337,6 +339,7 @@ impl PhysicalConnection {
             state: state.clone(),
             stream,
             body: OnceLock::new(),
+            snapshot: Mutex::new(None),
         });
         Ok((
             PhysicalRequest {
@@ -387,6 +390,8 @@ fn head_size(head: &Head) -> Option<usize> {
 enum Phase {
     Pending,
     Completing,
+    Admitted,
+    Executing,
     Cancelled,
 }
 struct StreamState {
@@ -450,6 +455,7 @@ pub struct RequestBinding {
     state: Arc<StreamState>,
     stream: u64,
     body: OnceLock<PhysicalBody>,
+    snapshot: Mutex<Option<Arc<ChargedRequestSnapshot>>>,
 }
 
 struct PhysicalBody {
@@ -492,6 +498,36 @@ impl RequestBinding {
     pub fn body(&self) -> Option<&[u8]> {
         self.body.get().map(|body| body.bytes.as_slice())
     }
+    /// Capture the original physical facts once. Shared budget lineage alone cannot attest
+    /// a caller's fields, so no external snapshot can be attached to this binding.
+    pub fn snapshot(&self) -> Result<Arc<ChargedRequestSnapshot>, SnapshotError> {
+        let body = self.body().ok_or(SnapshotError::Invalid)?;
+        let mut saved = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(snapshot) = saved.as_ref() {
+            return Ok(snapshot.clone());
+        }
+        let snapshot = ChargedRequestSnapshot::capture(
+            SnapshotInput {
+                method: &self.head.method,
+                path: &self.head.target,
+                query: self.head.query.as_deref().unwrap_or_default(),
+                query_present: self.head.query.is_some(),
+                authority: &self.head.authority,
+                headers: self
+                    .head
+                    .fields
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_slice())),
+                peer: &self.facts.peer,
+                tls_peer_cert: self.facts.peer_certificate.as_slice(),
+                body,
+                now_s: crate::store::now(),
+            },
+            &self.request,
+        )?;
+        *saved = Some(snapshot.clone());
+        Ok(snapshot)
+    }
     pub async fn cancelled(&self) {
         self.state.cancelled.cancelled().await;
     }
@@ -503,6 +539,21 @@ impl RequestBinding {
             .unwrap_or_else(PoisonError::into_inner)
             == Phase::Cancelled
         {
+            return Err(ArrivalRefusal::Cancelled);
+        }
+        if self.deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(ArrivalRefusal::Deadline);
+        }
+        Ok(())
+    }
+    /// The effect gate requires the final physical execution transition, not mere liveness.
+    pub fn check_executing(&self) -> Result<(), ArrivalRefusal> {
+        let phase = self
+            .state
+            .phase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *phase != Phase::Executing {
             return Err(ArrivalRefusal::Cancelled);
         }
         if self.deadline.is_some_and(|at| Instant::now() >= at) {
@@ -598,12 +649,96 @@ impl CompletingPhysicalRequest {
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
+
+    /// Join the real final data policy result to this exact physical arrival once.
+    pub fn complete(
+        mut self,
+        authorization: DataAuthorization,
+    ) -> Result<AuthorizedPhysicalData, ArrivalRefusal> {
+        if !Arc::ptr_eq(&self.binding, authorization.binding()) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Admitted;
+        }
+        self.cancel_on_drop = false;
+        Ok(AuthorizedPhysicalData {
+            authorization,
+            physical: PhysicalExecutionOwner {
+                binding: self.binding.clone(),
+            },
+        })
+    }
 }
 impl Drop for CompletingPhysicalRequest {
     fn drop(&mut self) {
         if self.cancel_on_drop {
             self.binding.state.cancel();
         }
+    }
+}
+
+/// Move-only handoff to native allocation. Neither component is publicly constructible.
+pub struct AuthorizedPhysicalData {
+    authorization: DataAuthorization,
+    physical: PhysicalExecutionOwner,
+}
+impl AuthorizedPhysicalData {
+    pub(crate) fn into_parts(self) -> (DataAuthorization, PhysicalExecutionOwner) {
+        (self.authorization, self.physical)
+    }
+}
+
+/// Retained by final native data execution through its effects. Dropping the owner closes
+/// the same state read by the effect gate, even if other code retains input projections.
+pub struct PhysicalExecutionOwner {
+    binding: Arc<RequestBinding>,
+}
+impl PhysicalExecutionOwner {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+
+    /// Start once with the exact final allocation/money proof. Reset and this transition
+    /// arbitrate under one lock; a reset that wins cannot be followed by execution.
+    pub fn start_execution(
+        &self,
+        admission: &DataExecutionAdmission,
+    ) -> Result<(), ArrivalRefusal> {
+        if !Arc::ptr_eq(&self.binding, admission.binding()) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        let mut phase = self
+            .binding
+            .state
+            .phase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *phase != Phase::Admitted {
+            return Err(ArrivalRefusal::Cancelled);
+        }
+        if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(ArrivalRefusal::Deadline);
+        }
+        *phase = Phase::Executing;
+        Ok(())
+    }
+}
+impl Drop for PhysicalExecutionOwner {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
     }
 }
 
