@@ -302,6 +302,7 @@ pub(crate) fn delivery_ledger(source: &StorageSource) -> Result<DeliveryLedger, 
 struct InputSlot {
     stream: u64,
     deadline: Option<Instant>,
+    body_started: tokio::time::Instant,
     pending: Option<PhysicalRequest>,
     body: Option<InputBody>,
     // The same owner also accompanies completion. A reset can still reach it after input EOS.
@@ -309,6 +310,13 @@ struct InputSlot {
     node: Option<crate::root::plane_node::NativeNodeHandle>,
     carrier_reported: bool,
     held: Option<serving::HeldRequest>,
+}
+impl InputSlot {
+    fn body_bounds_exceeded(&self) -> bool {
+        let elapsed = u64::try_from(self.body_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let bytes = self.body.as_ref().map_or(0, |body| body.bytes.len() as u64);
+        crate::root::listener::check_body_bounds(0, elapsed, bytes).is_some()
+    }
 }
 
 pub(crate) struct ReadyInput {
@@ -371,6 +379,11 @@ impl NativeIngress {
                 end_stream,
                 head,
             } => {
+                let body_started = tokio::time::Instant::now();
+                let total_deadline = Instant::now()
+                    .checked_add(crate::root::listener::total_body_deadline())
+                    .ok_or(InputError::Capacity)?;
+                let deadline = Some(deadline.map_or(total_deadline, |at| at.min(total_deadline)));
                 // Host stream identities are monotone and never recycled, including refused heads.
                 if stream <= self.last_head {
                     return Err(InputError::Invalid);
@@ -396,6 +409,7 @@ impl NativeIngress {
                 self.slots.push(InputSlot {
                     stream,
                     deadline,
+                    body_started,
                     pending: Some(pending),
                     body: Some(body),
                     owner: Arc::new(owner),
@@ -435,6 +449,14 @@ impl NativeIngress {
                     bytes.as_slice(),
                     limit,
                 )?;
+                if slot.body_bounds_exceeded() {
+                    self.connection.cancel(&slot.owner);
+                    slot.pending.take();
+                    slot.body.take();
+                    return Err(InputError::Delivery(
+                        busbar_contract::response_delivery::ResponseStop::Deadline,
+                    ));
+                }
                 Ok(None)
             }
             Inbound::End(stream) => self.end(stream).map(Some),
@@ -461,6 +483,14 @@ impl NativeIngress {
             .iter_mut()
             .find(|slot| slot.stream == stream)
             .ok_or(InputError::Invalid)?;
+        if slot.body_bounds_exceeded() {
+            self.connection.cancel(&slot.owner);
+            slot.pending.take();
+            slot.body.take();
+            return Err(InputError::Delivery(
+                busbar_contract::response_delivery::ResponseStop::Deadline,
+            ));
+        }
         let pending = slot.pending.take().ok_or(InputError::Invalid)?;
         let InputBody { bytes, credit } = slot.body.take().ok_or(InputError::Invalid)?;
         let request = pending.finish_input(bytes, credit)?.begin_completion()?;
