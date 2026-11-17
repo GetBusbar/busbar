@@ -92,3 +92,48 @@ async fn native_stage_never_replaces_an_installed_original_or_foreign_book() {
     assert!(foreign_slot.is_none());
     assert_eq!(other.journal.pending_records(), 0);
 }
+
+#[tokio::test]
+async fn native_stage_retries_same_frozen_facts_after_journal_budget_is_released() {
+    let fixture = NativeFixture::new(7).await;
+    let journal = RuntimeJournal::open(
+        fixture.core.clone(),
+        7,
+        BufferBudget {
+            records: 1,
+            bytes: 64 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            7,
+            journal.clone(),
+            None,
+            BUDGET,
+        )
+        .await
+        .unwrap(),
+    ));
+    let frozen = FrozenNativeAudit::new(inputs(1), &book);
+    let occupied = journal
+        .stage_run(&[Entry::new(RecordClass::Load, vec![1])])
+        .unwrap();
+    let mut slot = None;
+    assert!(Durability::stage_native(&book, &frozen, &audit_pass(), &token(), &mut slot).is_err());
+    assert!(slot.is_none());
+    assert_eq!(book.lock().unwrap().record.next_seq(), 1);
+    journal.confirm(&occupied).await.unwrap();
+    Durability::stage_native(&book, &frozen, &audit_pass(), &token(), &mut slot).unwrap();
+    let staged = slot.as_ref().unwrap();
+    staged.confirm_journal().await.unwrap();
+    assert_eq!(staged.line().chain_seq, 1);
+    assert_eq!(staged.line().node_seq, 2);
+    let held = book.lock().unwrap();
+    let record = held.audit_records().last().unwrap();
+    assert_eq!(record.subject, frozen.inputs.subject);
+    assert_eq!(record.what, frozen.inputs.what);
+    assert_eq!(record.usage, frozen.inputs.usage);
+}
