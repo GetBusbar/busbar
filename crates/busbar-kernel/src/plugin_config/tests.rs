@@ -283,7 +283,20 @@ fn a_trust_path_holds_pem_or_refuses() {
 }
 
 #[test]
-fn unix_paths_are_the_operator_written_paths_only() {
+fn unix_paths_are_frozen_check_targets_only() {
+    use busbar_plugin_abi::need::{egress, need_flag, op};
+    use busbar_ports::binder::NetworkEndpoint;
+    let endpoint = |path: &str| {
+        NetworkEndpoint::new(
+            op::OPEN,
+            need_flag::TLS_NONE | (egress::OPERATOR_INFRASTRUCTURE << 16),
+            &format!("unix:{path}"),
+        )
+        .expect("absolute socket path")
+    };
+    let allowed = |b: &Binder, instance: u64, path: &str| {
+        b.admit_network(instance, &endpoint(path)).is_some()
+    };
     let b = binder("unused");
     let cfg = json!({
         "url": "mysql://u@localhost/db?socket=%2Frun%2Fmysqld%2Fmysqld.sock",
@@ -292,22 +305,34 @@ fn unix_paths_are_the_operator_written_paths_only() {
         "web": "https://example.com/path",
     });
     b.bind(1, &bytes(&cfg), &[], &[], &[], &[]).expect("binds");
-    assert!(b.unix_path(1, "/run/mysqld/mysqld.sock"));
-    assert!(b.unix_path(1, "/var/run/valkey.sock"));
-    assert!(b.unix_path(1, "/srv/data.db"));
     assert!(
-        !b.unix_path(1, "/path"),
+        !allowed(&b, 1, "/run/mysqld/mysqld.sock"),
+        "raw strings never grant reach"
+    );
+    b.freeze_network(
+        1,
+        &[
+            endpoint("/run/mysqld/mysqld.sock"),
+            endpoint("/var/run/valkey.sock"),
+            endpoint("/srv/data.db"),
+        ],
+    )
+    .expect("config-only CHECK endpoints");
+    assert!(allowed(&b, 1, "/run/mysqld/mysqld.sock"));
+    assert!(allowed(&b, 1, "/var/run/valkey.sock"));
+    assert!(allowed(&b, 1, "/srv/data.db"));
+    assert!(
+        !allowed(&b, 1, "/path"),
         "a URI with an authority yields no path"
     );
-    assert!(!b.unix_path(1, "/var/run/docker.sock"));
-    assert!(!b.unix_path(2, "/srv/data.db"), "unknown instance");
+    assert!(!allowed(&b, 1, "/var/run/docker.sock"));
+    assert!(!allowed(&b, 2, "/srv/data.db"), "unknown instance");
 
-    let mut many = busbar_contract::json::Map::new();
-    for i in 0..17 {
-        many.insert(&format!("p{i}"), Value::from(format!("/sock/{i}").as_str()));
-    }
+    b.bind(2, b"{}", &[], &[], &[], &[])
+        .expect("second candidate");
+    let many: Vec<_> = (0..17).map(|i| endpoint(&format!("/sock/{i}"))).collect();
     assert!(matches!(
-        b.bind(1, &bytes(&Value::from(many)), &[], &[], &[], &[]),
+        b.freeze_network(2, &many),
         Err(BindError::TooMany)
     ));
 }

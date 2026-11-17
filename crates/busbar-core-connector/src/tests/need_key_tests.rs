@@ -10,6 +10,8 @@ use super::*;
 fn key(dest: &str) -> NeedKey {
     NeedKey {
         instance: busbar_contract::conn::InstanceId(1),
+        registration: 1,
+        lease: busbar_ports::binder::NetworkLease::new(1),
         dest: dest.into(),
         sni: dest.into(),
         alpn: "".into(),
@@ -114,6 +116,41 @@ fn a_waived_conn_never_serves_a_verified_open() {
     assert!(pool.take(&waived).is_none());
 }
 
+#[test]
+fn final_network_retirement_evicts_idle_and_refuses_late_returns() {
+    let pool = NeedPool::new(2);
+    let owner = key("db.internal:443");
+    pool.put(
+        owner.clone(),
+        Pooled {
+            id: 1,
+            conn: 7_u8,
+            alpn: "".into(),
+        },
+    )
+    .unwrap();
+    let in_flight = owner.clone();
+    owner.lease.retire();
+    pool.retire(owner.instance);
+    assert_eq!(pool.idle(), 0);
+    assert!(pool.take(&owner).is_none());
+    assert!(pool
+        .put(
+            in_flight,
+            Pooled {
+                id: 2,
+                conn: 8,
+                alpn: "".into()
+            }
+        )
+        .is_err());
+    assert_eq!(
+        pool.idle(),
+        0,
+        "no late return recreates a retired pool entry"
+    );
+}
+
 /// The pooled-conn id travels with the conn, and the per-key cap hands the extra one back.
 #[test]
 fn the_cap_returns_the_extra_conn_and_ids_ride_along() {
@@ -161,6 +198,8 @@ fn pooled_sessions_never_cross_instance_boundaries() {
 fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
     let NeedKey {
         instance,
+        registration,
+        lease,
         dest,
         sni,
         alpn,
@@ -172,6 +211,8 @@ fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
     } = key("a.test:443");
     let _: (
         busbar_contract::conn::InstanceId,
+        u32,
+        busbar_ports::binder::NetworkLease,
         Box<str>,
         Box<str>,
         Box<str>,
@@ -180,7 +221,19 @@ fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
         [u8; 32],
         [u8; 32],
         bool,
-    ) = (instance, dest, sni, alpn, class, tls, trust, cert, waived);
+    ) = (
+        instance,
+        registration,
+        lease,
+        dest,
+        sni,
+        alpn,
+        class,
+        tls,
+        trust,
+        cert,
+        waived,
+    );
 
     let key_rs = include_str!("../need/key.rs");
     let start = key_rs

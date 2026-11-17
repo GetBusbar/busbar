@@ -168,9 +168,17 @@ pub struct Registered<T: Source> {
 /// `io.register`: put the non-blocking `io` on the calling worker's reactor.
 pub fn register<T: Source>(io: T) -> io::Result<Registered<T>> {
     let _entered = enter_process_runtime();
-    if tokio::runtime::Handle::try_current().is_err() {
-        return Err(io::Error::other(NOT_ON_A_WORKER));
-    }
+    let runtime =
+        tokio::runtime::Handle::try_current().map_err(|_| io::Error::other(NOT_ON_A_WORKER))?;
+    register_on(&runtime, io)
+}
+
+/// Register on the supplied runtime without consulting the process or ambient reactor.
+pub fn register_on<T: Source>(
+    runtime: &tokio::runtime::Handle,
+    io: T,
+) -> io::Result<Registered<T>> {
+    let _entered = runtime.enter();
     Ok(Registered {
         registration: private::Source::registration(io)?,
         socket: PhantomData,

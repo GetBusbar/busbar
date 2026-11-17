@@ -101,6 +101,8 @@ pub(crate) struct Entry {
 /// Why a dial has no client TLS configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustRefusal {
+    /// The native Need supplied malformed identity material or requested identity under a waiver.
+    InvalidNeed,
     /// `roots: none` and nothing else applies to this destination (BUSBAR-3140).
     NoAnchors(String),
     /// Every anchor of the matching entries was withdrawn because it expired (BUSBAR-5048).
@@ -112,6 +114,7 @@ pub enum TrustRefusal {
 impl std::fmt::Display for TrustRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidNeed => f.write_str("invalid native TLS identity request"),
             Self::NoAnchors(host) => write!(
                 f,
                 "{}: no trust anchor applies to `{host}`: advanced.tls.roots is `none` and neither \
@@ -196,6 +199,22 @@ pub fn process_env(name: &str) -> Option<String> {
 }
 
 impl TrustStore {
+    /// Current trust-withdrawal epoch for native connection/config reuse fences.
+    #[must_use]
+    pub fn withdrawal_epoch(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether operator policy supplies a client identity to this logical destination.
+    #[must_use]
+    pub fn has_client_identity(&self, host: &str) -> bool {
+        dialled(host).is_some_and(|host| {
+            self.entries.iter().any(|entry| {
+                !entry.plaintext && entry.matcher.matches(&host) && entry.identity.is_some()
+            })
+        })
+    }
+
     /// Whether the deployment wrote nothing: dials use the connector's bundled-roots config, so
     /// every byte on the wire is what it was before the store existed.
     #[must_use]

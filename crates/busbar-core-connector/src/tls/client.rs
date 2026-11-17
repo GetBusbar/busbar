@@ -43,7 +43,7 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 /// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
 /// not checked; built through the crypto backend, which may refuse it.
 pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tls::TlsError> {
-    let verifier = Arc::new(AcceptsAnyCertificate(crypto_tls::signature_algorithms()));
+    let verifier = unverified_verifier();
     crypto_tls::client_config(|builder| {
         crate::off_path::tls::select_client_output(
             builder
@@ -52,6 +52,10 @@ pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tl
                 .with_no_client_auth(),
         )
     })
+}
+
+pub(crate) fn unverified_verifier() -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
+    Arc::new(AcceptsAnyCertificate(crypto_tls::signature_algorithms()))
 }
 
 /// A verifier that accepts any certificate and checks only the handshake's signature with it.
@@ -99,7 +103,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
 /// is still a refusal.
 #[derive(Debug)]
 pub(crate) struct PinnedKeyVerifier {
-    pub(crate) inner: Arc<rustls::client::WebPkiServerVerifier>,
+    pub(crate) inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
     /// The pinned SPKI digests, looked up by the handshake's digest.
     pub(crate) pins: foldhash::HashSet<[u8; 32]>,
 }

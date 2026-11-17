@@ -11,6 +11,8 @@ fn held(conn: u8) -> Held<u8> {
         conn,
         key: NeedKey {
             instance: busbar_contract::conn::InstanceId(1),
+            registration: 1,
+            lease: busbar_ports::binder::NetworkLease::new(1),
             dest: "db:5432".into(),
             sni: "".into(),
             alpn: "".into(),

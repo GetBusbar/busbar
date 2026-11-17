@@ -8,7 +8,7 @@
 //! `unix:` path; the transport gate (`policy`, with the caller's core-held `Accept`) before the pool
 //! lookup and before any DNS; the instance's unix-path binding check; the pool probe on a
 //! [`key::NeedKey`] built from the owning instance, normalised dest,
-//! `guard::judged_class(stated, configured)`, the effective SNI, the ALPN, the trust and
+//! frozen CHECK registration/class authority, the effective SNI, the ALPN, the trust and
 //! certificate digests and the `verify` bit; and only on a miss the judge (`judge`: name, DNS,
 //! answer, the node's own ports), then the dial. Every refusal is `NeedErr::Denied` with no text
 //! (I2), audited here with the full reason.
@@ -20,7 +20,6 @@
 //! `Accept` waives it.
 
 use std::future::Future;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,7 +36,8 @@ use busbar_plugin_abi::need::need_flag::{TLS_INBAND, TLS_MUTUAL, TLS_NONE, TLS_R
 use busbar_plugin_abi::need::open_flag;
 use busbar_plugin_abi::records::commit as commit_code;
 
-use crate::guard::{judged_class, Resolve, SystemResolver};
+use crate::guard::Resolve;
+use busbar_ports::binder::{NetworkEndpoint, NetworkPermit};
 
 pub mod certs;
 pub mod commit;
@@ -45,13 +45,15 @@ pub mod exchange;
 pub mod judge;
 pub mod key;
 pub mod net;
+pub mod network;
+pub mod observations;
 pub mod policy;
 pub mod table;
 pub mod tlsconf;
 pub mod unix;
 
 use certs::{custody_err, CertDigests};
-use judge::{split_dest, split_url, Judge};
+use judge::{split_dest, Judge};
 use key::{NeedKey, NeedPool, Pooled, Tls};
 pub use net::ConnectorIo;
 use policy::{admit_fetch, admit_open, Admit, Reported};
@@ -127,8 +129,12 @@ pub struct TlsPlan<'a> {
 
 /// One dial.
 pub struct Dial<'a> {
-    /// The addresses the judge admitted, in answer order (empty for a unix socket).
-    pub addrs: &'a [SocketAddr],
+    /// The exact owning runtime generation, retained for TLS observation attribution.
+    pub instance: u64,
+    /// Original admitted logical destination; independent of resolved addresses and TLS SNI.
+    pub dest: &'a str,
+    /// The route admitted for this logical destination.
+    pub route: judge::Route,
     /// The unix socket path (rules (1) to (3) and (5) held), when the dest is one.
     pub unix: Option<&'a str>,
     /// TLS from the first byte; `None` for plaintext and for TLS_INBAND's plaintext phase.
@@ -150,6 +156,8 @@ pub struct Dialled<C> {
 
 /// A FETCH, decided and judged by the handler; the transport only carries it.
 pub struct FetchReq<'a> {
+    /// The exact owning runtime generation.
+    pub instance: u64,
     /// The request.
     pub need: FetchNeed<'a>,
     /// The judged class.
@@ -172,8 +180,12 @@ pub struct FetchReq<'a> {
 /// judged again), so a client that pools its own connections still judges every dial it makes.
 pub trait Admission: Send + Sync {
     /// Judge a dial of `host:port` and return the addresses to connect to.
-    fn dial<'a>(&'a self, host: &'a str, port: u16)
-        -> BoxFut<'a, Result<Vec<SocketAddr>, NeedErr>>;
+    fn dial<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        secured: bool,
+    ) -> BoxFut<'a, Result<judge::Route, NeedErr>>;
 }
 
 /// The seam under the handlers: sockets, TLS and the HTTP client. Everything a Need decides is
@@ -181,6 +193,12 @@ pub trait Admission: Send + Sync {
 pub trait NeedIo: Send + Sync + 'static {
     /// A live conn.
     type Conn: Send + 'static;
+    /// Bound DNS and the full connection plan using this I/O owner's timer service.
+    fn timeout<F: Future + Send>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> impl Future<Output = Result<F::Output, NeedErr>> + Send;
     /// Connect (and, for `Dial::tls`, handshake), within `timeout`.
     fn dial(
         &self,
@@ -222,8 +240,7 @@ pub trait NeedIo: Send + Sync + 'static {
 /// The one-judge-per-dial adapter handed to [`NeedIo::fetch`].
 struct Dialer<'a, R: Resolve> {
     judge: &'a Judge<R>,
-    class: u32,
-    owner: (u64, u32),
+    checked: &'a NetworkPermit,
 }
 
 impl<R: Resolve> Admission for Dialer<'_, R> {
@@ -231,8 +248,37 @@ impl<R: Resolve> Admission for Dialer<'_, R> {
         &'a self,
         host: &'a str,
         port: u16,
-    ) -> BoxFut<'a, Result<Vec<SocketAddr>, NeedErr>> {
-        Box::pin(self.judge.dial(host, port, self.class, self.owner))
+        secured: bool,
+    ) -> BoxFut<'a, Result<judge::Route, NeedErr>> {
+        Box::pin(async move {
+            if !self.checked.lease.live() {
+                return Err(NeedErr::Denied);
+            }
+            let authority = if host.contains(':') {
+                format!("[{host}]:{port}")
+            } else {
+                format!("{host}:{port}")
+            };
+            let actual = NetworkEndpoint::from_intent(
+                busbar_plugin_abi::need::op::FETCH,
+                self.checked.endpoint.flags,
+                &format!("{}://{authority}", if secured { "https" } else { "http" }),
+            )
+            .ok_or(NeedErr::Denied)?;
+            if actual != self.checked.endpoint {
+                return Err(NeedErr::Denied);
+            }
+            self.judge
+                .plan(
+                    host,
+                    port,
+                    self.checked.class(),
+                    self.checked.private_reach(),
+                    secured,
+                    (self.checked.instance, self.checked.registration),
+                )
+                .await
+        })
     }
 }
 
@@ -307,7 +353,7 @@ fn parts<'a>(tls: &TlsMode<'a>) -> Parts<'a> {
 
 /// The Need handlers. `C` custody, `R` records, `D` the kernel directory, `I` the I/O seam (the
 /// connector's own sockets, TLS and HTTP in production), `Z` the resolver (the system's).
-pub struct HostNeeds<C, R, D, I = ConnectorIo, Z = SystemResolver>
+pub struct HostNeeds<C, R, D, I = ConnectorIo, Z = network::SharedResolver>
 where
     C: SecretCustody,
     R: PluginRecords,
@@ -328,43 +374,10 @@ where
     certs: CertDigests,
     reported: Reported,
     admitted: policy::Admitted,
-    configured: Option<ConfiguredFn>,
 }
-
-/// A test of whether a destination is one the operator configured.
-type ConfiguredFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Idle conns kept per key.
 const POOL_PER_KEY: usize = 8;
-
-impl<C, R, D> HostNeeds<C, R, D>
-where
-    C: SecretCustody,
-    R: PluginRecords,
-    D: PluginDirectory,
-{
-    /// The production handlers, as the kernel boot builds them: the connector's own sockets, rustls
-    /// and hyper ([`ConnectorIo`]) under `guard` (the node's own ports published into it, IF 12.1)
-    /// and the system resolver.
-    pub fn production(
-        guard: crate::guard::Guard,
-        custody: C,
-        records: R,
-        directory: D,
-        binder: Arc<dyn ConfigBinder>,
-        limits: NeedLimits,
-    ) -> Self {
-        Self::new(
-            ConnectorIo::new(),
-            Judge::new(guard, SystemResolver),
-            custody,
-            records,
-            directory,
-            binder,
-            limits,
-        )
-    }
-}
 
 impl<C, R, D, I, Z> HostNeeds<C, R, D, I, Z>
 where
@@ -398,20 +411,36 @@ where
             certs: CertDigests::default(),
             reported: Reported::default(),
             admitted: policy::Admitted::default(),
-            configured: None,
         }
     }
 
     /// The instance is unbound: drop what core keeps for it.
     pub fn unbind(&self, instance: u64) {
+        self.pool
+            .retire(busbar_contract::conn::InstanceId(instance));
         self.ids.forget(instance);
         self.certs.forget(instance);
         self.reported.forget(instance);
         self.admitted.forget(instance);
     }
 
-    fn is_configured(&self, dest: &str) -> bool {
-        self.configured.as_ref().is_some_and(|f| f(dest))
+    fn network(
+        &self,
+        cx: &Caller<'_>,
+        op: u32,
+        tls: u32,
+        class: u32,
+        dest: &str,
+    ) -> Result<NetworkPermit, NeedErr> {
+        if class > busbar_plugin_abi::need::egress::LOOPBACK_ALLOWED {
+            return Err(NeedErr::Denied);
+        }
+        let endpoint =
+            NetworkEndpoint::from_intent(op, tls | (class << 16), dest).ok_or(NeedErr::Denied)?;
+        self.binder
+            .admit_network(cx.instance, &endpoint)
+            .filter(|permit| permit.lease.live())
+            .ok_or(NeedErr::Denied)
     }
 
     /// The time one step may take: `cap`, the instance's own limit when set, and what is left of
@@ -495,6 +524,9 @@ where
 
     /// Register `held` for the chain; the conn is dropped (closed) when the chain may not hold it.
     fn hold(&self, cx: &Caller<'_>, held: Held<I::Conn>) -> Result<ConnId, NeedErr> {
+        if !held.key.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         self.table
             .insert(cx.instance, cx.chain, held)
             .map_err(|(e, _closed)| e)
@@ -509,6 +541,9 @@ where
     I: NeedIo,
     Z: Resolve + 'static,
 {
+    fn retire(&self, instance: u64) {
+        self.unbind(instance);
+    }
     async fn open(
         &self,
         cx: &Caller<'_>,
@@ -519,9 +554,17 @@ where
             return Err(NeedErr::Invalid);
         }
         let p = parts(&n.tls);
+        let checked = self.network(
+            cx,
+            busbar_plugin_abi::need::op::OPEN,
+            p.bits,
+            n.egress,
+            n.dest,
+        )?;
+        let class = checked.class();
         // Unix rules (1) to (3), before anything is looked up.
         let unix = if names_unix(n.dest) {
-            let path = unix_rules(n.dest, &n.tls, n.egress);
+            let path = unix_rules(n.dest, &n.tls, class);
             if path == Err(NeedErr::Denied) {
                 self.audit_refused(cx, n.dest, n.egress, "unix-class");
             }
@@ -539,17 +582,22 @@ where
         };
         self.admitted
             .count(cx.kind.word(), cx.instance, cx.name, admit);
-        let dest = normalise(n.dest)?;
-        let class = judged_class(n.egress, self.is_configured(&dest));
-        if let Some(path) = unix {
-            if !self.binder.unix_path(cx.instance, path) {
-                self.audit_refused(cx, n.dest, class, "unix-path");
-                return Err(NeedErr::Denied);
-            }
-        }
+        let dest = normalise(&checked.endpoint.dest)?;
+        let deadline = Instant::now()
+            + self.budget(
+                cx,
+                dial_policy(class).connect_timeout,
+                cx.limits.connect_timeout_ms,
+            )?;
         let inband = p.bits == TLS_INBAND;
         let (trust, trust_digest) = self.trust(cx, class, p.trust)?;
-        let (_, cert_digest) = self.cert(cx, p.cert, false).await?;
+        let (_, cert_digest) = self
+            .io
+            .timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.cert(cx, p.cert, false),
+            )
+            .await??;
         let sni = if p.bits == TLS_NONE {
             "".into()
         } else {
@@ -565,6 +613,8 @@ where
         };
         let key = NeedKey {
             instance: busbar_contract::conn::InstanceId(cx.instance),
+            registration: checked.registration,
+            lease: checked.lease.clone(),
             dest: dest.clone(),
             sni: sni.clone(),
             alpn: p.alpn.into(),
@@ -592,36 +642,68 @@ where
             let id = self.hold(cx, held)?;
             return self.answer(res, id, flags, &hit.alpn, hit.id);
         }
-        // A miss: judge, then dial.
-        let (addrs, path) = match unix {
-            Some(path) => (Vec::new(), Some(path)),
-            None => {
-                let (host, port) = split_dest(&dest)?;
-                (
-                    self.judge.dial(host, port, class, (cx.instance, 0)).await?,
-                    None,
-                )
-            }
-        };
+        // One connection deadline begins before resolution and covers proxy and TLS.
         let policy = dial_policy(class);
-        let timeout = self.budget(cx, policy.connect_timeout, cx.limits.connect_timeout_ms)?;
-        let (cert, _) = self.cert(cx, p.cert, true).await?;
-        let plan = (p.bits != TLS_NONE && !inband).then(|| TlsPlan {
-            sni: &sni,
-            alpn: p.alpn,
-            trust: trust.clone(),
-            cert: cert.clone(),
-            waive: waived,
-        });
+        let timeout = self
+            .budget(cx, policy.connect_timeout, cx.limits.connect_timeout_ms)?
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if timeout.is_zero() {
+            return Err(NeedErr::Timeout);
+        }
         let dialled = self
             .io
-            .dial(Dial {
-                addrs: &addrs,
-                unix: path,
-                tls: plan,
-                timeout,
+            .timeout(timeout, async {
+                if !checked.lease.live() {
+                    return Err(NeedErr::Denied);
+                }
+                let (route, path) = match unix {
+                    Some(path) => (
+                        judge::Route {
+                            addrs: Vec::new(),
+                            tunnel: None,
+                        },
+                        Some(path),
+                    ),
+                    None => {
+                        let (host, port) = split_dest(&dest)?;
+                        (
+                            self.judge
+                                .plan(
+                                    host,
+                                    port,
+                                    class,
+                                    checked.private_reach(),
+                                    p.bits != TLS_NONE,
+                                    (checked.instance, checked.registration),
+                                )
+                                .await?,
+                            None,
+                        )
+                    }
+                };
+                let (cert, _) = self.cert(cx, p.cert, true).await?;
+                if !checked.lease.live() {
+                    return Err(NeedErr::Denied);
+                }
+                let plan = (p.bits != TLS_NONE && !inband).then(|| TlsPlan {
+                    sni: &sni,
+                    alpn: p.alpn,
+                    trust: trust.clone(),
+                    cert: cert.clone(),
+                    waive: waived,
+                });
+                self.io
+                    .dial(Dial {
+                        instance: checked.instance,
+                        dest: &dest,
+                        route,
+                        unix: path,
+                        tls: plan,
+                        timeout,
+                    })
+                    .await
             })
-            .await?;
+            .await??;
         let pooled = self.ids.mint(cx.instance);
         let mut dial_key = key;
         dial_key.tls = match p.bits {
@@ -652,6 +734,9 @@ where
         res: &mut NeedOut<'_>,
     ) -> Result<(), NeedErr> {
         let mut held = self.table.take(cx.instance, cx.chain, c)?;
+        if !held.key.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         // A unix conn, a conn that is not waiting for its upgrade and a non-TLS mode are Invalid.
         if names_unix(&held.key.dest) || !held.inband_pending {
             return self.keep_invalid(cx, c, held);
@@ -722,6 +807,9 @@ where
         res: &mut NeedOut<'_>,
     ) -> Result<(), NeedErr> {
         let mut held = self.table.take(cx.instance, cx.chain, c)?;
+        if !held.key.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         let t = self.budget(
             cx,
             dial_policy(held.key.class).io_timeout,
@@ -742,6 +830,9 @@ where
         res: &mut NeedOut<'_>,
     ) -> Result<(), NeedErr> {
         let mut held = self.table.take(cx.instance, cx.chain, c)?;
+        if !held.key.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         let t = self.budget(
             cx,
             dial_policy(held.key.class).io_timeout,
@@ -798,14 +889,39 @@ where
         };
         self.admitted
             .count(cx.kind.word(), cx.instance, cx.name, admit);
-        let (host, port) = split_url(n.url)?;
-        let dest = normalise(&format!("{host}:{port}"))?;
-        let class = judged_class(n.egress, self.is_configured(&dest));
+        let tls = if busbar_contract::net::scheme_is(n.url, "https") {
+            if n.cert.is_some_and(|c| c != 0) {
+                TLS_MUTUAL
+            } else {
+                TLS_REQUIRED
+            }
+        } else {
+            if n.cert.is_some_and(|c| c != 0) {
+                return Err(NeedErr::Denied);
+            }
+            TLS_NONE
+        };
+        let checked = self.network(cx, busbar_plugin_abi::need::op::FETCH, tls, n.egress, n.url)?;
+        let class = checked.class();
+        let deadline = Instant::now()
+            + self.budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?;
         let (trust, _) = self.trust(cx, class, n.trust)?;
         let cert_handle = n.cert.filter(|c| *c != 0);
-        let (cert, _) = self.cert(cx, cert_handle, true).await?;
-        let timeout = self.budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?;
+        let (cert, _) = self
+            .io
+            .timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.cert(cx, cert_handle, true),
+            )
+            .await??;
+        let timeout = self
+            .budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if timeout.is_zero() {
+            return Err(NeedErr::Timeout);
+        }
         let req = FetchReq {
+            instance: checked.instance,
             need: n,
             class,
             waive: admit == Admit::Waived,
@@ -822,9 +938,11 @@ where
         };
         let dialer = Dialer {
             judge: &self.judge,
-            class,
-            owner: (cx.instance, 0),
+            checked: &checked,
         };
+        if !checked.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         self.io.fetch(req, &dialer, res).await
     }
 
@@ -949,6 +1067,9 @@ where
     /// Put a conn back after an operation; the conn is closed when its chain was released while it
     /// was out.
     fn put_back(&self, cx: &Caller<'_>, c: ConnId, held: Held<I::Conn>) -> Result<(), NeedErr> {
+        if !held.key.lease.live() {
+            return Err(NeedErr::Denied);
+        }
         self.table
             .restore(cx.instance, cx.chain, c, held)
             .map_err(|_closed| NeedErr::Closed)

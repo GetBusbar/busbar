@@ -40,3 +40,7 @@ mod off_path;
 // the conn table. Core-side only; no plugin text crosses it.
 pub mod need;
 pub mod response_delivery;
+
+#[cfg(test)]
+#[path = "tests/native_need_authority_tests.rs"]
+mod native_need_authority_tests;

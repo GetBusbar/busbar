@@ -5,6 +5,7 @@
 //! names it; `busbar_kernel::plugin_config` re-exports it and W1-K7 implements `ConfigBinder` there. `Bindings`
 //! stays in the kernel. Every path and signature is the §12.7 text; only the home moved.
 
+pub use crate::network::{NetworkEndpoint, NetworkLease, NetworkPermit};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::BoxFut;
@@ -26,6 +27,8 @@ pub struct TrustAnchor {
 }
 #[derive(Debug)]
 pub enum BindError {
+    /// A missing, repeated or contradictory frozen network candidate; no destination is echoed.
+    BadNetwork,
     NotAReference {
         pointer: Box<str>,
     },
@@ -63,6 +66,18 @@ pub trait RefSource: Send + Sync + 'static {
 }
 
 pub trait ConfigBinder: Send + Sync + 'static {
+    /// Freeze the checked same-config candidate before live open. May be called only once.
+    fn freeze_network(
+        &self,
+        _instance: u64,
+        _endpoints: &[NetworkEndpoint],
+    ) -> Result<(), BindError> {
+        Err(BindError::BadNetwork)
+    }
+    /// Exact instance/operation/transport admission, before any credential, pool or network use.
+    fn admit_network(&self, _instance: u64, _endpoint: &NetworkEndpoint) -> Option<NetworkPermit> {
+        None
+    }
     /// Walk `config` (the operator's JSON for this instance). At every node matched by a D_SECRET_PATH
     /// pointer: parse it with busbar-contract's SecretRef parser in the admitted-source context with the
     /// installed `Sugars` (secret_ref.rs `context`: SourceReference, a declared shorthand `{<word>: X}` expanded to
@@ -141,10 +156,6 @@ pub trait ConfigBinder: Send + Sync + 'static {
     fn secret(&self, instance: u64, handle: u32) -> Option<busbar_contract::secret_ref::SecretRef>;
     /// The connector's lookup for OPEN/STARTTLS/FETCH `trust`.
     fn trust(&self, instance: u64, handle: u32) -> Option<std::sync::Arc<TrustAnchor>>;
-    /// Round 24, the connector's check for a `unix:` OPEN on a pool miss (§12.1 rule (5)): whether `path` equals
-    /// one of the ≤ 16 `unix_paths` `bind` computed from the instance's operator config (more: `TooMany`).
-    /// False for an unknown instance. No allocation; a linear byte compare.
-    fn unix_path(&self, instance: u64, path: &str) -> bool;
     /// Round 7: the export pump's lookup for APPEND `dest` (§12.21).
     fn dest(&self, instance: u64, handle: u32) -> Option<std::sync::Arc<DestDef>>;
 }
