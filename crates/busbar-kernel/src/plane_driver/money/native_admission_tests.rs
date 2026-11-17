@@ -101,11 +101,14 @@ async fn occupied_native_install_preserves_existing_open_and_refunds_new_admissi
     money
         .install_native_pending(UnitKey::new(1), first, |_, _, _| Ok(()))
         .unwrap();
-    let original = money.shard(UnitKey::new(1))[&UnitKey::new(1)].identity.clone();
+    let original = money.shard(UnitKey::new(1))[&UnitKey::new(1)]
+        .identity
+        .clone();
     let second = pending(&gov, &unit);
-    let result = money.install_native_pending(UnitKey::new(1), second, |_, _, _| {
-        panic!("occupied insertion must not activate another receipt")
-    });
+    let result: Result<(), NativeAdmissionError> =
+        money.install_native_pending(UnitKey::new(1), second, |_, _, _| {
+            panic!("occupied insertion must not activate another receipt")
+        });
     assert!(matches!(result, Err(NativeAdmissionError::Occupied)));
     assert!(Arc::ptr_eq(
         &original,
@@ -122,11 +125,10 @@ async fn occupied_native_install_preserves_existing_open_and_refunds_new_admissi
 async fn failed_phase_activation_removes_only_the_new_open_and_rolls_back_once() {
     let (gov, money, unit) = fixture().await;
     let pending = pending(&gov, &unit);
-    let result: Result<(), NativeAdmissionError> = money.install_native_pending(
-        UnitKey::new(1),
-        pending,
-        |_, _, _| Err(NativeAdmissionError::NotLive),
-    );
+    let result: Result<(), NativeAdmissionError> =
+        money.install_native_pending(UnitKey::new(1), pending, |_, _, _| {
+            Err(NativeAdmissionError::NotLive)
+        });
     assert!(matches!(result, Err(NativeAdmissionError::NotLive)));
     assert_eq!(money.open_units(), 0);
     assert_eq!(totals(&gov, &unit).await, (0, 0));
