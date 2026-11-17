@@ -235,12 +235,12 @@ fn fixture() -> Fixture {
     }
 }
 pub(crate) fn accepted() -> AcceptedConnection {
-    AcceptedConnection {
-        peer: "192.0.2.1".into(),
-        local: "192.0.2.2".into(),
-        alpn: "h2".into(),
-        peer_certificate: SecureVec::new(),
-    }
+    accepted_with_certificate(&[])
+}
+fn accepted_with_certificate(certificate: &[u8]) -> AcceptedConnection {
+    let source = crate::limits::process_admission::ProcessAdmission::new(1)
+        .connection_storage(AdmissionClass::Data);
+    AcceptedConnection::capture(&source, "192.0.2.1", "192.0.2.2", "h2", certificate).unwrap()
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn native_physical_head_captures_actual_snapshot_route_and_budget() {
     assert!(Arc::ptr_eq(binding.prepared(), &f.prepared));
     assert_eq!(binding.head().target, "/one");
     assert_eq!(binding.route().line().route.path, "/one");
-    assert_eq!(binding.connection().peer.as_ref(), "192.0.2.1");
+    assert_eq!(binding.connection().peer(), "192.0.2.1");
     assert_eq!(binding.request().class(), AdmissionClass::Data);
     assert_eq!(f.budget.used(), (8, 8));
 }
@@ -526,8 +526,7 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
 fn native_physical_snapshot_captures_original_fields_once() {
     let mut f = fixture();
     f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
-    let mut facts = accepted();
-    facts.peer_certificate = SecureVec::from(&b"certificate"[..]);
+    let facts = accepted_with_certificate(b"certificate");
     let conn = f.listener.connect(facts);
     let mut original = head("/one");
     original.query = Some(String::new());

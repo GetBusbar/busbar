@@ -11,6 +11,7 @@ use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Caller;
+use busbar_contract::storage::{StorageCredit, StorageDenied, StorageSource};
 use busbar_ports::transport::TransportPort;
 use foldhash::HashMap;
 use tokio_util::sync::CancellationToken;
@@ -270,10 +271,73 @@ impl PhysicalListener {
 
 /// Root-owned socket facts, frozen before the framer receives any application bytes.
 pub struct AcceptedConnection {
-    pub peer: Box<str>,
-    pub local: Box<str>,
-    pub alpn: Box<str>,
-    pub peer_certificate: SecureVec,
+    peer: Box<str>,
+    local: Box<str>,
+    alpn: Box<str>,
+    peer_certificate: SecureVec,
+    // Backing fields drop first. The same facts Arc may outlive both socket and connection task.
+    _credit: StorageCredit,
+}
+impl AcceptedConnection {
+    /// Capture actual accepted socket/security metadata against its original trusted account.
+    /// All separately allocated backing is reserved before any copy; no request is admitted here.
+    pub fn capture(
+        source: &StorageSource,
+        peer: &str,
+        local: &str,
+        alpn: &str,
+        peer_certificate: &[u8],
+    ) -> Result<Self, StorageDenied> {
+        let bytes = peer
+            .len()
+            .checked_add(local.len())
+            .and_then(|n| n.checked_add(alpn.len()))
+            .and_then(|n| n.checked_add(peer_certificate.len()))
+            .ok_or(StorageDenied)?;
+        let credit = source.try_reserve(bytes)?;
+        let peer = accepted_text(peer)?;
+        let local = accepted_text(local)?;
+        let alpn = accepted_text(alpn)?;
+        let mut certificate =
+            SecureVec::with_capacity(peer_certificate.len()).map_err(|_| StorageDenied)?;
+        if certificate.capacity() > peer_certificate.len() {
+            return Err(StorageDenied);
+        }
+        certificate
+            .extend(peer_certificate)
+            .map_err(|_| StorageDenied)?;
+        Ok(Self {
+            peer,
+            local,
+            alpn,
+            peer_certificate: certificate,
+            _credit: credit,
+        })
+    }
+    pub fn peer(&self) -> &str {
+        &self.peer
+    }
+    pub fn local(&self) -> &str {
+        &self.local
+    }
+    pub fn alpn(&self) -> &str {
+        &self.alpn
+    }
+    pub fn peer_certificate(&self) -> &[u8] {
+        self.peer_certificate.as_slice()
+    }
+}
+
+fn accepted_text(text: &str) -> Result<Box<str>, StorageDenied> {
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(text.len())
+        .map_err(|_| StorageDenied)?;
+    if owned.capacity() > text.len() {
+        return Err(StorageDenied);
+    }
+    owned.push_str(text);
+    Ok(owned.into_boxed_str())
 }
 
 type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
