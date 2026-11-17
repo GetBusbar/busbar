@@ -636,6 +636,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
 
     let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
+        // hook.child is in the frozen IF table but unserved (1.6.0 refuses hook child dispatch): its
+        // absent slot is the generic unserved answer.
+        let Some(f) = f else {
+            assert_eq!(service, op::HOOK_CHILD, "only hook.child is unserved");
+            continue;
+        };
         use busbar_contract::abi::mechanism::KindCode;
         let kind = match service {
             op::RECORDS_SECRET => KindCode::Auth,
@@ -665,7 +671,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         let mut o = blank();
         // SAFETY: the zeroed raw frame covers each selected input and every nonempty range
         // is the live buffer installed above; the slot rejects malformed metadata before use.
-        let ret = unsafe { f.unwrap()(d.ctx, raw.as_ptr().cast(), &mut o) };
+        let ret = unsafe { f(d.ctx, raw.as_ptr().cast(), &mut o) };
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
@@ -3724,6 +3730,18 @@ fn cached_callbacks_cannot_cross_kind_boundaries_including_exact_and_unticketed_
         let d = double_for(kind);
         let advertised = slots_of(host_slots(kind));
         for (service, callback) in slots_of(&HOST_SLOTS).into_iter().enumerate() {
+            let Some(callback) = callback else {
+                assert!(
+                    advertised[service].is_none(),
+                    "{kind:?}: hook.child is advertised to no kind"
+                );
+                assert_eq!(
+                    service as u32,
+                    op::HOOK_CHILD,
+                    "only hook.child is unserved"
+                );
+                continue;
+            };
             let policy = access::service(service as u32).unwrap();
             assert_eq!(
                 advertised[service].is_some(),
@@ -3743,7 +3761,7 @@ fn cached_callbacks_cannot_cross_kind_boundaries_including_exact_and_unticketed_
                     input.as_mut_ptr().cast::<ServiceHead>().write(header);
                 }
                 let mut out = blank();
-                let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+                let result = unsafe { callback(d.ctx, input.as_ptr().cast(), &mut out) };
                 assert_eq!(
                     result.outcome(),
                     Outcome::Refused,
@@ -3813,6 +3831,14 @@ fn cached_io_callbacks_refuse_nontransport_kinds_before_provider_lookup() {
     ] {
         let d = double_for(kind);
         for (operation, callback) in slots.into_iter().enumerate() {
+            let Some(callback) = callback else {
+                assert_eq!(
+                    operation as u32,
+                    op::HOOK_CHILD,
+                    "only hook.child is unserved"
+                );
+                continue;
+            };
             let mut input = [0u64; 64];
             let header = head(operation as u32, TICKET, 0, size_of_val(&input));
             // SAFETY: the initialized storage covers the advertised frame. No forbidden
@@ -3821,7 +3847,7 @@ fn cached_io_callbacks_refuse_nontransport_kinds_before_provider_lookup() {
                 input.as_mut_ptr().cast::<ServiceHead>().write(header);
             }
             let mut out = blank();
-            let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+            let result = unsafe { callback(d.ctx, input.as_ptr().cast(), &mut out) };
             assert_eq!(
                 result.outcome(),
                 Outcome::Refused,
@@ -4086,21 +4112,10 @@ fn outbound_prepare_accepts_sealed_body_once_and_rejects_invalid_action_fields()
 }
 
 #[test]
-fn hook_child_is_refused_to_every_caller() {
+fn hook_child_is_served_to_no_kind() {
     use busbar_contract::abi::mechanism::KindCode;
-    let d = double_for(KindCode::Hook);
-    let mut buf = [0; 32];
-    let input = svc::HookChildIn {
-        head: head(op::HOOK_CHILD, TICKET, 0, size_of::<svc::HookChildIn>()),
-        body: blob(b"bounded"),
-        into: bufs(&mut buf, &mut []),
-    };
-    let mut out = blank();
-    // SAFETY: initialized input and writable output/response buffers remain live here.
-    let result = unsafe {
-        HOST_SLOTS.hook_child.unwrap()(d.ctx, std::ptr::from_ref(&input).cast(), &mut out)
-    };
-    assert_eq!(result.outcome(), Outcome::Refused);
+    assert!(HOST_SLOTS.hook_child.is_none());
+    assert!(host_slots(KindCode::Hook).hook_child.is_none());
     assert!(host_slots(KindCode::Hook).unit_nest.is_none());
     assert!(host_slots(KindCode::Plane).hook_child.is_none());
 }
@@ -4126,6 +4141,14 @@ fn authenticated_route_rejects_cached_mutation_callbacks_including_exact_and_unt
             busbar_contract::abi::mechanism::lifecycle::slot::TICK,
         );
         for (service, callback) in slots_of(&HOST_SLOTS).into_iter().enumerate() {
+            let Some(callback) = callback else {
+                assert_eq!(
+                    service as u32,
+                    op::HOOK_CHILD,
+                    "only hook.child is unserved"
+                );
+                continue;
+            };
             let policy = access::service(service as u32).unwrap();
             if matches!(policy.name, "CLOCK_NOW" | "RECORDS_GET" | "RECORDS_LIST") {
                 continue;
@@ -4139,7 +4162,7 @@ fn authenticated_route_rejects_cached_mutation_callbacks_including_exact_and_unt
                     input.as_mut_ptr().cast::<ServiceHead>().write(header);
                 }
                 let mut out = blank();
-                let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+                let result = unsafe { callback(d.ctx, input.as_ptr().cast(), &mut out) };
                 assert_eq!(
                     result.outcome(),
                     Outcome::Refused,

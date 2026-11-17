@@ -813,9 +813,7 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             work_status: busbar_contract::abi::host::access::service(op::WORK_STATUS)
                 .filter(|p| p.admits(kind))
                 .map(|_| work_status as svc::ServiceFn),
-            hook_child: busbar_contract::abi::host::access::service(op::HOOK_CHILD)
-                .filter(|p| p.admits(kind))
-                .map(|_| hook_child as svc::ServiceFn),
+            hook_child: None,
             outbound_authorize: busbar_contract::abi::host::access::service(op::OUTBOUND_AUTHORIZE)
                 .filter(|p| p.admits(kind))
                 .map(|_| outbound_authorize as svc::ServiceFn),
@@ -887,7 +885,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     ticket_take: Some(ticket_take),
     work_status: Some(work_status),
     outbound_authorize: Some(outbound_authorize),
-    hook_child: Some(hook_child),
+    hook_child: None,
     directory_get: Some(directory_get),
     directory_lookup: Some(directory_lookup),
     directory_scan: Some(directory_scan),
@@ -2354,16 +2352,6 @@ service! {
                 provider.unit_nest(caller, unit, ask, later)
             })
         }
-    }
-}
-
-/// `hook.child`: hook child dispatch is not served in 1.6.0, so every caller the access table admits
-/// is REFUSED.
-pub const NO_HOOK_CHILD: &str = "hook child dispatch is not served";
-
-service! {
-    hook_child, slot, op::HOOK_CHILD, svc::HookChildIn, |_, _, _, _i| {
-        Answered::bare(Outcome::Refused, NO_HOOK_CHILD)
     }
 }
 
