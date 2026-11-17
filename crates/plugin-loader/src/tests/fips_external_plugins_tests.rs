@@ -50,6 +50,9 @@ fn stated(publisher: &str) -> Manifest {
 fn wide_open() -> TrustPolicy {
     TrustPolicy {
         first_party_key: Some(release().verifying_key()),
+        // Busbar's own release verifies through its sealed roots (#300/#357).
+        first_party_keys: crate::both_ways::first_party_roots(),
+        release_clock: Some(crate::release_trust::tests::NOW),
         binary_version: "1.6.0".into(),
         publishers: std::iter::once((
             "acme-allowlisted".to_string(),
@@ -146,15 +149,22 @@ fn a_fips_backend_refuses_every_drop_in_that_is_not_busbar_s_own_release() {
         );
         let skipped = registry.skipped();
         assert_eq!(skipped.len(), 1, "{case}: the refusal is a skip");
+        // AGREED l.474: invalid proof from a known publisher is verified before backend policy and
+        // refused as tampering, never hidden as the backend's policy refusal.
+        let expected = if case == "claims-busbar-without-its-key" {
+            "tampered"
+        } else {
+            "external_crypto"
+        };
         assert_eq!(
             skipped[0].kind.code(),
-            "external_crypto",
+            expected,
             "{case}: refused as the backend's refusal: {}",
             skipped[0].reason
         );
         let rows = busbar_contract::plugin_rows::PluginRows::skipped(&registry);
         assert_eq!(
-            rows[0].code, "external_crypto",
+            rows[0].code, expected,
             "{case}: the code the boot logger seals on the audit chain"
         );
         let refused = registry.secret_refusal(NAME);
@@ -168,7 +178,8 @@ fn a_fips_backend_refuses_every_drop_in_that_is_not_busbar_s_own_release() {
 #[test]
 fn a_fips_backend_admits_and_opens_busbar_s_own_signed_release() {
     let lib = image();
-    let m = sign(&release(), stated("busbar"), &lib);
+    // Busbar's own release is sealed (#300/#357); a bare first-party signature is refused.
+    let (m, _) = crate::both_ways::sealed_first_party(stated("busbar"), &lib);
     let registry = {
         let _fips = FipsBackend::link();
         scan("first-party", &m, &lib, &wide_open())

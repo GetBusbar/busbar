@@ -238,6 +238,11 @@ impl ServeTables {
         };
         let head = lent_head(req.headers(), req.extensions().get());
         let principal = req.extensions().get::<AuthPrincipal>().cloned();
+        // Only the admin gate inserts this, from its own admission verdict (condition B-C1).
+        let trust_authority = req
+            .extensions()
+            .get::<crate::host_services::TrustDecisionAuthority>()
+            .cloned();
         let body = match Bytes::from_request(req, &()).await {
             Ok(body) => body,
             Err(refused) => return Some(refused.into_response()),
@@ -247,15 +252,16 @@ impl ServeTables {
         let calls = &*table.calls;
         let at = index as u32;
         // `answer` is mounted behind core admin authorization. Public routes never
-        // enter here. Read-only verbs receive no trust mutation authority.
-        let authority = matches!(route.verb.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
-            .then(|| {
-                table
-                    .records
-                    .as_ref()
-                    .map(|(services, caller)| (services.as_ref(), caller, name))
-            })
-            .flatten();
+        // enter here. Read-only verbs receive no trust mutation authority, and neither does a
+        // request the admin gate granted no trust verb (r3 §4.2a).
+        let authority =
+            matches!(route.verb.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+                .then(|| {
+                    table.records.as_ref().zip(trust_authority).map(
+                        |((services, caller), granted)| (services.as_ref(), caller, name, granted),
+                    )
+                })
+                .flatten();
         let served = serve_authorized(
             calls,
             table.caps,
@@ -384,6 +390,9 @@ pub struct AdminServe<'a> {
     pub consumed: Option<&'a ConsumedCredentials>,
     /// The principal the gate admitted; `None` = the open admin posture.
     pub principal: Option<&'a AuthPrincipal>,
+    /// The trust decision authority the admin gate built from its admission verdict and the
+    /// caller's verb grant; `None` = the plane may not decide trust (r3 §4.2a, B-C1).
+    pub trust_authority: Option<&'a crate::host_services::TrustDecisionAuthority>,
 }
 
 impl ServeTables {
@@ -423,7 +432,8 @@ impl ServeTables {
         let target = target_of(req.path, req.query);
         let calls = &*table.calls;
         // This is the gated admin door's path. Lend the same live-ticket authority
-        // as `answer`; a plane's own request bytes cannot authorize a trust write.
+        // as `answer`; a plane's own request bytes cannot authorize a trust write, and without
+        // the admin gate's trust authority nothing is lent (r3 §4.2a).
         let authority = matches!(
             table.routes[index].verb.as_str(),
             "POST" | "PUT" | "PATCH" | "DELETE"
@@ -432,7 +442,8 @@ impl ServeTables {
             table
                 .records
                 .as_ref()
-                .map(|(services, caller)| (services.as_ref(), caller, name))
+                .zip(req.trust_authority.cloned())
+                .map(|((services, caller), granted)| (services.as_ref(), caller, name, granted))
         })
         .flatten();
         let served = serve_authorized(
@@ -616,6 +627,7 @@ async fn serve_authorized(
         &crate::host_services::KernelServices,
         &busbar_contract::services::Caller,
         &str,
+        crate::host_services::TrustDecisionAuthority,
     )>,
 ) -> Result<Served, Unserved> {
     if route as usize >= routes {
@@ -627,8 +639,8 @@ async fn serve_authorized(
         ticket,
         crossing: false,
     };
-    let _authority = authority.and_then(|(services, caller, counterparty)| {
-        services.grant_trust_decision(caller, ticket, counterparty)
+    let _authority = authority.and_then(|(services, caller, counterparty, granted)| {
+        services.grant_trust_decision(caller, ticket, counterparty, granted)
     });
     let keep = Arc::new(Mutex::new(Bufs {
         target: joined(target),

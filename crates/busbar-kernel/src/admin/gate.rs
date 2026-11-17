@@ -245,6 +245,36 @@ pub fn admin_envelope_body_with(
     )
 }
 
+/// [`admin_envelope_body`] with the raiser's `reason` and typed `details`, built through the JSON
+/// facade end to end (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5): for answers whose `details` the raiser
+/// assembles as facade values, so no `serde_json` value is passed in.
+#[must_use]
+pub fn admin_envelope_body_details(
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &busbar_contract::json::Value,
+) -> String {
+    let reason = if code == "internal" {
+        None
+    } else {
+        reason.or_else(|| super::reasons::default_reason(code))
+    };
+    let body = busbar_contract::json::json!({
+        "code": admin_diag(code).banner().to_string(),
+        "error": {
+            "code": code,
+            "reason": reason,
+            "message": message,
+            "request_id": current_request_id(),
+            "retryable": super::reasons::retryable(code, reason),
+            "details": details,
+        },
+    });
+    busbar_contract::json::to_string(&body)
+        .expect("the admin envelope holds only strings, booleans and facade values")
+}
+
 /// The admin error envelope response, with the reason `code` defaults to and empty `details`.
 pub fn admin_error_envelope(status: u16, code: &str, message: &str) -> Response {
     admin_error_envelope_with(status, code, None, message, &serde_json::json!({}))
@@ -265,6 +295,30 @@ pub fn admin_error_envelope_with(
         status,
         [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
         envelope_text(code, reason, message, details, &request_id),
+    )
+        .into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(HEADER_REQUEST_ID, value);
+    }
+    response
+}
+
+/// [`admin_error_envelope_with`] whose `details` are a JSON facade value
+/// ([`admin_envelope_body_details`]). The response carries `X-Request-Id`, equal to the body's
+/// `request_id`.
+pub fn admin_error_envelope_details(
+    status: u16,
+    code: &str,
+    reason: Option<&str>,
+    message: &str,
+    details: &busbar_contract::json::Value,
+) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let request_id = current_request_id();
+    let mut response = (
+        status,
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+        admin_envelope_body_details(code, reason, message, details),
     )
         .into_response();
     if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {

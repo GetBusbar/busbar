@@ -452,7 +452,6 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         )
         .await
         .unwrap();
-        let late = crate::root::serve::Services::bootstrap();
         let router = mount_node(
             a_recording_surface(surface.clone()),
             64 * 1024,
@@ -460,7 +459,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
             fixture.core.clone(),
             &book,
             None,
-            &late,
+            None,
             crate::root::adapters::BreakerPolicy::new(),
         )
         .expect("native admin bindings");
@@ -1161,12 +1160,12 @@ async fn a_q71_node(
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
-    a_q71_node_trusting(door, crate::root::units_admin::no_trust()).await
+    a_q71_node_trusting(door, None).await
 }
 
 async fn a_q71_node_trusting(
     door: crate::root::units_admin::AdminDoorFn,
-    trust: crate::root::units_admin::TrustDesk,
+    trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
@@ -1276,16 +1275,63 @@ async fn a_q71_node_trusting(
     (mounted, kept)
 }
 
+/// Sight `hash` at `inst`'s counterparty `peer`, waiting for any durable trust effect it starts
+/// (a drift quarantine settles later under bound custody, r3 §6).
+async fn sight_settled(
+    kernel: &busbar_kernel::host_services::KernelServices,
+    caller: &busbar_contract::services::Caller,
+    hash: &str,
+) {
+    use busbar_contract::services::{HostServices, Ran};
+    let (sent, settled) = tokio::sync::oneshot::channel();
+    if let Ran::Later = kernel.trust_sight(
+        caller,
+        "peer",
+        hash,
+        Box::new(move |stored| {
+            let _ = sent.send(stored);
+        }),
+    ) {
+        settled.await.expect("the sighting settles");
+    }
+}
+
+/// The r5 §1.2 envelope of a refusal, without its per-request `request_id`, which must be present.
+fn envelope_of(body: &serde_json::Value) -> serde_json::Value {
+    let mut error = body["error"].clone();
+    assert!(
+        error["request_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "the envelope names its request: {body}"
+    );
+    error
+        .as_object_mut()
+        .expect("the error is an object")
+        .remove("request_id");
+    error
+}
+
+fn refusal(code: &str, reason: &str, message: &str, retryable: bool) -> serde_json::Value {
+    serde_json::json!({
+        "code": code,
+        "reason": reason,
+        "message": message,
+        "retryable": retryable,
+        "details": {},
+    })
+}
+
 #[tokio::test]
 async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     let _one = crate::root::PUBLISHING.lock().await;
-    use busbar_contract::services::{Caller, HostServices, Later};
-    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_contract::services::Caller;
+    use busbar_kernel::host_services::InstanceFacts;
     use busbar_kernel::trust::book::{Distrust, TrustFacts};
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
 
-    let kernel = Arc::new(KernelServices::new());
+    let kernel = Arc::new(crate::root::units_admin::bound::bound_tests::bound_kernel().await);
     kernel
         .admit(
             "inst",
@@ -1306,10 +1352,9 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         )
         .await
         .expect("admitted");
-    let desk = Arc::clone(&kernel);
     let (node, _) = a_q71_node_trusting(
         a_door_that_identifies_the_operator(),
-        Arc::new(move || Some(Arc::clone(&desk))),
+        Some(Arc::clone(&kernel)),
     )
     .await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
@@ -1322,10 +1367,6 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         Arc::from("inst"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
-    let sight = |hash: &str| {
-        let later: Later = Box::new(|_| {});
-        let _ = kernel.trust_sight(&caller, "peer", hash, later);
-    };
     let served = || {
         kernel.trust_judge(
             "inst",
@@ -1336,19 +1377,21 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
             },
         )
     };
-    let approve = |key: &'static str| {
+    // r3 §4.1: every decision names the digest the operator reviewed (`null`: never sighted).
+    let decide = |path: &'static str, key: &'static str, reviewed: &'static str| {
         let node = node.clone();
         async move {
             over_as_json(
                 &node,
                 "POST",
-                "/api/v1/admin/trust/approve",
-                &format!(r#"{{"key":"{key}"}}"#),
+                path,
+                &format!(r#"{{"key":"{key}","expected_digest":{reviewed}}}"#),
                 op,
             )
             .await
         }
     };
+    let approve = |key, reviewed| decide("/api/v1/admin/trust/approve", key, reviewed);
     let row = |state: &str, approved: &str, seen: &str| {
         serde_json::from_str::<serde_json::Value>(&format!(
             r#"{{"approved":{approved},"counterparty":"peer","instance":"inst","item":null,"key":"inst/peer","seen":{seen},"state":"{state}"}}"#
@@ -1363,23 +1406,27 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
             serde_json::json!({"keys": [row("new", "null", "null")]})
         )
     );
+    let (status, body) = approve("inst/peer", "null").await;
+    assert_eq!(status, 409);
     assert_eq!(
-        approve("inst/peer").await,
-        (
-            409,
-            serde_json::from_str::<serde_json::Value>(r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was never sighted"}}"#).expect("the complete expected error is JSON")
+        envelope_of(&body),
+        refusal(
+            "conflict",
+            "state_conflict",
+            "trust key `inst/peer` was never sighted",
+            false
         )
     );
 
-    sight("h1");
+    sight_settled(&kernel, &caller, "h1").await;
     assert_eq!(served(), Err(Distrust::NotApproved));
 
-    let first = approve("inst/peer").await;
+    let first = approve("inst/peer", r#""h1""#).await;
     assert_eq!(first, (200, row("approved", r#""h1""#, r#""h1""#)));
-    assert_eq!(approve("inst/peer").await, first, "idempotent");
+    assert_eq!(approve("inst/peer", r#""h1""#).await, first, "idempotent");
     assert_eq!(served(), Ok(()));
 
-    sight("h2");
+    sight_settled(&kernel, &caller, "h2").await;
     assert_eq!(served(), Err(Distrust::Quarantined));
     assert_eq!(
         over_as_json(&node, "GET", "/api/v1/admin/trust", "", op).await,
@@ -1389,42 +1436,37 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         )
     );
     assert_eq!(
-        approve("inst/peer").await,
+        approve("inst/peer", r#""h2""#).await,
         (200, row("approved", r#""h2""#, r#""h2""#))
     );
     assert_eq!(served(), Ok(()));
 
     assert_eq!(
-        over_as_json(
-            &node,
-            "POST",
-            "/api/v1/admin/trust/revoke",
-            r#"{"key":"inst/peer"}"#,
-            op
-        )
-        .await,
+        decide("/api/v1/admin/trust/revoke", "inst/peer", r#""h2""#).await,
         (200, row("new", r#""h2""#, r#""h2""#))
     );
     assert_eq!(served(), Err(Distrust::NotApproved));
 
+    let (status, body) = approve("inst/stranger", r#""h2""#).await;
+    assert_eq!(status, 404);
     assert_eq!(
-        approve("inst/stranger").await,
-        (
-            404,
-            serde_json::from_str::<serde_json::Value>(
-                r#"{"error":{"code":"not_found","message":"trust key `inst/stranger` not found"}}"#
-            )
-            .expect("the complete expected error is JSON")
+        envelope_of(&body),
+        refusal(
+            "not_found",
+            "unknown_resource",
+            "trust key `inst/stranger` not found",
+            false
         )
     );
+    let (status, body) = over_as_json(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await;
+    assert_eq!(status, 400);
     assert_eq!(
-        over_as_json(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await,
-        (
-            400,
-            serde_json::from_str::<serde_json::Value>(
-                r#"{"error":{"code":"invalid_request","message":"key is required"}}"#
-            )
-            .expect("the complete expected error is JSON")
+        envelope_of(&body),
+        refusal(
+            "invalid_request",
+            "malformed_body",
+            "key is required",
+            false
         )
     );
 
@@ -1448,12 +1490,12 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
 #[tokio::test]
 async fn a_rejected_approval_is_audited() {
     let _one = crate::root::PUBLISHING.lock().await;
-    use busbar_contract::services::{Caller, HostServices, Later};
-    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_contract::services::Caller;
+    use busbar_kernel::host_services::InstanceFacts;
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
 
-    let kernel = Arc::new(KernelServices::new());
+    let kernel = Arc::new(crate::root::units_admin::bound::bound_tests::bound_kernel().await);
     kernel
         .admit(
             "inst",
@@ -1474,10 +1516,9 @@ async fn a_rejected_approval_is_audited() {
         )
         .await
         .expect("admitted");
-    let desk = Arc::clone(&kernel);
     let (node, _) = a_q71_node_trusting(
         a_door_that_identifies_the_operator(),
-        Arc::new(move || Some(Arc::clone(&desk))),
+        Some(Arc::clone(&kernel)),
     )
     .await;
     let op = Some(THE_OPERATORS_CREDENTIAL);
@@ -1492,24 +1533,28 @@ async fn a_rejected_approval_is_audited() {
         Arc::from("inst"),
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
-    let later: Later = Box::new(|_| {});
-    let _ = kernel.trust_sight(&caller, "peer", "unverified", later);
+    sight_settled(&kernel, &caller, "unverified").await;
 
     assert_eq!(approve("not json").await.0, 400, "malformed");
     assert_eq!(
-        approve(r#"{"key":"inst/stranger"}"#).await.0,
+        approve(r#"{"key":"inst/stranger","expected_digest":"unverified"}"#)
+            .await
+            .0,
         404,
         "unknown"
     );
 
+    let (status, body) = approve(r#"{"key":"inst/peer","expected_digest":"unverified"}"#).await;
+    assert_eq!(status, 409, "an unverified sighting is never approved");
     assert_eq!(
-        approve(r#"{"key":"inst/peer"}"#).await,
-        (
-            409,
-            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was last sighted unverified: its document failed verification, so there is nothing to approve"}}"#
-                .to_string()
-        ),
-        "an unverified sighting is never approved"
+        envelope_of(&serde_json::from_str(&body).expect("the refusal is JSON")),
+        refusal(
+            "conflict",
+            "state_conflict",
+            "trust key `inst/peer` was last sighted unverified: its document failed \
+             verification, so there is nothing to approve",
+            false
+        )
     );
     assert!(
         kernel.trust_rows().iter().all(|r| r.approved.is_none()),

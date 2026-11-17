@@ -1480,9 +1480,11 @@ const fn fips_backend_linked() -> bool {
 /// manifest verified against busbar's embedded release roots (`Verdict::Trusted { first_party:
 /// true }`; never the self-declared `publisher` string) passes. Everything else that phase 2
 /// would load, through an allowlisted publisher or an `allow_untrusted`
-/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned, tampered or
-/// unknown-publisher reject, so its remedy never names an opt-in that cannot help. The hard
-/// rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
+/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned or unknown-publisher
+/// reject, so its remedy never names an opt-in that cannot help. Proof is verified before this
+/// policy: invalid proof from a known publisher (a Busbar artifact without a valid release seal
+/// included) refuses as tampered and is audited as tampering, never hidden as the backend's policy
+/// refusal (AGREED l.474). The hard rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
 /// reaches here: it is built in the same build, against the same backend.
 ///
 /// GAP (#260, DES-1): busbar's release seal does not yet attest that the crypto-graph and

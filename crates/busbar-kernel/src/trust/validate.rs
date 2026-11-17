@@ -25,6 +25,14 @@ pub fn next_generation() -> u64 {
     GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The last trust registry generation [`next_generation`] issued (0 before the first): the
+/// `core/trust` state members `generation` and `standing.snapshot_generation` (r3 §3.4). A read,
+/// never an issue.
+#[must_use]
+pub fn live_generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed).saturating_sub(1)
+}
+
 pub mod reason {
     pub use crate::audit::vocab::{
         REASON_ARTIFACT_DRIFTED as ARTIFACT_DRIFTED, REASON_EGRESS_DENIED as EGRESS_DENIED,
