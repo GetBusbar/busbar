@@ -10,6 +10,7 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
+    "crates/busbar-count",
     "crates/busbar-secure",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
