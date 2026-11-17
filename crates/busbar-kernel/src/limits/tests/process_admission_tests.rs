@@ -401,3 +401,30 @@ fn unreported_credit_preserves_class_and_request_without_recorder_access() {
     assert_eq!(budget.used(), (0, 0));
     assert!(budget.try_enter(AdmissionClass::Data).is_ok());
 }
+
+#[test]
+fn request_identity_distinguishes_admissions_in_the_same_process_and_class() {
+    let budget = ProcessAdmission::with_limits(4, 32, 8);
+    let first = budget.try_enter(AdmissionClass::Data).unwrap();
+    let shared = first.clone();
+    let second = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let other_budget = ProcessAdmission::with_limits(4, 32, 8);
+    let other = other_budget.try_enter(AdmissionClass::Data).unwrap();
+
+    assert!(first.same_request(&first));
+    assert!(first.same_request(&shared));
+    assert!(shared.same_request(&first));
+    assert!(!first.same_request(&second));
+    assert!(!second.same_request(&first));
+    assert!(!first.same_request(&operator));
+    assert!(!first.same_request(&other));
+    let input = first.copy_input(b"owned").unwrap();
+    assert!(input.request().same_request(&first));
+    assert!(!input.request().same_request(&second));
+    drop(first);
+    assert!(input.request().same_request(&shared));
+    assert_eq!(budget.used(), (5, 5));
+    drop(input);
+    assert_eq!(budget.used(), (0, 0));
+}
