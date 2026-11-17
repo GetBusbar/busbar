@@ -137,3 +137,160 @@ async fn native_stage_retries_same_frozen_facts_after_journal_budget_is_released
     assert_eq!(record.what, frozen.inputs.what);
     assert_eq!(record.usage, frozen.inputs.usage);
 }
+
+/// The terminal facts a native caller still owns when it asks for a frozen audit (r2: the
+/// preparation returns this original bundle on any refusal).
+#[derive(Debug, PartialEq, Eq)]
+struct TerminalSource {
+    user: String,
+    billing: busbar_kernel_audit::record::billing::PartitionedBillingV1,
+}
+
+fn terminal_source(user: String) -> TerminalSource {
+    use busbar_kernel_audit::record::billing as signed;
+    use std::collections::BTreeMap;
+    let era = signed::BillingEra {
+        effective_from: 17,
+        entry_id: Some([1; 12]),
+    };
+    let selected = signed::SelectedQuantity {
+        count: 12u64.into(),
+        source: signed::UsageSource::Reported,
+    };
+    let billing = signed::PartitionedBillingV1::new(signed::BillingFacts {
+        revision: 9,
+        request_pool: "p\u{1f}original".into(),
+        routing_generation: 3,
+        era,
+        session_origin: signed::SessionOrigin {
+            instance: "p".into(),
+            lane: "p\u{1f}".into(),
+            provider: None,
+        },
+        logical_request: signed::LogicalRequest::DeliveredPreparation(1),
+        fee: signed::LogicalFee {
+            state: signed::FeeState::Charged,
+            lane: Some("p\u{1f}".into()),
+            era,
+        },
+        disposition: signed::BillingDisposition::End,
+        far_end_answered: true,
+        caller_bytes_committed: true,
+        final_target: Some(1),
+        partitions: vec![signed::BillingPartition {
+            scope: signed::PartitionScope::Attempt {
+                preparation: 1,
+                dispatch: Some(1),
+            },
+            kind: signed::TargetKind::Model,
+            instance: "p".into(),
+            lane: "p\u{1f}model".into(),
+            provider: Some("configured".into()),
+            selected_pool: Some("p\u{1f}selected".into()),
+            resource: None,
+            transport: Some(signed::Transport::Committed),
+            finality: signed::Finality::Complete,
+            classes: BTreeMap::from([(
+                "tokens".into(),
+                signed::BillingClass {
+                    reported: Some(selected.count),
+                    floor: Some(3u64.into()),
+                    estimated: Some(50u64.into()),
+                    selected: Some(selected),
+                    billed: Some(selected),
+                    rate_high_water: selected.count,
+                },
+            )]),
+        }],
+    })
+    .unwrap();
+    TerminalSource { user, billing }
+}
+
+/// The canonical inputs the caller's existing input building produces from its source.
+fn build_from(source: &TerminalSource) -> Result<AuditInputs, std::convert::Infallible> {
+    let mut built = inputs(1);
+    built.usage.fee_count = source.billing.fee_count();
+    built.unit.billing = Some(source.billing.clone());
+    built.unit.records.user = Some(source.user.clone());
+    Ok(built)
+}
+
+/// DOES: (native DATA audit r2, frozen input boundary) a terminal whose canonical line no journal
+/// body can carry (a V9 `records.user` past its bound) is refused at preparation, before any entry
+/// owns it, and the caller gets its original source bundle back (same allocation, unchanged).
+/// Nothing is staged, the chain does not move and the journal holds nothing. Freezing it instead
+/// would leave an entry whose every stage retry refuses for the rest of the process.
+#[tokio::test]
+async fn native_prepare_refuses_an_unencodable_line_and_returns_the_original_source() {
+    let fixture = NativeFixture::new(7).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let source = terminal_source("u".repeat(4097));
+    let original = source.user.as_ptr();
+    let expected = terminal_source("u".repeat(4097));
+    let before = book.lock().unwrap().record.next_seq();
+    let Err(refused) = FrozenNativeAudit::prepare(source, &book, &audit_pass(), build_from) else {
+        panic!("a line no journal body can carry was frozen into the native entry");
+    };
+    assert!(!matches!(refused.why, NativeFreezeRefusal::Build(_)));
+    assert_eq!(refused.source.user.as_ptr(), original);
+    assert_eq!(refused.source, expected);
+    assert_eq!(book.lock().unwrap().record.next_seq(), before);
+    assert_eq!(fixture.journal.pending_records(), 0);
+    assert!(fixture
+        .journal
+        .read_records(BUDGET)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// DOES: a refusal by the caller's own input building returns the same source bundle and freezes
+/// nothing.
+#[tokio::test]
+async fn native_prepare_build_refusal_returns_the_original_source() {
+    let fixture = NativeFixture::new(7).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let source = terminal_source("user".into());
+    let original = source.user.as_ptr();
+    let Err(refused) =
+        FrozenNativeAudit::prepare(source, &book, &audit_pass(), |_: &TerminalSource| {
+            Err::<AuditInputs, _>("selected terminal differs from its original audit identity")
+        })
+    else {
+        panic!("a refused build froze an entry");
+    };
+    assert_eq!(
+        refused.why,
+        NativeFreezeRefusal::Build("selected terminal differs from its original audit identity")
+    );
+    assert_eq!(refused.source.user.as_ptr(), original);
+    assert_eq!(refused.source, terminal_source("user".into()));
+    assert_eq!(fixture.journal.pending_records(), 0);
+}
+
+/// DOES: an encodable V9 terminal freezes with this book's identity, hands the caller back its
+/// untouched source to drop after install, and the frozen facts stage as exactly that line.
+#[tokio::test]
+async fn native_prepare_freezes_an_encodable_line_and_stages_those_exact_facts() {
+    let fixture = NativeFixture::new(7).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let source = terminal_source("user".into());
+    let original = source.user.as_ptr();
+    let (frozen, source) =
+        FrozenNativeAudit::prepare(source, &book, &audit_pass(), build_from).unwrap();
+    assert_eq!(source.user.as_ptr(), original);
+    assert_eq!(frozen.identity, book.lock().unwrap().line_identity());
+    assert_eq!(
+        frozen.inputs.unit.billing.as_ref(),
+        Some(&source.billing),
+        "the frozen copy is the source's billing"
+    );
+    let mut slot = None;
+    Durability::stage_native(&book, &frozen, &audit_pass(), &token(), &mut slot).unwrap();
+    slot.as_ref().unwrap().confirm_journal().await.unwrap();
+    let held = book.lock().unwrap();
+    let record = held.audit_records().last().unwrap();
+    assert_eq!(record.unit.records.user.as_deref(), Some("user"));
+    assert_eq!(record.unit.billing.as_ref(), Some(&source.billing));
+}
