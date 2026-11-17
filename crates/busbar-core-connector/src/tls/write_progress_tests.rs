@@ -329,3 +329,74 @@ async fn fatal_record_read_keeps_positive_last_gasp_output_before_error() {
     assert_eq!(progress.complete_records_plaintext, 0);
     assert_eq!(script.lock().unwrap().written, 6);
 }
+
+#[test]
+fn funded_handshake_retires_partial_state_before_refunding_on_every_exit() {
+    use busbar_contract::storage::StorageSource;
+    use busbar_kernel::limits::process_admission::{
+        AdmissionClass, ProcessAdmission, BODY_BYTES, OPERATOR_BODY_BYTES,
+    };
+    use std::future::Future;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Backing {
+        source: StorageSource,
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for Backing {
+        fn drop(&mut self) {
+            // The real shared account is full. A byte becomes available only if outer
+            // credit was refunded before this included backing's destructor.
+            assert!(self.source.try_reserve(1).is_err());
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    struct PartialHandshake {
+        backing: Option<Backing>,
+        outcome: u8,
+    }
+    impl Future for PartialHandshake {
+        type Output = io::Result<Backing>;
+        fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            match self.outcome {
+                0 => Poll::Pending,
+                1 => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+                _ => Poll::Ready(Ok(self.backing.take().unwrap())),
+            }
+        }
+    }
+
+    for outcome in 0..3 {
+        let source = ProcessAdmission::new(0).connection_storage(AdmissionClass::Data);
+        let requested = tls::write_progress::output_plan()
+            .unwrap()
+            .requested_bytes();
+        let credit = source.try_reserve(requested).unwrap();
+        let _other = source
+            .try_reserve((BODY_BYTES - OPERATOR_BODY_BYTES) as usize - requested)
+            .unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut handshake = super::write_progress::handshake(credit, || PartialHandshake {
+            backing: Some(Backing {
+                source: source.clone(),
+                dropped: dropped.clone(),
+            }),
+            outcome,
+        });
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        match (outcome, Pin::new(&mut handshake).poll(&mut cx)) {
+            (0, Poll::Pending) => drop(handshake),
+            (1, Poll::Ready(Err(_))) => drop(handshake),
+            (2, Poll::Ready(Ok(stream))) => {
+                assert!(!dropped.load(Ordering::SeqCst));
+                assert!(source.try_reserve(1).is_err());
+                drop(handshake);
+                assert!(source.try_reserve(1).is_err());
+                drop(stream);
+            }
+            _ => panic!("unexpected handshake exit"),
+        }
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(source.try_reserve(requested).is_ok());
+    }
+}
