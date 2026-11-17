@@ -7,9 +7,11 @@ use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 
 use crate::plugin_records::RecordsDenied;
 
+pub mod grant;
+
 #[cfg(test)]
-#[path = "grant/tests.rs"]
-mod grant_tests;
+#[path = "grant/owner_tests.rs"]
+mod grant_owner_tests;
 
 /// Grants are custody: stored encrypted (core at-rest key), keyed by (plane plugin, plane instance **name**,
 /// caller subject hash, configured upstream name), never by a runtime id, so they survive restart, reconfigure
