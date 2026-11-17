@@ -52,9 +52,20 @@ impl DataSettlement {
         if snapshot.terminal.is_none() || delivery.reader().snapshot() != *snapshot {
             return Err(InputError::Invalid);
         }
-        if let Some(work) = self.work.take() {
-            self.ran = work.await.map_err(|_| InputError::Invalid)?;
-        }
+        let work_failed = if let Some(work) = self.work.take() {
+            match work.await {
+                Ok(ran) => {
+                    self.ran = ran;
+                    false
+                }
+                Err(_) => {
+                    self.ran = false;
+                    true
+                }
+            }
+        } else {
+            false
+        };
         let admitted = self.authority.admitted().ok_or(InputError::Invalid)?;
         let original = delivery.admission().ok_or(InputError::Invalid)?;
         if !original.same_admission(&admitted.request) {
@@ -70,7 +81,11 @@ impl DataSettlement {
         self.billing
             .settle_admitted(original, end)
             .map_err(|_| InputError::Invalid)?;
-        Ok(())
+        if work_failed {
+            Err(InputError::Invalid)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -421,14 +436,14 @@ pub(super) async fn prepare(
                 trailer_credit: None,
                 failed: false,
             }));
-            *response.status_mut() =
-                StatusCode::from_u16(status).map_err(|_| InputError::Invalid)?;
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            *response.status_mut() = status;
             *response.headers_mut() = headers;
             response.extensions_mut().insert(credit);
-            (response, status, false, Some(work))
+            (response, status.as_u16(), false, Some(work))
         }
         Err(_) => {
-            let ran = (&mut work).await.map_err(|_| InputError::Invalid)?;
+            let ran = (&mut work).await.unwrap_or(false);
             let mut response = Response::new(Body::empty());
             *response.status_mut() = StatusCode::BAD_GATEWAY;
             (response, 502, ran, None)
