@@ -130,6 +130,12 @@ pub(crate) struct NativeAttempt {
 }
 
 impl NativeAttempt {
+    pub(crate) fn checkpoint(
+        &self,
+    ) -> Result<crate::plane_driver::cancel::Checkpoint, NativeAttemptError> {
+        self.service.checkpoint()
+    }
+
     pub(super) fn new(service: NativeRequestMoney, rate: CommittedRate) -> Self {
         Self {
             service,
