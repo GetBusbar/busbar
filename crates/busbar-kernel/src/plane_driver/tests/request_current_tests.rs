@@ -11,7 +11,7 @@ fn routes(pools: &str) -> RequestRoutes {
         &grammar,
     )
     .unwrap();
-    let yaml = format!("providers:\n  provider: {{}}\nmodels:\n  m: {{provider: provider}}\n  n: {{provider: provider}}\npools:\n{pools}");
+    let yaml = format!("providers:\n  provider: {{api_key: none}}\nmodels:\n  m: {{provider: provider}}\n  n: {{provider: provider}}\npools:\n{pools}");
     let deploy = config::deploy_from_yaml_str(&yaml, &grammar).unwrap();
     let mut resolved = config::resolve_with_provider_planes(
         &deploy,
