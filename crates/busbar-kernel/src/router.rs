@@ -550,6 +550,7 @@ pub(crate) fn mount_plane_route(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -577,6 +578,7 @@ pub(crate) fn mount_plane_route(
                     headers,
                     body,
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
@@ -616,6 +618,7 @@ pub(crate) fn mount_plane_session(
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
               listener: Option<
@@ -642,6 +645,7 @@ pub(crate) fn mount_plane_session(
                     headers,
                     body: axum::body::Bytes::new(),
                     gov: gov.map(|axum::extract::Extension(g)| g),
+                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
                     slot,

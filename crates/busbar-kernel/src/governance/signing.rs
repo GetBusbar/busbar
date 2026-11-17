@@ -322,6 +322,33 @@ pub struct TokenVerifier {
     keys: foldhash::HashMap<String, VerifyingKey>,
 }
 
+/// Evidence of the existing signature verification, without retaining bearer bytes.
+/// Only this module can construct it; claims alone never establish authentication.
+pub(super) struct VerifiedToken {
+    claims: TokenClaims,
+    public_key: [u8; 32],
+}
+
+impl VerifiedToken {
+    pub(super) fn claims(&self) -> &TokenClaims {
+        &self.claims
+    }
+
+    pub(super) fn valid_with(
+        &self,
+        current: &TokenVerifier,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> bool {
+        self.claims.exp > now
+            && self.claims.aud.as_deref() == expected_aud
+            && current
+                .keys
+                .get(&self.claims.kid)
+                .is_some_and(|key| key.to_bytes() == self.public_key)
+    }
+}
+
 impl TokenVerifier {
     pub fn single(kid: impl Into<String>, key: VerifyingKey) -> Self {
         let mut keys = foldhash::HashMap::default();
@@ -339,6 +366,21 @@ impl TokenVerifier {
             .strip_prefix(TOKEN_PREFIX)
             .ok_or(VerifyError::Malformed)?;
         self.verify_body(body, now, expected_aud)
+    }
+
+    pub(super) fn verify_retained(
+        &self,
+        token: &str,
+        now: u64,
+        expected_aud: Option<&str>,
+    ) -> Result<VerifiedToken, VerifyError> {
+        let claims = self.verify(token, now, expected_aud)?;
+        let public_key = self
+            .keys
+            .get(&claims.kid)
+            .ok_or(VerifyError::UnknownKid)?
+            .to_bytes();
+        Ok(VerifiedToken { claims, public_key })
     }
 
     pub(crate) fn verify_body(

@@ -4,6 +4,58 @@
 use super::*;
 use busbar_plugin_abi::transport::{MSG_BINARY, MSG_FIN, MSG_TEXT};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_signed_package_checks_structure_even_when_signature_and_digest_are_valid() {
+    use busbar_plugin_loader::{sign, tarball, test_host};
+
+    // The same actual native cdylib used by the central self-pack producer proof, built by CI.
+    // A missing fixture fails; a synthetic stamp or skipped arm cannot replace its image bytes.
+    let exe = std::env::current_exe().unwrap();
+    let path = exe
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(busbar_plugin_loader::plugin_library_filename(
+            "native_pack_fixture",
+        ));
+    let bytes = std::fs::read(path)
+        .expect("CI must build busbar-plugin-loader's native_pack_fixture example");
+    let mut manifest = test_host::test_manifest(&bytes, &["old-native", "native"]).unwrap();
+    manifest.alias = "native".into();
+    manifest = test_host::test_sign(manifest, &bytes);
+    let trust = test_host::test_trust("native-pack-fixture");
+    sign::evaluate(&bytes, &manifest, &trust).unwrap();
+    let good = tarball::package(&manifest, "native.so", &bytes).unwrap();
+    let unpacked = unpack_package(&good).expect("the native producer's complete package is valid");
+    assert_eq!(unpacked.lib_bytes, bytes);
+    assert_eq!(unpacked.manifest, manifest);
+
+    for field in ["host", "alias", "schema", "derived", "declares", "needs"] {
+        let mut bad = manifest.clone();
+        match field {
+            "host" => bad.host = Some("other-product".into()),
+            "alias" => bad.alias = "not-in-header".into(),
+            "schema" => bad.settings_schema = Some("{}".into()),
+            "derived" => bad.schema_derived = true,
+            "declares" => bad.declares.disk = true,
+            "needs" => bad.needs.prompt = sign::NeedLevel::Ro,
+            _ => unreachable!(),
+        }
+        let signed = test_host::test_sign(bad, &bytes);
+        sign::evaluate(&bytes, &signed, &trust)
+            .expect("negative control has a real trusted signature over the unchanged image");
+        assert_eq!(signed.sha256, sign::sha256_hex(&bytes));
+        let archive = tarball::package(&signed, "native.so", &bytes).unwrap();
+        assert!(
+            matches!(unpack_package(&archive), Err(Failure::Admission)),
+            "correct signature must not authorize invalid package field {field}"
+        );
+    }
+}
+
 #[test]
 fn native_signed_subject_requires_complete_canonical_build_digest() {
     for value in [

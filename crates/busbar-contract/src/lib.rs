@@ -42,7 +42,7 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
-pub mod count;
+pub use busbar_count::count;
 pub mod dest;
 
 pub mod diagnostic;
@@ -86,6 +86,7 @@ pub mod protocol;
 
 pub mod provider_keys;
 pub mod redacted;
+pub mod response_delivery;
 pub mod retry;
 
 #[allow(missing_docs)]
@@ -108,6 +109,7 @@ pub mod signal;
 
 pub mod spans;
 pub mod stage_probe;
+pub mod storage;
 pub mod surface;
 pub mod transport;
 pub mod unit;

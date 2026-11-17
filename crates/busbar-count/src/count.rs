@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use crate::json_grammar::{resolve_pointer, Resolved};
+use crate::json_span::{resolve_pointer, Resolved};
 
 /// The ONE scale every count is held at: six decimal places, i.e. micro-units.
 pub const COUNT_SCALE: u32 = 6;
@@ -130,7 +130,7 @@ impl<'de> serde::de::Visitor<'de> for CountVisitor {
 
     fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Count, E> {
         let number =
-            crate::json::Number::from_f64(value).ok_or_else(|| E::custom("not a JSON number"))?;
+            sonic_rs::Number::from_f64(value).ok_or_else(|| E::custom("not a JSON number"))?;
         Self::read(&number.to_string())
     }
 
