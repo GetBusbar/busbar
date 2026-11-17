@@ -304,3 +304,20 @@ impl ConcurrencyGauge {
         }
     }
 }
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_concurrency_bucket_refuses_as_rate_without_taking_another_lease() {
+        let gauge = ConcurrencyGauge::new();
+        let bucket = group_lease("capacity");
+        assert_eq!(gauge.acquire(&bucket, 1), Ok(()));
+        assert_eq!(gauge.acquire(&bucket, 1), Err(ReasonCode::RateLimited));
+        assert_eq!(gauge.count(&bucket), 1);
+        gauge.release(&bucket);
+        assert_eq!(gauge.acquire(&bucket, 1), Ok(()));
+        assert_eq!(gauge.count(&bucket), 1);
+    }
+}
