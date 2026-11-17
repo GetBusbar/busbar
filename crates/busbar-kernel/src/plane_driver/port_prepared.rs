@@ -19,7 +19,7 @@ pub(super) struct FrozenUsage {
     route: Option<u32>,
     origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
-    classes: Vec<UsageClass>,
+    pub(super) classes: Vec<UsageClass>,
     attempt_classes: Vec<Box<str>>,
 }
 
@@ -171,9 +171,19 @@ impl PreparationFacts {
 pub(crate) struct PreparedExchange {
     target: Candidate,
     attempt: u32,
-    exchange: UpExchange,
+    dialect: Box<str>,
+    model: Box<str>,
+    exchange: PreparedOperands,
     estimates: Option<Estimates>,
     declaration: Arc<FrozenUsage>,
+}
+
+enum PreparedOperands {
+    Plain(UpExchange),
+    Resource {
+        forward: crate::resource_admission::ValidatedForward,
+        data: Arc<crate::auth::native_data::NativeDataPending>,
+    },
 }
 
 /// The actual retained task's immutable declaration, supplied before its money admission.
@@ -185,6 +195,9 @@ pub struct RequestDeclaration {
 }
 
 impl RequestDeclaration {
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.context.same_unit(&other.context) && Arc::ptr_eq(&self.declaration, &other.declaration)
+    }
     pub fn original_route(
         &self,
     ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
@@ -230,7 +243,63 @@ impl PreparedExchange {
         self.attempt
     }
     pub(crate) fn exchange(&self) -> &UpExchange {
-        &self.exchange
+        match &self.exchange {
+            PreparedOperands::Plain(exchange) => exchange,
+            PreparedOperands::Resource { forward, .. } => forward.exchange(),
+        }
+    }
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        match &self.exchange {
+            PreparedOperands::Plain(_) => None,
+            PreparedOperands::Resource { data, .. } => Some(data),
+        }
+    }
+
+    /// Bind the actual encoder output to the exact eligible walk definition and DATA selection.
+    /// The immutable checked exchange and its physical execution owner remain inseparable.
+    pub(crate) fn bind_resource(
+        mut self,
+        selected: &crate::plane_driver::port_egress::SelectedWalkAttempt,
+        data: Arc<crate::auth::native_data::NativeDataPending>,
+    ) -> Result<Self, SessionError> {
+        let execution = data.execution().ok_or(SessionError::NotDriven)?;
+        if !data.is_live()
+            || execution.binding().check_executing().is_err()
+            || !execution.money().accepts_walk(selected.walk())
+            || selected.target() != &self.target
+            || selected.preparation() != self.attempt
+            || self.route() != data.selected().request().route()
+        {
+            return Err(SessionError::NotDriven);
+        }
+        let bound = data
+            .selected()
+            .forward_for_target(&self.target, &self.dialect, &self.model)
+            .map_err(|_| SessionError::NotDriven)?;
+        let PreparedOperands::Plain(exchange) = self.exchange else {
+            return Err(SessionError::NotDriven);
+        };
+        let echo = bound
+            .resolve_echo(
+                exchange
+                    .resource_echo
+                    .as_ref()
+                    .ok_or(SessionError::Violation(Violation::BadRecords))?
+                    .borrowed(),
+            )
+            .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
+        let forward = bound
+            .validate(
+                echo,
+                &self.target,
+                &self.dialect,
+                &self.model,
+                selected.definition().ok_or(SessionError::NotDriven)?,
+                exchange,
+            )
+            .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
+        self.exchange = PreparedOperands::Resource { forward, data };
+        Ok(self)
     }
     pub(crate) fn estimates(&self) -> Option<&[(Box<str>, EstimateValue)]> {
         self.estimates
@@ -243,6 +312,50 @@ impl PreparedExchange {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
+    /// Prepare from the host's actual retained resource selection, never a plugin descriptor id.
+    pub(crate) fn prepare_selected(
+        &mut self,
+        target: &Candidate,
+        attempt: u32,
+        dialect: &str,
+        model: &str,
+        effects: &dyn Effects,
+    ) -> Result<Option<PreparedExchange>, SessionError> {
+        let mut admission = Reply::new();
+        if let Some(data) = self.data() {
+            let execution = data.execution().ok_or(SessionError::NotDriven)?;
+            if !data.is_live() || execution.binding().check_executing().is_err() {
+                return Err(SessionError::NotDriven);
+            }
+            target.with_target(attempt, dialect, model, |input| {
+                data.selected()
+                    .forward_for_target(target, input.dialect, input.model)
+                    .map_err(|_| SessionError::NotDriven)?
+                    .write_admission(&mut admission)
+                    .map_err(|_| SessionError::Encode)
+            })?;
+        }
+        if self.selected_attempts() {
+            wire::write_selected(
+                &mut admission,
+                SelectedResource {
+                    attempt,
+                    exchange: 0,
+                    resource: target.resource.as_deref().unwrap_or(""),
+                },
+            )
+            .map_err(|_| SessionError::Encode)?;
+        }
+        self.prepare(
+            target,
+            attempt,
+            dialect,
+            model,
+            admission.as_bytes(),
+            effects,
+        )
+    }
+
     pub(crate) fn request_declaration(&self) -> Result<RequestDeclaration, SessionError> {
         self.declaration.route.ok_or(SessionError::NotDriven)?;
         Ok(RequestDeclaration {
@@ -304,10 +417,18 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             return Err(SessionError::Violation(Violation::BadRecords));
         }
         let exchange = answer.exchanges.pop().unwrap();
+        let (dialect, model) = target.with_target(attempt, dialect, model, |input| {
+            (
+                Box::<str>::from(input.dialect),
+                Box::<str>::from(input.model),
+            )
+        });
         let prepared = PreparedExchange {
             target: target.clone(),
             attempt,
-            exchange,
+            dialect,
+            model,
+            exchange: PreparedOperands::Plain(exchange),
             estimates: answer.preparation.estimates,
             declaration: Arc::clone(&self.declaration),
         };

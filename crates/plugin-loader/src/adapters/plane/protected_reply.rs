@@ -7,6 +7,7 @@
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::plane::{self as p, tag, ExMsg};
 use busbar_plugin_abi::records::Records;
+use busbar_ports::codec::fallback_usage::Declaration;
 
 use super::{decode_answer, fault, Call};
 
@@ -29,9 +30,32 @@ pub fn classify(
     answer: &[u8],
     max_message: usize,
 ) -> Result<Classification<'_>, FaultReason> {
+    classify_declared(
+        from,
+        has_demux,
+        Declaration::legacy(),
+        None,
+        answer,
+        max_message,
+    )
+}
+
+/// The same classifier for an actual opted-in instance: use its frozen declaration and the callback's
+/// exact exchange. General output keeps all existing attempt/resource rules, without a second call.
+pub fn classify_declared<'a>(
+    from: u32,
+    has_demux: bool,
+    declaration: Declaration<'_>,
+    exchange: Option<u32>,
+    answer: &'a [u8],
+    max_message: usize,
+) -> Result<Classification<'a>, FaultReason> {
     decode_answer(
         Call::Piece(from),
         has_demux,
+        declaration,
+        None,
+        exchange,
         Records::new(answer),
         &mut |_| {},
     )?;
@@ -105,5 +129,60 @@ mod tests {
         let mut truncated = out.as_bytes().to_vec();
         truncated.push(0);
         assert!(classify(p::FROM_CORE, true, &truncated, 4096).is_err());
+    }
+
+    #[test]
+    fn general_classification_preserves_the_actual_usage_declaration_and_exchange() {
+        use busbar_plugin_abi::fallback_usage::{self as wire, UsageSource};
+        use busbar_ports::plane::UsageClass;
+        let classes = [UsageClass {
+            class: "tokens.in".into(),
+            unit: p::UNIT_TOKENS,
+            expected_units: None,
+        }];
+        let attempts = [Box::<str>::from("tokens.in")];
+        let declared = Declaration::new(p::FB_ATTEMPT_USAGE, &classes, &attempts).unwrap();
+        let mut answer = Reply::new();
+        wire::write_attempt_usage(
+            &mut answer,
+            wire::AttemptUsage {
+                attempt: 1,
+                class: "tokens.in",
+                amount: 1,
+                scale: 0,
+                source: UsageSource::Reported,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            classify_declared(
+                p::FROM_UPSTREAM,
+                false,
+                declared,
+                Some(0),
+                answer.as_bytes(),
+                4096
+            )
+            .unwrap(),
+            Classification::General
+        ));
+        assert!(classify_declared(
+            p::FROM_UPSTREAM,
+            false,
+            declared,
+            Some(7),
+            answer.as_bytes(),
+            4096
+        )
+        .is_err());
+        assert!(classify_declared(
+            p::FROM_UPSTREAM,
+            false,
+            Declaration::legacy(),
+            Some(0),
+            answer.as_bytes(),
+            4096
+        )
+        .is_err());
     }
 }

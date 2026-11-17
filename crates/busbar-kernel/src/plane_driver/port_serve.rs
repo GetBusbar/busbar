@@ -435,10 +435,13 @@ fn drive_answers<K: Calls + ?Sized>(
                 ran.member = Some(member);
                 ran.attempts = attempts;
             }
-            Attempted::Exhausted { attempts } => {
+            Attempted::Exhausted {
+                attempts,
+                local_quota,
+            } => {
                 ran.attempts = attempts;
                 ran.exhausted = true;
-                exhausted(task, req, drive, &mut ran, wait)?;
+                exhausted(task, req, drive, &mut ran, wait, local_quota)?;
             }
         }
     }
@@ -468,8 +471,14 @@ fn exhausted<K: Calls + ?Sized>(
     drive: &Drive<'_>,
     ran: &mut Ran,
     wait: Option<u32>,
+    local_quota: bool,
 ) -> Result<(), SessionError> {
-    let refusal = drive.refusals.for_core(req.route, R_NO_ROUTE);
+    let code = if local_quota {
+        busbar_plugin_abi::fail::refused::R_RATE_LIMITED
+    } else {
+        R_NO_ROUTE
+    };
+    let refusal = drive.refusals.for_core(req.route, code);
     let before = ran.client.len();
     let mut arg = Reply::new();
     if encode_refusal(&mut arg, refusal.status, refusal.code, &refusal.text).is_err() {

@@ -28,6 +28,8 @@ pub(crate) enum NativeAttemptError {
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
 /// Live selection/rate authority is separate and is never reconstructed from these facts.
 pub(super) struct NativeMoney {
+    pub(super) terminal: Arc<super::native_terminal::TerminalSlot>,
+    pub(super) work: Option<super::super::usage::Ending>,
     accepted: Arc<UnitCheckpoint>,
     /// Incurred facts remain owned here if publishing their successor was refused.
     unpublished: Option<Arc<UnitCheckpoint>>,
@@ -39,6 +41,8 @@ impl NativeMoney {
     #[cfg(test)]
     pub(super) fn from_accepted(accepted: Arc<UnitCheckpoint>) -> Self {
         Self {
+            terminal: super::native_terminal::TerminalSlot::new(&accepted),
+            work: None,
             accepted,
             unpublished: None,
             declaration: None,
@@ -47,6 +51,8 @@ impl NativeMoney {
 
     pub(super) fn admitted(accepted: Arc<UnitCheckpoint>, declaration: RequestDeclaration) -> Self {
         Self {
+            terminal: super::native_terminal::TerminalSlot::new(&accepted),
+            work: None,
             accepted,
             unpublished: None,
             declaration: Some(declaration),
@@ -55,6 +61,10 @@ impl NativeMoney {
 
     pub(super) fn checkpoint(&self) -> &Arc<UnitCheckpoint> {
         self.unpublished.as_ref().unwrap_or(&self.accepted)
+    }
+
+    pub(super) fn accepted_revision(&self) -> u64 {
+        self.accepted.revision
     }
 
     fn publish_incurred(
@@ -79,6 +89,7 @@ impl NativeMoney {
 /// The original money service and admitted request, issued only after selected initial custody.
 /// Runtime keeps this with the same allocation; there is no numeric-unit lookup constructor.
 pub struct NativeRequestMoney {
+    pub(super) terminal: Arc<super::native_terminal::TerminalSlot>,
     pub(super) money: Arc<super::PlaneMoney>,
     pub(super) request: AdmittedRequest,
 }
@@ -96,7 +107,11 @@ impl NativeRequestMoney {
         prepared: PreparedExchange,
     ) -> Result<PreparedRateAttempt, NativeAttemptError> {
         if !self.request.accepts_walk(selected.walk())
-            || self.request.walk_key() != Some(selected.pool())
+            || !member_granted(
+                self.request.member_grants(),
+                selected.pool(),
+                selected.qualified_member(),
+            )
             || selected.target() != prepared.target()
             || selected.preparation() != prepared.attempt()
         {
@@ -192,8 +207,8 @@ impl NativeRequestMoney {
         let open = all
             .get_mut(&self.request.unit())
             .ok_or(NativeAttemptError::Unavailable)?;
-        self.check_open(open)?;
-        if !prepared.request.matches_money(
+        self.check_open_identity(open)?;
+        if !prepared.request.matches_money_identity(
             &self.money.book,
             &open.identity,
             open.grant.as_ref().ok_or(NativeAttemptError::Unavailable)?,
@@ -204,7 +219,7 @@ impl NativeRequestMoney {
             .native
             .as_mut()
             .ok_or(NativeAttemptError::Unavailable)?;
-        let mut snapshot = native.accepted.as_ref().clone();
+        let mut snapshot = native.checkpoint().as_ref().clone();
         let attempt = snapshot
             .partitions
             .as_mut()
@@ -218,12 +233,7 @@ impl NativeRequestMoney {
         }
         attempt.transport = Transport::NoSend;
         attempt.finality = Finality::Unknown;
-        native.accepted = self
-            .money
-            .gov
-            .stage_selected_checkpoint(snapshot, Some(native.accepted.revision))
-            .map_err(NativeAttemptError::Custody)?;
-        Ok(())
+        native.publish_incurred(&self.money.gov, snapshot)
     }
 
     fn check_open(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
@@ -234,7 +244,7 @@ impl NativeRequestMoney {
         Ok(())
     }
 
-    fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
+    pub(super) fn check_open_identity(&self, open: &super::Open) -> Result<(), NativeAttemptError> {
         if open.finished
             || open.ledgered
             || open.abandoned
@@ -253,6 +263,8 @@ impl NativeRequestMoney {
 
 #[path = "native_live.rs"]
 mod live;
+#[path = "native_session.rs"]
+mod session;
 #[cfg(test)]
 use live::effective_tokens;
 pub(crate) use live::{NativeAttempt, NativeCommitError};
@@ -263,6 +275,12 @@ fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u
         && attempts
             .last()
             .is_none_or(|prior| prior.preparation < preparation && prior.finality != Finality::Live)
+}
+
+fn member_granted(grants: &BTreeMap<String, Vec<String>>, pool: &str, member: &str) -> bool {
+    grants
+        .get(pool)
+        .is_some_and(|members| members.iter().any(|held| held == member))
 }
 use busbar_plugin_abi::records::RecErr;
 use busbar_ports::codec::fallback_usage::{
@@ -325,6 +343,14 @@ impl PreparedRateAttempt {
         &self,
     ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
         self._prepared.original_route()
+    }
+
+    pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
+        self._prepared.exchange()
+    }
+
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self._prepared.data()
     }
 }
 

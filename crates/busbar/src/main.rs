@@ -741,7 +741,7 @@ async fn run(
         // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
-            &plugin_process, file_images, &base_cfg, boot_guard.clone(),
+            process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(),
         ).await.unwrap_or_else(|error| die(store_boot_refusal(principal_transition.is_some(), error)))
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
@@ -752,7 +752,7 @@ async fn run(
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
-                conversion, process_io.handle(), store_admission, None,
+                conversion, store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
                 None,
                 &observation_reservation,
@@ -760,7 +760,6 @@ async fn run(
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
         }
-        let secret_resolver = bootstrap_ready.resolver(process_io.handle());
         let anchor_store = store_admission.store().expect("confirmed Store admission");
         root::exit::arm(&anchor_store);
         // Migrate-on-boot step 4 (MIGRATE-ON-BOOT r42 §3 4a, 4b): the 1.5.5 rows a store's data step
@@ -953,7 +952,6 @@ async fn run(
             operator_reference,
             effective_images,
             bootstrap_ready,
-            secret_resolver,
         ))
     }))
     .await;
@@ -972,7 +970,6 @@ async fn run(
         operator_reference,
         effective_images,
         bootstrap_ready,
-        secret_resolver,
     )) = bootstrap
     else {
         return;
@@ -1196,7 +1193,7 @@ async fn run(
     )
     .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
-        secret_resolver,
+        secret_resolver: serving_ready.resolver(),
         startup: store_admission,
         config: cfg,
         judged,
@@ -1269,6 +1266,17 @@ async fn run(
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
+    root::plane_node::node()
+        .bind_response_intents(
+            store_admission
+                .store()
+                .unwrap_or_else(|| die("response intent has no admitted Store")),
+            book.response_intents
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| die("response intent service was not constructed")),
+        )
+        .unwrap_or_else(|error| die(error));
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
@@ -1345,20 +1353,20 @@ async fn run(
     let observation_reservation = export_observers
         .reserve(serving_ready.export_names())
         .unwrap_or_else(|error| die(error));
-    let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
-        serving_ready,
-        process_io.handle(),
-        store_admission,
-        services.kernel(),
-        busbar_kernel::plane_driver::port_work::governed_binder(
-            app.governance.clone(),
-            app.role_bindings.clone(),
-        ),
-        Some(root::min3_boot::ServingEnvironment::new(&app)),
-        &observation_reservation,
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+    let (store_admission, mut generation_workers, exports, native, selected_policy) =
+        root::min3_boot::finish(
+            serving_ready,
+            store_admission,
+            services.kernel(),
+            busbar_kernel::plane_driver::port_work::governed_binder(
+                app.governance.clone(),
+                app.role_bindings.clone(),
+            ),
+            Some(root::min3_boot::ServingEnvironment::new(&app)),
+            &observation_reservation,
+        )
+        .await
+        .unwrap_or_else(|error| die(error));
 
     let export_registry = export::plugin::open_prepared(
         &export_config,
@@ -1367,6 +1375,9 @@ async fn run(
     )
     .unwrap_or_else(|error| die_list("config errors", [error]));
     let mut app = Arc::unwrap_or_clone(app);
+    selected_policy
+        .install_initial(&mut app)
+        .unwrap_or_else(|error| die(error));
     app.secret_resolver = Arc::clone(&native.resolver);
     let auth_epoch = app
         .config_generation

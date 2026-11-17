@@ -530,28 +530,7 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
                 .is_none(),
             "direct UnitRecords must enforce the same gate"
         );
-        let ctx = crate::teller::UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
-            key: admitted.unit(),
-            origin: busbar_contract::caps::OriginKind::Client,
-            session: None,
-            generation: crate::registry::Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        Ok(AdmittedUnit {
-            selected: None,
-            request: admitted,
-            unit: crate::plane_driver::port::Unit {
-                ctx,
-                money: crate::plane_driver::port_money::PortMoney::new(
-                    book.clone(),
-                    Arc::from(Vec::<String>::new()),
-                    Arc::new(crate::plane_driver::CoreAudit),
-                ),
-                journal: None,
-            },
-        })
+        Ok(ordinary_unit(&book, admitted))
     });
     let pending = Arc::new(pending);
     let calls = PlaneCalls(AtomicUsize::new(0));
@@ -570,8 +549,10 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
             .core()
             .units()
             .take_ticket(context.unit()),
-        Some(None)
+        None,
+        "descriptor execution cannot authorize generic ticket access"
     );
+    assert_generic_effects_refused(&f, &context);
     assert!(pending.execution().unwrap().money().is_live());
     assert!(
         pending
@@ -584,11 +565,19 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     );
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 1);
+    let receipt = pending.execution().unwrap().money().clone();
     drop(pending);
     assert!(!context.is_live());
     assert!(!context.effects_allowed());
     assert!(binding.check_executing().is_err());
-    money.settle_end(busbar_contract::UnitKey::new(context.unit()), 499);
+    let ended = crate::plane_driver::money::UnitEnd {
+        caller_status: 499,
+        cut: false,
+        refused_unspent: true,
+    };
+    assert!(money.settle_admitted(&receipt, ended).unwrap());
+    assert!(!money.settle_admitted(&receipt, ended).unwrap());
+    assert_eq!(money.open_units(), 0);
     drop(owner);
 }
 
@@ -896,4 +885,205 @@ fn begin_task<'a>(
         .unwrap()
         .unwrap();
     task
+}
+
+fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
+    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::services::{HostServices, OutboundAuthorization, Ran};
+    assert!(context
+        .nest(
+            &f.route.caller,
+            busbar_contract::services::NestAsk {
+                verb: "POST".into(),
+                target: "/other".into(),
+                body: vec![]
+            },
+            Box::new(|_| panic!("DATA cannot nest"))
+        )
+        .is_err());
+    assert!(context
+        .offload_hook(Box::new(|| panic!("DATA cannot run hooks")))
+        .is_err());
+    let core = context.generation().core();
+    let call = |unit, action, revision| {
+        let publish = action == OUTBOUND_PUBLISH;
+        let result = core.outbound_authorize(
+            &f.route.caller,
+            Some(unit),
+            OutboundAuthorization {
+                action,
+                need: 0,
+                member: "m0",
+                resource: "https://example.invalid/private",
+                connection: "public-account",
+                expected_revision: revision,
+                expires_at_unix: if publish { u64::MAX } else { 0 },
+                field_name: if publish { "authorization" } else { "" },
+                credential: if publish { b"Bearer fixture" } else { b"" },
+            },
+            Box::new(|_| panic!("synchronous custody")),
+        );
+        match result {
+            Ran::Now(result) => result,
+            Ran::Later => panic!("synchronous custody"),
+        }
+    };
+    assert_eq!(
+        call(context.unit(), OUTBOUND_PUBLISH, 0).outcome,
+        Outcome::Refused
+    );
+    // An independently admitted ordinary unit with the same owner can enroll revision 1.
+    // This proves the refused DATA request created no custody row.
+    let ordinary = 999;
+    core.units().admitted_for(
+        ordinary,
+        &f.route.caller,
+        crate::host_units::UnitRecord {
+            principal: context.principal().cloned(),
+            depth: 0,
+        },
+    );
+    let published = call(ordinary, OUTBOUND_PUBLISH, 0);
+    assert_eq!(published.outcome, Outcome::Ready);
+    assert_eq!(published.value, 1);
+    assert_eq!(
+        call(context.unit(), OUTBOUND_REVOKE, 1).outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        call(ordinary, OUTBOUND_BIND, 1).outcome,
+        Outcome::Ready,
+        "refused DATA revocation cannot alter the existing custody row"
+    );
+    core.units().ended(ordinary);
+}
+
+#[tokio::test]
+async fn native_data_task_refuses_substituted_physical_request_id() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let pending = Arc::new(
+        NativeDataAllocation::register(authorized)
+            .unwrap()
+            .into_pending(|_| panic!("foreign request id cannot acquire money")),
+    );
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let effects = DataEffects(&pending);
+    let answer = pending
+        .snapshot()
+        .with_auth_input(|request| {
+            crate::plane_driver::port_session::Task::begin(
+                &calls,
+                &busbar_ports::plane::PlaneIn {
+                    route: pending.selected().request().route(),
+                    flags: 0,
+                    auth: AUTH_PRINCIPAL,
+                    method: request.method,
+                    path: request.path,
+                    query: request.query,
+                    headers: request.headers,
+                    identity: pending.identity().identity_records(),
+                    request_id: cx.request_id + 1,
+                    carrier: 0,
+                    work: "",
+                    ticket_record: &[],
+                },
+                request.body,
+                &effects,
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        answer,
+        Err(crate::plane_driver::port_session::SessionError::NotDriven)
+    ));
+    assert_eq!(calls.0.load(Ordering::SeqCst), 0);
+    assert!(pending.execution().is_none());
+}
+
+fn ordinary_unit(book: &Arc<PlaneMoney>, admitted: AdmittedRequest) -> AdmittedUnit {
+    let rollback = book.admission_rollback(&admitted).unwrap();
+    let ctx = crate::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: admitted.unit(),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: crate::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let unit = crate::plane_driver::port::Unit {
+        ctx,
+        money: crate::plane_driver::port_money::PortMoney::new(
+            book.clone(),
+            Arc::from(Vec::<String>::new()),
+            Arc::new(crate::plane_driver::CoreAudit),
+        ),
+        journal: None,
+    };
+    AdmittedUnit::ordinary(admitted, unit, rollback).unwrap()
+}
+
+#[tokio::test]
+async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let context = allocation.context().clone();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Post)));
+    let book = money.clone();
+    let pending = Arc::new(allocation.into_pending(move |receipt| {
+        let admitted = book
+            .admit_existing(
+                receipt.begin().unwrap(),
+                Arc::from(Vec::<String>::new()),
+                FeeRefund::CallerStatus,
+                ExhaustionMode::FinishUnit,
+            )
+            .unwrap();
+        let admitted = ordinary_unit(&book, admitted);
+        assert_eq!(book.open_units(), 1);
+        drop(owner); // Actual physical reset wins after the grant and before DATA starts.
+        Ok(admitted)
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert_eq!(calls.0.load(Ordering::SeqCst), 1);
+    assert!(pending.execution().is_none());
+    assert!(binding.check_executing().is_err());
+    assert!(!context.effects_allowed());
+    assert!(!context.is_live());
+    assert_eq!(
+        money.open_units(),
+        0,
+        "failed physical start cannot strand its monetary Open"
+    );
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+    drop(task);
+    drop(pending);
 }

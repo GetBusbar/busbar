@@ -19,6 +19,42 @@ pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
     pub selected: Option<super::NativeRequestMoney>,
+    rollback: Mutex<Option<super::AdmissionRollback>>,
+}
+
+impl AdmittedUnit {
+    pub fn selected(
+        unit: Unit,
+        money: super::NativeRequestMoney,
+        rollback: super::AdmissionRollback,
+    ) -> Result<Self, super::NativeAdmissionError> {
+        let request = money.request().clone();
+        if unit.ctx.key != request.unit() || !rollback.accepts(&request) {
+            return Err(super::NativeAdmissionError::Declaration);
+        }
+        Ok(Self {
+            request,
+            unit,
+            selected: Some(money),
+            rollback: Mutex::new(Some(rollback)),
+        })
+    }
+    /// Keep exact money rollback armed until the same Task has accepted all admission proofs.
+    pub fn ordinary(
+        request: AdmittedRequest,
+        unit: Unit,
+        rollback: super::AdmissionRollback,
+    ) -> Result<Self, super::NativeAdmissionError> {
+        if unit.ctx.key != request.unit() || !rollback.accepts(&request) {
+            return Err(super::NativeAdmissionError::Declaration);
+        }
+        Ok(Self {
+            request,
+            unit,
+            selected: None,
+            rollback: Mutex::new(Some(rollback)),
+        })
+    }
 }
 
 enum Commit {
@@ -44,6 +80,7 @@ pub struct Pending {
     journal: Option<Arc<dyn super::HookJournal>>,
     channel_budget: Option<crate::channels::budget::UnitBudget>,
     route: Option<super::route_identity::OriginalPlaneRoute>,
+    current_rates: Option<crate::state::SelectedRateAdmission>,
 }
 
 impl Pending {
@@ -62,6 +99,7 @@ impl Pending {
             journal,
             channel_budget: None,
             route: None,
+            current_rates: None,
         }
     }
 
@@ -83,6 +121,7 @@ impl Pending {
             journal,
             channel_budget: None,
             route: None,
+            current_rates: None,
         }
     }
 
@@ -103,11 +142,30 @@ impl Pending {
     pub fn original_route(&self) -> Option<&super::route_identity::OriginalPlaneRoute> {
         self.route.as_ref()
     }
+    pub fn with_current_rates(mut self, rates: crate::state::SelectedRateAdmission) -> Self {
+        self.current_rates = Some(rates);
+        self
+    }
+    pub(crate) fn current_rates(&self) -> Option<&crate::state::SelectedRateAdmission> {
+        self.current_rates.as_ref()
+    }
     pub fn journal(&self) -> Option<Arc<dyn super::HookJournal>> {
         self.journal.clone()
     }
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
+    }
+    pub(crate) fn accept_admission(&self) -> Result<(), SessionError> {
+        let admitted = self.admitted.get().ok_or(SessionError::NotDriven)?;
+        let mut held = admitted.rollback.lock().unwrap();
+        let rollback = held.as_ref().ok_or(SessionError::NotDriven)?;
+        if !admitted.request.is_live() || !rollback.accepts(&admitted.request) {
+            return Err(SessionError::NotDriven);
+        }
+        held.take()
+            .expect("checked original rollback owner")
+            .commit();
+        Ok(())
     }
     pub(crate) fn routes(&self) -> Arc<RequestRoutes> {
         self.routes.clone()
@@ -143,6 +201,23 @@ impl Pending {
             .ok_or(SessionError::NotDriven)?;
         let mut members = members;
         let receipt = match wants {
+            Some(wants)
+                if wants
+                    .upstream
+                    .as_deref()
+                    .is_some_and(|name| self.routes.command_registration(name).is_some()) =>
+            {
+                allocation
+                    .registration(
+                        &self.routes,
+                        wants.model.as_deref(),
+                        wants
+                            .upstream
+                            .as_deref()
+                            .expect("classified actual command"),
+                    )
+                    .map_err(|_| SessionError::NotDriven)?
+            }
             Some(wants) => {
                 let members = members.as_deref_mut().ok_or(SessionError::NotDriven)?;
                 let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
@@ -158,6 +233,7 @@ impl Pending {
                 .local(&self.routes)
                 .map_err(|_| SessionError::NotDriven)?,
         };
+        let walk_selected = receipt.walk_key().is_some();
         let admitted = match commit {
             Commit::Ordinary(commit) => commit(receipt),
             Commit::Selected(commit) => commit(receipt, declaration),
@@ -181,7 +257,7 @@ impl Pending {
         self.admitted
             .set(admitted)
             .map_err(|_| SessionError::NotDriven)?;
-        if let Some(members) = members.filter(|_| wants.is_some()) {
+        if let Some(members) = members.filter(|_| walk_selected) {
             if !members.admit_request(&self.admitted.get().unwrap().request) {
                 return Err(SessionError::NotDriven);
             }
@@ -204,7 +280,11 @@ impl Pending {
 
 impl Books for Pending {
     fn ended(&self, ending: super::usage::Ending, usage: &super::usage::SessionUsage) {
-        if let Some(books) = self.books() {
+        if let Some(money) = self.admitted.get().and_then(|unit| unit.selected.as_ref()) {
+            if let Err(error) = money.work_ended(ending) {
+                tracing::warn!(?error, "selected work ending remains in original custody");
+            }
+        } else if let Some(books) = self.books() {
             books.ended(ending, usage);
         }
         if let Some(admitted) = self.admitted.get() {

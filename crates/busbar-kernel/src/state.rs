@@ -11,6 +11,11 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 pub mod activation;
+mod selected_rates;
+pub use selected_rates::SelectedRateAdmission;
+pub(crate) use selected_rates::{
+    SelectedCommitRejected, SelectedHeadroomRejected, SelectedRateRejected,
+};
 
 pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
@@ -387,6 +392,9 @@ pub struct App {
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
     pub cost: std::sync::Arc<crate::cost::CostModel>,
+    /// Current immutable selected-resource rules. Native candidate publication installs this
+    /// alongside its CostModel; absence never authorizes a selected attempt.
+    pub selected_policy: Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -807,6 +815,7 @@ impl App {
             governance,
             secret_resolver,
             cost,
+            selected_policy: None,
             plugins_dir,
             plugins_cfg,
             plugin_admission,

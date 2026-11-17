@@ -327,7 +327,7 @@ impl GovState {
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
         self.prepare_current_credentials(now);
-        self.standing_key_cached(claims, now)
+        self.standing_key_cached(claims, now).ok()
     }
 
     /// Schedule the existing refresh outside the publication admission guard. A refresh failure
@@ -341,10 +341,11 @@ impl GovState {
         &self,
         claims: &super::signing::TokenClaims,
         now: u64,
-    ) -> Option<Arc<VirtualKey>> {
+    ) -> Result<Arc<VirtualKey>, super::current_credential::CurrentCredentialRefusal> {
+        use super::current_credential::CurrentCredentialRefusal;
         if self.denylist.contains(&claims.sub) {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
-            return None;
+            return Err(CurrentCredentialRefusal::Revoked);
         }
 
         match self.lookup_by_sub(&claims.sub) {
@@ -359,31 +360,35 @@ impl GovState {
                     sub = %claims.sub,
                     "signed-token rejected: the key's self-serve subject is held"
                 );
-                None
+                Err(CurrentCredentialRefusal::SubjectHeld)
             }
             Some(key) if key_row_expired(&key, now) => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the key row's expires_at has passed"
                 );
-                None
+                Err(CurrentCredentialRefusal::KeyExpired)
             }
             Some(key)
                 if key.enabled
                     && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
             {
-                Some(key)
+                Ok(key)
             }
             Some(key) if key.enabled => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the binding was rotated after this token was minted"
                 );
-                None
+                Err(CurrentCredentialRefusal::RotatedKey)
             }
-            _ => {
+            Some(_) => {
                 tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
-                None
+                Err(CurrentCredentialRefusal::DisabledKey)
+            }
+            None => {
+                tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
+                Err(CurrentCredentialRefusal::MissingKey)
             }
         }
     }
