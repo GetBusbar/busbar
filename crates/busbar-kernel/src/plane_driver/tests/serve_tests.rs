@@ -304,6 +304,7 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
                 headers: &headers,
                 consumed: Some(&consumed),
                 principal: Some(&principal),
+                trust_authority: None,
             },
             Bytes::new(),
         )

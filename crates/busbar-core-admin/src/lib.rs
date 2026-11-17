@@ -41,6 +41,8 @@ pub use verbs::{required_scope, Verbs};
 #[path = "tests/table_matches_openapi.rs"]
 mod table_matches_openapi;
 
+pub use v1::json::generation::valid_idempotency_key;
+pub use v1::json::trust_inventory;
 pub use v1::service::mark_start;
 
 pub fn install() {

@@ -475,7 +475,7 @@ fn absent_default_demotion_owner_preserves_scoped_durability_without_claiming_le
         run(|l| r.s.trust_sight(&me, "cp", "fp", l)).value,
         svc::TRUST_NEW
     );
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -506,7 +506,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
     assert!(ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = ready(r.s.demotions.as_ref().unwrap().record.list());
@@ -526,13 +526,13 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     let me = caller("inst");
 
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
     );
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_QUARANTINED);
-    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    let row = ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("moved"));
     assert!(
         ready(r.s.demotions.as_ref().unwrap().record.list()).is_empty(),
@@ -547,7 +547,7 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
         "the kept approval, over the declared pin"
     );
     assert_eq!(
-        ready(fresh.trust_rule("inst/nobody", Ruling::Revoke)),
+        ready(fresh.trust_rule_reviewed("inst/nobody", Ruling::Revoke)),
         Err(TrustRefused::NoSuchKey)
     );
     let s = fresh.trust_unreached(&caller("nowhere"), "cp");
@@ -564,7 +564,7 @@ fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_
         svc::TRUST_NEW,
         "a first sighting"
     );
-    let row = ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    let row = ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(row.approved.as_deref(), Some("c1"));
     let fresh = restarted(&r);
     fresh.admit_sync("inst", trusting(Some("fp"))).unwrap();
@@ -590,8 +590,13 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         generation: 1,
     };
     let _grant =
-        r.s.grant_trust_decision(&me, ticket, "cp")
-            .expect("gated admin grant");
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test(),
+        )
+        .expect("gated admin grant");
     let tool = TrustKeyRef {
         counterparty: "cp",
         item: Some("t"),
@@ -599,8 +604,8 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
     assert_eq!(
         run(|later| r.s.trust_decide(&me, ticket, tool, Some("d1"), true, later)).value,
-        svc::UNDECIDED_UNPINNED,
-        "nothing sighted yet"
+        svc::UNDECIDED_STALE,
+        "nothing sighted yet: a reviewed digest that is not the current sighting is stale (r3 §4.1)"
     );
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
@@ -698,12 +703,12 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     );
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
     assert_eq!(r.s.trust_state(&me, "cp").value, svc::KEY_NEW, "sighted");
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later)).value,
         svc::TRUST_NEW
     );
-    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(
         run(|later| r.s.trust_sight_item(&me, "cp", "u", "e1", later)).value,
         svc::TRUST_NEW
@@ -740,7 +745,7 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -838,9 +843,9 @@ fn an_items_drift_demotion_outlives_a_restart() {
     let r = rig();
     let me = caller("inst");
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     run(|later| r.s.trust_sight_item(&me, "cp", "t", "d1", later));
-    ready(r.s.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     let serves = |s: &KernelServices| s.trust_serves(&me, "cp", Some("t"), None).value;
     assert_eq!(serves(&r.s), svc::DISTRUST_NONE);
     run(|later| r.s.trust_sight_item(&me, "cp", "t", "d2", later));
@@ -854,7 +859,7 @@ fn an_items_drift_demotion_outlives_a_restart() {
         svc::DISTRUST_NONE,
         "reverted after a restart, it stays refused"
     );
-    ready(fresh.trust_rule("inst/cp/t", Ruling::Approve)).unwrap();
+    ready(fresh.trust_rule_reviewed("inst/cp/t", Ruling::Approve)).unwrap();
     assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
 }
 
@@ -899,7 +904,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
-    ready(r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -1149,7 +1154,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit_sync("inst", trusting(Some("fp"))).unwrap();
-    ready(s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
+    ready(s.trust_rule_reviewed("inst/cp", crate::trust::book::Ruling::Approve)).unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
 
@@ -2175,12 +2180,15 @@ async fn a_trust_decision_the_store_refused_never_takes_effect() {
     r.observe(ORIGINAL).await;
     r.backend.refuse_commit.store(true, Ordering::SeqCst);
     assert!(matches!(
-        r.node.trust_rule(KEY, Ruling::Approve).await,
+        r.node.trust_rule_reviewed(KEY, Ruling::Approve).await,
         Err(TrustRefused::Store(_))
     ));
     assert_eq!(judged(&r.node, None), Err(Distrust::NotApproved));
     r.backend.refuse_commit.store(false, Ordering::SeqCst);
-    r.node.trust_rule(KEY, Ruling::Approve).await.unwrap();
+    r.node
+        .trust_rule_reviewed(KEY, Ruling::Approve)
+        .await
+        .unwrap();
     assert_eq!(judged(&r.node, None), Ok(()));
 }
 
@@ -2400,7 +2408,7 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
         svc::TRUST_NEW,
         "a first sighting on node a"
     );
-    ready(r.s.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    ready(r.s.trust_rule_reviewed("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         b.trust_unreached(&me, "cp").value,
         svc::TRUST_NEW,
@@ -2610,13 +2618,40 @@ fn trust_decision_authority_is_scoped_to_incarnation_ticket_counterparty_and_lif
     };
     run(|later| r.s.trust_sight(&me, "cp", "fp", later));
     assert_eq!(decide(&me, ticket, key).error, NO_TRUST_DECISION_GRANT);
-    assert!(r.s.grant_trust_decision(&me, Ticket::NONE, "cp").is_none());
-    assert!(r.s.grant_trust_decision(&me, ticket, "foreign").is_none());
+    assert!(r
+        .s
+        .grant_trust_decision(
+            &me,
+            Ticket::NONE,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none());
+    assert!(r
+        .s
+        .grant_trust_decision(
+            &me,
+            ticket,
+            "foreign",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none());
     let grant =
-        r.s.grant_trust_decision(&me, ticket, "cp")
-            .expect("admin call owns this grant");
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test(),
+        )
+        .expect("admin call owns this grant");
     assert!(
-        r.s.grant_trust_decision(&me, ticket, "cp").is_none(),
+        r.s.grant_trust_decision(
+            &me,
+            ticket,
+            "cp",
+            crate::host_services::TrustDecisionAuthority::for_test()
+        )
+        .is_none(),
         "cannot replace an outstanding grant"
     );
     assert_eq!(

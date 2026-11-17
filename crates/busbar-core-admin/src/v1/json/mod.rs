@@ -392,6 +392,10 @@ fn mount_one_admin_spec(
               Path(name): Path<String>,
               principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
               consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
+              // Inserted only by the admin gate, from its own admission verdict (r3 condition B-C1).
+              trust_authority: Option<
+            axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
+        >,
               axum::extract::RawQuery(query): axum::extract::RawQuery,
               headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
@@ -413,6 +417,7 @@ fn mount_one_admin_spec(
                     consumed: consumed.map(|axum::Extension(c)| c),
                     query,
                     serve: handle.load().serve_tables.clone(),
+                    trust_authority: trust_authority.map(|axum::Extension(granted)| granted),
                 };
                 finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }
@@ -692,6 +697,7 @@ mod config_document;
 mod config_tree;
 pub(crate) mod kinds;
 mod plane_input_schemas;
+pub mod trust_inventory;
 mod views;
 pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
