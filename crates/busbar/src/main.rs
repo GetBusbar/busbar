@@ -1450,6 +1450,8 @@ async fn run(
         .assemble(&app, &served, &owners)
         .unwrap_or_else(|error| die(error));
     root::serve::install_native_slots(&mut app, slots).unwrap_or_else(|error| die(error));
+    root::min3_candidate::install_initial(&mut app, Arc::clone(&native), Arc::clone(&services))
+        .unwrap_or_else(|error| die(error));
     let app = Arc::new(app);
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
@@ -1525,7 +1527,10 @@ async fn run(
             spawn(host);
         }
     }
-    let generation_workers = generation_workers.start();
+    let generation_workers =
+        root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
+            .unwrap_or_else(|error| die(error));
+    generation_workers.bind(&app_handle);
     app_handle.on_apply(Box::new(|app| {
         stage_native_inbound(app);
         let _ = root::inbound::publish(app);
