@@ -325,6 +325,65 @@ fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
         other.admitted_view(&admitted),
         Err(AdmissionViewUnavailable::ForeignGovernor)
     ));
+    let parent = money.parent_money(admitted.unit(), admitted.key()).unwrap();
+    let child_caller = Caller::for_test(Arc::from("seat"), KindCode::Plane);
+    let _child_lease = ctx
+        .generation()
+        .core()
+        .admit_native_invocation(&child_caller)
+        .unwrap();
+    assert!(ctx.generation().core().units().pre_admitted_for(
+        18,
+        &child_caller,
+        UnitRecord {
+            principal: Some(admitted.key().clone()),
+            depth: 1,
+        }
+    ));
+    let child_context = InvocationContext::new(ctx.generation().clone(), child_caller, 18).unwrap();
+    let child_walk = RequestWalk::new(&child_context).unwrap();
+    let child_receipt = RequestAllocation::new(child_context.clone(), parent.cost().clone(), 101)
+        .unwrap()
+        .forward(&routes, &child_walk, Some("q"))
+        .unwrap();
+    let child = money
+        .admit_existing_child(
+            child_receipt.begin().unwrap(),
+            &parent,
+            Arc::from([]),
+            super::super::money::FeeRefund::CallerStatus,
+        )
+        .unwrap();
+    assert_eq!(child.domain(), &RequestDomain::NamedPool("q".into()));
+    assert_eq!(
+        child.pool(),
+        admitted.pool(),
+        "child routing cannot replace the parent's admitted monetary scope"
+    );
+    assert_eq!(child.arrived(), admitted.arrived());
+    let child_view = gov.admitted_view(&child).unwrap();
+    assert_eq!(
+        child_view.rate_headroom,
+        Some(0.8),
+        "a child takes no second request admission"
+    );
+    assert!(child_view
+        .budgets
+        .iter()
+        .any(|bucket| bucket.pool.as_deref() == Some("p")));
+    assert!(child_view
+        .budgets
+        .iter()
+        .all(|bucket| bucket.pool.as_deref() != Some("q")));
+    money.settle_end_as(
+        child.unit(),
+        UnitEnd {
+            caller_status: 200,
+            cut: false,
+            refused_unspent: false,
+        },
+    );
+    child_context.retire();
     money.settle_end_as(
         admitted.unit(),
         UnitEnd {
