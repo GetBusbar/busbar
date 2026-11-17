@@ -12,6 +12,8 @@ pub(crate) mod hooks;
 
 mod source;
 
+pub(crate) use source::request_store;
+
 pub use source::{boot_nonce, process_generation, RequestIdentity, RequestSnapshot};
 
 #[cfg(test)]
@@ -272,6 +274,10 @@ pub fn explicitly_off() -> bool {
 }
 
 pub fn configure(buffer: Option<Duration>) {
+    // Complete off-path arena construction before a phase emitter can see effective retention.
+    if buffer.is_some() {
+        let _ = request_store::process();
+    }
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
         std::thread::spawn(move || init_with(buffer));
@@ -396,6 +402,11 @@ pub fn init_with(buffer: Duration) {
 }
 
 fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static source::Source> {
+    #[cfg(test)]
+    if let Some((entered, release)) = INSTALL_TEST_GATE.get() {
+        entered.wait();
+        release.wait();
+    }
     match metrics::set_global_recorder(source) {
         Ok(()) => {
             describe();
@@ -415,6 +426,9 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
     }
 }
 
+#[cfg(test)]
+static INSTALL_TEST_GATE: OnceLock<(std::sync::Barrier, std::sync::Barrier)> = OnceLock::new();
+
 const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3) {
     Some(n) => n,
     None => unreachable!(),
@@ -427,6 +441,7 @@ pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn init_for_test(buffer: Duration) {
+    let _ = request_store::process();
     let _ = ENABLED.set(true);
     init_with(buffer);
 }
@@ -610,17 +625,51 @@ pub fn recorder_installed() -> bool {
 pub fn snapshot() -> Option<Vec<Family>> {
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
-    let source = (*HANDLE.get()?)?;
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return None;
+    };
     crate::telemetry::flush_to_recorder();
-    Some(source.snapshot())
+    source.snapshot()
 }
 
 /// Bounded request-phase telemetry for an authorized internal reader. Missing/failed recorder
 /// initialization is unavailable, never an invented zero snapshot.
 pub fn request_snapshot(limit: usize) -> Option<RequestSnapshot> {
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return None;
+    };
+    source.request_snapshot(limit)
+}
+
+/// Covered projection/serialization storage is separate from recorder maintenance and workspace.
+pub fn snapshot_budgeted(
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<Option<crate::limits::output::Captured<Vec<Family>>>, crate::limits::output::OutputError>
+{
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
-    let source = (*HANDLE.get()?)?;
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
     crate::telemetry::flush_to_recorder();
-    source.request_snapshot(limit)
+    source.snapshot_budgeted(request)
+}
+
+/// The owned exact result keeps output credit after the recorder workspace becomes reusable.
+/// This is an internal producer, not a new Admin endpoint or authorization grant.
+pub fn request_snapshot_budgeted(
+    limit: usize,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    Option<crate::limits::output::Captured<RequestSnapshot>>,
+    crate::limits::output::OutputError,
+> {
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
+    source.request_snapshot_budgeted(limit, request)
 }
