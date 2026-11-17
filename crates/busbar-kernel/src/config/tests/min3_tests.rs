@@ -6,6 +6,29 @@ use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
+fn unknown_key_refresh_policy_keeps_adopted_default_and_minimum() {
+    assert_eq!(
+        parse_min3(&deploy("providers: {}\nmodels: {}\n"))
+            .unwrap()
+            .unknown_key_refresh_s,
+        30
+    );
+    for (written, expected) in [(0, 5), (4, 5), (5, 5), (17, 17)] {
+        let cfg = deploy(&format!(
+            "providers: {{}}\nmodels: {{}}\nauth: {{unknown_key_refresh_s: {written}}}\n"
+        ));
+        assert_eq!(parse_min3(&cfg).unwrap().unknown_key_refresh_s, expected);
+    }
+    for value in ["null", "-1", "1.5", "[]"] {
+        let yaml =
+            format!("providers: {{}}\nmodels: {{}}\nauth: {{unknown_key_refresh_s: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err()
+        );
+    }
+}
+
+#[test]
 fn issued_kind_grants_are_explicit_per_configured_provider() {
     let cfg = deploy("providers: {}\nmodels: {}\nidentity-providers:\n  none: {module: verifier}\n  empty: {module: verifier, issued_kinds: []}\n  allowed: {module: verifier, issued_kinds: [signed]}\n");
     let parsed = parse_min3(&cfg).unwrap();
