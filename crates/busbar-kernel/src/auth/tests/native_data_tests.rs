@@ -649,3 +649,62 @@ async fn native_data_reset_after_registration_closes_the_exact_context() {
     drop(pending);
     assert!(!context.is_live());
 }
+
+#[tokio::test]
+async fn native_data_uncertain_replay_cancellation_never_opens_execution() {
+    let f = fixture(true);
+    let (request, selected, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let mut completion = Box::pin(pending.complete());
+    assert!(futures::poll!(completion.as_mut()).is_pending());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+    drop(owner);
+    assert!(matches!(completion.await, Err(DataRefused::Cancelled)));
+    assert!(binding.check_executing().is_err());
+    assert_eq!(
+        f.replay.0.load(Ordering::SeqCst),
+        1,
+        "uncertain claim is never retried"
+    );
+}
+
+#[tokio::test]
+async fn native_data_publication_after_lease_retains_original_authority() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let pending = f.route.prepare(request, selected, cx).await.unwrap();
+    let mut completion = Box::pin(pending.complete());
+    assert!(futures::poll!(completion.as_mut()).is_pending());
+    binding.handle().swap(app()).await;
+    let authorized = completion.await.unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    assert!(allocation.context().is_live());
+    assert!(!allocation.context().effects_allowed());
+    drop(allocation);
+    assert!(binding.check_live().is_err());
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_data_final_physical_join_refuses_foreign_request() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let (authorization, _original_owner) = authorized.into_parts();
+    let (foreign, _selected, _, _foreign_owner) = arrival(&f, 2);
+    let binding = foreign.binding().clone();
+    assert!(matches!(
+        foreign.complete(authorization),
+        Err(crate::inbound::native::ArrivalRefusal::ForeignInput)
+    ));
+    assert!(binding.check_executing().is_err());
+}
