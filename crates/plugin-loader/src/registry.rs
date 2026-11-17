@@ -741,39 +741,6 @@ impl PluginRegistry {
         Ok(p)
     }
 
-    fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
-        self.resolve_kind(name_or_alias, "store", "back the governance store")
-    }
-
-    pub fn store_door(
-        &self,
-        name_or_alias: &str,
-    ) -> Result<busbar_contract::persistence::axis::StoreDoor, String> {
-        use busbar_contract::persistence::axis::StoreDoor;
-        let p = self.resolve_store(name_or_alias)?;
-        let no_door = || {
-            format!(
-                "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
-                p.key()
-            )
-        };
-        if let Some(entry) = p.entry {
-            return match entry {
-                LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
-                LinkedEntry::Door(_) => Err(no_door()),
-            };
-        }
-        let named = |e: String| format!("plugin '{}': {e}", p.key());
-        match p.manifest.stated_rendering().map_err(named)? {
-            Some(stated) => Ok(StoreDoor::Dropped {
-                file: p.file.clone(),
-                bytes: std::sync::Arc::clone(&p.lib_bytes),
-                stated,
-            }),
-            None => Err(no_door()),
-        }
-    }
-
     #[must_use]
     pub fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String {
         match self.resolve_kind(name_or_alias, kind, purpose) {

@@ -378,6 +378,10 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+The engine always mints `X-Request-Id`, whatever the client sends. A valid
+client id (1 to 128 of `[A-Za-z0-9._:-]`) comes back in `X-Client-Request-Id` and is kept on the
+audit rows as `client_request_id`. Join on that, or on `trace_id` when you send a W3C `traceparent`.
+
 `POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
 
 Instance names must be unique across configuration sections and must not collide with core

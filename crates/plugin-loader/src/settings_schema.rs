@@ -14,17 +14,23 @@ pub fn statement_schema(
     if schema.fmt != busbar_contract::abi::mechanism::call::BLOB_JSON || schema.flags != 0 {
         return Err("Statement settings_schema must be public JSON".into());
     }
-    if schema.bytes.len() > 256 * 1024 {
-        return Err("Statement settings_schema exceeds the 262144-byte cap".into());
+    authoritative_schema(&schema.bytes, "Statement settings_schema").map(Some)
+}
+
+/// The rules an authoritative settings schema meets, whatever carries it (a Statement's settings_schema, a
+/// MIN-3 describe's D_SCHEMA: IF r29 l.2764, core's D_SCHEMA validator): at most 262144 bytes of UTF-8 JSON
+/// that is a JSON Schema object or boolean. `what` names the carrier in the refusal.
+pub(crate) fn authoritative_schema(bytes: &[u8], what: &str) -> Result<String, String> {
+    if bytes.len() > 256 * 1024 {
+        return Err(format!("{what} exceeds the 262144-byte cap"));
     }
-    let text = std::str::from_utf8(&schema.bytes)
-        .map_err(|_| "Statement settings_schema is not UTF-8".to_string())?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| format!("Statement settings_schema is not valid JSON: {e}"))?;
+    let text = std::str::from_utf8(bytes).map_err(|_| format!("{what} is not UTF-8"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("{what} is not valid JSON: {e}"))?;
     if !value.is_object() && !value.is_boolean() {
-        return Err("Statement settings_schema must be a JSON Schema object or boolean".into());
+        return Err(format!("{what} must be a JSON Schema object or boolean"));
     }
-    Ok(Some(text.to_string()))
+    Ok(text.to_string())
 }
 
 pub const SECRET_NAME_HINTS: &[&str] = &[

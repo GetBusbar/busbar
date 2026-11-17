@@ -91,6 +91,9 @@ impl ChainedRecord for AuditEntry {
                 severity: self.severity.clone(),
                 message: self.message.clone(),
                 data: self.data.clone(),
+                client_request_id: self.client_request_id.clone(),
+                trace_id: self.trace_id.clone(),
+                operation_id: self.operation_id.clone(),
                 unconditional: self.unconditional.unwrap_or(false),
             };
             let suffix = match self.at_ms {

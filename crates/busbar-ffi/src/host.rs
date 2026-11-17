@@ -781,10 +781,7 @@ impl<K: Kind> Drop for Chain<'_, K> {
 impl Admitted {
     /// Cold: the image's describe items.
     pub fn describe(&self, host: &'static Host, lease: &mut OutLease) -> Status {
-        match self.header().entries().0 {
-            Some(describe) => describe(host, lease.arm()),
-            None => Status::FAULT,
-        }
+        describe_header(self.header(), host, lease)
     }
 
     /// Open an instance of kind `K` with `config` (kept for the open chain) and `flags`.
@@ -1479,5 +1476,21 @@ mod tests {
             2,
             "one insert CAS and one remove CAS at its cancel"
         );
+    }
+}
+
+/// The describe crossing over a header, admitted or still only opened (DES-443 r3 §3.2): one body for both.
+fn describe_header(header: &Plugin, host: &'static Host, lease: &mut OutLease) -> Status {
+    match header.entries().0 {
+        Some(describe) => describe(host, lease.arm()),
+        None => Status::FAULT,
+    }
+}
+
+impl crate::image::Opened {
+    /// Cold: an opened image's describe items, borrowed from the opened image (no admission; DES-443 r3). The
+    /// caller runs it on a permanent plugin worker and closes the image afterwards.
+    pub fn describe(&self, host: &'static Host, lease: &mut OutLease) -> Status {
+        describe_header(self.header(), host, lease)
     }
 }

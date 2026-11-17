@@ -202,57 +202,11 @@ impl ImagesBuilder {
     pub fn admit(&mut self, admitted: Admitted) -> Result<(), Refusal> {
         let identity = admitted.identity().to_owned();
         let (header, kind) = (admitted.plugin(), admitted.kind());
-        let named = |r: Refusal| r.named(&identity);
-        let lease = self.slots.alloc(
-            SlotRecord {
-                kind,
-                name: Arc::from(identity.as_str()),
-                scrub: Arc::new(Scrub::new()),
-                errors: &ErrorBook::None,
-                undeclared_warned: AtomicBool::new(false),
-            },
-            &crate::watchdog::describe_row(),
-        );
-        let mut buf = Pool::global().acquire(self.ceilings.max_out);
         let host = self.host;
-        let status = entry::guard(lease.slot(), ENTRY_DESCRIBE, &mut buf, |out| {
-            header.describe(host, out)
-        })
-        .ok_or_else(|| {
-            named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                "the entry stack is full",
-                "a describe entry",
-            ))
-        })?;
-        if !lease.is_live() {
-            return Err(named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe.ceiling",
-                "the describe entry passed its ceiling",
-                "an answer within 5 s",
-            )));
-        }
-        let answer = Answer::parse(status, buf.bytes()).map_err(|reason| {
-            named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                format!("{reason:?}"),
-                "a well-formed describe answer",
-            ))
-        })?;
-        if !answer.is_ok() {
-            return Err(named(Refusal::new(
-                RefusalCode::DescribeInvalid,
-                "describe",
-                format!("status {}", status.0),
-                "OK",
-            )));
-        }
-        let described = chains::decode_described(kind, answer.records()).map_err(named)?;
-        let kind_items =
-            decode_kind_items(&described, answer.records(), &identity).map_err(named)?;
+        let (described, kind_items) =
+            describe_with(&self.slots, self.ceilings.max_out, &identity, kind, |out| {
+                header.describe(host, out)
+            })?;
         let former: Vec<&str> = header
             .former_names()
             .split(',')
@@ -2287,7 +2241,7 @@ mod l2_tests {
 
 /// What `add` decodes from the kind's own describe items (validated: a bad item is `DescribeInvalid`), kept only
 /// once the image is admitted.
-struct KindItems {
+pub(crate) struct KindItems {
     sugars: Vec<SugarDecl>,
     issued: Vec<(Box<str>, IssuedShape)>,
     dialect_auth: Vec<plane::DialectAuthOwned>,
@@ -2578,3 +2532,103 @@ pub mod plane_sections;
 
 #[cfg(test)]
 mod needs_tests;
+
+/// The one describe sequence (DES-443 r3 §3.3), for an admitted image (`ImagesBuilder::admit`) and an opened one
+/// under inspection alike: a slot leased on the describe row, the crossing `cross` inside `entry::guard`, the
+/// ceiling liveness check, the answer parse and `decode_described` (D_SCHEMA held to core's validator) and the
+/// kind items. `cross` is the only difference: `Admitted::describe` or `Opened::describe`.
+pub(crate) fn describe_with(
+    slots: &Arc<SlotTable>,
+    max_out: usize,
+    identity: &str,
+    kind: KindCode,
+    cross: impl FnOnce(&mut busbar_ffi::host::OutLease) -> busbar_ffi::raw::Status,
+) -> Result<(Described, KindItems), Refusal> {
+    let named = |r: Refusal| r.named(identity);
+    let lease = slots.alloc(
+        SlotRecord {
+            kind,
+            name: Arc::from(identity),
+            scrub: Arc::new(Scrub::new()),
+            errors: &ErrorBook::None,
+            undeclared_warned: AtomicBool::new(false),
+        },
+        &crate::watchdog::describe_row(),
+    );
+    let mut buf = Pool::global().acquire(max_out);
+    let status = entry::guard(lease.slot(), ENTRY_DESCRIBE, &mut buf, cross).ok_or_else(|| {
+        named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            "the entry stack is full",
+            "a describe entry",
+        ))
+    })?;
+    if !lease.is_live() {
+        return Err(named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe.ceiling",
+            "the describe entry passed its ceiling",
+            "an answer within 5 s",
+        )));
+    }
+    let answer = Answer::parse(status, buf.bytes()).map_err(|reason| {
+        named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            format!("{reason:?}"),
+            "a well-formed describe answer",
+        ))
+    })?;
+    if !answer.is_ok() {
+        return Err(named(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe",
+            format!("status {}", status.0),
+            "OK",
+        )));
+    }
+    let described = chains::decode_described(kind, answer.records()).map_err(named)?;
+    let kind_items = decode_kind_items(&described, answer.records(), identity).map_err(named)?;
+    Ok((described, kind_items))
+}
+
+/// The checks `admit_described` applies after describe that read only the decoded describe, for an inspection
+/// (DES-443 r3 §3.3): D_ERRORS decoded into an owned book and dropped (no `Box::leak`), and the §10.6 ceiling
+/// row. NameConflict is not an inspection's concern (no configuration is admitted).
+pub(crate) fn inspect_checks(
+    identity: &str,
+    stamp_name: &[u8; 64],
+    described: &Described,
+) -> Result<(), Refusal> {
+    let bodies: Vec<&[u8]> = described
+        .items
+        .iter()
+        .filter(|(t, _)| *t == tag::D_ERRORS)
+        .map(|(_, b)| b.as_slice())
+        .collect();
+    drop(decode_errors(&bodies, || {
+        crate::scan::error_identity(stamp_name)
+    }));
+    let declared: Vec<(u64, u64)> = described
+        .items
+        .iter()
+        .filter(|(t, _)| *t == tag::D_CEILING)
+        .filter_map(|(t, b)| {
+            let rec = busbar_plugin_abi::records::Rec { tag: *t, body: b };
+            rec.pod::<CeilingRec>().ok().map(|c| (c.method, c.micros))
+        })
+        .collect();
+    let blocking = described.kind == KindCode::Store
+        && described.facts & busbar_plugin_abi::store::F_BLOCKING_FILE != 0;
+    crate::watchdog::ceiling_row(&declared, blocking)
+        .map(drop)
+        .map_err(|have| Refusal {
+            code: RefusalCode::DescribeInvalid,
+            field: "describe.ceiling",
+            plugin: Some(identity.to_owned()),
+            have,
+            want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
+            link: None,
+        })
+}

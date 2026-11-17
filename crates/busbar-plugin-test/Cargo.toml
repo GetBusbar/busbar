@@ -11,11 +11,11 @@ license = "Apache-2.0"
 # `cases.rs` fails if a file under `tests/` is wired nowhere.
 autotests = false
 
-# The host's own fixtures: one store and one transport, SDK-authored; each test pulls in its
-# linked twin with #[path].
+# The host's own fixtures: a MIN-3 store (plugin!) and an SDK-authored transport; each test pulls in
+# its linked twin with #[path].
 [[example]]
-name = "store_fixture"
-path = "tests/fixtures/store_fixture.rs"
+name = "native_store_fixture"
+path = "tests/fixtures/native_store_fixture.rs"
 crate-type = ["cdylib"]
 
 [[example]]

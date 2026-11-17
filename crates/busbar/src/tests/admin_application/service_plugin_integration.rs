@@ -111,20 +111,15 @@ impl PluginAdmission for InventoryReads {
 async fn install_answers_the_admissions_refusals_in_their_classes() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -233,20 +228,15 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
 async fn install_catalog_remove_roundtrip() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -405,20 +395,15 @@ async fn install_catalog_remove_roundtrip() {
 async fn remove_filesystem_failure_is_internal_error() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -538,20 +523,15 @@ async fn remove_filesystem_failure_is_internal_error() {
 async fn catalog_repeat_gets_reuse_the_cached_scan() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -716,20 +696,15 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
 async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -869,20 +844,15 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
 async fn list_plugins_store_single_flights_concurrent_misses() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1007,20 +977,15 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
 async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1147,20 +1112,15 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
 async fn list_plugins_store_scan_does_not_park_the_reactor() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1298,20 +1258,15 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
 async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1465,20 +1420,15 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
 async fn the_store_catalog_heads_with_the_linked_store_rows() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1591,20 +1541,15 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
 async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1707,20 +1652,15 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
 async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -1864,20 +1804,15 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
 async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -2053,20 +1988,15 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
 async fn rollback_reads_the_target_and_merges_pins() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",
@@ -2255,20 +2185,15 @@ async fn rollback_reads_the_target_and_merges_pins() {
 async fn install_filesystem_failures_are_internal_errors() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-plugin-policy-{}",

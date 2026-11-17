@@ -173,19 +173,13 @@ async fn build_application(
     crate::dist_root_install::install();
 
     let store_library = crate::root::test_plugins::application_store_library();
-    let stated = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&stated)
-        .expect("the actual store statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&store_library).name;
     let library = std::fs::read(&store_library).expect("the actual store library reads");
-    let mut manifest = plugins::manifest(
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(stated));
     let instance = busbar_kernel::door::op_id().counter();
     let directory = plugins::scratch(&format!("oauth-application-{instance}"));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
