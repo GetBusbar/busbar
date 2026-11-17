@@ -255,7 +255,8 @@ fn delegate() -> LocalSigner {
 /// A certificate line of node 21 at chain seq 1 (WAL 1, genesis), certifying [`delegate`], signed
 /// by `by`.
 fn certificate(by: &LocalSigner) -> Line {
-    let public = delegate().public_key();
+    let delegate = delegate();
+    let public = delegate.public_key();
     let mut certificate = NotaryKeyCertificate {
         key_id: public.key_id.to_string(),
         sig_alg: public.alg.as_str().to_owned(),
