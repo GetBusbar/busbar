@@ -178,6 +178,15 @@ impl Opened {
         core::str::from_utf8(names.get())
     }
 
+    /// The first null header or table entry, named, without admitting the image (DES-443 r3: inspect checks it
+    /// on the opened image, then closes it). The same check `admit` runs; nothing it reads outlives the call.
+    pub fn null_field(&self) -> Option<&'static str> {
+        Admitted {
+            plugin: self.plugin,
+        }
+        .null_field()
+    }
+
     /// Exit a: the image is admitted and never unloaded (I13). A null header or table entry refuses it
     /// and hands the image back for `close`.
     pub fn admit(self) -> Result<Admitted, (Opened, ImageError)> {

@@ -1452,6 +1452,18 @@ pub struct NativeStores {
     registry: crate::instance::Registry,
 }
 
+/// The test binary's one set of process plugin resources (a process installs its plugin sinks once).
+///
+/// # Errors
+/// The resources could not start.
+pub fn shared_process() -> Result<&'static crate::process::ProcessResources, &'static String> {
+    static PROCESS: std::sync::OnceLock<Result<crate::process::ProcessResources, String>> =
+        std::sync::OnceLock::new();
+    PROCESS
+        .get_or_init(crate::process::ProcessResources::new)
+        .as_ref()
+}
+
 impl NativeStores {
     /// One registry over `admitted`, binding through `binder` (the kernel's `plugin_config::Binder`).
     ///
@@ -1461,19 +1473,14 @@ impl NativeStores {
         admitted: crate::admit::Admitted,
         binder: Arc<dyn busbar_ports::binder::ConfigBinder>,
     ) -> Result<Self, crate::refusal::Refusal> {
-        static PROCESS: std::sync::OnceLock<Result<crate::process::ProcessResources, String>> =
-            std::sync::OnceLock::new();
-        let process = PROCESS
-            .get_or_init(crate::process::ProcessResources::new)
-            .as_ref()
-            .map_err(|error| {
-                crate::refusal::Refusal::new(
-                    crate::refusal::RefusalCode::Integrity,
-                    "process",
-                    error.clone(),
-                    "process resources",
-                )
-            })?;
+        let process = shared_process().map_err(|error| {
+            crate::refusal::Refusal::new(
+                crate::refusal::RefusalCode::Integrity,
+                "process",
+                error.clone(),
+                "process resources",
+            )
+        })?;
         let mut images = crate::instance::ImagesBuilder::new(
             &busbar_plugin_abi::host_side::host_vt::HOST,
             Arc::clone(process.slots()),

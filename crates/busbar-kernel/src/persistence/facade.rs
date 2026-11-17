@@ -13,7 +13,7 @@ use busbar_contract::persistence::{
     ReadResult, MAX_SLOTS,
 };
 
-use super::commit::{Attempt, State, SubmitResult};
+use super::commit::{Attempt, NoEffectCause, State, SubmitResult};
 
 /// At most this many in-doubt attempts are resubmitted per settle tick.
 pub const SETTLE_PER_TICK: usize = 64;
@@ -116,6 +116,8 @@ pub struct CoreStore {
     exhausted: AtomicBool,
     pub(super) claim_maintenance: Mutex<super::claims::Maintenance>,
     pub(super) first_start: std::sync::OnceLock<Arc<super::first_start::FirstStart>>,
+    /// Receipt identities in generations, and their sweeps (DES-264).
+    pub(super) record_ops: super::record_ops::RecordOps,
 }
 
 impl CoreStore {
@@ -195,6 +197,7 @@ impl CoreStore {
             limits,
             claim_maintenance: Mutex::default(),
             first_start: std::sync::OnceLock::new(),
+            record_ops: super::record_ops::RecordOps::default(),
             exhausted: AtomicBool::new(false),
             pending: Mutex::new(Pending {
                 authority,
@@ -451,6 +454,23 @@ impl CoreStore {
     ) -> Result<Submission, AccessError> {
         let (id, attempt) = self.register(candidate, None)?;
         self.drive(id, attempt).await
+    }
+
+    /// [`CoreStore::submit`], also answering why a [`SubmitResult::NoEffect`] applied nothing
+    /// (#319 r4 §7.1): the record-format driver may shrink a page only for a backend refusal of a
+    /// send with no earlier uncertainty, never for a fence or a slot invariant the facade reports
+    /// as the same `Failure::Refused`.
+    pub(crate) async fn submit_traced(
+        &self,
+        candidate: PreparedCandidate,
+    ) -> Result<(Submission, Option<NoEffectCause>), AccessError> {
+        let (id, attempt) = self.register(candidate, None)?;
+        let submission = self.drive(id, attempt.clone()).await?;
+        let cause = match submission.result {
+            SubmitResult::NoEffect(_) => attempt.no_effect_cause(),
+            _ => None,
+        };
+        Ok((submission, cause))
     }
 
     /// [`CoreStore::submit`] for a plain write made under `domain`: the attempt is registered

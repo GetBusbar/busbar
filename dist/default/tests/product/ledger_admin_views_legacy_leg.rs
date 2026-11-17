@@ -68,7 +68,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";

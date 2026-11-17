@@ -53,7 +53,7 @@ const fn name_ok(n: &str) -> bool {
 }
 
 const _: () = {
-    assert!(b::API == 2, "busbar-crypto-backend API mismatch");
+    assert!(b::API == 3, "busbar-crypto-backend API mismatch");
     // Required, no default (IF §5.2 round 13): a backend that never states it does not build.
     let _: bool = b::EXTERNAL_PLUGINS;
     assert!(
@@ -69,6 +69,8 @@ const _: () = {
     let _: fn() -> R<()> = b::self_test;
     let _: fn(bool, bool) -> R<()> = b::approve_signer;
     let _: fn(&[u8]) -> [u8; 32] = b::sha256;
+    let _: fn(&[u8]) -> R<[u8; 32]> = b::sha256_checked;
+    let _: fn(&[u8; 65]) -> R<()> = b::ecdsa_p256::validate_public_key;
     let _: fn(&[u8]) -> [u8; 48] = b::sha384;
     let _: fn(&[u8]) -> [u8; 64] = b::sha512;
     let _: fn() -> b::Sha256State = b::Sha256State::new;

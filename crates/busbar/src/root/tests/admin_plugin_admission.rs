@@ -244,7 +244,6 @@ async fn serve_admission_with_inputs(
     let core = configured
         .core_store_handle()
         .expect("native admission Store");
-    configured.set_admin_token(Some("admintok"));
     configured.set_signing_key(Some(
         busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
             &[9u8; 32],
@@ -1321,6 +1320,67 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .find(|p| p["name"] == linked_store_key())
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
+/// DES-443 r3 §5: every inspection, POST /plugins/inspect and GET /plugins/{file}/schema, writes one
+/// `plugin.inspect` audit row carrying the requesting actor and how it ended (`manifest`: shown from its manifest,
+/// never loaded).
+#[tokio::test]
+async fn each_inspection_is_audited_with_its_actor() {
+    if !isolated_card_case("each_inspection_is_audited_with_its_actor").await {
+        return;
+    }
+    crate::dist_root_install::install();
+    let dir = tmp_plugins_dir("inspect-audit");
+    let mut m = test_manifest("acme-store-audited", "audited", "acme", "1.0.0");
+    m.settings_schema = Some(serde_json::json!({"type": "object"}).to_string());
+    let tarball = unsigned_tarball(m, b"junk lib bytes for acme-store-audited");
+    std::fs::write(dir.join("acme-store-audited.tar.gz"), &tarball).unwrap();
+    let hook_env = scanned_hook_env(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let client = reqwest::Client::new();
+
+    let (status, body) = inspect(addr, &tarball).await;
+    assert_eq!(status, 200, "inspect answers: {body}");
+    let digest = crate::root::loader::sign::sha256_hex(&tarball);
+    let schema = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/plugins/acme-store-audited.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(schema.status().as_u16(), 200);
+
+    let audit: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/audit"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows: Vec<&serde_json::Value> = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "plugin.inspect")
+        .collect();
+    assert_eq!(rows.len(), 2, "one row per inspection: {audit}");
+    for row in rows {
+        let principal = row["principal"].as_str().unwrap_or("");
+        assert!(
+            !principal.is_empty() && principal != "anonymous",
+            "the row carries the actor: {row}"
+        );
+        assert_eq!(row["resource"], "plugin:acme-store-audited", "{row}");
+        assert_eq!(row["outcome"], "manifest", "{row}");
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();

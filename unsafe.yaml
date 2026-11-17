@@ -10,7 +10,7 @@ ffi:
   path: crates/busbar-ffi
   # Every `unsafe` token in the crate (tests and doc code included) plus every allow/expect(unsafe_code).
   # Measured by W1-U0; it never rises (against the merge base and origin/dev) and only falls.
-  total: 101
+  total: 92
   # The only files the crate may hold, each with its own pinned count: no file is added, and unsafe
   # cannot move between files without the owner's approval of this file.
   files:
@@ -18,11 +18,10 @@ ffi:
     src/raw.rs: { tokens: 10, reason: "the three non-empty view reads, the Out write view, the RawLent read, the view-argument read, the ChainBytes read and Send + Sync for Shared (the one impl pair the views and the Plugin header derive Send/Sync from); its allow" }
     src/header.rs: { tokens: 2, reason: "export!'s #[unsafe(no_mangle)]; its allow" }
     src/vt.rs: { tokens: 10, reason: "the nine instance-taking entry fn-pointer aliases (EntryFn0-5, ResumeFn, CancelFn, CloseFn); its allow" }
-    src/shim.rs: { tokens: 47, reason: "enter (def and block); each of the 21 instance shims' def and enter block; the session and resume slot lookups; close's drop; its allow" }
-    src/slots.rs: { tokens: 12, reason: "the slot write, get_mut (def and body), the slot take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks), the C-CLOSE-PARKED test's two blocks; its allow" }
+    src/shim.rs: { tokens: 41, reason: "enter (def and block); instance shims' definitions and enter blocks; close's drop; its allow. Slot primitives are private safe calls under I6." }
+    src/slots.rs: { tokens: 11, reason: "the raw slot write, exclusive value borrow and take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks), the C-CLOSE-PARKED test's two blocks; its allow" }
     src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
     src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
-    tests/loom_slots.rs: { tokens: 2, reason: "C-SLOT-STALE: the two get_mut checks under loom" }
   # Exactly these dependencies, each with its role: always, host (optional, feature `host`), or the cfg.
   dependencies:
     zerocopy: always
@@ -225,8 +224,6 @@ interim:
   crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_door_root.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/listener_framed_tests.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/listener_plan.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/secret_source.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/serve_datagram.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }

@@ -479,6 +479,7 @@ concurrency|lane-atcapacity|n4
 concurrency|ok|n8
 config.migrate|LAW0-MIG-OPERATOR-14X|boot
 config.migrate|LAW0-MIG-OPERATOR-INLINE|boot
+config.migrate|LAW0-MIG-PLANE-MCP-LITERALS|boot
 config.migrate|v0.10.0|migrate
 config.migrate|v0.10.0|validate-migrated
 config.migrate|v0.11.0|migrate

@@ -14,11 +14,11 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::state::App;
 
 use crate::v1::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
-    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
-    KeyUsageView, ModelUsageView, ModelView, NamedDefView, NodeView, Page, PluginView,
-    PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, TopologyInfo,
-    UsageBreakdown, UsageView, UsageWindow,
+    AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
+    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
+    UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
@@ -342,18 +342,21 @@ pub mod read_path_money {
     pub use crate::v1::contract::UsageBreakdown;
 }
 
-static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
-static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Epoch milliseconds the process started, stamped once by [`mark_start`].
+static PROCESS_START_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 pub fn mark_start() {
-    let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
+    let _ = PROCESS_START_MS.set(busbar_kernel::store::now_ms());
 }
 
 /// Epoch seconds the process started, once [`mark_start`] ran.
 pub(crate) fn started_at() -> Option<u64> {
-    PROCESS_START_EPOCH.get().copied()
+    started_at_ms().map(|ms| ms / 1000)
+}
+
+/// Epoch milliseconds the process started, once [`mark_start`] ran (`/info.started_at_ms`).
+pub(crate) fn started_at_ms() -> Option<u64> {
+    PROCESS_START_MS.get().copied()
 }
 
 struct CatalogCacheEntry {
@@ -1230,6 +1233,8 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+#[cfg(test)]
+pub(crate) use operations::refused as admission_refused;
 pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {

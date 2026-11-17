@@ -19,6 +19,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 pub use super::claims::{Error as ClaimError, Outcome as ClaimOutcome, PendingClaim};
 pub use super::host_records::{Error, Outcome};
+pub use super::record_ops::{HeldOp, Op};
 
 /// Canonical destination identity for a fenced host-owned migration. The caller
 /// supplies the authenticated legacy instance and unscoped logical suffix; this
@@ -122,7 +123,8 @@ pub enum Mutation {
 }
 #[derive(Debug)]
 pub struct Request {
-    pub op_id: [u8; 16],
+    /// The receipt identity: a held class-M op, or the class-D principal-transition op.
+    pub op: Op,
     pub predicates: Vec<Predicate>,
     pub mutations: Vec<Mutation>,
 }
@@ -246,7 +248,7 @@ impl ScopedStore {
     }
     /// Prepare a guarded deletion before awaiting; retain this request across
     /// cancellation and resubmit it to rediscover the original pending attempt.
-    pub fn prepare_delete_exact(
+    pub async fn prepare_delete_exact(
         &self,
         schema: &str,
         key: &[u8],
@@ -255,7 +257,7 @@ impl ScopedStore {
         // Authorization is checked before returning an operation capability.
         self.owner()?.address(schema, &self.key(key))?;
         Ok(Request {
-            op_id: self.store.next_id()?.operation,
+            op: self.store.record_op().await?.into(),
             predicates: vec![Predicate {
                 schema: schema.into(),
                 key: key.into(),
@@ -266,6 +268,10 @@ impl ScopedStore {
                 key: key.into(),
             }],
         })
+    }
+    /// A class-M receipt identity for one request of this scope (DES-264): the request holds it.
+    pub async fn record_op(&self) -> Result<Op, Error> {
+        Ok(self.store.record_op().await?.into())
     }
     pub async fn page(
         &self,
@@ -368,7 +374,7 @@ impl ScopedStore {
             })
             .collect::<Result<Vec<_>, Error>>()?;
         owner
-            .conditional_native_timed(request.op_id, predicates, mutations, time)
+            .conditional_native_timed(&request.op, predicates, mutations, time)
             .await
     }
     /// Register this host scope with the attachment's shared maintenance owner.

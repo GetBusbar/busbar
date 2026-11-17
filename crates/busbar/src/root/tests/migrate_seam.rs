@@ -6,6 +6,17 @@
 use super::*;
 
 #[test]
+fn native_refusal_uses_its_own_verdict_and_full_width_count() {
+    assert_eq!(
+        native_admission_refusal(9, Err("key resolver refused".to_owned())),
+        "CONFIG: key resolver refused"
+    );
+    let message = native_admission_refusal(u64::MAX, Ok(false));
+    assert!(message.contains("18446744073709551615"));
+    assert!(message.contains("Set `auth.signing_key`"));
+}
+
+#[test]
 fn the_stamp_decides_step_one() {
     assert_eq!(admit(0, false, false), Ok(Stamp::Older(0)));
     assert_eq!(admit(CONFIG_FORMAT, false, false), Ok(Stamp::Current));
@@ -374,6 +385,7 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let settled = [busbar_migrate::Settled {
         placement: busbar_migrate::BagPlacement::Settings,
         allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index: 0,
         path: vec!["store".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -457,8 +469,9 @@ mod records_step {
 
     fn all(store: &Store, ns: NamespaceId) -> Vec<(Vec<u8>, Vec<u8>)> {
         store
-            .scan(ns, &[], 4096)
+            .scan(ns, None, 4096)
             .unwrap()
+            .rows
             .into_iter()
             .map(|(k, v)| (k, v.to_vec()))
             .collect()

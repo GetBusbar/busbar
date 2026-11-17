@@ -16,8 +16,8 @@
 //! under ([`Kind::root`]) and off the plane registry, never off a plugin name: the plugin an
 //! instance runs appears only as data, in its `plugin` member.
 //!
-//! Every `config` passes through the secret rule (§14.2). `/info.kinds_revision` is the `/kinds`
-//! ETag: a digest over every (category, kind, instance, image, config digest), kept once per
+//! Every `config` passes through the secret rule (§14.2). The `/kinds` ETag is the discovery
+//! revision: a digest over every (category, kind, instance, image, config digest), kept once per
 //! generation.
 
 use std::collections::HashMap;
@@ -102,7 +102,7 @@ pub(crate) struct Instance {
     pub(crate) kind: String,
     pub(crate) id: String,
     /// The module the operator configured it with: data, read for `plugin{}` and the image only.
-    module: Option<String>,
+    pub(super) module: Option<String>,
     /// Its configuration under the secret rule.
     pub(crate) config: Value,
     plane: Option<&'static PlaneDecl>,
@@ -253,7 +253,7 @@ fn digest_of(value: &Value) -> String {
 }
 
 /// The image an instance runs, by the SHA-256 of its admitted archive, else its version.
-fn image(app: &App, instance: &Instance) -> String {
+pub(super) fn image(app: &App, instance: &Instance) -> String {
     let Some(module) = instance.module.as_deref() else {
         return String::new();
     };
@@ -268,17 +268,18 @@ fn image(app: &App, instance: &Instance) -> String {
 /// built from.
 fn revision(app: &App, instance: &Instance) -> String {
     sha(format!(
-        "{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         instance.category,
         instance.kind,
         instance.id,
         image(app, instance),
-        digest_of(&instance.config)
+        digest_of(&instance.config),
+        super::generation::config_etag(app)
     )
     .as_bytes())
 }
 
-/// The digest over every instance of `app`: `/info.kinds_revision` and the `/kinds` ETag.
+/// The digest over every instance of `app`: the `/kinds` ETag.
 fn compute_revision(app: &App) -> String {
     let instances = inventory(app);
     let mut text = String::new();
@@ -339,6 +340,7 @@ fn kinds_of(instances: &[Instance]) -> Vec<(String, &'static str)> {
 /// arrive with the core instances (MR15) and plugin views with MIN-3 (MR16).
 fn views_of(instance: &Instance) -> Vec<Descriptor> {
     let declared = match (instance.category, instance.id.as_str()) {
+        ("core", "process") => vec![nodes_descriptor()],
         ("core", "routing") => vec![pools_descriptor()],
         ("core", "trust") => super::trust_inventory::descriptors(),
         _ => return Vec::new(),
@@ -354,6 +356,28 @@ fn views_of(instance: &Instance) -> Vec<Descriptor> {
             .join("; ")
     );
     kept
+}
+
+/// The `core/process` view `nodes` (ADMIN-API-1.6-ONE-MODEL §10.1): every node the Store holds a lease
+/// row for, so a client can prove it reads the whole deployment. Node ids, roles and lease times are
+/// topology, so they are read here with `kinds:read`, not on `/info`.
+fn nodes_descriptor() -> Value {
+    busbar_contract::json::json!({
+        "view": "nodes",
+        "title": "Nodes",
+        "shape": "table",
+        "fields": [
+            {"name": "node_id", "label": "Node", "type": "string", "unit": null, "format": null, "role": "id"},
+            {"name": "role", "label": "Role", "type": "string", "unit": null, "format": null, "role": "dimension"},
+            {"name": "state", "label": "Lease", "type": "string", "unit": null, "format": null, "role": "status"},
+            {"name": "started_at_ms", "label": "Started", "type": "time", "unit": null, "format": null, "role": "time"},
+            {"name": "last_seen_at_ms", "label": "Last seen", "type": "time", "unit": null, "format": null, "role": "time"}
+        ],
+        "default_sort": "node_id",
+        "filters": ["node_id", "role"],
+        "time": null,
+        "step_options": []
+    })
 }
 
 fn pools_descriptor() -> Value {
@@ -406,6 +430,26 @@ async fn view_items(
             Some(Ok(rows)) => Ok(rows),
             Some(Err(why)) => Err(ViewRefused::Unavailable(why.0)),
         };
+    }
+    if instance.category == "core" && instance.id == "process" && view == "nodes" {
+        let Some(live) = busbar_kernel::persistence::boot_identity::live() else {
+            return Err(ViewRefused::Unavailable(
+                "this process has not booted its Store yet".into(),
+            ));
+        };
+        let nodes = live.nodes().await.map_err(|_| ViewRefused::Failed)?;
+        return Ok(nodes
+            .into_iter()
+            .map(|node| {
+                busbar_contract::json::json!({
+                    "node_id": node.node_id,
+                    "role": node.role,
+                    "state": node.state,
+                    "started_at_ms": node.started_at.saturating_mul(1000),
+                    "last_seen_at_ms": node.last_seen_at.saturating_mul(1000),
+                })
+            })
+            .collect());
     }
     if instance.category == "core" && instance.id == "routing" && view == "pools" {
         let pools = crate::v1::service::AdminService::new(app)
@@ -565,7 +609,7 @@ fn status_of(app: &App, trust: Option<&TrustReadout>, instance: &Instance) -> Va
 
 /// The instance's `D_SCHEMA`, as declared, with `x-sensitive: true` beside every
 /// `x-busbar-secret`.
-fn config_schema(app: &App, instance: &Instance) -> Value {
+pub(super) fn config_schema(app: &App, instance: &Instance) -> Value {
     let Some(module) = instance.module.as_deref() else {
         return Value::new_null();
     };
@@ -800,6 +844,20 @@ fn list_row(app: &App, trust: Option<&TrustReadout>, instance: &Instance) -> Val
 /// The `core/trust` state schema's component name in the embedded document (r3 §3.3).
 pub(crate) const CORE_STATE_TRUST: &str = "CoreState_trust";
 
+/// The `core/durability` state schema's component name in the embedded document.
+pub(crate) const CORE_STATE_DURABILITY: &str = "CoreState_durability";
+
+/// The `core/durability` state (ADMIN-API-1.6-ONE-MODEL section 10.1): `store.persistence` is whether
+/// configuration changes made through the API are kept in the Store and survive a restart (`false`
+/// when the configuration is locked and API configuration changes are refused).
+fn durability_state(app: &App) -> Value {
+    let mut store = Map::new();
+    store.insert("persistence", Value::from(app.overlay_path.is_some()));
+    let mut state = Map::new();
+    state.insert("store", Value::from(store));
+    Value::from(state)
+}
+
 /// One component schema of the embedded `openapi.json`, with its `$ref`s to other components
 /// inlined so a Describe `state_schema` stands alone (r5 §5.5); `null` when the embedded document
 /// does not carry it.
@@ -869,6 +927,9 @@ pub(crate) fn describe_of(app: &App, trust: Option<&TrustReadout>, instance: &In
     if instance.category == "core" && instance.id == "trust" {
         members.insert("state", super::trust_inventory::state(trust));
         members.insert("state_schema", embedded_schema(CORE_STATE_TRUST));
+    } else if instance.category == "core" && instance.id == "durability" {
+        members.insert("state", durability_state(app));
+        members.insert("state_schema", embedded_schema(CORE_STATE_DURABILITY));
     } else {
         members.insert("state", Value::new_null());
         members.insert("state_schema", Value::new_null());
@@ -884,7 +945,9 @@ pub(crate) fn describe_of(app: &App, trust: Option<&TrustReadout>, instance: &In
                 .collect::<Vec<_>>(),
         ),
     );
-    members.insert("actions", Value::from(Vec::<Value>::new()));
+    let (management, actions) = super::instance_settings::discovery(app, instance);
+    members.insert("management", management);
+    members.insert("actions", actions);
     Value::from(members)
 }
 
@@ -948,7 +1011,7 @@ fn page(items: Vec<Value>, next_cursor: Option<String>) -> Value {
 /// `GET /kinds[?category=]`.
 pub(crate) async fn list(
     State(handle): State<Arc<AppHandle>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Some(refused) = refuse_unknown(&q, LIST_PARAMS) {
@@ -1086,7 +1149,11 @@ pub(crate) async fn describe(
     State(handle): State<Arc<AppHandle>>,
     Path((kind, id)): Path<(String, String)>,
 ) -> Response {
-    let app = super::response_snapshot(handle.load()).await;
+    // The action's config ETag and its source/schema must describe one publication. An App's
+    // durable-generation counter is shared across snapshots; retaining only its Arc is not a
+    // read fence. Use the existing config writer lock for this bounded metadata projection.
+    let _guard = busbar_kernel::config::transaction::effect_lock().await;
+    let app = handle.load();
     match find(inventory(&app), &kind, &id) {
         Ok(instance) => send(&describe_of(&app, handle.trust(), &instance), None),
         Err(response) => *response,
@@ -1276,11 +1343,9 @@ pub(crate) mod doc {
     documented!(KindsPage, {
         "type": "object",
         "required": ["items", "next_cursor"],
-        "additionalProperties": false,
         "properties": {
             "items": {"type": "array", "items": {
                 "type": "object",
-                "additionalProperties": false,
                 "required": ["kind", "category", "display", "instance_count", "views", "record_attributes", "descriptors_uniform", "etag"],
                 "properties": {
                     "kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
@@ -1300,11 +1365,9 @@ pub(crate) mod doc {
     documented!(InstancesPage, {
         "type": "object",
         "required": ["items", "next_cursor"],
-        "additionalProperties": false,
         "properties": {
             "items": {"type": "array", "items": {
                 "type": "object",
-                "additionalProperties": false,
                 "required": ["id", "name", "plugin", "state", "labels", "etag"],
                 "properties": {
                     "id": {"type": "string"},
@@ -1325,8 +1388,7 @@ pub(crate) mod doc {
 
     documented!(Describe, {
         "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "name", "plugin", "labels", "etag", "config", "config_schema", "state", "state_schema", "runtime", "health", "links", "views", "actions"],
+        "required": ["id", "name", "plugin", "labels", "etag", "config", "config_schema", "state", "state_schema", "runtime", "health", "links", "views", "actions", "management"],
         "properties": {
             "id": {"type": "string"},
             "name": {"type": "string"},
@@ -1341,13 +1403,13 @@ pub(crate) mod doc {
             "health": {"type": "array", "items": {"type": "object", "required": ["check", "status", "observed_at", "detail", "text", "plugin_diag"]}},
             "links": {"type": "array", "items": {"type": "object", "required": ["kind", "id"], "properties": {"kind": {"type": "string"}, "id": {"type": "string"}}}},
             "views": {"type": "array", "items": {"type": "object"}},
-            "actions": {"type": "array", "maxItems": 0}
+            "actions": {"type": "array", "maxItems": 1, "items": super::super::instance_settings::action_schema()},
+            "management": super::super::instance_settings::management_schema()
         }
     });
 
     documented!(ViewPage, {
         "type": "object",
-        "additionalProperties": false,
         "required": ["fields", "rows", "next_cursor", "as_of"],
         "properties": {
             "fields": {"type": "array", "items": {"type": "object"}},

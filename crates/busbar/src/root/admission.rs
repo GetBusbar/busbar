@@ -288,6 +288,24 @@ impl PluginAdmission for RootAdmission {
         inspect_with_policy(tarball, &policy)
     }
 
+    fn inspect_audited(
+        &self,
+        tarball: &[u8],
+        cfg: &PluginsCfg,
+        installed: bool,
+        principal: &str,
+    ) -> busbar_kernel::admission::Inspection {
+        let policy = if installed {
+            policy(cfg, env!("CARGO_PKG_VERSION"))
+        } else {
+            install_policy(cfg, env!("CARGO_PKG_VERSION"))
+        };
+        match policy {
+            Ok(policy) => inspect_by(tarball, &policy, principal),
+            Err(text) => (Err(Refusal::Validation(text)), None),
+        }
+    }
+
     fn rollback_target(
         &self,
         file: &str,
@@ -319,7 +337,20 @@ fn inspect_with_policy(
     tarball: &[u8],
     policy: &TrustPolicy,
 ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
-    let unpacked = unpack_checked(tarball, "")?;
+    inspect_by(tarball, policy, "anonymous").0
+}
+
+/// One inspection for `principal` (DES-443 r3): the manifest view, with a Trusted native image's D_SCHEMA read by
+/// the loader's describe-only inspection, and the audit facts of that load (None when nothing was loaded).
+fn inspect_by(
+    tarball: &[u8],
+    policy: &TrustPolicy,
+    principal: &str,
+) -> busbar_kernel::admission::Inspection {
+    let unpacked = match unpack_checked(tarball, "") {
+        Ok(unpacked) => unpacked,
+        Err(refusal) => return (Err(refusal), None),
+    };
     let (judged, verification) =
         match evaluate_with_verification(&unpacked.lib_bytes, &unpacked.manifest, policy) {
             Ok((Verdict::Trusted { publisher, .. }, verification)) => {
@@ -333,18 +364,28 @@ fn inspect_with_policy(
                 Default::default(),
             ),
         };
-    let mut stated = stated(&unpacked.manifest).map_err(Refusal::Validation)?;
+    let mut stated = match stated(&unpacked.manifest) {
+        Ok(stated) => stated,
+        Err(text) => return (Err(Refusal::Validation(text)), None),
+    };
     // IF r29 l.2764: a native image's authoritative schema is the D_SCHEMA its describe answers, held to core's
-    // D_SCHEMA validator. A trusted native candidate is admitted and described (the loader's one admission path),
-    // so the inspected schema is its own and a refused describe is the inspect's refusal (#442).
-    if loads_on_inspect(&judged)
-        && crate::root::loader::pack_native::is_native(&unpacked.lib_bytes)
-            .map_err(Refusal::Validation)?
-    {
-        stated.settings_schema =
-            native_schema_bounded(&unpacked.lib_bytes, &unpacked.manifest, policy)?;
+    // D_SCHEMA validator. A Trusted native candidate is described without being admitted for life (#443), so the
+    // inspected schema is its own and a refused describe is the inspect's refusal (#442).
+    let native = match crate::root::loader::pack_native::is_native(&unpacked.lib_bytes) {
+        Ok(native) => native,
+        Err(text) => return (Err(Refusal::Validation(text)), None),
+    };
+    if !(loads_on_inspect(&judged) && native) {
+        return (Ok((stated, judged, verification)), None);
     }
-    Ok((stated, judged, verification))
+    let (schema, load) = native_schema(&unpacked.lib_bytes, &unpacked.manifest, policy, principal);
+    match schema {
+        Ok(schema) => {
+            stated.settings_schema = schema;
+            (Ok((stated, judged, verification)), load)
+        }
+        Err(refusal) => (Err(refusal), load),
+    }
 }
 
 /// The process's plugin resources for an inspection's describe: the ones `main` installed, else (a test build
@@ -369,44 +410,116 @@ fn process(
     Ok(PROCESS.get_or_init(|| std::sync::Arc::new(made)))
 }
 
-/// Admit `lib` under `policy` (the loader's `admit_bytes`) and describe it (`ImagesBuilder::admit`, whose describe
-/// decode holds D_SCHEMA to core's validator): its D_SCHEMA text, or None when it declares none.
+/// `lib`'s D_SCHEMA text (None when it declares none), from the loader's describe-only inspection under `policy`
+/// (DES-443 r3): cached, described from a resident image, or opened once, described, closed and probed. A busy
+/// slot, a passed deadline or the cap is a 503 the caller may retry.
 #[cfg(target_os = "linux")]
 fn native_schema(
     lib: &[u8],
     manifest: &Manifest,
     policy: &TrustPolicy,
-) -> Result<Option<String>, Refusal> {
-    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder};
-    let admitted = busbar_plugin_loader::admit::admit_bytes(lib, manifest, policy)
-        .map_err(|refusal| Refusal::Validation(refusal.to_string()))?;
-    let identity = admitted.identity().to_owned();
-    let process = process().map_err(Refusal::Validation)?;
-    let mut builder = ImagesBuilder::new(
+    principal: &str,
+) -> (
+    Result<Option<String>, Refusal>,
+    Option<busbar_kernel::admission::InspectOutcome>,
+) {
+    use busbar_plugin_loader::inspect::{self, Unanswered};
+    metrics::gauge!(busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS)
+        .set(inspect::slot_held_seconds() as f64);
+    let process = match process() {
+        Ok(process) => process,
+        Err(text) => return (Err(Refusal::Validation(text)), None),
+    };
+    let (plugin, principal) = (manifest.name.clone(), principal.to_owned());
+    let late = Box::new(move |outcome: inspect::InspectOutcome| {
+        metrics::gauge!(busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS).set(0.0);
+        audit_late(&plugin, &principal, &kernel_outcome(&outcome));
+    });
+    let (answer, outcome) = inspect::describe(
+        lib,
+        manifest,
+        policy,
         &busbar_plugin_abi::host_side::host_vt::HOST,
-        std::sync::Arc::clone(process.slots()),
-        Ceilings::DEFAULT,
+        process.slots(),
+        late,
     );
-    builder
-        .admit(admitted)
-        .map_err(|refusal| Refusal::Validation(refusal.to_string()))?;
-    Ok(builder
-        .finish()
-        .described(&identity)
-        .and_then(|described| described.schema)
-        .map(String::from))
+    if outcome.reason.as_deref() == Some("inspect-cap") {
+        metrics::counter!(busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL).increment(1);
+    }
+    metrics::gauge!(busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS)
+        .set(inspect::slot_held_seconds() as f64);
+    let answer = match answer {
+        Ok(described) => Ok(described.schema.map(String::from)),
+        Err(Unanswered::Refused(refusal)) => Err(Refusal::Validation(refusal.to_string())),
+        Err(Unanswered::Unavailable {
+            text,
+            retry_after_s,
+        }) => Err(Refusal::Unavailable {
+            text,
+            retry_after_s,
+        }),
+    };
+    (answer, Some(kernel_outcome(&outcome)))
 }
 
-/// Native images are staged only where the loader's sealed-memfd admission runs.
+/// Native images are inspected only where the loader's sealed-memfd staging runs.
 #[cfg(not(target_os = "linux"))]
 fn native_schema(
     _lib: &[u8],
     _manifest: &Manifest,
     _policy: &TrustPolicy,
-) -> Result<Option<String>, Refusal> {
-    Err(Refusal::Validation(
-        "a native plugin is inspected only on Linux, where its image can be admitted".into(),
-    ))
+    _principal: &str,
+) -> (
+    Result<Option<String>, Refusal>,
+    Option<busbar_kernel::admission::InspectOutcome>,
+) {
+    (
+        Err(Refusal::Validation(
+            "a native plugin is inspected only on Linux, where its image can be staged".into(),
+        )),
+        None,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn kernel_outcome(
+    outcome: &busbar_plugin_loader::inspect::InspectOutcome,
+) -> busbar_kernel::admission::InspectOutcome {
+    busbar_kernel::admission::InspectOutcome {
+        sha256: hex::encode(outcome.sha256),
+        opened: outcome.opened,
+        outcome: outcome.outcome.word(),
+        reason: outcome.reason.clone(),
+    }
+}
+
+/// The audit row of an inspection that finished after its request answered 503 (DES-443 r3 §5): the same fields as
+/// the request's row, the principal captured at dispatch, outcome `late`.
+#[cfg(target_os = "linux")]
+fn audit_late(plugin: &str, principal: &str, outcome: &busbar_kernel::admission::InspectOutcome) {
+    let mut message = format!(
+        "verdict=trusted opened={} sha256={}",
+        outcome.opened, outcome.sha256
+    );
+    if let Some(reason) = &outcome.reason {
+        message.push_str(" reason=");
+        message.push_str(reason);
+    }
+    busbar_kernel::audit_ring::AUDIT.record_row(busbar_kernel::audit::auditlog::AuditRowInput {
+        action: "plugin.inspect".into(),
+        resource: format!("plugin:{plugin}"),
+        outcome: outcome.outcome.into(),
+        principal: principal.into(),
+        kind: Some("plugin".into()),
+        message,
+        ..Default::default()
+    });
+}
+
+/// Which verdicts an inspection may load (dlopen and describe) to read a native image's D_SCHEMA: Trusted only
+/// (DES-443 H1). An operator opt-in (`allow_untrusted`: Allowed) is shown from its manifest and never executed.
+fn loads_on_inspect(judged: &Judged) -> bool {
+    matches!(judged, Judged::Trusted { .. })
 }
 
 #[cfg(test)]
@@ -597,58 +710,6 @@ mod store_overlay_management {
         assert!(store.read_bytes_async().await.unwrap().is_some());
     }
 }
-
-/// Which verdicts an inspection may load (dlopen and describe) to read a native image's D_SCHEMA: Trusted only
-/// (DES-443 H1). An operator opt-in (`allow_untrusted`: Allowed) is shown from its manifest and never executed.
-fn loads_on_inspect(judged: &Judged) -> bool {
-    matches!(judged, Judged::Trusted { .. })
-}
-
-/// The outer wall-clock bound on one inspection's admission and describe (DES-443 M1).
-const INSPECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// One inspection loads and describes at a time (DES-443 M1). Held by the describing thread until its call
-/// returns, so a describe that never answers keeps the slot and every later inspection is refused, not queued.
-static INSPECTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// [`native_schema`] under the inspection cap and its outer deadline: a busy slot or a deadline passed is a
-/// typed refusal and the request thread returns; the describing thread keeps the slot until its call ends.
-fn native_schema_bounded(
-    lib: &[u8],
-    manifest: &Manifest,
-    policy: &TrustPolicy,
-) -> Result<Option<String>, Refusal> {
-    use std::sync::atomic::Ordering;
-    struct Slot;
-    impl Drop for Slot {
-        fn drop(&mut self) {
-            INSPECTING.store(false, Ordering::Release);
-        }
-    }
-    if INSPECTING.swap(true, Ordering::AcqRel) {
-        return Err(Refusal::Conflict(
-            "another plugin inspection is loading an image; retry when it finishes".into(),
-        ));
-    }
-    let slot = Slot;
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let (lib, manifest, policy) = (lib.to_vec(), manifest.clone(), policy.clone());
-    std::thread::Builder::new()
-        .name("busbar-inspect".into())
-        .spawn(move || {
-            let _slot = slot;
-            let _ = tx.send(native_schema(&lib, &manifest, &policy));
-        })
-        .map_err(|e| Refusal::Conflict(format!("the plugin inspection could not start: {e}")))?;
-    rx.recv_timeout(INSPECT_DEADLINE).unwrap_or_else(|_| {
-        Err(Refusal::Conflict(format!(
-            "the plugin's describe did not answer within {} s; its inspection keeps the one inspection 
-             slot until it does",
-            INSPECT_DEADLINE.as_secs()
-        )))
-    })
-}
-
 /// DES-443 H1: inspect loads only a Trusted candidate. An operator opt-in (Allowed) or a refused one is shown from
 /// its manifest alone and never loaded, so a read-only preview never executes an untrusted image.
 #[cfg(test)]
@@ -694,6 +755,48 @@ mod inspect_tests {
         assert!(stated.settings_schema.is_none());
     }
 
+    /// #443 (DES-443 r3, A-F3): inspecting a Trusted native image that is never installed leaves no resident
+    /// mapping: it is described, closed on a worker and unloaded (or pinned), never admitted for life.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_inspected_image_is_not_left_resident() {
+        use crate::root::loader::sign::{sign, PublisherKey, PublisherTrust, SigningKey};
+        let path = crate::root::test_plugins::native_schema_bomb_path().unwrap_or_else(|| {
+            crate::root::test_plugins::missing(
+                "native_schema_bomb",
+                crate::root::test_plugins::BUILD_LOADER_EXAMPLES,
+            )
+        });
+        let lib = std::fs::read(&path).expect("the bomb image reads");
+        let key = SigningKey::from_bytes(&[0x44; 32]);
+        let manifest = crate::root::test_plugins::native_manifest("store", &path, "acme");
+        let name = manifest.name.clone();
+        let manifest = sign(&key, manifest, &lib);
+        let tarball = crate::root::loader::tarball::package(&manifest, "lib.so", &lib)
+            .expect("the signed bomb packs");
+        let mut policy = TrustPolicy::default();
+        policy.publishers.insert(
+            "acme".into(),
+            PublisherTrust {
+                plugins: [name].into_iter().collect(),
+                keys: vec![PublisherKey {
+                    key: key.verifying_key(),
+                    revoked: false,
+                }],
+            },
+        );
+        let refused = inspect_with_policy(&tarball, &policy);
+        assert!(
+            refused.is_err(),
+            "the Trusted bomb is described and refused"
+        );
+        let sha256 = busbar_contract::crypto::sha256(&lib);
+        assert!(
+            !crate::root::loader::admit::is_resident(&sha256),
+            "an inspected image that is never installed is not left resident"
+        );
+    }
+
     #[test]
     fn a_rejected_candidate_is_shown_from_its_manifest_and_never_loaded() {
         let (tarball, _) = bomb_tarball();
@@ -701,26 +804,5 @@ mod inspect_tests {
             .expect("a rejected image inspects from its manifest");
         assert!(matches!(judged, Judged::Rejected { .. }), "{judged:?}");
         assert!(stated.settings_schema.is_none());
-    }
-}
-
-#[cfg(test)]
-mod inspect_cap_tests {
-    use super::*;
-
-    /// DES-443 M1: while one inspection holds the slot, another is refused at once, not queued.
-    #[test]
-    fn a_second_inspection_is_refused_while_one_loads() {
-        use std::sync::atomic::Ordering;
-        assert!(
-            !INSPECTING.swap(true, Ordering::AcqRel),
-            "the slot starts free"
-        );
-        let busy = native_schema_bounded(b"", &Manifest::default(), &TrustPolicy::default());
-        INSPECTING.store(false, Ordering::Release);
-        assert!(
-            matches!(&busy, Err(Refusal::Conflict(text)) if text.contains("another plugin inspection")),
-            "{busy:?}"
-        );
     }
 }

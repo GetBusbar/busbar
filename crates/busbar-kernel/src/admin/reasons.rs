@@ -19,19 +19,20 @@ pub struct ReasonRow {
     pub details_schema: &'static str,
 }
 
-pub const NO_DETAILS: &str = r#"{"type":"object","additionalProperties":false}"#;
-const SCOPE_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["needed_scope","needed_verb"],"properties":{"needed_scope":{"type":"string"},"needed_verb":{"type":["string","null"]}}}"#;
-const CURSOR_MISMATCH_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"properties":{"cursor_node_id":{"type":"string"}}}"#;
-const CURSOR_EXPIRED_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["oldest_available"],"properties":{"oldest_available":{"type":"string"}}}"#;
-const RANGE_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["max_buckets"],"properties":{"max_buckets":{"type":"integer"}}}"#;
-const PLUGIN_REFUSED_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["refusal","field","have","want","link"],"properties":{"refusal":{"type":"string"},"field":{"type":"string"},"have":{"type":"string"},"want":{"type":"string"},"link":{"type":["string","null"]},"byte":{"type":"integer"},"rule":{"type":"string"}}}"#;
+pub const NO_DETAILS: &str = r#"{"type":"object"}"#;
+const SCOPE_DETAILS: &str = r#"{"type":"object","required":["needed_scope","needed_verb"],"properties":{"needed_scope":{"type":"string"},"needed_verb":{"type":["string","null"]}}}"#;
+const CURSOR_MISMATCH_DETAILS: &str =
+    r#"{"type":"object","properties":{"cursor_node_id":{"type":"string"}}}"#;
+const CURSOR_EXPIRED_DETAILS: &str = r#"{"type":"object","required":["oldest_available"],"properties":{"oldest_available":{"type":"string"}}}"#;
+const RANGE_DETAILS: &str = r#"{"type":"object","required":["max_buckets"],"properties":{"max_buckets":{"type":"integer"}}}"#;
+const PLUGIN_REFUSED_DETAILS: &str = r#"{"type":"object","required":["refusal","field","have","want","link"],"properties":{"refusal":{"type":"string"},"field":{"type":"string"},"have":{"type":"string"},"want":{"type":"string"},"link":{"type":["string","null"]},"byte":{"type":"integer"},"rule":{"type":"string"}}}"#;
 /// `PluginTextDetails` (section 1.3): a plugin's own words and code, scrubbed, never in `message`.
-const PLUGIN_TEXT_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["text","plugin_diag"],"properties":{"text":{"type":["string","null"]},"plugin_diag":{"type":["string","null"]},"condition":{"type":["string","null"]}}}"#;
+const PLUGIN_TEXT_DETAILS: &str = r#"{"type":"object","required":["text","plugin_diag"],"properties":{"text":{"type":["string","null"]},"plugin_diag":{"type":["string","null"]},"condition":{"type":["string","null"]}}}"#;
 /// The `details` of an unknown trust decision outcome (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5): the
 /// attempt the replay of the same `Idempotency-Key` resolves. Absent on every other 503.
-const SERVICE_UNAVAILABLE_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"properties":{"key":{"type":"string"},"ruling":{"enum":["approve","revoke"]},"decided_at":{"type":"integer","description":"Wall seconds the attempt was stamped at"},"decided_by":{"type":"object","required":["kind","id"],"properties":{"kind":{"const":"principal"},"id":{"type":"string"}}},"operation":{"type":["string","null"],"description":"The deciding request's Idempotency-Key"}}}"#;
+const SERVICE_UNAVAILABLE_DETAILS: &str = r#"{"type":"object","properties":{"key":{"type":"string"},"ruling":{"enum":["approve","revoke"]},"decided_at":{"type":"integer","description":"Wall seconds the attempt was stamped at"},"decided_by":{"type":"object","required":["kind","id"],"properties":{"kind":{"const":"principal"},"id":{"type":"string"}}},"operation":{"type":["string","null"],"description":"The deciding request's Idempotency-Key"}}}"#;
 /// The `details` of `outcome_not_applied` (r3 §4.6): the replayed operation and its stamp.
-const OUTCOME_NOT_APPLIED_DETAILS: &str = r#"{"type":"object","additionalProperties":false,"required":["operation","decided_at"],"properties":{"operation":{"type":["string","null"]},"decided_at":{"type":"integer"}}}"#;
+const OUTCOME_NOT_APPLIED_DETAILS: &str = r#"{"type":"object","required":["operation","decided_at"],"properties":{"operation":{"type":["string","null"]},"decided_at":{"type":"integer"}}}"#;
 
 macro_rules! row {
     ($r:literal, $c:literal, $h:literal) => {
@@ -108,7 +109,6 @@ pub const REASONS: &[ReasonRow] = &[
         also & [("invalid_request", 400)]
     ),
     row!("overlong", "invalid_request", 400),
-    row!("nothing_to_rotate", "conflict", 409),
     row!("no_supervisor", "conflict", 409),
     row!("not_restartable", "conflict", 409),
     row!("unknown_section", "invalid_request", 400),

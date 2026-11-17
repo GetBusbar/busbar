@@ -144,7 +144,7 @@ impl DemotionRecord {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .find(|write| write.request.op_id == op_id)
+            .find(|write| write.request.op.bytes() == op_id)
             .cloned();
         if let Some(write) = pending {
             let _ = self.settle_write(write).await;
@@ -187,9 +187,11 @@ impl DemotionRecord {
                     .unwrap_or_else(|e| e.into_inner())
                     .retain(|pending| !Arc::ptr_eq(pending, &write));
                 match decided {
-                    scoped::Outcome::Applied => self.remember(write.request.op_id, Verdict::Landed),
+                    scoped::Outcome::Applied => {
+                        self.remember(write.request.op.bytes(), Verdict::Landed)
+                    }
                     scoped::Outcome::OpIdConflict => {
-                        self.remember(write.request.op_id, Verdict::NotApplied);
+                        self.remember(write.request.op.bytes(), Verdict::NotApplied);
                     }
                     _ => {}
                 }
@@ -260,10 +262,15 @@ impl DemotionRecord {
         let Some(owner) = self.owner() else {
             return Ok(());
         };
+        let op = owner
+            .records
+            .record_op()
+            .await
+            .map_err(|e| WriteFailure::NotApplied(error(e)))?;
         let write = Arc::new(Write {
             owner,
             request: Arc::new(scoped::Request {
-                op_id: crate::door::op_id().0,
+                op,
                 predicates: vec![],
                 mutations,
             }),
@@ -273,7 +280,7 @@ impl DemotionRecord {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(write.clone());
-        let op_id = write.request.op_id;
+        let op_id = write.request.op.bytes();
         match self.settle_write(write.clone()).await {
             Ok(()) => Ok(()),
             // A decided outcome other than `Applied` is definite. Anything else leaves the exact

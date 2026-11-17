@@ -195,6 +195,7 @@ fn unit() -> UnitCheckpoint {
         .key("work")
         .expect("test meter class registered");
     let audit = super::super::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "checkpoint-principal".into(),
         op_class: "checkpoint.actual".into(),
@@ -1668,4 +1669,59 @@ fn test_commit_key() -> busbar_contract::persistence::CommitKey {
         &busbar_contract::caps::SlotSeal::acquire_for_tests(),
     )
     .expect("slot 0, seq 1 is a valid key")
+}
+
+#[tokio::test]
+async fn selected_recovery_keeps_signed_partition_and_rejects_replayed_attribution_change() {
+    let fixture = ActualStore::new();
+    let core = fixture.open().await;
+    let host = format!(
+        "selected-audit-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(core, &host).await;
+    let mut report = crate::root::selected_report_tests::terminal();
+    let facts = super::super::RunningAudit {
+        selected_identity: Some(super::super::SelectedAuditIdentity {
+            node: book.lock().unwrap().record.node(),
+            boot_nonce: [7; 16],
+            user: Some("original-user".into()),
+            labels: vec![("purpose".into(), "original".into())],
+        }),
+        incarnation: 7,
+        principal: report.principal.clone(),
+        op_class: "checkpoint.selected".into(),
+        origin: "client".into(),
+        parent: None,
+        wall: report.arrived,
+        mono: 91,
+        destination: None,
+        rate_card: None,
+        policy_epoch: 3,
+        hooks: Vec::new(),
+    };
+    report.audit = Some(json::to_vec(&facts).unwrap());
+    let sink = unit_checkpoint_sink(&book);
+    sink.recover_audit(&report).await.unwrap();
+    let (_, audit) = book
+        .evidence
+        .find_audit(report.unit, 7)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = busbar_kernel::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(&report).unwrap();
+    let expected = crate::root::selected_report::selected_billing(&view).unwrap();
+    assert_eq!(audit.unit.billing.as_ref(), Some(&expected));
+    assert!(audit.usage.lines.is_empty());
+    assert_eq!(audit.unit.boot_nonce, [7; 16]);
+    assert_eq!(audit.unit.records.user.as_deref(), Some("original-user"));
+    sink.recover_audit(&report).await.unwrap();
+    report.partitions.as_mut().unwrap().attempts[0]
+        .usage
+        .provider = Some("another-provider".into());
+    assert!(
+        sink.recover_audit(&report).await.is_err(),
+        "same identity cannot adopt a different partition"
+    );
+    stop(&book);
 }

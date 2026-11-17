@@ -250,7 +250,8 @@ pub(crate) struct AuditChainHeadView {
 }
 
 /// `GET /audit/range`: records by position, `from` through `to` inclusive, each carrying every
-/// field its digest was taken over, plus the head this node published at or before `to`.
+/// field its fingerprint was taken over, under the link recipe (`busbar.audit.link.v1`), with the
+/// evidence that authenticates them (SEALING-FIX r20 §3.5 "Reads").
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AuditChainRangeView {
@@ -259,9 +260,20 @@ pub(crate) struct AuditChainRangeView {
     algorithm: String,
     from: u64,
     to: u64,
-    /// The head published at or before `to`, or null when none was.
-    anchor: Option<AuditChainSignedHead>,
+    /// The covering stamp of the page's last line (the first stamp whose `to` is at or after
+    /// it), or null when none exists yet.
+    anchor: Option<AuditStampView>,
     records: Vec<AuditChainRecordView>,
+    /// Every page stamp over the page's lines plus the covering stamp of its last line, and every
+    /// break notice over the walked lines (`kind` `break`).
+    stamps: Vec<AuditEvidenceView>,
+    /// The lines after the page's last line up to its covering stamp: authentication evidence,
+    /// not part of the range.
+    cover: Vec<AuditChainRecordView>,
+    /// The `notary_key` line each returned stamp's `key_cert` names.
+    certs: Vec<AuditChainRecordView>,
+    /// The node's `sealed:<node>` row, or null when there is none.
+    seal_row: Option<AuditSealRowView>,
     /// Fixed upper audit position captured on the first page; exact decimal string.
     snapshot_to: String,
     /// `bounded_live_range`: upper bound is fixed, retention is live, no snapshot is retained.
@@ -280,6 +292,89 @@ pub(crate) struct AuditChainRangeView {
     retention: AuditRetentionView,
     scanned_positions: String,
     scan_limit: String,
+}
+
+/// One page stamp (`audit.stamp.v1`): every signed field, and the WAL position it was read at.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditStampView {
+    /// The WAL `node_seq` the stamp was read at; absent for a stamp read from a seal row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_seq: Option<u64>,
+    node: u64,
+    from: u64,
+    to: u64,
+    /// Line `to`'s fingerprint, 64 lowercase hex digits.
+    fingerprint: String,
+    /// `live`, `final` or `after_restart`.
+    kind: String,
+    sealer: u64,
+    host: String,
+    every: u64,
+    stamped_ms: u64,
+    down_from_ms: u64,
+    down_to_ms: u64,
+    crypto: String,
+    sig_alg: String,
+    key_id: String,
+    /// The WAL `node_seq` of the certifying `notary_key` line; 0 for the Bootstrap key.
+    key_cert: u64,
+    /// 128 lowercase hex digits.
+    signature: String,
+}
+
+/// One break notice (`audit.break.v1`, `kind` `break`): it vouches for no line.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditBreakView {
+    /// The WAL `node_seq` the notice was read at; absent for a notice read from a seal row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_seq: Option<u64>,
+    /// `break`.
+    kind: String,
+    node: u64,
+    sealer: u64,
+    last_good: u64,
+    unsealed_from: u64,
+    unsealed_to: u64,
+    journal_from: u64,
+    journal_to: u64,
+    reason: String,
+    detected_ms: u64,
+    host: String,
+    crypto: String,
+    sig_alg: String,
+    key_id: String,
+    /// 128 lowercase hex digits.
+    signature: String,
+}
+
+/// A page stamp or a break notice.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum AuditEvidenceView {
+    _Stamp(AuditStampView),
+    _Break(AuditBreakView),
+}
+
+/// A node's seal row: who sealed it and how (`clean`, `stamp`, `break`, or `undecodable`).
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+struct AuditSealRowView {
+    /// The successor node that wrote it; absent when the row does not decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sealer: Option<u64>,
+    outcome: String,
+    /// `clean` only: the node's tail line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    through: Option<u64>,
+    /// `stamp` only: the signed `after_restart` page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stamp: Option<AuditStampView>,
+    /// `break` only: the signed break notice.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "break")]
+    break_notice: Option<AuditBreakView>,
 }
 
 #[cfg(feature = "openapi-schema")]
@@ -652,8 +747,6 @@ pub(crate) struct StoreRestoreReq {
 enum Success {
     Json(Value, &'static str),
 
-    Document,
-
     NoContent(&'static str),
 }
 
@@ -827,8 +920,8 @@ fn doc_for(
                 `core`, core's own subsystems. `category` is the engine kind; `kind` is the id \
                 a client routes on. `instance_count` counts the running instances; `views` and \
                 `record_attributes` are on the row when every instance declares the same \
-                descriptors (`descriptors_uniform`). The ETag is `/info.kinds_revision`. Pages \
-                with `cursor` and `limit`."
+                descriptors (`descriptors_uniform`). The ETag moves whenever a kind or an instance \
+                is added, removed or reconfigured. Pages with `cursor` and `limit`."
                 .to_string(),
             success: Success::Json(
                 schema_of(gen.subschema_for::<super::kinds::doc::KindsPage>()),
@@ -1225,18 +1318,6 @@ fn doc_for(
             schema_of(gen.subschema_for::<LedgerMigration>()),
             "Whether this deployment has migrated, and the marker if it has",
         ),
-        KernelVerb::GetLedgerOpenapiJson => VerbDoc {
-            summary: "The full administrative OpenAPI 3.1 document, served at the ledger's own path",
-            description: "The committed, generated document, unfiltered: every operation this \
-                          BUILD can serve, including each plane's. `GET /openapi.json` serves the \
-                          same document filtered to the planes this node configured."
-                .to_string(),
-            success: Success::Document,
-            request: None,
-            query: Vec::new(),
-            errors: vec![unavailable_503("the node could not take the unit")],
-        },
-
 
         KernelVerb::GetAuditHead => audit_read(
             "The audit record chain's tip: position, digest, signature, key identifier and clock",
@@ -1247,7 +1328,7 @@ fn doc_for(
             let mut doc = audit_read(
                 "Audit records by position, each with every field its digest was taken over",
                 schema_of(gen.subschema_for::<AuditChainRangeView>()),
-                "The window's records and the head published at or before `to`",
+                "The window's records, their stamps, cover and certificates, and the node's seal row",
             );
             doc.query = ["from", "to"]
                 .into_iter()
@@ -1468,7 +1549,7 @@ fn records_doc(schema: Value) -> VerbDoc {
              `next_cursor` is always a string; `complete: true` means caught up. With no cursor \
              the feed starts at the oldest retained record. A request scans at most \
              {RECORDS_SCAN_BOUND} sealed records, so a filtered page may be short or empty with a \
-             cursor that continues. Records are per node: `/info.nodes` lists every node. Spend \
+             cursor that continues. Records are per node: the `core/process` view `nodes` lists every node. Spend \
              is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is \
              never posture-gated."
         ),
@@ -1528,15 +1609,6 @@ pub(crate) fn operations(
                     "200".into(),
                     json!({"description": description,
                            "content": {"application/json": {"schema": schema}}}),
-                );
-            }
-            Success::Document => {
-                by_status.insert(
-                    "200".into(),
-                    json!({"description": "The one administrative OpenAPI document",
-                           "content": {"application/json": {"schema": {
-                               "type": "object",
-                               "description": "An OpenAPI 3.1 document (this document's shape)"}}}}),
                 );
             }
             Success::NoContent(description) => {

@@ -102,7 +102,13 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        tracing::info!(target: "busbar::migrate", "{line}");
+        // A line that carries a BUSBAR code is one the operator must act on or know about (the
+        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
+        if line.starts_with("BUSBAR-") {
+            tracing::warn!(target: "busbar::migrate", "{line}");
+        } else {
+            tracing::info!(target: "busbar::migrate", "{line}");
+        }
     }
     for line in plan.warnings() {
         tracing::warn!(target: "busbar::migrate", "{line}");
@@ -199,6 +205,33 @@ pub(crate) async fn finish(
     core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
 ) -> Result<Option<Written>, String> {
     finish_settled(Vec::new(), core).await
+}
+
+/// LEGACY-KEYFILE-MARKER r2 §3: the held plan's side-table marks, by auth instance name: the pointers
+/// whose slot carries its 1.5.5 value on this one converting open. Never a value. A stamped boot has none.
+///
+/// # Errors
+/// CONFIG when a mark names an instance path other than `auth.<name>`.
+pub(crate) fn legacy_marks() -> Result<Vec<(String, Vec<String>)>, String> {
+    let Some(plan) = PENDING.get() else {
+        return Ok(Vec::new());
+    };
+    let mut by_name: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for mark in plan.legacy_marks() {
+        let [kind, name] = mark.instance.as_slice() else {
+            return Err("CONFIG: a 1.5.5 credential mark names no instance".to_owned());
+        };
+        if kind != "auth" {
+            return Err(format!(
+                "CONFIG: a 1.5.5 credential mark names `{kind}`, which has no marked settlement"
+            ));
+        }
+        by_name
+            .entry(name.clone())
+            .or_default()
+            .push(mark.pointer.clone());
+    }
+    Ok(by_name.into_iter().collect())
 }
 
 /// Whether this boot runs a stamped config.yaml (or none): no plan is held. Step 4's final records
@@ -375,6 +408,19 @@ pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
     admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
 }
 
+/// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.
+pub(crate) fn native_admission_refusal(n: u64, verdict: Result<bool, String>) -> String {
+    let dir = CONFIG_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    admit_answer(n, Some(verdict), &dir)
+        .err()
+        .unwrap_or_else(|| {
+            "CONFIG: Store recovery admission refused; nothing was written".to_owned()
+        })
+}
+
 /// The gate's verdict for `n` rows, from the bootstrap's at-rest verdict `keys` (`None` = no
 /// bootstrap resolved one) and the config directory `dir`.
 pub(crate) fn admit_answer(
@@ -529,6 +575,33 @@ fn read_config(config: &Path) -> Result<Option<String>, String> {
 
 fn text_of(refusal: Refusal) -> String {
     refusal.to_string()
+}
+
+/// After step 5 wrote config.yaml: one audit record per security-relevant change the plan reported
+/// under a BUSBAR code (the retired cloud-metadata carve-outs, BUSBAR-3411). The record names the
+/// removed paths and never a value; it is written only for a write this process made, never for a
+/// peer's stamp (#293, via the #291 settled write path).
+pub(crate) fn record_completed_changes(written: &Written) {
+    if !matches!(written, Written::Stamped) {
+        return;
+    }
+    let Some(plan) = PENDING.get() else {
+        return;
+    };
+    for line in plan.report() {
+        if let Some(paths) = line
+            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+            .and_then(|rest| rest.split_once(';'))
+            .map(|(paths, _)| paths)
+        {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                "migrate.metadata_carve_out_removed",
+                paths,
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        }
+    }
 }
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with

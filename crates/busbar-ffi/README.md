@@ -13,7 +13,7 @@ or goes to the owner. It never comes here.
 
 ## What is pinned (`unsafe.yaml` at the repository root, owner-approved)
 
-- **Files.** Only `src/{lib,raw,header,vt,shim,slots,host,image}.rs` and `tests/loom_slots.rs` exist. A new
+- **Files.** Only `src/{lib,raw,header,vt,shim,slots,host,image}.rs` exist. A new
   file fails the check.
 - **Counts.** The crate total and every file's own count of `unsafe` tokens (tests and doc code included)
   plus `allow`/`expect(unsafe_code)` attributes. A count above its pin fails; one below fails with "lower

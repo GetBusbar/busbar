@@ -100,14 +100,14 @@ pub(crate) fn services_caller_rows(
 /// The one-time durable binding row of a principal seen for the first time: absent, then put.
 #[cold]
 pub(crate) fn services_caller_binding(
-    op_id: [u8; 16],
+    op: crate::persistence::scoped::Op,
     schema: &str,
     principal: &str,
     proposed: &str,
 ) -> crate::persistence::scoped::Request {
     use crate::persistence::scoped::{Expected, Mutation, Predicate, Request};
     Request {
-        op_id,
+        op,
         predicates: vec![Predicate {
             schema: schema.to_owned(),
             key: principal.as_bytes().to_vec(),

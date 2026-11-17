@@ -198,6 +198,7 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
@@ -206,12 +207,23 @@ pub(crate) mod migrate;
 pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+/// Native lifetime custody attached to the exact published App.
+pub(crate) mod min3_candidate;
+pub(crate) mod min3_candidate_secrets;
+pub(crate) mod min3_framers;
+pub(crate) mod min3_listener_plan;
+pub(crate) mod min3_physical;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
+pub(crate) mod min3_selected_policy;
 /// K9: each MIN-3 plane seat's egress walk and channel carrier, composed at boot from the configured upstreams.
 pub(crate) mod plane_seats;
 /// The HTTP mount of the MIN-3 plane instances: their data routes onto `PortDriver::serve`.
 pub(crate) mod port_mount;
+/// `busbar --store-kit` (DES-STOREKIT r2): the kernel's store kit against one store pack; harness
+/// builds only.
+#[cfg(feature = "test-harness")]
+pub(crate) mod store_kit_run;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -365,3 +377,7 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(root_stdio);
 #[cfg(test)]
 owner_test_sources!(root_http);
+
+pub(crate) mod selected_report;
+#[cfg(test)]
+mod selected_report_tests;

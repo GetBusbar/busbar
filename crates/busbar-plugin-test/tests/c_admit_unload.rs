@@ -36,3 +36,22 @@ fn admitted_then_refused_stays_resident_and_readmits_the_same_image() {
 fn admitted_then_dropped_stays_resident_and_readmits_the_same_image() {
     todo!("owner: #217 (C-ADMIT-UNLOAD)")
 }
+
+/// DES-443 r3 §6: an image inspected (described, never admitted) is closed on a permanent worker and unmapped: it
+/// is neither resident nor reopened by a later inspection. Asserted today in plugin-loader's
+/// `inspect::tests::an_image_is_opened_once_unloaded_and_then_answered_from_the_cache`; this arm runs it over a
+/// dropped-in image in the QA integration suite.
+#[test]
+#[ignore = "owner: #217 (Δ4: dropped-in MIN-3 image; loader cover: inspect_tests an_image_is_opened_once_unloaded_and_then_answered_from_the_cache)"]
+fn inspected_then_unloaded_is_neither_resident_nor_reopened() {
+    todo!("owner: #217 (C-ADMIT-UNLOAD, inspected and unloaded)")
+}
+
+/// DES-443 r3 §6: an inspected image that pins itself (it stays mapped after close) is counted as pinned, gets no
+/// resident entry, and is never reopened. Asserted today in plugin-loader's
+/// `inspect::tests::an_image_that_pins_itself_is_counted_and_never_reopened`.
+#[test]
+#[ignore = "owner: #217 (Δ4: dropped-in MIN-3 image; loader cover: inspect_tests an_image_that_pins_itself_is_counted_and_never_reopened)"]
+fn inspected_then_pinned_has_no_resident_entry() {
+    todo!("owner: #217 (C-ADMIT-UNLOAD, inspected and pinned)")
+}

@@ -58,6 +58,9 @@ pub struct Settled {
     /// Exact pointers authorized by core from admitted describe paths and typed core leaves.
     /// Never infer this set from CONFIG strings or from requested LIFT fragments.
     pub allowed_lifts: std::collections::BTreeSet<String>,
+    /// The 1.5.5 literal secrets the plugin was handed at its declared secret positions, as they stood
+    /// before its `open`. The settled document may hold none of them in plaintext (#441).
+    pub known_secrets: Vec<SecureString>,
     pub placement: BagPlacement,
 }
 
@@ -66,6 +69,8 @@ pub struct Settled {
 pub enum BagPlacement {
     Settings,
     Block,
+    /// An auth binding's `config:` object `{style, credential, settings}` (LEGACY-KEYFILE-MARKER r2 §6).
+    Config,
 }
 
 /// A planned 0600 secret file: a lifted literal. The bytes are wiped on drop and never printed.
@@ -248,6 +253,12 @@ fn settle_block(
     }
     let index = answer.index;
     let shown = answer.path.join(".");
+    // Core authors the bag's key: a binding's `config:` object, else the instance's `settings:`.
+    let bag_key = if answer.placement == BagPlacement::Config {
+        "config"
+    } else {
+        "settings"
+    };
     if let Some(settings) = &answer.settings {
         let bag: Value = yaml::from_str(settings.as_str()).map_err(|_| {
             refuse(
@@ -255,7 +266,7 @@ fn settle_block(
                 "the settled settings are not a YAML value; nothing was written",
             )
         })?;
-        block.insert_key("settings", bag);
+        block.insert_key(bag_key, bag);
     }
     let mut limits_seen = false;
     let mut lifted: Vec<&str> = Vec::new();
@@ -297,7 +308,7 @@ fn settle_block(
                     ));
                 }
                 lifted.push(pointer);
-                let bag = block.get_key_mut("settings").ok_or_else(|| {
+                let bag = block.get_key_mut(bag_key).ok_or_else(|| {
                     refuse(
                         index,
                         "a lift names a slot, but the instance has no settings",
@@ -331,7 +342,99 @@ fn settle_block(
             _ => {}
         }
     }
+    // #441: a literal the plugin left at a declared secret position without asking for its LIFT is
+    // lifted by core, so the write-back never persists a declared secret as plaintext. An empty
+    // value is not a secret and stays.
+    for pointer in &answer.allowed_lifts {
+        if lifted.contains(&pointer.as_str()) {
+            continue;
+        }
+        let Some(bag) = block.get_key_mut("settings") else {
+            break;
+        };
+        let Some(slot) = pointer_mut(bag, pointer) else {
+            continue;
+        };
+        if !slot.as_text().is_some_and(|text| !text.is_empty()) {
+            continue;
+        }
+        let file = secret_path(dir, &answer.path, pointer)?;
+        let reference = Value::Map(vec![(
+            Value::from("file"),
+            Value::from(file.to_str().unwrap_or_default()),
+        )]);
+        let Value::Text(literal) = std::mem::replace(slot, reference) else {
+            continue;
+        };
+        report.push(format!(
+            "{shown}: the literal secret at `{pointer}` was not lifted by its instance; core moved it \
+             to the 0600 file {}",
+            file.display()
+        ));
+        secrets.push(SecretFile {
+            path: file,
+            bytes: literal.into_bytes(),
+        });
+    }
+    // #441: a known 1.5.5 secret value may not remain in plaintext anywhere else in the bag (the
+    // instance moved it to a position it does not declare secret).
+    if !answer.known_secrets.is_empty() {
+        if let Some(bag) = block.get_key("settings") {
+            let mut found = None;
+            find_known(bag, "", &answer.known_secrets, &mut found);
+            if let Some(pointer) = found {
+                return Err(refuse(
+                    index,
+                    &format!(
+                        "a 1.5.5 secret value stays in plaintext at `{pointer}`, a position the image \
+                         does not declare secret; keep it at its declared secret position or in a \
+                         secret reference. Nothing was written"
+                    ),
+                ));
+            }
+        }
+    }
     Ok(())
+}
+
+/// Whether a known secret is distinctive enough to refuse on: at least 8 bytes and not a bare
+/// boolean or number. A short or generic value (`true`, `admin`, `1234`) legitimately recurs as an
+/// ordinary setting, so matching it would refuse correct migrations (#441).
+fn distinctive(secret: &str) -> bool {
+    secret.len() >= 8 && !matches!(secret, "true" | "false") && secret.parse::<f64>().is_err()
+}
+
+/// The first pointer under `at` whose text equals one of the `known` secrets.
+fn find_known(value: &Value, at: &str, known: &[SecureString], found: &mut Option<String>) {
+    if found.is_some() {
+        return;
+    }
+    match value {
+        Value::Text(text) => {
+            if known
+                .iter()
+                .any(|secret| distinctive(secret.as_str()) && secret.as_str() == text.as_str())
+            {
+                *found = Some(at.to_owned());
+            }
+        }
+        Value::Map(entries) => {
+            for (key, child) in entries {
+                let step = key
+                    .as_text()
+                    .unwrap_or("")
+                    .replace('~', "~0")
+                    .replace('/', "~1");
+                find_known(child, &format!("{at}/{step}"), known, found);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                find_known(child, &format!("{at}/{index}"), known, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Apply `settled` to `text` (config.yaml, after the chain): each instance's bag replaced, its

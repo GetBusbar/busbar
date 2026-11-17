@@ -561,7 +561,7 @@ impl BootRecords {
         mutations: Vec<Mutation>,
     ) -> Result<bool, String> {
         let request = Arc::new(Request {
-            op_id: crate::door::op_id().0,
+            op: self.records.record_op().await.map_err(error)?,
             predicates,
             mutations,
         });
@@ -1134,7 +1134,7 @@ impl BootIdentity {
     }
 }
 
-/// One node of `/info.nodes`.
+/// One node lease row: a row of the `core/process` view `nodes`. Times are epoch seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeRow {
     pub node_id: String,
@@ -1354,6 +1354,8 @@ pub struct ExpiredPass {
     pub invalid: usize,
     pub remaining: usize,
     pub records: super::undrained::PassCounts,
+    /// Receipt generations of closed writers swept by the owner-row step (DES-264 §3.5).
+    pub swept: usize,
 }
 
 impl PredecessorFence {
@@ -1456,6 +1458,17 @@ impl PredecessorFence {
                 }
             }
         }
+        // DES-264 §3.5: the crash sweep, driven by owner rows, at most EXPIRED_PASS_MAX of them.
+        // A separate candidate per generation, only for writers whose close is decided.
+        if !stopped() {
+            match self.core.sweep_owner_rows(EXPIRED_PASS_MAX).await {
+                Ok((swept, _)) => pass.swept = swept,
+                Err(error) => tracing::warn!(
+                    ?error,
+                    "the receipt crash sweep did not finish; the next pass continues"
+                ),
+            }
+        }
         if pass.remaining > 0 {
             crate::diag_warn!(
                 crate::diagnostics::EXPIRED_WRITERS_REMAINING,
@@ -1485,6 +1498,7 @@ impl PredecessorFence {
             skipped_live = pass.skipped_live,
             invalid = pass.invalid,
             remaining = pass.remaining,
+            swept = pass.swept,
             refused = %refused.join("; "),
             "expired_writers"
         );
@@ -1519,8 +1533,8 @@ mod predecessor_seal;
 #[path = "retire_error.rs"]
 mod retire_error;
 pub use predecessor_seal::{
-    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
-    SealState, TailView,
+    read_seal_row, FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome,
+    SealRow, SealState, TailView,
 };
 pub use retire_error::RetireError;
 
@@ -1670,3 +1684,7 @@ mod expired_writers_tests;
 #[cfg(test)]
 #[path = "tests/fence_settle_tests.rs"]
 mod fence_settle_tests;
+
+#[cfg(test)]
+#[path = "tests/record_ops_tests.rs"]
+mod record_ops_tests;

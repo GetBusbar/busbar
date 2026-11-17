@@ -238,39 +238,13 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 }
 
 #[cfg(unix)]
+#[path = "native_listener.rs"]
+pub(crate) mod native_listener;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
-    let addr = listener.local_addr();
-    let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver = Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-
-    let serve_handle = tokio::spawn(serve_listener(
-        listener,
-        router,
-        None,
-        secret_resolver,
-        "test",
-        recv_shutdown(shutdown_rx),
-        None,
-        true,
-        None,
-    ));
-
-    let resp = reqwest::Client::new()
-        .get(format!("http://{addr}/probe"))
-        .send()
-        .await
-        .expect("serve_listener must actually accept and answer a real HTTP request");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
-
-    shutdown_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
-        .await
-        .expect("serve_listener must actually stop once shutdown fires")
-        .unwrap();
+    native_listener::assert_real_http().await;
 }
 
 #[test]
@@ -731,7 +705,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     let records =
         ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
     let corrupt = Request {
-        op_id: busbar_kernel::door::op_id().0,
+        op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {
             schema: KEYSET_SCHEMA.into(),
             key: b"deployment".to_vec(),
@@ -1056,3 +1030,6 @@ fn stdio_selects_line_serving_through_mains_cli_path() {
     assert!(!line_serve_requested(&Argv::parse(Vec::<String>::new())));
     assert!(!line_serve_requested(&Argv::parse(["--mcp-stdio"])));
 }
+
+#[path = "openapi_evolution.rs"]
+mod openapi_evolution;

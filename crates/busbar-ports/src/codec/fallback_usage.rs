@@ -24,6 +24,7 @@ pub struct Declaration<'a> {
 /// Host lifecycle facts. This validator does not mint the selected/prepared/committed seal.
 #[derive(Clone, Copy)]
 pub struct AttemptState {
+    /// The preparation ordinal bound by the host's current active attempt seal.
     pub attempt: u32,
     pub exchange: u32,
     pub sealed: bool,
@@ -91,6 +92,15 @@ impl<'a> Declaration<'a> {
         self.attempt_classes
             .iter()
             .any(|declared| &**declared == class)
+    }
+
+    /// Physical token identities from this exact validated instance generation. Native names
+    /// remain borrowed here; a retained attempt owns bounded copies, never a global intern.
+    pub fn physical_classes(self) -> impl Iterator<Item = &'a str> {
+        self.classes
+            .iter()
+            .filter(|class| class.unit == p::UNIT_TOKENS)
+            .map(|class| class.class.as_ref())
     }
 
     /// Validate all preparation facts before any callback or candidate estimate replacement.

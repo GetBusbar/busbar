@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::overlaps;
+use super::{overlaps, Generation};
 use crate::grammar::Selector;
 
 #[test]
@@ -111,4 +111,33 @@ fn the_boot_seal_and_the_contract_agree_on_every_transport_pair() {
             );
         }
     }
+}
+
+#[test]
+fn process_generation_exhaustion_never_wraps_or_reuses_first() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let sequence = AtomicU64::new(u64::MAX - 1);
+    assert_eq!(
+        Generation::allocate_from(&sequence).unwrap().get(),
+        u64::MAX - 1
+    );
+    assert!(Generation::allocate_from(&sequence).is_err());
+    assert!(Generation::allocate_from(&sequence).is_err());
+    assert_eq!(sequence.load(Ordering::Relaxed), u64::MAX);
+}
+
+#[test]
+fn concurrent_process_generations_are_unique() {
+    let mut values = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| Generation::allocate().unwrap()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    values.sort_unstable();
+    assert!(values.iter().all(|value| *value != Generation::FIRST));
+    assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
 }

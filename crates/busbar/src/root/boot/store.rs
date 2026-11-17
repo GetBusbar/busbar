@@ -66,6 +66,7 @@ async fn open_config_store(
         .map_err(|error| failed(error.to_string()))?
         .into_exposed(&busbar_kernel::seal::lend());
     let spec = busbar_plugin_loader::instance::InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: &store.module,
         name: busbar_kernel::appbuild::STORE_INSTANCE,
