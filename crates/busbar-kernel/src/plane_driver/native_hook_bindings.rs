@@ -20,7 +20,7 @@ use crate::governance::GovState;
 use crate::hooks::RequestedSignals;
 
 use super::hooks::{CallerKey, HookRead};
-use super::port_hooks::{Binder, Call, Selected, Selection, Taps};
+use super::port_hooks::{Binder, Call, RouteCounters, Selected, Selection, Taps};
 
 /// One S8-opened instance; `image` keys the frozen admitted word catalog. The root obtains both
 /// identity and words from that instance's admitted descriptor, never from its settings.
@@ -246,10 +246,13 @@ impl WalkPlan {
             words,
         };
         let default = default_hook(hooks)?;
+        let global = Attached::build(&calls, &self.global)?;
+        let section = Attached::build(&calls, &self.section)?;
         let mut walks: BTreeMap<String, BTreeMap<String, PoolTable>> = BTreeMap::new();
         for walk in &self.walks {
             let (pool, container) = walk.scope();
-            let table = PoolTable::build(&calls, walk.pool(), default).map_err(|why| {
+            let table = PoolTable::build(&calls, pool, walk.pool(), default, [&global, &section])
+                .map_err(|why| {
                 format!("native hook walk pool `{pool}` container `{container}`: {why}")
             })?;
             walks
@@ -258,8 +261,8 @@ impl WalkPlan {
                 .insert(container.to_owned(), table);
         }
         Ok(WalkTables {
-            global: Attached::build(&calls, &self.global)?,
-            section: Attached::build(&calls, &self.section)?,
+            global,
+            section,
             walks,
         })
     }
@@ -457,6 +460,7 @@ impl Binder for Bindings {
             rate_headroom,
             cost: self.cost.clone(),
             reads,
+            counters: selected.counters,
         })
     }
 }
@@ -745,19 +749,25 @@ pub struct WalkTables {
 struct PoolTable {
     attached: Attached,
     policy: Option<Bound>,
+    /// Bound for a configured pool; a direct model has none.
+    counters: Option<Arc<RouteCounters>>,
 }
 struct Chosen {
     rewrites: Vec<Arc<Call>>,
     gates: Vec<Arc<Call>>,
     policy: Option<Arc<Call>>,
     taps: Taps,
+    counters: Option<Arc<RouteCounters>>,
 }
 
 impl PoolTable {
+    /// `outer`: the global and section attachments, which decide this walk beside its own.
     fn build(
         calls: &Calls<'_>,
+        label: &str,
         pool: Option<&crate::config::PoolCfg>,
         default: Option<&str>,
+        outer: [&Attached; 2],
     ) -> Result<Self, String> {
         let policy = if let Some(pool) = pool {
             if let Some((name, hook)) = inherited_ordering(pool, calls.hooks, default) {
@@ -774,9 +784,20 @@ impl PoolTable {
         } else {
             None
         };
+        let attached = Attached::build(calls, pool.map_or(&[][..], |p| p.gates.as_slice()))?;
+        let counters = pool.map(|_| {
+            let deciding = outer
+                .into_iter()
+                .chain([&attached])
+                .flat_map(|a| a.rewrites.iter().chain(&a.gates))
+                .chain(&policy)
+                .map(|bound| &bound.call);
+            Arc::new(RouteCounters::bind(label, deciding))
+        });
         Ok(Self {
-            attached: Attached::build(calls, pool.map_or(&[][..], |p| p.gates.as_slice()))?,
+            attached,
             policy,
+            counters,
         })
     }
     fn active(&self) -> bool {
@@ -865,6 +886,7 @@ impl WalkTables {
             policy: selected
                 .and_then(|pool| pool.policy.as_ref())
                 .and_then(|b| b.select(group, tree)),
+            counters: selected.and_then(|pool| pool.counters.clone()),
         })
     }
 }
