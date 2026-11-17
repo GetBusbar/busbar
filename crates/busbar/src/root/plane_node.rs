@@ -199,7 +199,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(None),
+            lost: Mutex::new(Self::fixture_terminal_book()),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
 
@@ -226,6 +226,40 @@ impl Node {
             process.connection_storage(AdmissionClass::Operator),
         ));
         Ok(())
+    }
+
+    /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
+    #[cfg(not(test))]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        None
+    }
+
+    /// Unit fixtures use a real ProcessAdmission, as production does. A fixture asserting on
+    /// its own boot budget rebinds through `rebind_terminal_storage` before any unit enters.
+    #[cfg(test)]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        let process = ProcessAdmission::new(0);
+        Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ))
+    }
+
+    /// Replace an empty fixture book with the fixture's own boot-bound process storage.
+    #[cfg(test)]
+    pub(crate) fn rebind_terminal_storage(&self, process: &Arc<ProcessAdmission>) {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            book.as_ref().is_none_or(|book| book.len() == 0),
+            "terminal storage is rebound only before any unit enters"
+        );
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
     }
 
     pub(crate) fn terminal_pending(&self) -> usize {
@@ -520,15 +554,16 @@ impl Node {
 
     /// Freeze a funded copy while the original native entry still owns its facts and pass.
     /// This performs no journal stage, chain advance, receipt transfer or source removal.
-    fn freeze_native_inputs(
+    pub(super) fn freeze_native_inputs(
         &self,
         terminal: &busbar_kernel::teller::native_data_audit::NativeAuditTerminal,
         open: &OpenUnit,
+        // The original money owner's transferred report, never a re-derived bill.
+        report: Option<&Report>,
     ) -> Result<AuditInputs, &'static str> {
         let context = terminal.context();
         let outcome = terminal.outcome();
         let facts = terminal.facts();
-        let report = open.sealing.report.as_ref();
         if terminal.admission().is_some() && report.is_none() {
             return Err("native terminal has no original monetary report");
         }

@@ -1151,6 +1151,8 @@ impl AdmissionLease {
 }
 
 pub struct AppHandle {
+    // 0: open, 1: shutdown refuses new admission, 2: admitted publication drained.
+    config_publication: std::sync::atomic::AtomicU8,
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
     admission: std::sync::Mutex<()>,
@@ -1177,6 +1179,7 @@ type SharedApplier = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
         Self {
+            config_publication: std::sync::atomic::AtomicU8::new(0),
             current: arc_swap::ArcSwap::new(app),
             publication: std::sync::Mutex::new(()),
             admission: std::sync::Mutex::new(()),
@@ -1189,6 +1192,39 @@ impl AppHandle {
             appliers: std::sync::Mutex::new(Vec::new()),
             door_refuser: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Stop new configuration effects, then drain the actual retained transaction guard
+    /// and publication callbacks before a root may stop generation workers. A cancelled
+    /// wait keeps admission closed; it does not certify that publication has drained.
+    pub async fn close_config_publication(&self) {
+        let _ = self.config_publication.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        let _effects = crate::config::transaction::effect_lock().await;
+        let _application = self.application.lock().await;
+        self.config_publication
+            .store(2, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn config_admission_open(&self) -> bool {
+        self.config_publication
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+    }
+
+    fn check_config_publication(&self) -> Result<(), String> {
+        if self
+            .config_publication
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 2
+        {
+            return Err(crate::config::transaction::PUBLICATION_CLOSED.into());
+        }
+        Ok(())
     }
 
     pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
@@ -1306,6 +1342,7 @@ impl AppHandle {
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
     ) -> Result<Arc<App>, String> {
+        self.check_config_publication()?;
         let _publication = self
             .publication
             .lock()
@@ -1445,6 +1482,7 @@ impl AppHandle {
     }
 
     pub(crate) fn check_candidate_generation(&self, next: &App) -> Result<(), String> {
+        self.check_config_publication()?;
         next.check_selected_preparation(&self.load())?;
         if let Some(held) = next
             .publication_generation

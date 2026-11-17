@@ -99,6 +99,7 @@ pub(super) fn request(
 pub(super) async fn serve(
     router: Router,
     req: Request<AxumBody>,
+    request: busbar_kernel::limits::process_admission::RequestLease,
     slot: SessionSlot,
     out: Emitter,
     _end: StreamEnd,
@@ -130,7 +131,7 @@ pub(super) async fn serve(
         );
     }
     if let Some(pipe) = slot.take() {
-        out.send(Op::Switch { pipe });
+        out.send(Op::Switch { pipe, request });
         return;
     }
     respond(&out, response).await;

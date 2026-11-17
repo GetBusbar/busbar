@@ -48,7 +48,7 @@ pub(crate) use amend::verify_held;
 
 mod audit;
 
-pub(crate) use audit::{AuditWindowAt, LineIdentity, NativeStagedAudit};
+pub(crate) use audit::{AuditWindowAt, FrozenNativeAudit, LineIdentity, NativeStagedAudit};
 
 mod audit_page;
 

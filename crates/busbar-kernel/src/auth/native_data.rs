@@ -890,6 +890,10 @@ impl NativeDataPending {
     pub fn context(&self) -> &InvocationContext {
         &self.context
     }
+    /// Whether this runtime belongs to the exact original invocation of `owner`.
+    pub fn owned_by(&self, owner: &crate::teller::native_data_audit::NativeAuditOwner) -> bool {
+        self.context.same_unit(owner.invocation())
+    }
     pub fn execution(&self) -> Option<&DataExecutionAdmission> {
         self.execution.get()
     }

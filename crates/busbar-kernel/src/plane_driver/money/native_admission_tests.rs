@@ -37,7 +37,6 @@ async fn fixture() -> (Arc<GovState>, PlaneMoney, UnitMoney) {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                selected: None,
             }],
             ..Default::default()
         },

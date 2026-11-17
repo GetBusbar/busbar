@@ -241,7 +241,6 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
-                selected: None,
             }],
             ..GroupCfg::default()
         },
