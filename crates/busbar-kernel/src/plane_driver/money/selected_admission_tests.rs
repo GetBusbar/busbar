@@ -13,11 +13,18 @@ struct Declared(Vec<UsageClass>, Vec<Box<str>>);
 impl Declared {
     fn new() -> Self {
         Self(
-            vec![UsageClass {
-                class: "tokens.custom".into(),
-                unit: busbar_plugin_abi::plane::UNIT_TOKENS,
-                expected_units: None,
-            }],
+            vec![
+                UsageClass {
+                    class: "tokens.custom".into(),
+                    unit: busbar_plugin_abi::plane::UNIT_TOKENS,
+                    expected_units: None,
+                },
+                UsageClass {
+                    class: "calls.custom".into(),
+                    unit: busbar_plugin_abi::plane::UNIT_COUNT,
+                    expected_units: None,
+                },
+            ],
             vec!["tokens.custom".into()],
         )
     }
@@ -335,4 +342,75 @@ async fn callback_rollback_owns_only_original_admission_until_handoff_commits() 
     money.admission_rollback(&admitted).unwrap().commit();
     assert_eq!(money.open_units(), 1);
     assert!(context.is_live());
+}
+
+#[tokio::test]
+async fn selected_session_reports_keep_source_precedence_and_reject_attempt_classes_atomically() {
+    use crate::plane_driver::usage::SessionUsage;
+    use busbar_plugin_abi::plane::{UsageRec, SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED};
+    let (money, _, context, _lease, request) = selected_fixture(98, true).await;
+    let descriptor = declaration(&context);
+    let selected = money
+        .admit_existing_selected(
+            request,
+            descriptor.clone(),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let mut usage = SessionUsage::new();
+    for (amount, source) in [(20, SRC_ESTIMATED), (16, SRC_FLOOR), (8, SRC_REPORTED)] {
+        usage
+            .answer(
+                "calls.custom",
+                UsageRec {
+                    amount,
+                    scale: 0,
+                    source,
+                },
+            )
+            .unwrap();
+    }
+    assert!(!selected.observe_session(&descriptor, &usage).unwrap());
+    assert_eq!(
+        selected.checkpoint().unwrap(),
+        crate::plane_driver::cancel::Checkpoint::Continue
+    );
+    let before = money.usage_view(selected.request().unit()).unwrap();
+    let UsageView::Partitioned(before) = before.as_ref() else {
+        panic!("selected view")
+    };
+    let projected =
+        crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(
+            before.as_ref(),
+        )
+        .unwrap()
+        .project()
+        .unwrap();
+    let class = &projected.partitions[0].classes["calls.custom"];
+    assert_eq!(
+        class.billed.unwrap().count,
+        busbar_contract::Count::from_micros(8_000_000)
+    );
+    usage
+        .answer(
+            "tokens.custom",
+            UsageRec {
+                amount: 100,
+                scale: 0,
+                source: SRC_REPORTED,
+            },
+        )
+        .unwrap();
+    assert!(selected.observe_session(&descriptor, &usage).is_err());
+    let after = money.usage_view(selected.request().unit()).unwrap();
+    let UsageView::Partitioned(after) = after.as_ref() else {
+        panic!("selected view")
+    };
+    assert_eq!(
+        before, after,
+        "malformed session answer must publish nothing"
+    );
 }
