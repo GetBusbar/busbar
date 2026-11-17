@@ -10,6 +10,7 @@ mod pointer;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use binder::check_projection;
 pub use binder::{Binder, MAX_BINDINGS, MAX_UNIX_PATHS};
 
 use busbar_plugin_abi::host_side::caller::BoxFut;

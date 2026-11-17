@@ -158,6 +158,7 @@ fn make_model(provider: &str, max_concurrent: usize) -> config::ModelCfg {
 
 fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
+        protocol: None,
         reasoning: None,
         prompt_caching: None,
         max_requests: -1,

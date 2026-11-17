@@ -352,22 +352,7 @@ fn judge_with_plugins(
         }
     }
 
-    let mut known_protocols: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
-    for decl in crate::plane_driver::registry::plane_decls()
-        .iter()
-        .filter(|d| d.fallback || cfg.plane_sections.contains(d.config_section))
-    {
-        if let Some(default_section) = decl.default_section {
-            if let Some(dialects) = default_section(decl).known_dialects() {
-                for d in dialects.iter().copied() {
-                    if !known_protocols.contains(&d) {
-                        known_protocols.push(d);
-                    }
-                }
-            }
-        }
-    }
-    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
+    validate_providers_with(&[], cfg, unset_env_vars, &mut errors);
 
     for (pool_name, pool_cfg) in &cfg.pools {
         let mut member_protocols: HashSet<&str> = HashSet::new();
@@ -2123,7 +2108,7 @@ fn validate_token_endpoint_fields(
 }
 
 fn validate_providers_with(
-    known: &[&str],
+    _known: &[&str],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2136,11 +2121,8 @@ fn validate_providers_with(
     };
 
     for (provider_name, provider_cfg) in &cfg.providers {
-        validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
-
-        if let Err(refusal) = crate::config::providers::judge_options(provider_name, provider_cfg) {
-            errors.push(coded::config_provider_invalid(refusal).into());
-        }
+        // Dialect availability and plane-owned options were validated against the exact
+        // admitted image in config::resolve_with_provider_planes, before RootCfg existed.
 
         if let Some(health) = &provider_cfg.health {
             if health.interval_secs == Some(0) {
@@ -2171,14 +2153,6 @@ fn validate_providers_with(
                          a larger duration overflows the clock arithmetic it feeds"
                     )).into());
                 }
-            }
-        }
-
-        for (code, mapped_class) in provider_cfg.error_map() {
-            if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
-                errors.push(coded::config_provider_invalid(format!(
-                    "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
-                )).into());
             }
         }
 
@@ -2545,6 +2519,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_provider_protocol_with(
     known: &[&str],
     provider_name: &str,
