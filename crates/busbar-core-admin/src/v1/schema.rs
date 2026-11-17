@@ -295,18 +295,6 @@ pub struct RevokeView {
     pub revoked: String,
 }
 
-/// `POST /signing-key/rotate`: the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
-/// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
-#[derive(Serialize, JsonSchema)]
-pub struct SigningKeyRotateView {
-    /// The current signing-key id (`kid`) that tokens are minted under.
-    pub current_kid: String,
-    /// Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
-    pub revoke_all: bool,
-    /// Human-readable guidance for the operator-driven lockstep rotation.
-    pub message: String,
-}
-
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 /// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives

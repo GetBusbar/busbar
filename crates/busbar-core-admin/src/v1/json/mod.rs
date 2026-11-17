@@ -129,7 +129,6 @@ impl AdminTransport for JsonV1 {
             .route("/keys/{id}/usage", get(crate::keys::key_usage))
             .route("/keys/{id}/rotate", post(crate::keys::rotate_key))
             .route("/keys/{id}/revoke", post(crate::keys::revoke_key))
-            .route("/signing-key/rotate", post(crate::keys::rotate_signing_key))
             .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
 

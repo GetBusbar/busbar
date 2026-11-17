@@ -353,6 +353,7 @@ build. Update clients before accepting the upgrade.
 | `/export`, `/export/{name}` | `/kinds/export/instances[/{name}]` |
 | `/identity-providers`, `/identity-providers/{name}` | `/kinds/auth/instances[/{name}]` |
 | Plane-specific `/tools…` and `/agents…` admin paths | The selected plane kind instance's advertised operations under `/kinds/{kind}/instances/{id}/ops/…` |
+| `POST /signing-key/rotate` (it reported the key id and changed nothing) | None. Rotating the signing key is an operator action: replace `auth.signing_key`, restart every node in lockstep, and re-mint every key |
 
 Start with `GET /kinds`, then `GET /kinds/{kind}/instances`, then the instance and its advertised
 views and operations. Do not infer a kind name or operation from an artifact filename.

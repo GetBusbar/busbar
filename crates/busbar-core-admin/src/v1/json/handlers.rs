@@ -4170,18 +4170,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
-    paths.insert(
-        ap("/signing-key/rotate"),
-        json!({
-            "post": {
-                "summary": "ROTATE the busbar key-signing key. Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-                "security": [{"adminToken": []}],
-                RESPONSES_KEY: {
-                    "200": {"description": "`{current_kid, revoke_all, message}`: the rotation intent + revoke-all warning"},
-                }
-            }
-        }),
-    );
 
     use crate::v1::contract::taxonomy;
 
@@ -4666,12 +4654,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
     typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
-    typed!(
-        "/signing-key/rotate",
-        "post",
-        "200",
-        sview::SigningKeyRotateView
-    );
 
     for (path, method, op) in super::kernel_verbs::operations(&mut gen, &mut req_gen) {
         let item = paths.entry(path).or_insert_with(|| json!({}));
