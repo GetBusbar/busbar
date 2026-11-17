@@ -3168,28 +3168,14 @@ pub(crate) async fn patch_hook_settings(
         Ok(settings) => settings,
         Err(error) => return reject("hook.settings", &resource, &actor, &error),
     };
-    let pre_push_version = current.config_version;
-    let settings_version = pre_push_version.wrapping_add(1);
-
-    let hook_env = current.hook_env.clone();
-    if let Err(e) =
-        busbar_kernel::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
-    {
-        audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::plugin_text(
-            Cond::HookNoAck,
-            Some(e.to_string()),
-            None,
-            None,
-        ));
-    }
+    let expected_version = current.config_version;
 
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
-        if current.config_version != pre_push_version {
+        if current.config_version != expected_version {
             return Err(AdminError::Conflict(
-                "config changed during the settings push; retry".to_string(),
+                "config changed during the settings change; retry".to_string(),
             ));
         }
 
@@ -3237,24 +3223,6 @@ pub(crate) async fn patch_hook_settings(
             )
         }
         Err(e) => {
-            let committed = handle.load();
-            if let Some(committed_hook) = committed.hook_registry.get(&name) {
-                if let Err(re) = busbar_kernel::hooks::push_configure(
-                    committed_hook,
-                    &name,
-                    committed.config_version,
-                    &committed.hook_env,
-                )
-                .await
-                {
-                    tracing::debug!(
-                        hook = %name,
-                        error = %re,
-                        "hook.settings rejected; reverting the running hook to committed settings \
-                         failed — it will re-sync via the configure preamble on its next reconnect"
-                    );
-                }
-            }
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
             err_json(&e)
         }
@@ -3313,15 +3281,7 @@ pub(crate) async fn plugin_schema(
     let current = handle.load();
 
     if let Some(hook) = current.hook_registry.get(&name) {
-        let described = busbar_kernel::hooks::fetch_schema(
-            &name,
-            hook,
-            current.config_version,
-            &current.hook_env,
-        )
-        .await;
-
-        let loadable = current.hook_env.registry.resolve(&hook.plugin);
+        let loadable = current.plugin_registry.resolve(&hook.plugin);
         let trust = loadable
             .as_ref()
             .map(|p| verdict_trust(&p.trust))
@@ -3331,7 +3291,6 @@ pub(crate) async fn plugin_schema(
         let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
         let mut selection = hook_schema_selection(
             &name,
-            described,
             (
                 loadable.as_ref().and_then(|p| p.settings_schema.as_deref()),
                 if loadable.as_ref().is_some_and(|p| p.linked) {
@@ -3350,7 +3309,7 @@ pub(crate) async fn plugin_schema(
         }
         return ok_json(StatusCode::OK, &selection);
     }
-    let Some(loadable) = current.hook_env.registry.resolve(&name) else {
+    let Some(loadable) = current.plugin_registry.resolve(&name) else {
         if let Some(view) = cached_linked_plugin_schema(&current, &name) {
             return ok_json(StatusCode::OK, &view);
         }
@@ -3404,7 +3363,7 @@ fn loaded_plugin_configuration(
     row: &busbar_contract::plugin_rows::Row,
 ) -> serde_json::Value {
     let declaration = app.plugin_admission.and_then(|admission| {
-        admission.loaded_configuration(app.hook_env.registry.as_ref(), &row.name)
+        admission.loaded_configuration(app.plugin_registry.as_ref(), &row.name)
     });
     serde_json::to_value(crate::v1::plugin_configuration::configuration(
         &row.kind,
@@ -3421,15 +3380,11 @@ fn loaded_plugin_configuration(
 
 fn hook_schema_selection(
     name: &str,
-    described: Option<serde_json::Value>,
     (settings_schema, fallback_source): (Option<&str>, &str),
     trust: &str,
     kind: Option<&str>,
     restart_required_default: Option<bool>,
 ) -> serde_json::Value {
-    if described.is_some() {
-        return json!({ "name": name, "schema": described, "schema_error": null, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": "describe", "kind": kind, "restart_required_default": restart_required_default });
-    }
     let (schema, schema_error) = manifest_schema(settings_schema);
     json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": crate::v1::contract::PluginTrustView::from_verification(false, if trust == "trusted" {"trusted"} else if trust == "rejected" {"rejected"} else {"unverified"}, &Default::default()), "source": fallback_source, "kind": kind, "restart_required_default": restart_required_default })
 }
@@ -3457,9 +3412,8 @@ pub(crate) async fn hook_schema(
     let Some(hook) = current.hook_registry.get(&name) else {
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
-    let schema =
-        busbar_kernel::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
-            .await;
+    let row = current.plugin_registry.resolve(&hook.plugin);
+    let (schema, _) = manifest_schema(row.as_ref().and_then(|row| row.settings_schema.as_deref()));
     ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
 }
 
@@ -3472,69 +3426,8 @@ pub(crate) async fn hook_status(
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     let desired_version = current.config_version;
-    let reported =
-        busbar_kernel::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
     let as_of = busbar_kernel::store::now();
-    let body = match reported {
-        Some(r) => {
-            let drift_keys = busbar_kernel::hooks::settings_drift_keys(
-                hook,
-                r.settings.as_ref(),
-                &crate::v1::service::running_grammar(&current).sugars,
-            );
-            let settings_drift = !drift_keys.is_empty();
-            let version_drift = r.settings_version.is_some_and(|v| v != desired_version);
-            let metrics = r
-                .metrics
-                .as_ref()
-                .map(|m| {
-                    busbar_kernel::hooks::text_cut::parse_hook_status_metrics(&name, m)
-                        .into_iter()
-                        .map(|metric| {
-                            let mut entry =
-                                json!({"name": metric.name, "type": metric.kind, "value": metric.value});
-
-                            for (k, v) in [
-                                ("labels", metric.labels.map(|l| json!(l))),
-                                ("quantiles", metric.quantiles.map(|q| json!(q))),
-                                ("estimated", metric.estimated.map(serde_json::Value::from)),
-                                ("ci_low", metric.ci_low.map(serde_json::Value::from)),
-                                ("ci_high", metric.ci_high.map(serde_json::Value::from)),
-                                ("help", metric.help.map(serde_json::Value::from)),
-                                ("label", metric.label.map(serde_json::Value::from)),
-                                ("unit", metric.unit.map(serde_json::Value::from)),
-                                ("viz", metric.viz.map(serde_json::Value::from)),
-                                ("max", metric.max.map(serde_json::Value::from)),
-                            ] {
-                                if let Some(v) = v {
-                                    entry[k] = v;
-                                }
-                            }
-                            entry
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            json!({
-                "name": name,
-                "desired": {
-                    "settings_keys": crate::v1::service::settings_keys(&hook.settings),
-                    "settings_version": desired_version,
-                },
-                "reported": {
-                    "settings_keys": r.settings.as_ref().map(busbar_contract::plugin_settings::Settings::key_names),
-                    "settings_version": r.settings_version,
-                },
-                "drift": settings_drift || version_drift,
-                // WHICH desired keys the hook is not running — the drift signal an operator can act
-                // on, carrying names the body already serves and no value from either bag.
-                "drift_keys": drift_keys,
-                "metrics": metrics,
-                "as_of": as_of,
-                "source": "live",
-            })
-        }
-        None => json!({
+    let body = json!({
             "name": name,
             "desired": {
                 "settings_keys": crate::v1::service::settings_keys(&hook.settings),
@@ -3542,17 +3435,15 @@ pub(crate) async fn hook_status(
             },
             "reported": serde_json::Value::Null,
             "drift": serde_json::Value::Null,
-            // Invariantly an array, same rationale as `metrics` below: no drift is KNOWN here, so
-            // the list is empty rather than absent.
+            // Invariantly an array: no drift is KNOWN here, so the list is empty rather than absent.
             "drift_keys": [],
             // `metrics` is INVARIANTLY an array — `[]` here (not `{}`) so a strict consumer decoding
             // it as an array never has to special-case the no-status branch.
             "metrics": [],
             "as_of": as_of,
             "source": "live",
-            "note": "hook did not answer status (unsupported or unreachable)",
-        }),
-    };
+            "note": "hook status is not read: the native hook bindings report no status",
+    });
     ok_json(StatusCode::OK, &body)
 }
 
@@ -5267,10 +5158,9 @@ fn loaded_image_trust(
     row: &busbar_contract::plugin_rows::Row,
 ) -> crate::v1::contract::PluginTrustView {
     crate::v1::contract::PluginTrustView::from_verification(
-        app.hook_env.registry.signature_present(&row.name),
+        app.plugin_registry.signature_present(&row.name),
         verdict_trust(&row.trust),
-        &app.hook_env
-            .registry
+        &app.plugin_registry
             .verification(&row.name)
             .unwrap_or_default(),
     )

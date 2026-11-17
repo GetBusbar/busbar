@@ -303,79 +303,35 @@ async fn a_revoked_admission_cannot_enter_the_neutral_plane_dispatcher() {
 }
 
 #[tokio::test]
-async fn a_neutral_auth_refusal_runs_the_selected_completion_tap_once_outside_host_locks() {
+async fn a_neutral_auth_refusal_is_rendered_by_the_selected_plane_outside_host_locks() {
     neutral_auth_refusal("/framed/ok", 401).await;
 }
 
 #[tokio::test]
-async fn an_opaque_preadmission_refusal_survives_the_exact_plane_callback_and_completion() {
+async fn an_opaque_preadmission_refusal_survives_the_exact_plane_callback() {
     neutral_auth_refusal("/framed/opaque-refusal", 70_123).await;
 }
 
 async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     use busbar_contract::abi::host::service::REFUSE_STOPPED;
     use busbar_kernel::inbound::{ListenerScope, Refuse};
-    use std::time::Duration;
 
     let _one = PUBLISHING.lock().await;
     let g = governed("neutral-auth-refusal", false).await;
     let mounts =
         crate::root::serve::door_mounts(g.served.clone(), || None, &[], &[], &[], &[]).unwrap();
     let routes = mounts.data;
-    let dialect = routes.served.planes[0].dialects[0];
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}/completion", listener.local_addr().unwrap());
-    let (send, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let router = axum::Router::new().route(
-        "/completion",
-        axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
-            let send = send.clone();
-            async move {
-                send.send(body).unwrap();
-                axum::http::StatusCode::NO_CONTENT
-            }
-        }),
-    );
-    struct Server(tokio::task::JoinHandle<()>);
-    impl Drop for Server {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-    let _server = Server(tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap()
-    }));
-    let mut hook =
-        serde_json::to_value(g.screen_hook.authoring(&busbar_kernel::seal::acquire())).unwrap();
-    hook["kind"] = serde_json::json!("tap");
-    hook["phase"] = serde_json::json!(["response"]);
-    hook["settings"]["url"] = serde_json::json!(endpoint);
-    let registry = [(
-        "completion".to_owned(),
-        serde_json::from_value(hook).unwrap(),
-    )]
-    .into_iter()
-    .collect();
-    let mut app = (*g.app).clone();
-    app.tap_hooks_response = busbar_kernel::hooks::resolve_tap_hooks(
-        &registry,
-        &["completion".into()],
-        &app.hook_env,
-        1,
-        busbar_kernel::config::HookStage::Response,
-    );
-    assert_eq!(app.tap_hooks_response.len(), 1);
-    let app = Arc::new(app);
+    let app = Arc::clone(&g.app);
     let weak = Arc::new(Mutex::new(std::sync::Weak::<Inbound>::new()));
     let callback_host = Arc::clone(&weak);
     let callback_routes = Arc::clone(&routes);
     let scope = ListenerScope {
         audit_kind: None,
-        neutral_refuse: Some(Arc::new(move |app, refusal| {
+        neutral_refuse: Some(Arc::new(move |_, refusal| {
             // Acquiring the units mutex inside the producer catches a held host lock.
             let host = callback_host.lock().unwrap().upgrade().unwrap();
             assert!(host.unit_secret(OWNER, 0).is_none());
-            callback_routes.refuse_line(app, refusal)
+            callback_routes.refuse_line(refusal)
         })),
         admission: Arc::new(|_, _| None),
         legacy_fallback: false,
@@ -411,17 +367,6 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
         .unwrap();
     assert_eq!(reply.status, expected_status);
     assert_eq!(reply.body, b"refused:401:unauthenticated");
-    let tap = tokio::time::timeout(Duration::from_secs(5), received.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(tap["stage"]["outcome"], "rejected_by_auth");
-    assert_eq!(tap["stage"]["status"], 401);
-    assert_eq!(tap["request"]["ingress_protocol"], dialect);
-    assert!(
-        received.try_recv().is_err(),
-        "one completion tap per auth refusal"
-    );
     assert_eq!(g.money.open_units(), 0);
     assert!(g.book.lock().unwrap().audit_records().is_empty());
 }

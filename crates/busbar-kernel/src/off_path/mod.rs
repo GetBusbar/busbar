@@ -12,7 +12,6 @@ pub(crate) mod export;
 /// `governance`: boot recovery, persistence replay, operator-issued control-plane operations and
 /// configuration builds of the governance module; none runs per request.
 pub(crate) mod governance;
-pub(crate) mod hooks;
 pub(crate) mod host_outbound;
 pub(crate) mod host_records;
 pub(crate) mod host_services;

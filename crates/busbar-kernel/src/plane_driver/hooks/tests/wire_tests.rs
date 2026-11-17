@@ -192,9 +192,6 @@ fn status_metrics_rejects_nonfinite_bucket_bounds_except_exact_positive_inf() {
 }
 
 use super::{decision as answered, transformed};
-use crate::hooks::{
-    CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
-};
 use busbar_contract::abi::hook::{
     VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
@@ -204,6 +201,9 @@ use busbar_contract::abi::sdk::hook::{
 use busbar_contract::hook_wire::reply::{self, *};
 use busbar_contract::hook_wire::{build, parse_restrict, OP_DECIDE};
 use busbar_contract::hooks::TransformOutcome;
+use busbar_contract::hooks::{
+    CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
+};
 
 fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
     Candidate {

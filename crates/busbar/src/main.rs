@@ -1410,22 +1410,6 @@ async fn run(
         ),
         deploy.public_url.as_deref(),
         &door_reach,
-        Some({
-            let (live, boot) = (
-                std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::downgrade(&app),
-            );
-            std::sync::Arc::new(move || {
-                let app = match live.get() {
-                    Some(handle) => handle
-                        .upgrade()
-                        .expect("the serving application owner has retired")
-                        .load(),
-                    None => boot.upgrade().expect("the boot application is still owned"),
-                };
-                busbar_kernel::plane_driver::engine_host(&app)
-            })
-        }),
         &app.serve_tables,
         &|served| {
             listener_plan.mount_planes(

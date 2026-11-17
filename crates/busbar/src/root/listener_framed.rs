@@ -2123,7 +2123,6 @@ async fn serve_data(
                     .challenge(&admission)
                     .or_else(|| routes.refusal(&admission, ReasonCode::Unauthenticated))
                 {
-                    routes.auth_completion(&admission, rendered.status);
                     crate::root::serve::neutral::render(&*caller, rendered).await;
                 }
                 return None;

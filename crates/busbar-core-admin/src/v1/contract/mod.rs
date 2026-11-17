@@ -409,8 +409,8 @@ pub struct HookView {
     ///
     /// This used to be the bag itself, under a doc comment claiming hook settings are "never a
     /// secret by contract". That claim was retracted for `NamedDefView` and it is no more true here:
-    /// a hook's settings bag is a `SecretRef` carrier by design (`hooks::HookEnv::resolve_hook_settings`
-    /// resolves it before every configure push), and `config::secret::resolve_settings` forwards a
+    /// a hook's settings bag is a `SecretRef` carrier by design (resolved before the native hook opens),
+    /// and `config::secret::resolve_settings` forwards a
     /// non-object bag verbatim, so a literal credential is fully supported too. `GET /hooks` and
     /// `GET /hooks/{name}` serve this at READ-ONLY admin scope. The values are readable only where
     /// they are writable: the config file and the config overlay.

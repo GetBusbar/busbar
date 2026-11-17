@@ -257,7 +257,7 @@ fn image(app: &App, instance: &Instance) -> String {
     let Some(module) = instance.module.as_deref() else {
         return String::new();
     };
-    let registry = &app.hook_env.registry;
+    let registry = &app.plugin_registry;
     registry
         .archive_sha256(module)
         .or_else(|| registry.resolve(module).map(|row| row.version))
@@ -487,7 +487,7 @@ fn plugin_of(app: &App, instance: &Instance) -> Value {
         (None, Some(decl)) => decl.key,
         (None, None) => return Value::new_null(),
     };
-    let row = app.hook_env.registry.resolve(module);
+    let row = app.plugin_registry.resolve(module);
     let mut plugin = Map::new();
     plugin.insert(
         "name",
@@ -517,7 +517,7 @@ fn admission(app: &App, instance: &Instance) -> (&'static str, Value) {
     let Some(module) = instance.module.as_deref() else {
         return ("ok", Value::new_null());
     };
-    let registry = &app.hook_env.registry;
+    let registry = &app.plugin_registry;
     if registry.resolve(module).is_some() {
         return ("ok", Value::from("admitted"));
     }
@@ -613,8 +613,7 @@ fn config_schema(app: &App, instance: &Instance) -> Value {
         return Value::new_null();
     };
     let Some(text) = app
-        .hook_env
-        .registry
+        .plugin_registry
         .resolve(module)
         .and_then(|row| row.settings_schema)
     else {

@@ -228,7 +228,7 @@ async fn projection_boundary_app(
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    candidate.hook_env.registry = Arc::new(ListenerRows(Arc::clone(&candidate.hook_env.registry)));
+    candidate.plugin_registry = Arc::new(ListenerRows(Arc::clone(&candidate.plugin_registry)));
     candidate.plugin_routes =
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
@@ -875,7 +875,7 @@ async fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need(
     let mut candidate = projection_boundary_app(topology, Vec::new(), 2).await;
     let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
 
-    candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
+    candidate_mut.plugin_registry = Arc::new(crate::root::loader::PluginRegistry::empty());
     candidate_mut.export_defs = json::from_value(&json::json!({
         "actual-metrics": {"module": stated.name.clone(), "settings": {}}
     }))
@@ -910,7 +910,7 @@ async fn actual_candidate_registry_replaces_the_early_boot_need_projection() {
     let plan = plan(topology.clone());
     let mut candidate = projection_boundary_app(topology, Vec::new(), 2).await;
     let candidate_mut = Arc::get_mut(&mut candidate).unwrap();
-    candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
+    candidate_mut.plugin_registry = Arc::new(crate::root::loader::PluginRegistry::empty());
     candidate_mut.hook_registry.clear();
     candidate_mut.export_defs.clear();
     let actual = plan.needs(&candidate).unwrap();
@@ -1322,7 +1322,7 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
     state.auth = Arc::new(
         busbar_kernel::auth::AuthMiddleware::new(
             &auth_cfg,
-            &state.hook_env.registry,
+            &state.plugin_registry,
             &busbar_kernel::config::secret::SecretResolver::builtins_only(),
         )
         .expect("the actual configured keys chain opens its credential readers"),

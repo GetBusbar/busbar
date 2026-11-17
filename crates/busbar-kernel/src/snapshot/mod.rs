@@ -8,8 +8,6 @@ use crate::state::App;
 
 mod money;
 
-pub(crate) mod hooks;
-
 mod source;
 
 pub use source::{boot_nonce, process_generation, RequestIdentity, RequestSnapshot};

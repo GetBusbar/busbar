@@ -176,13 +176,13 @@ pub(super) fn decision(
     }
     if verbs & VERB_RESTRICT != 0 {
         return RoutingDecision::Restrict {
-            tags_any: super::trimmed_tags(restrict_tags()),
+            tags_any: trimmed_tags(restrict_tags()),
         };
     }
     if verbs & (VERB_PREFER | VERB_PRIORITIZE) == 0 {
         return RoutingDecision::Abstain;
     }
-    match super::ranked(order(), candidates) {
+    match ranked(order(), candidates) {
         RoutingDecision::Prefer(set) if verbs & VERB_PRIORITIZE != 0 => {
             RoutingDecision::Prioritize(set)
         }
@@ -371,6 +371,43 @@ impl RoutingPolicy for Ranking {
     fn content_blind(&self) -> bool {
         true
     }
+}
+
+/// `raw`, kept in order where it names one of `candidates`, each index once (what
+/// [`RoutingDecision::from_ranked`] keeps), compacted in place.
+fn ranked(mut raw: Vec<usize>, candidates: &[Candidate<'_>]) -> RoutingDecision {
+    let mut kept = 0;
+    for i in 0..raw.len() {
+        let idx = raw[i];
+        if candidates.iter().any(|c| c.idx == idx) && !raw[..kept].contains(&idx) {
+            raw[kept] = idx;
+            kept += 1;
+        }
+    }
+    raw.truncate(kept);
+    if raw.is_empty() {
+        RoutingDecision::Abstain
+    } else {
+        RoutingDecision::Prefer(raw)
+    }
+}
+
+/// `tags`, each trimmed in place, the empty ones dropped, in order.
+fn trimmed_tags(mut tags: Vec<String>) -> Vec<String> {
+    let mut kept = 0;
+    for i in 0..tags.len() {
+        let tag = &mut tags[i];
+        let end = tag.trim_end().len();
+        tag.truncate(end);
+        let start = tag.len() - tag.trim_start().len();
+        tag.drain(..start);
+        if !tag.is_empty() {
+            tags.swap(kept, i);
+            kept += 1;
+        }
+    }
+    tags.truncate(kept);
+    tags
 }
 
 #[cfg(test)]

@@ -1990,7 +1990,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     built.governance = Some(gov);
     built.admin_chain = vec![busbar_kernel::config::operator_provider().to_string()];
     let operator = busbar_kernel::auth::open_operator(
-        &built.hook_env.registry,
+        &built.plugin_registry,
         digest,
         &built.identity_providers,
     )

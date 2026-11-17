@@ -609,7 +609,7 @@ pub(crate) fn candidate_listener_needs(
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     root: Vec<InboundBind>,
 ) -> Option<Result<ListenerNeeds, String>> {
-    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
+    let registry = super::loader::rows::registry_of(app.plugin_registry.as_ref())?;
     Some(
         listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
             listener_projection(

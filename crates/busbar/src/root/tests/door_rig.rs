@@ -10,10 +10,10 @@ use busbar_contract::secret::SecretResolve;
 use busbar_contract::transport::TransportSettings;
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::DestJudge;
-use busbar_kernel::plane_driver::{GenerationHost, PlaneMoney};
+use busbar_kernel::plane_driver::PlaneMoney;
 use busbar_kernel_egress::ports::Journal;
 
-use super::{DoorEgress, HookStage, Served, Services, StreamFramers};
+use super::{DoorEgress, Served, Services, StreamFramers};
 use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{DoorReach, OutboundAuths, ProviderRoute};
 use crate::root::durability::NodeBook;
@@ -308,7 +308,6 @@ pub(crate) struct DoorCompose<'a> {
     money: &'a dyn Fn() -> Arc<PlaneMoney>,
     public_url: Option<&'a str>,
     egress: Option<&'a EgressRig>,
-    hooks: Option<HookStage>,
     post: Option<Arc<NodeEndPost>>,
     framers: Option<Arc<Connector>>,
     tables: Option<&'a busbar_kernel::plane_driver::serve::ServeTables>,
@@ -330,7 +329,6 @@ impl<'a> DoorCompose<'a> {
             money,
             public_url: None,
             egress: None,
-            hooks: None,
             post: None,
             framers: None,
             tables: None,
@@ -355,16 +353,6 @@ impl<'a> DoorCompose<'a> {
     #[must_use]
     pub(crate) fn egress(mut self, egress: &'a EgressRig) -> Self {
         self.egress = Some(egress);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn hooks(mut self, host: GenerationHost, gov: Arc<GovState>) -> Self {
-        self.hooks = Some(HookStage {
-            host,
-            gov,
-            journal: None,
-        });
         self
     }
 
@@ -406,7 +394,7 @@ impl<'a> DoorCompose<'a> {
             self.public_url,
             self.money,
             egress,
-            self.hooks.as_ref(),
+            None,
             self.tables.unwrap_or(&own),
         ))
     }

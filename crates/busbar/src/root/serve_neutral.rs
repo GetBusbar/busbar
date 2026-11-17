@@ -115,35 +115,9 @@ impl DataRoutes {
         )
     }
 
-    pub(crate) fn auth_completion(&self, admission: &RequestAdmission, status: u32) {
-        if let Some((plane, _)) = self.admitted_claim(admission) {
-            self.auth_completion_for(
-                &admission.app(),
-                plane,
-                admission.selected_line().dialect,
-                status,
-            );
-        }
-    }
-
-    fn auth_completion_for(
-        &self,
-        app: &Arc<busbar_kernel::state::App>,
-        plane: usize,
-        dialect: u32,
-        status: u32,
-    ) {
-        if let Some(dialect) = self.served.planes[plane].dialects.get(dialect as usize) {
-            // The legacy tap projection has a 16-bit optional status. Do not discard the
-            // completion or truncate an opaque 32-bit producer code to fit that projection.
-            busbar_kernel::auth::auth_completion_taps(app, dialect, u16::try_from(status).ok());
-        }
-    }
-
     /// Render a pre-admission refusal through the exact sealed claimant, without a path rematch.
     pub(crate) fn refuse_line(
         &self,
-        app: &Arc<busbar_kernel::state::App>,
         refusal: &busbar_kernel::plane_routes::KernelRefusal<'_>,
     ) -> Option<Rendered> {
         let line = refusal.selected_line?;
@@ -160,7 +134,6 @@ impl DataRoutes {
         };
         let (plane, _) = *self.of_line.get(&(instance.clone(), line.route.rung))?;
         if refusal.reason == ReasonCode::Unauthenticated {
-            self.auth_completion_for(app, plane, line.dialect, u32::from(refusal.status));
             return Some(self.served.planes[plane].driver.refuse_unitless(
                 refusal.reason,
                 line.dialect,

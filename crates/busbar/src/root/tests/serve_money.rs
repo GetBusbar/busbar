@@ -31,22 +31,6 @@ pub(super) struct Governed {
     token: String,
     app: Arc<App>,
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-
-    current: Arc<std::sync::Mutex<Arc<App>>>,
-    screen_hook: busbar_kernel::config::HookCfg,
-    hook_server: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Governed {
-    fn drop(&mut self) {
-        self.hook_server.abort();
-    }
-}
-
-impl Governed {
-    fn apply(&self, next: Arc<App>) {
-        *self.current.lock().expect("unpoisoned") = next;
-    }
 }
 
 pub(super) async fn governed(instance: &'static str, keys_chain: bool) -> Governed {
@@ -56,50 +40,7 @@ pub(super) async fn governed(instance: &'static str, keys_chain: bool) -> Govern
 const TEST_PLANE: &str = "plane-driver-test-plane";
 
 async fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
-    governed_full(
-        instance,
-        keys_chain,
-        budget,
-        Screen::Nothing,
-        None,
-        None,
-        false,
-    )
-    .await
-}
-
-/// What a governed deployment's `hooks:` screen.
-#[derive(Clone, Copy)]
-enum Screen<'a> {
-    /// No hook is configured.
-    Nothing,
-    /// A global gate rejects text carrying the token.
-    Global(&'a str),
-    /// A gate on the section's pool `p` (`pools: {p: {members: [m]}}`) rejects text carrying the
-    /// token.
-    Pool(&'a str),
-}
-
-fn screen_cfg(module: &str, endpoint: &str) -> busbar_kernel::config::HookCfg {
-    serde_json::from_value(serde_json::json!({
-        "kind": "gate",
-        "module": module,
-        "timeout_ms": 10_000,
-        "on_error": "weighted",
-        "prompt": "ro",
-        "priority": 0,
-        "settings": { "url": endpoint },
-    }))
-    .expect("an operator's gate definition")
-}
-
-async fn governed_hooked(
-    instance: &'static str,
-    keys_chain: bool,
-    budget: Option<u64>,
-    screen: Screen<'_>,
-) -> Governed {
-    governed_full(instance, keys_chain, budget, screen, None, None, false).await
+    governed_full(instance, keys_chain, budget, None, None, false).await
 }
 
 type BoundNode = (
@@ -114,23 +55,13 @@ async fn governed_over(
     budget: Option<u64>,
     on: Option<BoundNode>,
 ) -> Governed {
-    governed_full(
-        instance,
-        keys_chain,
-        budget,
-        Screen::Nothing,
-        on,
-        None,
-        false,
-    )
-    .await
+    governed_full(instance, keys_chain, budget, on, None, false).await
 }
 
 async fn governed_full(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
-    screen: Screen<'_>,
     on: Option<BoundNode>,
     flat_fee: Option<i64>,
     pools_arrival: bool,
@@ -204,40 +135,11 @@ async fn governed_full(
             assert!(crate::root::connector::install(connector).is_ok());
         }
     });
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the hook endpoint binds");
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}/screen", listener.local_addr().unwrap());
-    let blocked = match screen {
-        Screen::Global(token) | Screen::Pool(token) => token.to_owned(),
-        Screen::Nothing => "ping".to_owned(),
-    };
-    let hook_routes = axum::Router::new().route("/screen", axum::routing::post(
-        move |axum::Json(body): axum::Json<serde_json::Value>| {
-            let blocked = blocked.clone();
-            async move {
-                axum::Json(if body["request"]["messages"].to_string().contains(&blocked) {
-                    serde_json::json!({"reject": {"status": 403, "message": "blocked by test gate"}})
-                } else {
-                    serde_json::json!({"order": [0]})
-                })
-            }
-        }
-    ));
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    let hook_server =
-        tokio::spawn(async move { axum::serve(listener, hook_routes).await.unwrap() });
     let directory = crate::root::test_plugins::scratch(instance);
     let mut store_module = None;
-    let mut hook_module = None;
-    for (kind, variable) in [
-        ("store", "BUSBAR_TEST_SQLITE_CDYLIB"),
-        ("hook", "BUSBAR_TEST_WEBREQUEST_CDYLIB"),
-    ] {
-        let path = if kind == "store" {
-            crate::root::test_plugins::application_store_library()
-        } else {
-            std::path::PathBuf::from(std::env::var_os(variable).expect(variable))
-        };
+    {
+        let kind = "store";
+        let path = crate::root::test_plugins::application_store_library();
         let statement = crate::root::loader::dispatch::rendering_of_library(&path)
             .unwrap()
             .expect("the actual product states itself");
@@ -248,13 +150,7 @@ async fn governed_full(
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.statement = Some(hex::encode(statement));
-        if kind == "hook" {
-            manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
-            manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
-            hook_module = Some(facts.name);
-        } else {
-            store_module = Some(facts.name);
-        }
+        store_module = Some(facts.name);
         let archive = crate::root::test_plugins::signed(
             &crate::root::test_plugins::key(0x5a),
             manifest,
@@ -277,14 +173,7 @@ async fn governed_full(
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the money deployment parses");
-    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
-    let screen_hook = screen_cfg(&hook_module.unwrap(), &endpoint);
-    if !matches!(screen, Screen::Nothing) {
-        config.hooks.insert("screen".into(), screen_hook.clone());
-        if matches!(screen, Screen::Global(_)) {
-            config.global_hooks.push("screen".into());
-        }
-    }
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -465,27 +354,8 @@ async fn governed_full(
     app.governance = Some(Arc::clone(&gov));
     app.amendments = Arc::clone(gov.amendments());
     app.cost = Arc::new(cost);
-    if matches!(screen, Screen::Pool(_)) {
-        let gates = busbar_kernel::hooks::resolve_gate_hooks(
-            &app.hook_registry,
-            &["screen".into()],
-            &app.hook_env,
-            0,
-        );
-        assert_eq!(gates.len(), 1, "the configured gate resolves");
-        app.pool_decision_gates.insert("p".into(), gates);
-    }
     let app = Arc::new(app);
 
-    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
-    let reads = Arc::clone(&current);
-    let hooks = super::HookStage {
-        host: Arc::new(move || {
-            busbar_kernel::plane_driver::engine_host(&reads.lock().expect("unpoisoned"))
-        }),
-        gov: Arc::clone(&gov),
-        journal: None,
-    };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
@@ -494,7 +364,7 @@ async fn governed_full(
         None,
         &move || Arc::clone(&one),
         None,
-        Some(&hooks),
+        None,
         &app.serve_tables,
     )
     .await
@@ -525,9 +395,6 @@ async fn governed_full(
         token: token.expose(&busbar_kernel::seal::lend()).clone(),
         app,
         book,
-        current,
-        screen_hook,
-        hook_server,
     }
 }
 
@@ -737,80 +604,16 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
 }
 
 #[tokio::test]
-async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
+async fn a_planes_unit_is_served_verify_and_its_money_settles() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-services", true).await;
     let (status, body) = g.post("/call/services", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=0 gate=0 rewrite=0 verify=2")
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.ends_with(" verify=2"),
+        "the verify read is served: {body}"
     );
     assert_eq!(g.money.open_units(), 0);
-}
-
-#[tokio::test]
-async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
-    let _one = PUBLISHING.lock().await;
-    let g = governed_hooked("serve-money-gated", true, None, Screen::Global("ping")).await;
-    let (status, body) = g.post("/call/services", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=1 gate=403 rewrite=0 verify=2"),
-        "the gate blocks the screened content and stops the gated sub-operation"
-    );
-    assert_eq!(g.money.open_units(), 0);
-}
-
-#[tokio::test]
-async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
-    let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-live", true).await;
-    let (status, body) = g.post("/call/services", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=0 gate=0 rewrite=0 verify=2"),
-        "the boot generation configures no hook"
-    );
-
-    let mut next = (*g.app).clone();
-    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), g.screen_hook.clone())]
-        .into_iter()
-        .collect();
-    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
-        &registry,
-        &["screen".to_string()],
-        &g.app.hook_env,
-        1,
-    );
-    assert_eq!(next.global_gates.len(), 1, "the applied gate resolves");
-    next.hook_registry = registry;
-    next.global_hooks = vec!["screen".to_string()];
-    let next = Arc::new(next);
-    g.apply(next);
-    let (status, body) = g.post("/call/services", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=1 gate=403 rewrite=0 verify=1"),
-        "the next unit binds the applied gate (and hits the verify entry the first one stored)"
-    );
-}
-
-#[tokio::test]
-async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
-    let _one = PUBLISHING.lock().await;
-    let g = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping")).await;
-    let (status, body) = g.post("/call/services-pool:p", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=1 gate=403 rewrite=0 verify=2"),
-        "the pool's gate screens a unit routed over the pool"
-    );
-    let (status, body) = g.post("/call/services", true).await;
-    assert_eq!(
-        (status, body.as_str()),
-        (200, "scan=0 gate=0 rewrite=0 verify=1"),
-        "a direct unit is not under the pool's gate"
-    );
 }
 
 #[tokio::test]
@@ -917,7 +720,6 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         &sections,
         None,
         &reach,
-        None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
         &|_| datagram_binds(&doors, &sections),
     )
@@ -979,7 +781,6 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
         "serve-money-ungrouped",
         true,
         None,
-        Screen::Nothing,
         None,
         Some(FEE_CENTS),
         false,
@@ -1647,7 +1448,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         ("nested-other-plane", false, false, "/call/local", 401),
         ("nested-explicit-open", false, true, "/open", 503),
     ] {
-        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, pools).await;
+        let mut g = governed_full(instance, keys, None, None, None, pools).await;
         let routes = session_custody_routes(&mut g, pools);
         let bound = Arc::new(std::sync::Mutex::new(None));
         let capture = Arc::clone(&bound);

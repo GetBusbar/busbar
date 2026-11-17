@@ -448,7 +448,7 @@ pub(crate) fn ranking_on_axis(
     name: &str,
 ) -> Result<
     (
-        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
         std::time::Duration,
     ),
     String,
@@ -503,7 +503,7 @@ pub(crate) fn linked_hook_answers(module: &str) -> bool {
 pub(crate) fn builtin_ranking(
     name: &str,
 ) -> Option<(
-    std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+    std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     std::time::Duration,
 )> {
     let axis = linked_hook_axis()?;

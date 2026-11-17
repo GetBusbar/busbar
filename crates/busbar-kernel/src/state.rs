@@ -12,16 +12,6 @@ pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 pub mod activation;
 
-pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
-
-pub type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
-
-#[allow(clippy::type_complexity)]
-pub type ContainerRewriteMap =
-    HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>>;
-
-pub type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
-
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
@@ -110,111 +100,20 @@ pub struct App {
         std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     >,
     pub auth: Arc<crate::auth::AuthMiddleware>,
-    /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
-    /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
-    /// dispatch to mutate the request body (compression/redaction). Empty (the default) = no rewrite
-    /// pass, zero cost. Only `rw` gates land here — the grant is enforced at RESOLUTION, so a
-    /// `ro`/`no` hook can never rewrite (the bidirectional grant holds by construction). Each entry is
-    /// `(per-hook transform deadline, transport)`.
-    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-    /// Global request-stage taps from `global_hooks` are resolved to transports and spawned off the request path before dispatch. A tap cannot delay or fail the request. The default empty list has zero cost. Entries are `(per-hook deadline, send_prompt, transport)`; `send_prompt` carries the tap's `prompt: ro` grant, so granted taps receive prompt content and `prompt: no` taps receive only shape. This list serves the request stage.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    pub tap_hooks: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
-    /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
-    /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
-    /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
-    /// see gate denials too) and response status.
-    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL DECISION gates — the non-rewrite `kind: gate` hooks in `global_hooks`, resolved to
-    /// their full `ResolvedPolicy` (transport + on_error/on_empty/grants), each with its `priority`.
-    /// Fired CONCURRENTLY on every request in the phase-2 decision reconcile, merged with the pool's
-    /// own gates into one priority-sorted chain (reject wins / restricts intersect / order
-    /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
-    /// priority so the merge's stable sort keeps globals-first on ties.
-    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
-    /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
-    /// The resolved values are core-owned `ResolvedPolicy` / `Arc<dyn RoutingPolicy>`
-    /// objects over admitted plugins. A plane's `build_runtime` cannot
-    /// resolve them because it has no `hook_env` or
-    /// usable current `&App`. They are resolved and read
-    /// core-side, keyed by pool, and exposed through [`App::pool_policy`],
-    /// [`App::pool_gates`], and [`App::pool_rewrites`]. The facade returns the same
-    /// objects produced by `hooks::resolve_pool_*`, without storing them across
-    /// the plane seam. An absent pool uses the
-    /// zero-cost default: no policy and an empty chain.
-    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
-    pub pool_decision_gates:
-        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
-    #[allow(clippy::type_complexity)]
-    pub pool_rewrite_chains: std::collections::HashMap<
-        String,
-        Vec<(
-            std::time::Duration,
-            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-        )>,
-    >,
-    /// THE PER-PLANE PER-CONTAINER SUBMISSION GATES, keyed by the plane's stable decl key (the opaque
-    /// registry key) — one generic registry-keyed map in place of the former per-plane
-    /// gate fields, so core carries no plane vocabulary in its own
-    /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
-    /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
-    /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
-    /// [`busbar_kernel::plane_driver::slots::ContainerGateSink`]); read on the dispatch path by
-    /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
-    pub plane_gates: PlaneGateMap,
-    /// THE PER-PLANE PER-CONTAINER REWRITE (`prompt: rw`) CHAINS, keyed by the plane's stable decl key —
-    /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
-    /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
-    /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
-    /// through the same [`busbar_kernel::plane_driver::slots::ContainerGateSink`] callback the gates use. Empty
-    /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
-    /// path stays byte-identical.
-    pub plane_rewrites: PlaneRewriteMap,
-    /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
-    /// axis over it. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
-    /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
-    /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
-    /// out-of-process transport needed.
-    pub hook_env: crate::hooks::HookEnv,
+    /// The validated plugin registry: every admitted plugin row, read by the admin plugin surfaces
+    /// and the config validation of plugin references. Cheap to clone (Arc-backed).
+    pub plugin_registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
-    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
-    /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
+    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set; the native hook bindings
+    /// resolve their own attachments from the configuration they serve. Empty
     /// when no hooks are configured. Read-only after construction; the config-plane mutation surface
     /// swaps a new `App` snapshot rather than mutating this in place.
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
-    /// The "decision observability" signal catalog's config-generation
-    /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
-    /// alongside `hook_registry` above and recomputed by `admin::v1::service::rebuild_hook_derived`
-    /// on every snapshot that rewrites that registry (so a hook registered through the admin API
-    /// declaring `signals:` is honoured on the very next request, not only after a restart) — never
-    /// per request. All-zero (the default) when no hook
-    /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
-    /// check downstream short-circuits on.
-    pub requested_signals: crate::hooks::RequestedSignals,
-    /// Does this config generation grant ANY hook access to prompt CONTENT (`prompt: ro` / `rw`)?
-    /// Built ONCE alongside `requested_signals` above by `hooks::any_content_hook`, and recomputed
-    /// on every snapshot that rewrites `hook_registry` — never per request.
-    ///
-    /// This is the gate on building the request IR for the hook seam: `false` (the default, and
-    /// every deployment that runs no content hook) means the IR is never built and the request path
-    /// pays nothing at all. See `hooks::any_content_hook` for why the gate keys on the deployment's
-    /// grants rather than on the request's protocols.
-    pub any_content_hook: bool,
     /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
     /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
     /// from the resolved `export:` block, never per request.
     ///
-    /// THE COMPUTE GATE, and deliberately the SAME mechanism as `requested_signals` directly above:
+    /// THE COMPUTE GATE:
     /// the read runs ONLY when something declared it, never call-then-discard. Nothing subscribed ⇒
     /// core never assembles that stream's records at all. It supersedes the one-off
     /// `export::request_log_configured()` boolean this replaced — one mechanism for "did anybody ask
@@ -486,36 +385,9 @@ pub struct AppParts {
 
     pub auth: Arc<crate::auth::AuthMiddleware>,
 
-    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-
-    pub tap_hooks: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
-
-    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
-
-    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
-
-    pub pool_decision_gates:
-        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
-
-    pub pool_rewrite_chains: ContainerRewriteMap,
-
-    pub plane_gates: PlaneGateMap,
-
-    pub plane_rewrites: PlaneRewriteMap,
-
-    pub hook_env: crate::hooks::HookEnv,
+    pub plugin_registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
-
-    pub requested_signals: crate::hooks::RequestedSignals,
-
-    pub any_content_hook: bool,
 
     pub global_hooks: Vec<String>,
 
@@ -663,21 +535,8 @@ impl App {
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             global_hooks,
             base_hook_names,
             groups_registry,
@@ -757,21 +616,8 @@ impl App {
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             export_projections,
             global_hooks,
             base_hook_names,
@@ -914,39 +760,6 @@ impl App {
         self.fallback_runtime_key
     }
 
-    pub fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
-        self.plane_gates.get(plane_key)
-    }
-
-    pub fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
-        self.plane_rewrites.get(plane_key)
-    }
-
-    pub fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy> {
-        self.pool_orderings.get(pool)
-    }
-
-    pub fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)] {
-        self.pool_decision_gates
-            .get(pool)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn pool_rewrites(
-        &self,
-        pool: &str,
-    ) -> &[(
-        std::time::Duration,
-        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-    )] {
-        self.pool_rewrite_chains
-            .get(pool)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
     pub(crate) fn publish_limits(&self) {
         if let Some(limits) = &self.limits {
             busbar_kernel::config::limits::publish(limits);
@@ -959,35 +772,6 @@ impl App {
     ) -> Option<&std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>> {
         self.plane_pools.get(plane_key)
     }
-
-    pub fn resolve_container_gates<'a>(
-        &self,
-        containers: impl Iterator<Item = (&'a str, &'a [String])>,
-        section_hooks: &[String],
-    ) -> HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>> {
-        crate::hooks::resolve_container_gates(
-            containers,
-            section_hooks,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn resolve_container_rewrites<'a>(
-        &self,
-        containers: impl Iterator<Item = (&'a str, &'a [String])>,
-        section_hooks: &[String],
-    ) -> HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>> {
-        crate::hooks::resolve_container_rewrites(
-            containers,
-            section_hooks,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
 }
 
 impl busbar_kernel::plane_driver::slots::PlaneSlots for App {
@@ -996,26 +780,6 @@ impl busbar_kernel::plane_driver::slots::PlaneSlots for App {
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
-    fn reresolve_container_gates(
-        &mut self,
-        plane_key: &str,
-        containers: &[(&str, &[String])],
-        section_hooks: &[String],
-    ) {
-        let gates = self.resolve_container_gates(containers.iter().copied(), section_hooks);
-
-        let rewrites = self.resolve_container_rewrites(containers.iter().copied(), section_hooks);
-
-        if let Some(static_key) =
-            crate::plane_driver::registry::plane_decl_for(plane_key).map(|d| d.key)
-        {
-            self.plane_gates.insert(static_key, gates);
-            self.plane_rewrites.insert(static_key, rewrites);
-        }
     }
 }
 
