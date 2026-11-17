@@ -109,6 +109,7 @@ pub mod signal;
 
 pub mod spans;
 pub mod stage_probe;
+pub mod storage;
 pub mod surface;
 pub mod transport;
 pub mod unit;
