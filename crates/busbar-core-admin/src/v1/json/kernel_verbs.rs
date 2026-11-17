@@ -374,8 +374,10 @@ pub(crate) struct AuditChainKeysView {
     recipe: String,
     signature_domain: String,
     algorithm: String,
-    /// Every public key this node signs records under; empty when it signs none.
-    keys: Vec<AuditChainKeyView>,
+    /// This page of public keys, in key-id order; empty when the node signs none.
+    items: Vec<AuditChainKeyView>,
+    /// The shared cursor for the next page, or null after the final key.
+    next_cursor: Option<String>,
 }
 
 /// One published verifying key. Public halves only.
@@ -1250,11 +1252,19 @@ fn doc_for(
             );
             doc
         }
-        KernelVerb::GetAuditKeys => audit_read(
-            "The public keys the audit chain is signed with",
-            schema_of(gen.subschema_for::<AuditChainKeysView>()),
-            "The published verifying keys (empty when the node signs nothing)",
-        ),
+        KernelVerb::GetAuditKeys => {
+            let mut doc = audit_read(
+                "The public keys the audit chain is signed with",
+                schema_of(gen.subschema_for::<AuditChainKeysView>()),
+                "The published verifying keys (empty when the node signs nothing)",
+            );
+            doc.query = super::kinds::doc::query(&["cursor", "limit"]);
+            doc.errors.insert(0, (
+                "400",
+                "`invalid_request`: malformed or mismatched pagination cursor".to_string(),
+            ));
+            doc
+        },
         KernelVerb::GetOperationsKey => VerbDoc {
             summary: "One idempotent operation, by its Idempotency-Key",
             description: "The caller's own operation under `Idempotency-Key`: `state` is one of \

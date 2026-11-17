@@ -98,6 +98,7 @@ impl PersistenceBackend for Mock {
     }
     fn commit(&self, prepared: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
         Box::pin(async move {
+            control::admit(&prepared)?;
             let mut state = self.state.lock().unwrap();
             let digest = prepared.fingerprint();
             let candidate = prepared.candidate();
@@ -168,6 +169,15 @@ impl PersistenceBackend for Mock {
                     }
                     Mutation::Delete(address) => {
                         state.rows.remove(address);
+                    }
+                    Mutation::DeleteRange {
+                        namespace,
+                        prefix,
+                        exact_key_length,
+                    } if *namespace == control::SLOT_NS && *exact_key_length == 20 => {
+                        let writer: [u8; 16] =
+                            prefix.as_slice().try_into().map_err(|_| Failure::Refused)?;
+                        state.receipts.retain(|(id, _)| id.writer != writer);
                     }
                     Mutation::DeleteRange { .. } => return Err(Failure::Refused),
                 }

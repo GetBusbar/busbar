@@ -34,6 +34,25 @@ const READ_BYTES: usize = 64 * 1024;
 const TIMER_TURN: usize = 64;
 const SHUTDOWN_TICK: Duration = Duration::from_millis(100);
 
+#[cfg(target_os = "linux")]
+fn unpack_package(
+    archive: &[u8],
+) -> Result<busbar_plugin_loader::tarball::UnpackedPlugin, Failure> {
+    use busbar_plugin_loader::{sign, supported_abi, tarball};
+
+    let package = tarball::unpack(archive).map_err(|_| Failure::Admission)?;
+    // Match Registry's package boundary before invoking native admission. Its lower-level
+    // stamp/signature checks do not authorize manifest host, alias or operational metadata.
+    sign::validate_structure(
+        &package.manifest,
+        &package.lib_bytes,
+        &supported_abi,
+        sign::HOST_IDENTITY,
+    )
+    .map_err(|_| Failure::Admission)?;
+    Ok(package)
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn build_digest(expected: &str) -> Result<[u8; 32], Failure> {
     if expected.len() != 64
@@ -243,7 +262,7 @@ impl MessageStreamSubject {
         if trust.allow_untrusted || archive.len() as u64 > tarball::MAX_TARBALL_FILE_BYTES {
             return Err(Failure::Admission);
         }
-        let package = tarball::unpack(archive).map_err(|_| Failure::Admission)?;
+        let package = unpack_package(archive)?;
         if package.manifest.sha256 != expected_sha256
             || sign::sha256_hex(&package.lib_bytes) != expected_sha256
         {

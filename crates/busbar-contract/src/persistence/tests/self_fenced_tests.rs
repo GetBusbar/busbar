@@ -111,12 +111,14 @@ fn initialize_and_register_pick_the_fresh_writer_row() {
         vec![
             absent(root()),
             absent(writer(2)),
+            absent(control::epoch_row([2; 16], 1)),
             absent(manifest()),
             absent(birth.clone()),
         ],
         vec![
             put(root(), &root_value),
             put(writer(2), &open()),
+            put(control::epoch_row([2; 16], 1), control::EPOCH_VALUE),
             put(manifest(), b"m"),
             put(birth.clone(), b"b"),
         ],
