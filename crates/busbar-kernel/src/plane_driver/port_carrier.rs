@@ -295,6 +295,13 @@ pub(super) fn write_channels<K: Calls + ?Sized>(
 }
 
 impl CarrierSession {
+    pub(crate) fn with_admission(
+        mut self,
+        pending: Option<Arc<super::port_admission::Pending>>,
+    ) -> Self {
+        self.host = self.host.with_admission(pending);
+        self
+    }
     fn register(
         &self,
         detach: &Detach,

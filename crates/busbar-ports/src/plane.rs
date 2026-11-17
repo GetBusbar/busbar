@@ -364,6 +364,10 @@ pub trait PlanePort: Send + Sync + 'static {
         &[]
     }
     fn facts(&self) -> u64;
+    /// Whether the actual opened image declares the demux callback. Foreign ports opt in explicitly.
+    fn has_demux(&self) -> bool {
+        false
+    }
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.

@@ -130,4 +130,59 @@ mod tests {
         truncated.push(0);
         assert!(classify(p::FROM_CORE, true, &truncated, 4096).is_err());
     }
+
+    #[test]
+    fn general_classification_preserves_the_actual_usage_declaration_and_exchange() {
+        use busbar_plugin_abi::fallback_usage::{self as wire, UsageSource};
+        use busbar_ports::plane::UsageClass;
+        let classes = [UsageClass {
+            class: "tokens.in".into(),
+            unit: p::UNIT_TOKENS,
+            expected_units: None,
+        }];
+        let attempts = [Box::<str>::from("tokens.in")];
+        let declared = Declaration::new(p::FB_ATTEMPT_USAGE, &classes, &attempts).unwrap();
+        let mut answer = Reply::new();
+        wire::write_attempt_usage(
+            &mut answer,
+            wire::AttemptUsage {
+                attempt: 1,
+                class: "tokens.in",
+                amount: 1,
+                scale: 0,
+                source: UsageSource::Reported,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            classify_declared(
+                p::FROM_UPSTREAM,
+                false,
+                declared,
+                Some(0),
+                answer.as_bytes(),
+                4096
+            )
+            .unwrap(),
+            Classification::General
+        ));
+        assert!(classify_declared(
+            p::FROM_UPSTREAM,
+            false,
+            declared,
+            Some(7),
+            answer.as_bytes(),
+            4096
+        )
+        .is_err());
+        assert!(classify_declared(
+            p::FROM_UPSTREAM,
+            false,
+            Declaration::legacy(),
+            Some(0),
+            answer.as_bytes(),
+            4096
+        )
+        .is_err());
+    }
 }

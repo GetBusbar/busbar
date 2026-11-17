@@ -1553,7 +1553,8 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         }
         if let (Some(forward), Some((admitted, routes))) = (&answer.forward, &self.admitted) {
             let wants = super::port_upstream::Wants::from_facts(&forward.wants);
-            if !admitted.accepts_route(routes, wants.model.as_deref()) {
+            if !admitted.accepts_forward(routes, wants.model.as_deref(), wants.upstream.as_deref())
+            {
                 self.session = None;
                 return Err(SessionError::NotDriven);
             }
