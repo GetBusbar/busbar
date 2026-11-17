@@ -318,15 +318,11 @@ impl NativeAuditTerminal {
 
     /// Root calls only after money, original signed audit and physical retirement joined.
     /// This releases arrival custody; it never posts usage or settles the monetary owner.
+    /// The table removes this owner only on Ok; on Err it remains in place for recovery.
     pub fn complete(
-        self,
+        &mut self,
         gauge: &crate::slice::ConcurrencyGauge,
-    ) -> Result<(), (Self, NativeAuditError)> {
-        let result = self.release(gauge);
-        result.map_err(|error| (self, error))
-    }
-
-    fn release(&self, gauge: &crate::slice::ConcurrencyGauge) -> Result<(), NativeAuditError> {
+    ) -> Result<(), NativeAuditError> {
         let mut state = self
             .owner
             .shared
