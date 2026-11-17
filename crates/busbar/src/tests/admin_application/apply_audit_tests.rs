@@ -90,7 +90,7 @@ async fn admin_apply_parse_refusal_is_audited() {
 
     let refused = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -208,7 +208,7 @@ async fn admin_rows_seal_under_scheme4() {
 
     let refused = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("if-match", "*")
         .header("content-type", "application/json")
         .body(

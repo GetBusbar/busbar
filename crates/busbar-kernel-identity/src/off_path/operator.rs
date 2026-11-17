@@ -273,9 +273,23 @@ pub fn no_default_admin_chain() -> String {
     config_text(format_args!(
         "auth.admin_auth is not set and no admitted first-party auth plugin states the operator \
          credential, so there is no admin credential. Install the first-party operator credential \
-         plugin and give it `settings` in identity-providers, or set auth.admin_auth explicitly \
-         (`admin_auth: []` is the open dev posture)."
+         plugin and give it `settings` in identity-providers, or list the admin providers you use \
+         in auth.admin_auth."
     ))
+}
+
+/// `auth.admin_auth: []`, the 1.5.5 open admin posture, which 1.6.0 removes
+/// (ADMIN-API-1.6-ONE-MODEL §8.1.1): boot and `busbar --validate` refuse it with this remedy, in the
+/// migrate-on-boot refusal format (`CONFIG:` first, the upgrade line last). It is never migrated:
+/// that would invent a credential or keep the admin API open.
+pub fn open_admin_posture_removed() -> String {
+    format!(
+        "CONFIG: auth.admin_auth: [] (the open admin posture) is removed in 1.6.0; the admin API \
+         always needs a credential. Delete the auth.admin_auth line to use the default chain \
+         [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or \
+         list the admin providers you use.\n{}",
+        busbar_contract::upgrade::UPGRADE_FIRST
+    )
 }
 
 /// A `token:` on the chain entry backed by `module`, which is not the operator credential's.

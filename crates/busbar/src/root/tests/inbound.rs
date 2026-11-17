@@ -406,7 +406,7 @@ async fn captured_router_crossing(
         captured["listener"], "admin",
         "only captured admin crossings reach the actual admin router"
     );
-    request = request.header("x-admin-token", "actual-inbound-operator");
+    request = request.header("authorization", "Bearer actual-inbound-operator");
     let request = request
         .body(axum::body::Body::from(body))
         .expect("the captured real request builds");
@@ -481,7 +481,7 @@ async fn actual_admin_body_cap_uses_current_413_contract_and_preserves_authority
         use tower::ServiceExt as _;
         let mut request = axum::http::Request::builder().method(method).uri(path);
         if let Some(token) = token {
-            request = request.header("x-admin-token", token);
+            request = request.header("authorization", format!("Bearer {}", token));
         }
         let response = router
             .oneshot(

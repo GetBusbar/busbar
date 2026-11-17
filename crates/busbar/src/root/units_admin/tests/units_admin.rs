@@ -204,9 +204,11 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
@@ -358,7 +360,7 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = async |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
-        let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+        let binding = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
         let mut request = a_request();
         request.edit_for_test(|draft| draft.method = "POST".to_string());
         request.edit_for_test(|draft| draft.path = path.to_string());
@@ -731,23 +733,6 @@ async fn a_revoked_credential_is_refused_before_the_operation_runs() {
     );
 }
 
-#[tokio::test]
-async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                Denylist(true),
-            )));
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
-        .answer(a_request())
-        .await;
-    assert_eq!(
-        answer.status, 200,
-        "the open door admits, and the denylist is not a probe"
-    );
-}
-
 async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
         .await
@@ -838,7 +823,7 @@ async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() 
     assert_eq!(absent.status, 401);
     assert_eq!(
         String::from_utf8(absent.body).expect("the envelope is text"),
-        r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#
+        r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer)"}}"#
     );
     assert_eq!(
         absent.headers,
@@ -883,7 +868,7 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
 
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(real_admin_dispatch().await),
-        open_door(),
+        operator_door(),
     )
     .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
@@ -1283,7 +1268,7 @@ async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let binding = AdminBinding::new(Arc::new(NeverDispatched), operator_door());
         let mut request = a_request();
         request.edit_for_test(|draft| draft.method = "POST".to_string());
         request.edit_for_test(|draft| draft.path = path.to_string());
@@ -1383,7 +1368,7 @@ async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), operator_door());
         let admission: EffectAdmission = Arc::new(revoked);
         binding.effect_admission = Some(admission);
         let mut request = a_request();
@@ -1397,7 +1382,12 @@ async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_
             "POST",
             path,
             Default::default(),
-            &busbar_kernel::auth::AdminDoor::Open,
+            &busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+            ),
         ));
 
         let outcome = route(
@@ -1597,10 +1587,12 @@ fn a_ledger_request(path: &str) -> AdminRequest {
 }
 
 async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_ledger_view(Arc::new(SeededLedger));
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
@@ -1730,10 +1722,12 @@ async fn answer_over_counts(
     built.cost = std::sync::Arc::new(one_lane_card());
     let app = std::sync::Arc::new(built);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door()).with_ledger_view(
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door()).with_ledger_view(
         Arc::new(crate::root::units_admin::CountsLedger::new(handle)),
     );
     let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
@@ -2001,7 +1995,7 @@ fn authenticated_admin_request() -> AdminRequest {
     request.edit_for_test(|draft| {
         draft
             .headers
-            .push(("x-admin-token".into(), "admin-token".into()))
+            .push(("authorization".into(), "Bearer admin-token".into()))
     });
     request
 }
@@ -2028,7 +2022,7 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
         next: real_admin_dispatch().await,
     });
     let units =
-        crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), open_door()).await;
+        crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), operator_door()).await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let node = Arc::new(node);
     let first = Arc::clone(&node);
@@ -2049,9 +2043,11 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
 
 #[tokio::test]
 async fn an_unopened_ledger_answers_empty_rather_than_absent() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = async |path: &str| -> json::Value {
         let answer = node.answer(a_ledger_request(path)).await;
@@ -2152,7 +2148,7 @@ async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_u
         let door = if revoked {
             a_door_that_identifies_the_operator()
         } else {
-            open_door()
+            operator_door()
         };
         let units =
             crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
@@ -2419,10 +2415,12 @@ fn a_sealed_chain() -> SealedChain {
 }
 
 async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_audit_view(Arc::new(a_sealed_chain()) as Arc<dyn AuditView>);
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
@@ -2445,10 +2443,12 @@ async fn audit_verifying_keys_use_the_shared_cursor_page() {
         .map(|key| key.key_id().to_owned())
         .collect();
     expected.sort();
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_audit_view(Arc::new(audit) as Arc<dyn AuditView>);
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let mut path = "/api/v1/admin/audit/keys?limit=1".to_string();
@@ -2538,11 +2538,13 @@ async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
 
 #[tokio::test]
 async fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
 
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     for path in AUDIT_PATHS {
         let answer = node.answer(a_ledger_request(path)).await;
@@ -3885,9 +3887,11 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
             .collect()
     };
 
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         durability.record.seal(inputs(), &audit_token)
@@ -3898,9 +3902,11 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
     );
     assert!(record.signature.is_none());
 
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");
@@ -4321,7 +4327,7 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
 #[tokio::test]
 async fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
     let mut request = a_request();
     request.edit_for_test(|draft| draft.method = "POST".to_string());
     request.edit_for_test(|draft| draft.path = "/api/v1/admin/chain-break".to_string());
@@ -4413,9 +4419,11 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     let book: Arc<std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>> =
         Arc::new(std::sync::OnceLock::new());
     let kept = Arc::clone(&book);
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
@@ -4480,9 +4488,11 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),

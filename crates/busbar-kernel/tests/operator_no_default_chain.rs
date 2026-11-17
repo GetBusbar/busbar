@@ -2,11 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! OPERATOR-FROM-ADMITTED-AUTH R19: with no admitted operator row, an absent `admin_auth` (or an
-//! absent `auth:` block) is refused with a named remedy. It never resolves to an empty chain, which
-//! is the open posture, and an explicit `admin_auth: []` stays the opt-in open dev posture. No
-//! words are installed in this binary.
+//! absent `auth:` block) is refused with a named remedy. It never resolves to an empty chain. An
+//! explicit `admin_auth: []`, the 1.5.5 open posture, is refused too, with its own remedy
+//! (ADMIN-API-1.6-ONE-MODEL r3.1 §8.1.1). No words are installed in this binary.
 
 const NO_DEFAULT: &str = "no admitted first-party auth plugin states the operator credential";
+
+const OPEN_REMOVED: &str =
+    "CONFIG: auth.admin_auth: [] (the open admin posture) is removed in 1.6.0; the admin API \
+     always needs a credential.";
 
 fn resolved(yaml: &str) -> busbar_kernel::config::RootCfg {
     let deploy =
@@ -40,6 +44,10 @@ fn an_absent_admin_auth_with_no_operator_row_is_refused() {
     let open = errors_of(&resolved("auth:\n  chain: []\n  admin_auth: []\n"));
     assert!(
         open.iter().all(|e| !e.contains(NO_DEFAULT)),
-        "an explicit admin_auth: [] is the opt-in open posture: {open:?}"
+        "an explicit admin_auth: [] is not the absent-default case: {open:?}"
+    );
+    assert!(
+        open.iter().any(|e| e.contains(OPEN_REMOVED)),
+        "an explicit admin_auth: [] is refused with the open-posture remedy: {open:?}"
     );
 }

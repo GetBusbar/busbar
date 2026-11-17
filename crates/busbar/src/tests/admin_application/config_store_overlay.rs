@@ -644,7 +644,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     .unwrap();
     let response = reqwest::Client::new()
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"per_request_fee": 31}))
         .send()
         .await

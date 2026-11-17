@@ -10,7 +10,7 @@ use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Map, Value
 async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
     let bytes = client
         .get(format!("http://{addr}/api/v1/admin{path}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()

@@ -74,7 +74,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k", "group": "ghost"}))
         .send()
         .await
@@ -91,7 +91,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({
             "name": "grouped",
             "group": "growth",
@@ -109,7 +109,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     let list = json::parse_value(
         &client
             .get(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -240,7 +240,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 
     let noop = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", a.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({}))
         .send()
         .await

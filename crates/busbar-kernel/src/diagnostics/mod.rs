@@ -339,11 +339,11 @@ diagnostics! {
         "An auth chain entry sets `max_admin_scope: full`, so every principal identified by that module can hold FULL admin authority — the default ceiling is read-only. A security advisory: a compromised or over-broad identity source behind that module becomes an admin-authority source.",
         "Confirm the named module's chain is trusted end to end and that granting full admin to everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's principals) if full admin is broader than needed.";
 
-    /// auth.chain names `keys` and auth.admin_auth is explicitly empty — anyone can mint keys.
+    /// auth.chain names `keys` and auth.admin_auth is explicitly empty: refused, no credential mints.
     CONFIG_OPEN_ADMIN_MINT = 3012, Config, Actionable, "config-open-admin-mint", "1.6.0", false,
-        "auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)",
-        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.",
-        "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.";
+        "auth.chain names `keys` with an empty admin_auth (refused: no admin credential can mint a key)",
+        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty. 1.6.0 has no open admin posture, so the config is refused: an empty admin chain identifies no one, and no admin credential could mint a key.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.";
 
     /// An auth plugin states the operator credential but is not first-party; nothing references it.
     CONFIG_OPERATOR_INERT = 3030, Config, Actionable, "config-operator-inert", "1.6.0", false,
@@ -1035,9 +1035,9 @@ diagnostics! {
         "Investigate the logged context and store backend — a blocking-task panic is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed.";
 
     ADMIN_AUTH_CHAIN_EMPTY = 4026, Auth, Actionable, "admin-auth-chain-empty", "1.6.0", false,
-        "admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)",
-        "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` applies an empty chain as 1.5.5 did, with this warning, and the open posture is then live until the chain is set again.",
-        "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.";
+        "admin_auth chain is EMPTY (it identifies no one; 1.6.0 has no open admin posture)",
+        "An EMPTY admin_auth chain was seen. 1.6.0 has no anonymous admin posture: an empty chain identifies no one, so it admits no admin request and earns no scope. Boot and `busbar --validate` refuse `auth.admin_auth: []`, and the live `PUT /api/v1/admin/admin-auth` refuses an empty chain.",
+        "Delete the auth.admin_auth line to use the default chain [<operator>, keys] and set the operator token (identity-providers.<operator>.token), or list the admin providers you use.";
 
     ADMIN_CREATEKEY_MALFORMED_BODY = 4027, Auth, BenignRecurring, "admin-createkey-malformed-body", "1.6.0", false,
         "create_key request body failed to parse (client 400)",
@@ -1615,8 +1615,8 @@ diagnostics! {
     /// The admin API error envelope's `diag` for `error.code = unauthorized`.
     ADMIN_UNAUTHORIZED = 8102, Governance, Actionable, "admin-unauthorized", "1.6.0", false,
         "The admin request carries no valid admin credential",
-        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
-        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.";
+        "The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).",
+        "Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>`. docs/admin-api.md covers the auth chain.";
 
     /// The admin API error envelope's `diag` for `error.code = method_not_allowed`.
     ADMIN_METHOD_NOT_ALLOWED = 8103, Governance, Actionable, "admin-method-not-allowed", "1.6.0", false,

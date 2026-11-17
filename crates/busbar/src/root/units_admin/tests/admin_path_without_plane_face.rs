@@ -1771,7 +1771,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
 
 #[tokio::test]
 async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
-    const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
+    const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer)"}}"#;
     let scope = |needed: &str| {
         format!(
             r#"{{"error":{{"code":"forbidden","message":"insufficient scope: this endpoint requires `{needed}`"}}}}"#

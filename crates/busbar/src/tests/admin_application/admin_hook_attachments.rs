@@ -26,12 +26,12 @@ impl Served {
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
         self.client
             .get(self.url(path))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
     }
     fn send(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(method, self.url(path))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     }
     async fn register(&self, name: &str) {

@@ -317,7 +317,7 @@ async fn the_units_assemble_from_values_configuration_decided() {
         durability,
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
-            crate::root::units_admin::open_door(),
+            crate::root::units_admin::operator_door(),
         ),
         None,
     );
@@ -381,7 +381,7 @@ async fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_v
     book.verb_store = Some(Arc::clone(&configured) as _);
     let units = ProductionUnits::admin_over_book(
         Arc::new(crate::root::units_admin::RefusingDispatch),
-        crate::root::units_admin::open_door(),
+        crate::root::units_admin::operator_door(),
         &book,
     );
     let store = units
