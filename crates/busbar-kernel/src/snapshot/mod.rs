@@ -642,3 +642,34 @@ pub fn request_snapshot(limit: usize) -> Option<RequestSnapshot> {
     };
     source.request_snapshot(limit)
 }
+
+/// Covered projection/serialization storage is separate from recorder maintenance and workspace.
+pub fn snapshot_budgeted(
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<Option<crate::limits::output::Captured<Vec<Family>>>, crate::limits::output::OutputError>
+{
+    #[cfg(any(test, feature = "test-support"))]
+    let _serial = crate::telemetry::drain_serial::lock();
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
+    crate::telemetry::flush_to_recorder();
+    source.snapshot_budgeted(request)
+}
+
+/// The owned exact result keeps output credit after the recorder workspace becomes reusable.
+/// This is an internal producer, not a new Admin endpoint or authorization grant.
+pub fn request_snapshot_budgeted(
+    limit: usize,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    Option<crate::limits::output::Captured<RequestSnapshot>>,
+    crate::limits::output::OutputError,
+> {
+    let Some(Some(source)) = HANDLE.get() else {
+        request_store::unavailable();
+        return Ok(None);
+    };
+    source.request_snapshot_budgeted(limit, request)
+}

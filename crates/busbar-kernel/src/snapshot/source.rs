@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::limits::output::{CaptureScope, Captured, OutputError};
+use crate::limits::process_admission::RequestLease;
 use busbar_contract::abi::export::{SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_SUMMARY};
 use busbar_contract::export_calls::{Family, Sample};
 use metrics::atomics::AtomicU64;
@@ -13,6 +15,9 @@ use metrics::{Counter, Gauge, Histogram, HistogramFn, Key, KeyName, Metadata, Re
 use metrics::{SharedString, Unit};
 use metrics_util::registry::{Generation, GenerationalStorage, Registry, Storage};
 use metrics_util::storage::Summary;
+
+#[path = "output.rs"]
+pub(super) mod output;
 
 #[path = "request_store.rs"]
 pub(crate) mod request_store;
@@ -425,24 +430,77 @@ impl Source {
 
     #[must_use]
     pub fn snapshot(&self) -> Option<Vec<Family>> {
+        self.project(&mut None).ok().flatten()
+    }
+
+    pub(super) fn snapshot_budgeted(
+        &self,
+        request: &RequestLease,
+    ) -> Result<Option<Captured<Vec<Family>>>, OutputError> {
+        let mut scope = Some(CaptureScope::new(request)?);
+        let result = self.project(&mut scope)?;
+        Ok(result.map(|families| {
+            scope
+                .take()
+                .expect("budgeted projection scope")
+                .finish(families)
+        }))
+    }
+
+    fn project(
+        &self,
+        scope: &mut Option<CaptureScope>,
+    ) -> Result<Option<Vec<Family>>, OutputError> {
         if self.process_boot_nonce.is_none() {
             request_store::unavailable();
-            return None;
+            return Ok(None);
         }
+        // Generic maintenance, including raw histogram drain/replacement, is outside #420.
         self.drain();
         let mut out = Building::new();
-        for (key, c) in self.registry.get_counter_handles() {
+        let mut counters = Vec::new();
+        let mut failure = None;
+        self.registry.visit_counters(|key, value| {
+            if failure.is_none() {
+                failure = retain_handle(scope, &mut counters, key, value).err();
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        for (key, c) in counters {
+            if let Some(scope) = scope {
+                output::series(scope, &key, 1)?;
+            }
             let v = c.get_inner().load(Ordering::Acquire).to_string();
             put(&mut out, SCRAPE_KIND_COUNTER, &key, vec![("", None, v)]);
         }
-        for (key, g) in self.registry.get_gauge_handles() {
+        let mut gauges = Vec::new();
+        self.registry.visit_gauges(|key, value| {
+            if failure.is_none() {
+                failure = retain_handle(scope, &mut gauges, key, value).err();
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        for (key, g) in gauges {
+            // This may delete from the registry, so it runs AFTER visitor read guards drop.
             if self.fresh(&key, g.get_generation()) {
+                if let Some(scope) = scope {
+                    output::series(scope, &key, 1)?;
+                }
                 let v = f64::from_bits(g.get_inner().load(Ordering::Acquire)).to_string();
                 put(&mut out, SCRAPE_KIND_GAUGE, &key, vec![("", None, v)]);
             }
         }
         let now = Instant::now();
         for (key, d) in lock(&self.distributions).iter() {
+            if let Some(scope) = scope {
+                output::series(scope, key, 9)?;
+                // Both 32768-bin Summary stores, geometric growth traffic and overlap.
+                scope.reserve_requested(2 * 32_768 * std::mem::size_of::<u64>() * 6)?;
+            }
             let window = d.window(now, self.width, self.buckets);
             let at = |q: f64| window.quantile(q).unwrap_or(0.0).to_string();
             let mut lines: Vec<_> = QUANTILES.map(|q| ("", Some(q.to_string()), at(q))).into();
@@ -452,19 +510,11 @@ impl Source {
         }
         // One captured set supplies count, sum, and all exclusive bins, even while another
         // exporter drains concurrently. Rolling-window expiration never affects these totals.
-        self.requests.put(&mut out)?;
+        if self.requests.put_with_scope(&mut out, scope)?.is_none() {
+            return Ok(None);
+        }
         let help = lock(&self.help);
-        let family =
-            |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<SeriesSlot, Series>)| {
-                Family {
-                    help: help.get(&name.0).cloned(),
-                    name: std::mem::take(&mut name.0),
-                    unit: None,
-                    kind,
-                    samples: series.into_values().flat_map(|s| s.samples).collect(),
-                }
-            };
-        Some(out.into_iter().map(family).collect())
+        output::finish(out, &help, scope).map(Some)
     }
 
     /// Select at most 32 stable lexical identities without constructing the generic scrape.
@@ -472,11 +522,37 @@ impl Source {
         self.requests.snapshot(limit)
     }
 
+    pub(super) fn request_snapshot_budgeted(
+        &self,
+        limit: usize,
+        request: &RequestLease,
+    ) -> Result<Option<Captured<RequestSnapshot>>, OutputError> {
+        let mut scope = Some(CaptureScope::new(request)?);
+        let result = self.requests.snapshot_with_scope(limit, &mut scope)?;
+        Ok(result.map(|rows| scope.take().expect("budgeted request scope").finish(rows)))
+    }
+
     fn describe(&self, name: &KeyName, help: &str) {
         let mut all = lock(&self.help);
         let entry = all.entry(name.as_str().to_owned());
         entry.or_insert_with(|| help.to_owned());
     }
+}
+
+fn retain_handle<T: Clone>(
+    scope: &mut Option<CaptureScope>,
+    out: &mut Vec<(Key, T)>,
+    key: &Key,
+    value: &T,
+) -> Result<(), OutputError> {
+    let key = if let Some(scope) = scope {
+        scope.grow_vector(out, 1)?;
+        output::copy_key(scope, key)?
+    } else {
+        key.clone()
+    };
+    out.push((key, value.clone()));
+    Ok(())
 }
 
 impl Recorder for &'static Source {

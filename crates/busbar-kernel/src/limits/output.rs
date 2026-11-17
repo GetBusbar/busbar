@@ -206,10 +206,12 @@ impl OutputBuffer {
         result
     }
 
-    /// Consumers must complete serialization successfully before publishing these bytes.
-    #[must_use]
-    pub fn into_bytes(self) -> bytes::Bytes {
-        bytes::Bytes::from_owner(self)
+    /// A failed write can never publish a partial response as successful output.
+    pub fn into_bytes(self) -> Result<bytes::Bytes, OutputError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        Ok(bytes::Bytes::from_owner(self))
     }
 }
 
@@ -227,5 +229,12 @@ impl io::Write for OutputBuffer {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl std::fmt::Write for OutputBuffer {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.write_bytes(text.as_bytes())
+            .map_err(|_| std::fmt::Error)
     }
 }

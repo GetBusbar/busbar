@@ -404,15 +404,37 @@ impl RequestStore {
     }
 
     pub(super) fn snapshot(&self, limit: usize) -> Option<RequestSnapshot> {
+        self.snapshot_with_scope(limit, &mut None).ok().flatten()
+    }
+
+    pub(super) fn snapshot_with_scope(
+        &self,
+        limit: usize,
+        scope: &mut Option<CaptureScope>,
+    ) -> Result<Option<RequestSnapshot>, OutputError> {
         let Some(nonce) = self.core.nonce else {
             if self.core.production {
                 unavailable();
             }
-            return None;
+            return Ok(None);
         };
         self.capture(|rows, dropped, _, captured_at_unix_ms, uptime_ms| {
             let count = limit.min(32).min(rows.len());
-            RequestSnapshot {
+            if let Some(scope) = scope {
+                let mut bound = output::Bound::default();
+                bound.add(nonce.len())?;
+                bound.vector::<RequestIdentity>(count)?;
+                for row in &rows[..count] {
+                    let labels = self.core.labels[row.index]
+                        .get()
+                        .expect("captured metadata");
+                    for index in 0..4 {
+                        bound.add(labels.value(index).len())?;
+                    }
+                }
+                bound.reserve(scope)?;
+            }
+            Ok(RequestSnapshot {
                 process_boot_nonce: nonce.to_owned(),
                 uptime_ms,
                 captured_at_unix_ms,
@@ -438,22 +460,62 @@ impl RequestStore {
                         }
                     })
                     .collect(),
-            }
+            })
         })
+        .transpose()
     }
 
+    #[cfg(test)]
     pub(super) fn put(&self, out: &mut Building) -> Option<()> {
+        self.put_with_scope(out, &mut None).ok().flatten()
+    }
+
+    pub(super) fn put_with_scope(
+        &self,
+        out: &mut Building,
+        scope: &mut Option<CaptureScope>,
+    ) -> Result<Option<()>, OutputError> {
         self.capture(|rows, dropped, reserved, _, _| {
             if let Some(nonce) = self.core.nonce {
                 for row in rows {
-                    row.distribution.put(
-                        out,
-                        &self.core.labels[row.index]
-                            .get()
-                            .expect("captured metadata")
-                            .key(),
-                        nonce,
-                    );
+                    let labels = self.core.labels[row.index]
+                        .get()
+                        .expect("captured metadata");
+                    if let Some(scope) = scope {
+                        // Preflight the entire phase row before even constructing its temporary
+                        // Key/label lists. `put` below remains the shared projection algorithm.
+                        for name in [
+                            REQUEST_COUNT,
+                            REQUEST_SUM,
+                            REQUEST_ERRORS,
+                            REQUEST_CLIENT_ERRORS,
+                        ]
+                        .into_iter()
+                        .chain(std::iter::repeat_n(REQUEST_BIN, 16))
+                        {
+                            let labels = ["plane", "phase", "pool", "ingress_protocol"]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, name)| (name, labels.value(i)))
+                                .chain([
+                                    ("process_boot_nonce", nonce),
+                                    ("upper_bound_ms", "120000"),
+                                ]);
+                            output::series_labels(scope, name, labels, 1)?;
+                        }
+                    }
+                    row.distribution.put(out, &labels.key(), nonce);
+                }
+            }
+            if let Some(scope) = scope {
+                // Six loss families, two cell states, reserved storage and three busy reasons.
+                for _ in 0..12 {
+                    output::series_labels(
+                        scope,
+                        "busbar_telemetry_request_capture_refusals_total",
+                        [("reason", "source_unavailable")].into_iter(),
+                        1,
+                    )?;
                 }
             }
             for (reason, count) in LOSS.iter().zip(dropped) {
@@ -508,7 +570,9 @@ impl RequestStore {
                     vec![("", None, count.to_string())],
                 );
             }
+            Ok(())
         })
+        .transpose()
     }
 }
 
