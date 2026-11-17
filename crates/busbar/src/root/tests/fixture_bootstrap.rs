@@ -81,6 +81,67 @@ pub(crate) struct PlaneFixture {
     pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
     _owners: Arc<Owners>,
     _prefix: Arc<BootSecrets>,
+    records: Records,
+    directory: Directory,
+    hook_specs: Vec<Configured>,
+    public_url: Option<String>,
+}
+
+pub(crate) struct HookFixture {
+    pub(crate) who: Namespace,
+    pub(crate) port: Arc<dyn busbar_ports::hook::HookPort>,
+    pub(crate) described: busbar_plugin_loader::instance::Described,
+    pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+}
+
+impl PlaneFixture {
+    /// Open the candidate's actual hooks over the plane's same Registry, secret prefix, Store
+    /// and directory owners. The hook pipeline receives the admitted immutable describe records,
+    /// including D_WORD; no legacy HookCalls adapter or synthetic capability grant is involved.
+    pub(crate) async fn hooks(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
+        let built = &self._owners.built;
+        let needs = built.needs_for(
+            Arc::clone(&self._prefix),
+            Arc::clone(&self.records),
+            Arc::clone(&self.directory),
+        );
+        let refs = self._prefix.refs();
+        let specs = specifications(&self.hook_specs, self.public_url.as_deref(), false);
+        let mut opened = std::collections::BTreeMap::new();
+        for (_, spec) in specs {
+            let prepared = built
+                .registry
+                .reserve(&spec)
+                .map_err(|why| format!("{why:?}"))?;
+            let described = built
+                .registry
+                .described(prepared.identity())
+                .ok_or("native hook reservation lost its admitted description")?;
+            let who = Namespace {
+                plugin: Arc::from(prepared.identity()),
+                name: Arc::from(prepared.name()),
+                instance: prepared.id(),
+                slot: prepared.slot(),
+            };
+            let port = built
+                .registry
+                .open_hook_reserved(prepared, &needs, &refs)
+                .await
+                .map_err(|why| format!("{why:?}"))?;
+            opened.insert(
+                spec.name.to_owned(),
+                HookFixture {
+                    who,
+                    port,
+                    described,
+                    limits: spec.limits,
+                },
+            );
+        }
+        Ok(opened)
+    }
 }
 
 impl ServingFixture {
@@ -135,8 +196,9 @@ impl ServingFixture {
             Vec::new(),
         )
         .await?;
+        let directory = Arc::clone(&provisioning.directory);
         let shared = Arc::new(Shared::new(
-            records,
+            Arc::clone(&records),
             Arc::new(StorePushQueue::new(
                 Arc::clone(&store),
                 Arc::new(RetryPolicyImpl::default()),
@@ -197,11 +259,33 @@ impl ServingFixture {
         }
         let ticking = seat.clone();
         workers.push(async move { ticking.tick_task(shared.push.clone()).await });
+        let seal = busbar_kernel::seal::lend();
+        let hook_specs = cfg
+            .hooks
+            .iter()
+            .map(|(name, hook)| {
+                Ok(Configured {
+                    kind: KindCode::Hook,
+                    identity: hook.module.clone(),
+                    name: name.clone(),
+                    config: hook
+                        .settings
+                        .encode()
+                        .map_err(|why| format!("hooks.{name}: {why}"))?
+                        .into_exposed(&seal),
+                    limits: busbar_kernel::appbuild::instance_limits(cfg, "hooks", name),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(PlaneFixture {
             seat,
             workers,
             _owners: Arc::clone(&self.owners),
             _prefix: prefix,
+            records,
+            directory,
+            hook_specs,
+            public_url: cfg.public_url.clone(),
         })
     }
 }
