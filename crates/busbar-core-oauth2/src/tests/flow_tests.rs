@@ -167,14 +167,15 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
 }
 
 #[test]
-fn the_session_cookie_carries_exactly_the_attributes_it_should() {
-    use crate::config::AsIdentity;
-    use crate::routes::session_cookies;
+fn the_start_cookie_carries_exactly_the_attributes_it_should() {
+    use crate::config::{AsIdentity, OPERATOR_CONSENT_PATH, OPERATOR_DEVICE_PATH};
+    use crate::consent::start_cookie;
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
         ("http://127.0.0.1:8080", false),
         ("https://gw.example.com/tenant-a", true),
+        ("http://127.0.0.1:8080/oauth", false),
     ] {
         let cfg = OauthAsCfg {
             issuer: issuer.to_string(),
@@ -187,61 +188,54 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             clients: Vec::new(),
         };
         let id = AsIdentity::from_cfg(&cfg).expect("valid issuer");
-        let cookies = session_cookies(&id, "deadbeef");
+        let c = start_cookie(&id, "deadbeef");
 
         let mut jar = Jar::new(secure_expected);
-        for c in &cookies {
-            jar.store(c, id.consent_path());
-        }
+        jar.store(&c, id.authorize_path());
         assert!(
             jar.header_for(id.authorize_path()).is_some(),
-            "the approval resolver reads this cookie at {}: {cookies:?}",
+            "the approval resolver reads this cookie at {}: {c}",
             id.authorize_path()
         );
-        assert!(
-            jar.header_for(id.consent_path()).is_some(),
-            "the consent POST reads this cookie at {}: {cookies:?}",
-            id.consent_path()
-        );
-
-        assert_eq!(
-            jar.header_for(id.token_path()),
-            None,
-            "the token endpoint must never see the operator's session: {cookies:?}"
-        );
-        assert_eq!(jar.header_for(id.jwks_path()), None);
-        assert_eq!(jar.header_for(id.metadata_path()), None);
-        assert_eq!(
-            jar.header_for("/v1/chat/completions"),
-            None,
-            "a data-plane path on the same origin must never see it either"
-        );
-        assert_eq!(jar.header_for("/"), None);
-
-        for c in &cookies {
-            assert!(c.contains("; HttpOnly"), "script must not read it: {c}");
-            assert!(
-                c.contains("; SameSite=Lax"),
-                "Strict would withhold the cookie on the cross-site top-level navigation that \
-                 STARTS this flow: {c}"
-            );
+        for elsewhere in [
+            id.token_path(),
+            id.jwks_path(),
+            id.metadata_path(),
+            "/v1/chat/completions",
+            "/",
+            OPERATOR_CONSENT_PATH,
+            OPERATOR_DEVICE_PATH,
+        ] {
             assert_eq!(
-                c.contains("; Secure"),
-                secure_expected,
-                "`Secure` follows the issuer's scheme ({issuer}): {c}"
-            );
-            assert!(
-                c.contains(&format!(
-                    "; Max-Age={}",
-                    crate::consent::SESSION_TTL.as_secs()
-                )),
-                "the cookie's lifetime is the SESSION's lifetime, from the same constant: {c}"
-            );
-            assert!(
-                !c.contains("Path=/;") && !c.ends_with("Path=/"),
-                "`Path=/` is the widening this fix exists to avoid: {c}"
+                jar.header_for(elsewhere),
+                None,
+                "{elsewhere} must never see the start cookie (loopback origins share host-only \
+                 cookies across ports, so the admin pages are kept apart by path): {c}"
             );
         }
+
+        assert!(c.contains("; HttpOnly"), "script must not read it: {c}");
+        assert!(
+            c.contains("; SameSite=Lax"),
+            "Strict would withhold the cookie on the cross-site top-level navigations that start \
+             and finish this flow: {c}"
+        );
+        assert_eq!(
+            c.contains("; Secure"),
+            secure_expected,
+            "`Secure` follows the issuer's scheme ({issuer}): {c}"
+        );
+        assert!(
+            c.contains(&format!(
+                "; Max-Age={}",
+                crate::consent::SESSION_TTL.as_secs()
+            )),
+            "the cookie's lifetime is the SESSION's lifetime, from the same constant: {c}"
+        );
+        assert!(
+            !c.contains("Path=/;") && !c.ends_with("Path=/"),
+            "`Path=/` is the widening this scoping exists to avoid: {c}"
+        );
     }
 }
 
@@ -401,11 +395,18 @@ async fn owner_plane_with_store(
         config.authoring(&busbar_kernel::test_hooks::tokens::seal()),
     )
     .expect("owner config serializes");
-    crate::plane::seam_build::<crate::NoConnections>(block, Vec::new(), Vec::new(), None, store)
-        .await
-        .expect("the actual owner seam builds over the supplied Store product")
-        .downcast::<crate::plane::AsPlane>()
-        .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
+    crate::plane::seam_build::<crate::NoConnections>(
+        block,
+        Vec::new(),
+        Vec::new(),
+        None,
+        store,
+        crate::testkit::ADMIN_ORIGIN.to_string(),
+    )
+    .await
+    .expect("the actual owner seam builds over the supplied Store product")
+    .downcast::<crate::plane::AsPlane>()
+    .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
 }
 
 async fn approved_token(
@@ -448,16 +449,10 @@ async fn approved_token(
 #[tokio::test]
 async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
     use http_body_util::BodyExt as _;
-    let config = OauthAsCfg {
-        issuer: "http://bad\rhost/defect2".into(),
-        default_grant: vec![SCOPE.into()],
-        ..Default::default()
-    };
-    let identity = crate::config::AsIdentity::from_cfg(&config)
-        .expect("the owner identity retains the malformed host input");
     let response = crate::consent::login_redirect(
-        &identity.consent_url(),
+        "http://bad\rhost/oauth/consent",
         "/defect2/authorize?response_type=code&client_id=flow-test-client",
+        &"a".repeat(64),
     );
     let status = response.status().as_u16();
     let bytes = response
@@ -488,6 +483,7 @@ async fn issued_code_tokens_retain_their_live_private_records_for_each_default_s
         Vec::new(),
         None,
         crate::testkit::memory_store().await,
+        crate::testkit::ADMIN_ORIGIN.to_string(),
     )
     .await
     .expect("the actual owner seam builds over the supplied Store product");

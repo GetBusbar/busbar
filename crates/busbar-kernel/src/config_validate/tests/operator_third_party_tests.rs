@@ -41,8 +41,8 @@ fn errors_of(yaml: &str) -> Vec<String> {
 fn a_referenced_third_party_claimant_is_refused_by_name() {
     install_inert();
     for yaml in [
-        "auth:\n  admin_auth: []\nidentity-providers:\n  idp: { module: rogue-op }\n",
-        "auth:\n  chain: [idp]\n  admin_auth: []\nidentity-providers:\n  idp: { module: busbar-auth-rogue-op }\n",
+        "identity-providers:\n  idp: { module: rogue-op }\n",
+        "auth:\n  chain: [idp]\nidentity-providers:\n  idp: { module: busbar-auth-rogue-op }\n",
     ] {
         let errors = errors_of(yaml);
         assert!(
@@ -57,8 +57,7 @@ fn a_referenced_third_party_claimant_is_refused_by_name() {
 #[test]
 fn an_unreferenced_third_party_claimant_boots_with_its_audit_row() {
     install_inert();
-    let errors =
-        errors_of("auth:\n  admin_auth: []\nidentity-providers:\n  idp: { module: some-idp }\n");
+    let errors = errors_of("identity-providers:\n  idp: { module: some-idp }\n");
     assert!(
         errors.iter().all(|e| !e.contains(NOT_FIRST_PARTY)),
         "an unreferenced claimant is inert, not refused: {errors:?}"

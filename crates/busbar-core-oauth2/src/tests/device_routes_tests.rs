@@ -23,6 +23,7 @@ async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
         .unwrap();
         crate::plane::AsPlane::build_carrying(
             identity,
+            crate::testkit::ADMIN_ORIGIN.to_string(),
             None,
             Vec::new(),
             crate::cimd::unconnected(),
@@ -33,28 +34,28 @@ async fn device_csrf_is_shared_and_spent_once_across_fresh_nodes() {
     };
     let first = build().await;
     first
-        .issue_device_form("session-a", "csrf-a", "operator")
+        .issue_form("session-a", "key-a", "operator")
         .await
         .unwrap();
     let second = build().await;
     assert!(!second
-        .consume_device_form("session-b", "csrf-a", "operator")
+        .consume_form("session-b", "key-a", "operator")
         .await
         .unwrap());
     assert!(!second
-        .consume_device_form("session-a", "forged", "operator")
+        .consume_form("session-a", "forged", "operator")
         .await
         .unwrap());
     assert!(!second
-        .consume_device_form("session-a", "csrf-a", "someone-else")
+        .consume_form("session-a", "key-a", "someone-else")
         .await
         .unwrap());
     assert!(second
-        .consume_device_form("session-a", "csrf-a", "operator")
+        .consume_form("session-a", "key-a", "operator")
         .await
         .unwrap());
     assert!(!first
-        .consume_device_form("session-a", "csrf-a", "operator")
+        .consume_form("session-a", "key-a", "operator")
         .await
         .unwrap());
 }
@@ -84,7 +85,6 @@ async fn only_explicit_operator_device_clients_can_omit_redirects_and_use_device
         identity.device_authorization_path(),
         "/tenant/device_authorization"
     );
-    assert_eq!(identity.verification_path(), "/tenant/device");
     assert_eq!(identity.revocation_path(), "/tenant/revoke");
     let plane = build_owner(identity).await.unwrap();
     let client = plane
@@ -119,6 +119,7 @@ async fn build_owner(
 ) -> Result<crate::plane::AsPlane, crate::plane::AsBuildError> {
     crate::plane::AsPlane::build_carrying(
         identity,
+        crate::testkit::ADMIN_ORIGIN.to_string(),
         None,
         Vec::new(),
         crate::cimd::unconnected(),

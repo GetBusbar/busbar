@@ -82,7 +82,7 @@ impl NativeExport {
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let mut document = serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": store_module, "settings": crate::root::test_plugins::application_store_settings(&directory)},
             "advanced": {"block_private_addresses": false},
             "export": {},

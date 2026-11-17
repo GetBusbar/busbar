@@ -33,7 +33,7 @@ async fn test_dry_run_empty_admin_chain_is_not_full() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -74,6 +74,10 @@ async fn test_dry_run_empty_admin_chain_is_not_full() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
+    // Config cannot carry `admin_auth: []` (boot refuses it, ADMIN-API-1.6-ONE-MODEL §8.1.1), so the
+    // empty chain is put on the built app: the runtime still identifies no one through it.
+    let mut app = app;
+    app.admin_chain = Vec::new();
     let app = Arc::new(app);
     let g = dry_run_admin_scope(&app, &HeaderMap::new());
     assert!(

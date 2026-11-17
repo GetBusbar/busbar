@@ -136,7 +136,7 @@ fn a_candidate_unreadable_under_the_running_grammar_counts_as_changed() {
     let document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "admin_auth": [], "signing_key": { "fixture-word": "slot" } },
+        "auth": { "signing_key": { "fixture-word": "slot" } },
         "plugins": { "enabled": true, "dir": "/srv/busbar/plugins" },
     });
     let candidate = Candidate::of_json(&document, &no_shorthand(), None)

@@ -240,7 +240,7 @@ async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice(
     let serving = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "restart-mint")
         .body(json::json!({"name": "once"}).to_string())
@@ -312,7 +312,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
     let id = if first {
         let response = client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "rotated"}))
             .send()
             .await
@@ -330,7 +330,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
     assert!(!id.is_empty());
     let response = client
         .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "restart-rotate")
         .send()
         .await
@@ -359,7 +359,7 @@ async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twi
         assert!(!token.is_empty());
         let got = client
             .get(format!("http://{addr}/api/v1/admin/keys/{id}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
