@@ -23,6 +23,10 @@ use crate::records::{Full, Writer};
 /// The bytes of one WRITE record at most (a longer drain is several WRITE records, in order).
 const WRITE_CHUNK: usize = 16 * 1024;
 
+#[path = "memio_provenance.rs"]
+mod provenance;
+pub use provenance::Provenance;
+
 type Task = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 /// A poisoned lock only means a task panicked mid-poll; the state under it is still plain data.
@@ -35,8 +39,11 @@ struct Pipes {
     read: VecDeque<u8>,
     eof: bool,
     reader: Option<Waker>,
-    write: Vec<u8>,
+    write: busbar_secure::SecureVec,
+    writer: Option<Waker>,
+    plan: Option<provenance::Plan>,
     shut: bool,
+    close_reported: bool,
 }
 
 #[derive(Default)]
@@ -184,7 +191,12 @@ impl MemIo {
             return Ran::BudgetLeft;
         }
         let p = lock(&self.shared.pipes);
-        if self.live == 0 && (p.eof || p.shut) {
+        if self.live == 0
+            && (p.eof || p.shut)
+            && p.plan
+                .as_ref()
+                .is_none_or(|plan| plan.responses.is_empty() && plan.queue.is_empty())
+        {
             Ran::Closed
         } else {
             Ran::Idle
@@ -194,10 +206,21 @@ impl MemIo {
     pub fn flush(&mut self, out: &mut impl Writer) -> Result<(), Full> {
         {
             let mut p = lock(&self.shared.pipes);
+            let before = p.write.len();
+            // Attributed callers use flush_attributed after reserving a continuation.
+            // Refuse an accidental legacy drain before consuming any state.
+            if p.plan.is_some() {
+                return Err(Full);
+            }
             while !p.write.is_empty() {
                 let n = p.write.len().min(WRITE_CHUNK);
-                out.put(tag::WRITE, &p.write[..n])?;
-                p.write.drain(..n);
+                out.put(tag::WRITE, &p.write.as_slice()[..n])?;
+                p.write.consume(n);
+            }
+            if p.write.len() < before {
+                if let Some(waker) = p.writer.take() {
+                    waker.wake();
+                }
             }
         }
         let wake = if self.budget_out {
@@ -285,14 +308,37 @@ impl hyper::rt::Read for MemStream {
 impl hyper::rt::Write for MemStream {
     fn poll_write(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let mut p = lock(&self.shared.pipes);
         if p.shut {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
+        if let Some(plan) = p.plan.as_mut() {
+            if plan.fault || buf.len() as u64 > plan.serialized - plan.accepted {
+                plan.fault = true;
+                return Poll::Ready(Err(io::ErrorKind::InvalidData.into()));
+            }
+            let available = plan
+                .byte_limit
+                .saturating_sub((plan.accepted - plan.emitted) as usize);
+            if available == 0 && !buf.is_empty() {
+                p.writer = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            let n = available.min(buf.len());
+            plan.accepted += n as u64;
+            if p.write.extend(&buf[..n]).is_err() {
+                if let Some(plan) = p.plan.as_mut() {
+                    plan.fault = true;
+                }
+                return Poll::Ready(Err(io::ErrorKind::OutOfMemory.into()));
+            }
+            return Poll::Ready(Ok(n));
+        }
         p.write.extend_from_slice(buf);
+
         Poll::Ready(Ok(buf.len()))
     }
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -568,3 +614,7 @@ mod tests {
         assert!(polls.load(Ordering::SeqCst) <= 3);
     }
 }
+
+#[cfg(test)]
+#[path = "memio_provenance_tests.rs"]
+mod provenance_tests;
