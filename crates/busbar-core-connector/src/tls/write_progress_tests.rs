@@ -104,21 +104,29 @@ impl AsyncWrite for ScriptIo {
     }
 }
 
-async fn established() -> (
+type Fixture = (
     TrackedTls<ScriptIo>,
     Arc<dyn CarrierProgressReader>,
     Arc<Mutex<Script>>,
-) {
+);
+
+type PeerFixture = (
+    TrackedTls<ScriptIo>,
+    Arc<dyn CarrierProgressReader>,
+    Arc<Mutex<Script>>,
+    DuplexStream,
+);
+
+async fn established() -> Fixture {
     established_with_limit(4).await
 }
 
-async fn established_with_limit(
-    records: usize,
-) -> (
-    TrackedTls<ScriptIo>,
-    Arc<dyn CarrierProgressReader>,
-    Arc<Mutex<Script>>,
-) {
+async fn established_with_limit(records: usize) -> Fixture {
+    let (stream, reader, script, _peer) = established_with_peer(records).await;
+    (stream, reader, script)
+}
+
+async fn established_with_peer(records: usize) -> PeerFixture {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let certificate = cert.der().clone();
@@ -149,12 +157,12 @@ async fn established_with_limit(
             script: script.clone()
         }),
     );
-    let _client = client.unwrap();
+    let peer = client.unwrap().into_inner().0;
     let mut server = server.unwrap();
     server.flush().await.unwrap();
     let (tracked, reader) = TrackedTls::new(server, records).unwrap();
     script.lock().unwrap().enabled = true;
-    (tracked, reader, script)
+    (tracked, reader, script, peer)
 }
 
 fn arm(script: &Mutex<Script>, steps: impl IntoIterator<Item = Step>) {
@@ -287,4 +295,29 @@ async fn zero_raw_write_never_strands_full_descriptor_capacity_as_pending() {
             assert_eq!(progress.fault, Some(CarrierFault::WriteZero));
         }
     }
+}
+
+#[tokio::test]
+async fn fatal_record_read_keeps_positive_last_gasp_output_before_error() {
+    let (mut stream, reader, script, mut peer) = established_with_peer(4).await;
+    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+    arm(&script, [Step::Pending]);
+    assert!(matches!(
+        Pin::new(&mut stream).poll_write(&mut cx, b"body"),
+        Poll::Ready(Ok(4))
+    ));
+    // A TLS 1.3 ciphertext shorter than its authentication tag must fail packet processing.
+    peer.write_all(&[23, 3, 3, 0, 1, 0]).await.unwrap();
+    arm(&script, [Step::Bytes(6)]);
+    let mut bytes = [0u8; 16];
+    let mut read = ReadBuf::new(&mut bytes);
+    assert!(matches!(
+        Pin::new(&mut stream).poll_read(&mut cx, &mut read),
+        Poll::Ready(Err(_))
+    ));
+    let progress = reader.snapshot();
+    assert_eq!(progress.accepted_plaintext, 4);
+    assert_eq!(progress.written_plaintext, 1);
+    assert_eq!(progress.complete_records_plaintext, 0);
+    assert_eq!(script.lock().unwrap().written, 6);
 }
