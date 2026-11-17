@@ -53,6 +53,8 @@ pub use busbar_plugin_loader::test_host::{
 };
 /// The existing login vocabulary used with [`suites::harness::Harness::open_auth`].
 pub use busbar_ports::auth::{LoginAnswer, LoginIn};
+/// The existing upstream target and output vocabulary used with [`suites::harness::Harness::open_plane`].
+pub use busbar_ports::plane::{PlaneOut, TargetIn};
 pub use busbar_ports::{CallCx, PortError};
 pub use envelopes::{DiagRecord, Envelopes, MetricRecord};
 pub use fake_needs::{ConnScript, FakeNeeds};
