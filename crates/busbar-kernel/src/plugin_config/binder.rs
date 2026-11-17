@@ -698,6 +698,18 @@ impl ConfigBinder for Binder {
             .remove(&instance);
     }
 
+    fn committed(&self, instance: u64) -> Option<Vec<[u8; 32]>> {
+        self.entry(instance)?
+            .refs
+            .iter()
+            .map(|r| {
+                *r.resolved
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
+            .collect()
+    }
+
     fn bind_any(
         &self,
         instance: u64,
