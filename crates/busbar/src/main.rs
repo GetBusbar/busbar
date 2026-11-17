@@ -1342,19 +1342,20 @@ async fn run(
     let observation_reservation = export_observers
         .reserve(serving_ready.export_names())
         .unwrap_or_else(|error| die(error));
-    let (store_admission, mut generation_workers, exports, native) = root::min3_boot::finish(
-        serving_ready,
-        store_admission,
-        services.kernel(),
-        busbar_kernel::plane_driver::port_work::governed_binder(
-            app.governance.clone(),
-            app.role_bindings.clone(),
-        ),
-        Some(root::min3_boot::ServingEnvironment::new(&app)),
-        &observation_reservation,
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+    let (store_admission, mut generation_workers, exports, native, selected_policy) =
+        root::min3_boot::finish(
+            serving_ready,
+            store_admission,
+            services.kernel(),
+            busbar_kernel::plane_driver::port_work::governed_binder(
+                app.governance.clone(),
+                app.role_bindings.clone(),
+            ),
+            Some(root::min3_boot::ServingEnvironment::new(&app)),
+            &observation_reservation,
+        )
+        .await
+        .unwrap_or_else(|error| die(error));
 
     let export_registry = export::plugin::open_prepared(
         &export_config,
@@ -1363,6 +1364,9 @@ async fn run(
     )
     .unwrap_or_else(|error| die_list("config errors", [error]));
     let mut app = Arc::unwrap_or_clone(app);
+    selected_policy
+        .install_initial(&mut app)
+        .unwrap_or_else(|error| die(error));
     app.secret_resolver = Arc::clone(&native.resolver);
     let auth_epoch = app
         .config_generation

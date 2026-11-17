@@ -420,6 +420,8 @@ pub(crate) fn compose_egress(
 /// is swapped in.
 #[derive(Debug, Clone)]
 pub(crate) struct DoorConfig {
+    /// Exact candidate-native dispatchers; request lookup always uses its retained App.
+    pub(crate) native_slots: crate::root::min3_physical::NativeSlots,
     /// Candidate-owned physical handlers, constructed by its root rules before publication.
     pub(crate) listener_routes: Option<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
@@ -449,6 +451,7 @@ pub(crate) fn door_config(
         sections
     });
     let config = DoorConfig {
+        native_slots: Default::default(),
         listener_routes: None,
         listeners: sections
             .as_ref()

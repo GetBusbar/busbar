@@ -204,7 +204,8 @@ pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
     _channel_accounts: Arc<ChannelAccounts>,
-    _transports: Vec<transports::ServedTransport>,
+    pub(crate) framers: super::min3_framers::NativeFramers,
+    pub(crate) inventories: Arc<super::min3_physical::Inventories>,
     _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
         u32,
@@ -815,6 +816,8 @@ struct Steps<'r> {
     instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
+    inventory_inputs:
+        Mutex<std::collections::BTreeMap<String, super::min3_physical::InventoryInputs>>,
     invocations: Mutex<Vec<busbar_kernel::host_services::NativeInvocationAdmission>>,
     shared: Arc<Shared>,
     directory: Directory,
@@ -965,6 +968,26 @@ impl Steps<'_> {
             rt.clone(),
         )
         .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
+        // This cap bounds each validated configuration output, not aggregate process memory.
+        const RESOURCE_INVENTORY_OUTPUT_BYTES: usize = 1_048_576;
+        if self
+            .inventory_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                spec.name.to_owned(),
+                super::min3_physical::InventoryInputs {
+                    upstreams: wiring.inventory_upstreams,
+                    targets: wiring.inventory_targets,
+                    byte_limit: RESOURCE_INVENTORY_OUTPUT_BYTES,
+                },
+            )
+            .is_some()
+        {
+            return Err(OpenError::Unknown(
+                "duplicate native inventory source owner".into(),
+            ));
+        }
         if let Some(probes) = wiring.probes {
             self.probes
                 .lock()
@@ -1136,6 +1159,7 @@ pub(crate) struct ServingReady {
     images: Arc<super::boot::images::FileImages>,
     channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
+    selected_policy: Option<super::min3_selected_policy::CapturedSelectedPolicy>,
     provider_plan: super::min3_provider_plan::Plan,
     provider_catalogs: busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     implicit_auth: std::collections::BTreeSet<String>,
@@ -1394,6 +1418,18 @@ pub(crate) fn prepare_serving(
                 .map(|pool| (name.clone(), pool))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let selected_policy = (!converting)
+        .then(|| {
+            super::min3_selected_policy::capture(
+                &effective_images,
+                cfg,
+                &instances,
+                catalogs,
+                &declared,
+                &registrations,
+            )
+        })
+        .transpose()?;
     let mut next_destination = registrations
         .values()
         .flat_map(|pool| pool.members.iter().map(|member| member.destination.get()))
@@ -1529,6 +1565,7 @@ pub(crate) fn prepare_serving(
         images: effective_images,
         channel_accounts,
         hook_plan,
+        selected_policy,
         provider_plan,
         provider_catalogs: catalogs.clone(),
         implicit_auth,
@@ -1573,6 +1610,7 @@ pub(crate) async fn finish(
         super::boot::workers::PreparedWorkers,
         super::exports::ports::Exports,
         Arc<Booted>,
+        busbar_kernel::governance::selected_policy::PendingSelectedPolicy,
     ),
     String,
 > {
@@ -1581,6 +1619,7 @@ pub(crate) async fn finish(
         images,
         channel_accounts,
         hook_plan,
+        selected_policy,
         provider_plan,
         mut provider_catalogs,
         implicit_auth,
@@ -1600,6 +1639,15 @@ pub(crate) async fn finish(
         converting,
         normalization_source,
     } = ready;
+    let selected_policy = match (selected_policy, environment.as_ref()) {
+        (Some(policy), Some(environment)) => Some(
+            policy
+                .compile(Arc::clone(&environment.app.cost), None)
+                .map_err(|errors| errors.join("\n"))?,
+        ),
+        (None, None) if converting => None,
+        _ => return Err("serving composition lost its selected policy authority".into()),
+    };
     let hook_environment = environment
         .as_ref()
         .map(|environment| hooks::Environment::new(hook_plan, environment.app))
@@ -1641,6 +1689,7 @@ pub(crate) async fn finish(
         instances: &specs,
         services,
         seats: Mutex::default(),
+        inventory_inputs: Mutex::default(),
         invocations: Mutex::default(),
         shared: Arc::clone(&shared),
         directory: Arc::clone(&directory),
@@ -1876,6 +1925,8 @@ pub(crate) async fn finish(
     )
     .await?;
     let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let selected_policy =
+        selected_policy.ok_or("serving composition lost its captured selected policy")?;
     let owners = super::min3_admin_auth::owners(
         environment.app,
         &auth_policy,
@@ -1962,6 +2013,17 @@ pub(crate) async fn finish(
         .seats
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
+    let inventories = Arc::new(super::min3_physical::build_inventories(
+        &seats,
+        environment
+            .app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        &steps
+            .inventory_inputs
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner),
+    )?);
     let probes = steps
         .probes
         .into_inner()
@@ -1976,7 +2038,8 @@ pub(crate) async fn finish(
         resolver: Arc::clone(candidate_secrets.resolver()),
         registry: built.registry,
         _bootstrap_registry,
-        _transports: transports,
+        framers: super::min3_framers::NativeFramers::new(transports),
+        inventories,
         _native_invocations: invocations,
         _opened: walked.opened,
         auth,
@@ -2006,6 +2069,7 @@ pub(crate) async fn finish(
         workers,
         super::exports::ports::Exports::new(export_doors)?,
         booted,
+        selected_policy,
     ))
 }
 

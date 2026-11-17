@@ -302,6 +302,7 @@ impl ServingFixture {
             instances: &specs,
             services: Some(services),
             seats: Mutex::default(),
+            inventory_inputs: Mutex::default(),
             invocations: Mutex::default(),
             shared: Arc::clone(&shared),
             directory: provisioning.directory,
