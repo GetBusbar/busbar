@@ -116,7 +116,7 @@ interim:
   crates/busbar-contract/src/abi/sdk/tests/io_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/lent_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/life_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/migrate_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/migrate_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/out_tests.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/plane_inspection_leases_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/plane_life_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
@@ -258,7 +258,6 @@ interim:
   crates/plugin-loader/src/dispatch/load.rs: { tokens: 30, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/measurement_tests.rs: { tokens: 24, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/measurement.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/dispatch/migrate.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/mod.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/observation.rs: { tokens: 10, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/plugin.rs: { tokens: 105, by: "W2 / W3 (old dispatch and doors)" }
@@ -313,7 +312,6 @@ interim:
   crates/plugin-loader/src/tests/io_slots_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/kind_boundary_loaded_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/lifecycle_worker_tests.rs: { tokens: 4, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/migrate_door_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/needs_restated.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/neutral_kind_rename_tests.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/neutral_plane_identity_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
