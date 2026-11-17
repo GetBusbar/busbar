@@ -373,6 +373,19 @@ codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diag
 Instance names must be unique across configuration sections and must not collide with core
 instance IDs. Resolve a reported collision and update clients that select by instance name.
 
+`GET /info` is this node's identity only. Its removed members and their replacements:
+
+| Removed `/info` member | Replacement |
+|---|---|
+| `nodes[]` | The `core/process` view `nodes` (`/kinds/core/instances/process/views/nodes`), times in `*_ms` |
+| `build` (`auth_modules`, `hook_plugins`, `weighted_floor`) | `/plugins` and `/kinds` show what is installed and running |
+| `topology` | `/kinds` (`instance_count`) and the `core/routing` instance |
+| `process_boot_nonce` | `incarnation` (same value) |
+| `started_at`, `uptime_seconds` | `started_at_ms` |
+| `config_version` | `config_generation` |
+| `kinds_revision` | The `/kinds` ETag |
+| `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
+
 ## Usage and rate cards
 
 Review prices explicitly. Migration removes root `cache_write_utok: 0`, the 1.5.5 spelling of

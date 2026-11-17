@@ -61,33 +61,12 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "info must report the build version"
     );
 
-    assert_eq!(body["build"]["weighted_floor"], json::json!(true));
-    let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
-    assert!(
-        auth_modules.iter().any(|m| m == "keys"),
-        "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
-    );
-    assert_eq!(
-        auth_modules
-            .iter()
-            .any(|m| m == busbar_kernel::config::operator_provider()),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
-        "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
-    );
-
-    assert_eq!(
-        body["build"]["hook_plugins"],
-        json::json!(busbar_kernel::preflight::root_rows().hook_names),
-        "hook_plugins must be exactly the linked hook rows the root's install record carries"
-    );
-
-    assert!(body["topology"]["pools"].is_number());
-    assert!(body["topology"]["models"].is_number());
-    assert!(body["topology"]["providers"].is_number());
-
     assert_eq!(body["config_persistence"], true);
-    assert!(body.get("overlay_ignored").is_none());
+    assert_eq!(
+        body["warnings"],
+        json::json!([]),
+        "a boot without --ignore-overlay carries no overlay_ignored warning"
+    );
 
     let deployment_id = body["deployment_id"].as_str().expect("deployment_id");
     assert!(
@@ -105,14 +84,6 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
         "node_id is node_ + 16 lowercase hex: {node_id}"
     );
-    let nodes = body["nodes"].as_array().expect("nodes");
-    let own = nodes
-        .iter()
-        .find(|n| n["node_id"] == node_id)
-        .expect("nodes lists this process's own lease row");
-    assert_eq!(own["state"], "live");
-    assert_eq!(own["role"], "writer");
-    assert!(own["started_at"].as_u64().unwrap() <= own["last_seen_at"].as_u64().unwrap());
 
     handle.abort();
     println!("{WITNESS}");

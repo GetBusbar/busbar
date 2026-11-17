@@ -1114,35 +1114,6 @@
         ],
         "type": "object"
       },
-      "BuildInfo": {
-        "description": "The compiled-in feature proof (`InfoView.build`).",
-        "properties": {
-          "auth_modules": {
-            "description": "Auth modules baked into this binary (e.g. `[\"tokens\"]`; empty under `--no-default-features`).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "hook_plugins": {
-            "description": "Hook plugins baked into this binary (e.g. `[]`).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "weighted_floor": {
-            "description": "The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "auth_modules",
-          "hook_plugins",
-          "weighted_floor"
-        ],
-        "type": "object"
-      },
       "CacheFlushView": {
         "description": "`POST /auth/cache/flush`: number of cached credential-decision entries dropped.",
         "properties": {
@@ -3515,11 +3486,8 @@
         "type": "object"
       },
       "InfoView": {
-        "description": "The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers\nversion negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect\nthe ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a\nprovably smaller surface. No LLM content, ever.",
+        "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
-          "build": {
-            "$ref": "#/components/schemas/BuildInfo"
-          },
           "config_generation": {
             "description": "The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every\npublication, so it never repeats across restarts. The ETag of every config resource is\n`\"<deployment_id>.<config_generation>\"`.",
             "format": "uint64",
@@ -3535,17 +3503,6 @@
             "description": "Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable\n`config.overlay` backend: `true` = API-applied config changes are durable across restarts;\n`false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are\nrefused. Lets tooling tell an operator whether runtime changes are accepted and durable.",
             "type": "boolean"
           },
-          "config_version": {
-            "description": "Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and\ncompare to tell whether the running config changed. Process-local (resets on restart).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
           "deployment_id": {
             "description": "This deployment's identity (`dep_` + 32 hex, opaque): kept once in the Store, the same\nfor every node and every restart. Absent only before the process has booted its Store.",
             "pattern": "^dep_[0-9a-f]{32}$",
@@ -3554,9 +3511,13 @@
               "null"
             ]
           },
-          "kinds_revision": {
-            "description": "The `/kinds` ETag (ADMIN-API-1.6 §5.1): a digest over every (category, kind, instance,\nimage, instance config digest), kept once per generation. It moves whenever a kind or an\ninstance is added, removed or reconfigured.",
-            "type": "string"
+          "incarnation": {
+            "description": "This process's incarnation, the join-id term (`{node_id}.{incarnation}.{unit_key}`): a\nrandom 128-bit process generation, shared with the `/metrics` build_info series. Stable\nacross configuration reloads; a new process draws a new one. Null when OS randomness failed;\nclients must not fabricate a restart identity.",
+            "pattern": "^[0-9a-f]{32}$",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "node_id": {
             "description": "This process's node (`node_` + 16 hex, opaque): changes whenever a new writer takes over.",
@@ -3566,44 +3527,8 @@
               "null"
             ]
           },
-          "nodes": {
-            "description": "Every node the Store holds a lease row for, so a client can prove it reads the whole\ndeployment.",
-            "items": {
-              "$ref": "#/components/schemas/NodeView"
-            },
-            "type": "array"
-          },
-          "overlay_ignored": {
-            "description": "Present and `true` when this process was booted with `--ignore-overlay`; a later\nreload/apply re-merges the overlay.",
-            "type": "boolean"
-          },
-          "process_boot_nonce": {
-            "description": "Random 128-bit process generation, shared with the `/metrics` build_info series and available even when\nmetrics are disabled. Stable across configuration reloads; a new process generates a new\nnonce. Null when OS randomness failed; clients must not fabricate a restart identity.",
-            "pattern": "^[0-9a-f]{32}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "started_at": {
-            "description": "Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any\nprocess-local counter) resets on restart, so a consumer that sees `started_at` change knows\nto read a counter reset as \"new epoch\", never as \"reverted\".",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ],
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "topology": {
-            "$ref": "#/components/schemas/TopologyInfo"
-          },
-          "uptime_seconds": {
-            "description": "Seconds since process start, or `None` if the start instant was never stamped.",
+          "started_at_ms": {
+            "description": "Epoch milliseconds of process start, or null if the start instant was never stamped. A\nchanged value means a new process.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -3617,22 +3542,54 @@
             }
           },
           "version": {
-            "description": "busbar semantic version (`CARGO_PKG_VERSION`).",
+            "description": "busbar semantic version (`CARGO_PKG_VERSION`). Informational: clients negotiate on\n`/whoami.features` and discovery, never on this.",
             "type": "string"
+          },
+          "warnings": {
+            "description": "Conditions an operator should know about this process, oldest first; empty normally.",
+            "items": {
+              "$ref": "#/components/schemas/InfoWarning"
+            },
+            "type": "array"
           }
         },
         "required": [
           "version",
-          "build",
-          "uptime_seconds",
-          "started_at",
-          "process_boot_nonce",
-          "topology",
-          "config_persistence",
+          "incarnation",
+          "started_at_ms",
           "config_generation",
-          "config_version",
-          "kinds_revision",
-          "nodes"
+          "config_persistence",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "InfoWarning": {
+        "description": "One `InfoView.warnings` entry.",
+        "properties": {
+          "code": {
+            "description": "What the warning is, an extensible set: `overlay_ignored` (booted with `--ignore-overlay`:\nthe persisted config overlay was not merged; a later reload or apply re-merges it).",
+            "type": "string"
+          },
+          "message": {
+            "description": "Core-written English for an operator; never parsed.",
+            "type": "string"
+          },
+          "since_ms": {
+            "description": "Epoch milliseconds since the condition holds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "since_ms"
         ],
         "type": "object"
       },
@@ -5310,52 +5267,6 @@
         ],
         "type": "object"
       },
-      "NodeView": {
-        "description": "One node of `InfoView.nodes`: a Store node lease row.",
-        "properties": {
-          "last_seen_at": {
-            "description": "Epoch seconds of the node's last lease refresh.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "node_id": {
-            "type": "string"
-          },
-          "role": {
-            "description": "`writer` for the node this Store's current writer authority runs, otherwise `replica`.",
-            "type": "string"
-          },
-          "started_at": {
-            "description": "Epoch seconds the node started.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint64",
-              "representation": "json-integer-token"
-            }
-          },
-          "state": {
-            "description": "`live` (lease unexpired), `lost` (expired without release) or `stopped` (released).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "node_id",
-          "started_at",
-          "last_seen_at",
-          "state",
-          "role"
-        ],
-        "type": "object"
-      },
       "ObservationUsageView": {
         "description": "An authoritative dated observation total. Decimal strings preserve exact numeric values\nin clients whose JSON number representation cannot represent every integer or decimal.",
         "properties": {
@@ -6264,7 +6175,7 @@
         "type": "object"
       },
       "RecordsSource": {
-        "description": "Who answered a `/records` read. Records are per node: `/info.nodes` lists every node.",
+        "description": "Who answered a `/records` read. Records are per node: the `core/process` view `nodes` lists every node.",
         "properties": {
           "deployment_id": {
             "description": "`dep_` + 32 hex; null before the node has published its identity.",
@@ -6688,47 +6599,6 @@
         },
         "required": [
           "backup_ref"
-        ],
-        "type": "object"
-      },
-      "TopologyInfo": {
-        "description": "Pool/model/provider counts (`InfoView.topology`).",
-        "properties": {
-          "models": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          },
-          "pools": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          },
-          "providers": {
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer",
-            "x-busbar-exact-number": {
-              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
-              "integer_format": "uint",
-              "representation": "json-integer-token"
-            }
-          }
-        },
-        "required": [
-          "pools",
-          "models",
-          "providers"
         ],
         "type": "object"
       },
@@ -19241,7 +19111,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Version, compiled-in plugin proof, uptime, topology",
+        "summary": "Node identity: version, deployment, node, incarnation, warnings",
         "x-busbar-required-scope": "read-only",
         "x-busbar-verb": "get_info"
       }
@@ -21211,7 +21081,7 @@
     },
     "/api/v1/admin/kinds": {
       "get": {
-        "description": "One row per kind: the seven engine kinds (one per registered plane) and `core`, core's own subsystems. `category` is the engine kind; `kind` is the id a client routes on. `instance_count` counts the running instances; `views` and `record_attributes` are on the row when every instance declares the same descriptors (`descriptors_uniform`). The ETag is `/info.kinds_revision`. Pages with `cursor` and `limit`.",
+        "description": "One row per kind: the seven engine kinds (one per registered plane) and `core`, core's own subsystems. `category` is the engine kind; `kind` is the id a client routes on. `instance_count` counts the running instances; `views` and `record_attributes` are on the row when every instance declares the same descriptors (`descriptors_uniform`). The ETag moves whenever a kind or an instance is added, removed or reconfigured. Pages with `cursor` and `limit`.",
         "operationId": "GetKinds",
         "parameters": [
           {
@@ -25638,7 +25508,7 @@
     },
     "/api/v1/admin/records": {
       "get": {
-        "description": "A read-time projection of this node's sealed per-unit audit records, oldest first. `next_cursor` is always a string; `complete: true` means caught up. With no cursor the feed starts at the oldest retained record. A request scans at most 10000 sealed records, so a filtered page may be short or empty with a cursor that continues. Records are per node: `/info.nodes` lists every node. Spend is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is never posture-gated.",
+        "description": "A read-time projection of this node's sealed per-unit audit records, oldest first. `next_cursor` is always a string; `complete: true` means caught up. With no cursor the feed starts at the oldest retained record. A request scans at most 10000 sealed records, so a filtered page may be short or empty with a cursor that continues. Records are per node: the `core/process` view `nodes` lists every node. Spend is priced at read by the rule `GET /usage` uses. A read: it mutates nothing and is never posture-gated.",
         "operationId": "GetRecords",
         "parameters": [
           {

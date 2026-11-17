@@ -40,7 +40,7 @@ pub struct RecordsPage {
     pub complete: bool,
 }
 
-/// Who answered a `/records` read. Records are per node: `/info.nodes` lists every node.
+/// Who answered a `/records` read. Records are per node: the `core/process` view `nodes` lists every node.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct RecordsSource {
