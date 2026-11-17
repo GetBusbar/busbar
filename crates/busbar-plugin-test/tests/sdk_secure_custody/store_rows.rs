@@ -20,6 +20,13 @@ impl Writer for RowObserver {
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), Full> {
         unreachable!()
     }
+    fn put_u32s(
+        &mut self,
+        _: u16,
+        _: impl FnOnce(&mut busbar_plugin_abi::records::U32s<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        unreachable!()
+    }
     fn put_pod<T: Pod>(&mut self, _: u16, _: &T) -> Result<(), Full> {
         unreachable!()
     }
