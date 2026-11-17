@@ -18,6 +18,51 @@ use core::cell::Cell;
 
 std::thread_local! {
     static OWNER: Cell<u32> = const { Cell::new(u32::MAX) };
+    static PURE: Cell<bool> = const { Cell::new(false) };
+    static PURE_VIOLATION: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn pure() -> bool {
+    PURE.with(Cell::get)
+}
+
+/// Pure selection has no Host service authority. Buffer growth is only output allocation.
+/// This is entry-local enforcement, not a sandbox against a malicious native plugin.
+pub(crate) struct Pure {
+    active: bool,
+    violation: bool,
+}
+
+impl Pure {
+    pub(crate) fn enter() -> Self {
+        Self {
+            active: PURE.with(|p| p.replace(true)),
+            violation: PURE_VIOLATION.with(|v| v.replace(false)),
+        }
+    }
+}
+
+impl Pure {
+    pub(crate) fn violated(&self) -> bool {
+        PURE_VIOLATION.with(Cell::get)
+    }
+}
+
+/// Mark an attempted host service so a selector cannot succeed after ignoring the denial.
+pub(crate) fn deny_service() -> bool {
+    if pure() {
+        PURE_VIOLATION.with(|v| v.set(true));
+        true
+    } else {
+        false
+    }
+}
+
+impl Drop for Pure {
+    fn drop(&mut self) {
+        PURE.with(|p| p.set(self.active));
+        PURE_VIOLATION.with(|v| v.set(self.violation || (self.active && v.get())));
+    }
 }
 
 /// The slot of the entry running on this thread, or None outside an entry.
@@ -81,8 +126,10 @@ mod pure_tests {
                 assert_eq!(crate::host_side::host_vt::vt::now(), 0);
                 assert_eq!(crate::host_side::host_vt::vt::mono(), 0);
                 assert_eq!(crate::host_side::host_vt::vt::log_level(), 0);
+                assert!(_inner.violated());
             }
             assert!(pure());
+            assert!(_outer.violated());
             panic!("selector unwind");
         });
         assert!(result.is_err());
