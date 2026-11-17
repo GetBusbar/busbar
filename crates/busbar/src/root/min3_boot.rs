@@ -1920,6 +1920,18 @@ pub(super) async fn finish_with_store(
         seat,
         probes: Mutex::default(),
     };
+    // LEGACY-KEYFILE-MARKER r2 §3: before any converting open, hand the registry the plan's side-table
+    // marks; the loader checks each against the image's D_SECRET_PATH and writes `$migrated` into the
+    // bag of that one open only.
+    let legacy_marks = if converting {
+        super::migrate::legacy_marks()?
+    } else {
+        Vec::new()
+    };
+    for (name, pointers) in &legacy_marks {
+        let pointers: Vec<&str> = pointers.iter().map(String::as_str).collect();
+        built.registry.mark_legacy(name, &pointers);
+    }
     let mut opened = leases.opened;
     let mut opened_auth = Vec::new();
     let mut export_doors = Vec::new();
@@ -2035,6 +2047,13 @@ pub(super) async fn finish_with_store(
                 .ok_or_else(|| {
                     format!("CONFIG: instance {index} did not settle its converting CONFIG")
                 })?;
+            if let Some((_, marked)) = legacy_marks
+                .iter()
+                .find(|(name, _)| instance.kind == KindCode::Auth && *name == instance.name)
+            {
+                guard_legacy_marks(instance, &described, marked, &answer, &candidate_secrets)
+                    .await?;
+            }
             settled.push(settlement::answer(
                 u32::try_from(index).map_err(|_| "CONFIG: too many configured instances")?,
                 instance,
@@ -2328,6 +2347,69 @@ pub(crate) mod transports;
 
 #[path = "min3_settled.rs"]
 mod settlement;
+
+/// LEGACY-KEYFILE-MARKER r2 §5/§6 at step 5, for an auth instance the plan marked: each marked slot's
+/// original reference is resolved in memory (never logged), the leak guard and B-S2 run over the
+/// settled bag, and an instance that gave no settled answer is WARNed (A-M1: only then).
+async fn guard_legacy_marks(
+    instance: &Configured,
+    described: &busbar_plugin_loader::instance::Described,
+    marked: &[String],
+    answer: &busbar_plugin_loader::instance::Settled,
+    secrets: &super::min3_candidate_secrets::CandidateSecrets,
+) -> Result<(), String> {
+    use busbar_contract::json;
+    let shown = format!("auth.{}", instance.name);
+    let bound = json::parse_value(&instance.config)
+        .map_err(|_| format!("CONFIG: `{shown}`: its bound configuration is not JSON"))?;
+    let settled = json::parse_value(answer.config_json.as_slice())
+        .map_err(|_| format!("CONFIG: `{shown}`: its settled configuration is not JSON"))?;
+    let mut originals = std::collections::BTreeMap::new();
+    for pointer in marked {
+        let Some(slot) = settlement::at(&bound, pointer) else {
+            continue;
+        };
+        let text = json::to_string(slot)
+            .map_err(|_| format!("CONFIG: `{shown}`: `{pointer}` cannot be read"))?;
+        let resolver = Arc::clone(secrets.resolver());
+        let sugars = secrets.sugars().clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            let mut reader = json::Deserializer::from_str(&text);
+            let reference: busbar_contract::secret_ref::SecretRef =
+                busbar_contract::secret_ref::context::deserialize(&mut reader, &sugars).ok()?;
+            let held =
+                busbar_contract::secret::SecretResolve::resolve_string(&*resolver, &reference)
+                    .ok()?;
+            let seal = busbar_kernel::seal::lend();
+            Some(held.expose(&seal).trim_end_matches(['\r', '\n']).to_owned())
+        })
+        .await
+        .ok()
+        .flatten();
+        originals.insert(pointer.clone(), resolved);
+    }
+    let patterns: Vec<&str> = described
+        .paths(busbar_plugin_abi::records::tag::D_SECRET_PATH)
+        .collect();
+    settlement::guard_marked(
+        &shown,
+        &bound,
+        &settled,
+        &patterns,
+        marked,
+        &|pointer| originals.get(pointer).cloned().flatten(),
+        &|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file()),
+    )?;
+    if !answer.answered {
+        for pointer in marked {
+            tracing::warn!(
+                "`{shown}`: a 1.5.5 credential at `{pointer}` was kept as written; if it names a \
+                 key file, write `{{file: <path>}}`"
+            );
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "tests/fixture_bootstrap.rs"]

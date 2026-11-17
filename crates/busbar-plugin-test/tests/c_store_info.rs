@@ -27,7 +27,7 @@ use crate::min3_store::{
 
 #[cfg(feature = "test-seal")]
 #[test]
-fn typed_store_conversion_requires_and_retains_settled_config() {
+fn typed_store_conversion_settles_an_unchanged_bag_and_retains_settled_config() {
     use busbar_plugin_test::store::{StoreCase, StoreHarness};
     use busbar_plugin_test::suites::harness::OpenPurpose;
 
@@ -35,10 +35,16 @@ fn typed_store_conversion_requires_and_retains_settled_config() {
     let current = StoreCase::new("current", b"{}".to_vec());
     drop(h.open(&current).expect("canonical open needs no CONFIG"));
     let absent = StoreCase::new("missing-config", b"{}".to_vec());
-    assert!(
-        h.open_converting(&absent).is_err(),
-        "conversion requires CONFIG"
+    // #432: a converting open with no CONFIG answer is "unchanged"; core settles the bag as bound.
+    drop(
+        h.open_converting(&absent)
+            .expect("a converting open with no CONFIG is unchanged"),
     );
+    let unchanged = h
+        .harness()
+        .settled("missing-config")
+        .expect("core settles the unchanged bag");
+    assert_eq!(unchanged.config_json.as_slice(), b"{}");
     let converting = StoreCase::new("converted", br#"{"settle":true}"#.to_vec());
     drop(
         h.open_converting(&converting)

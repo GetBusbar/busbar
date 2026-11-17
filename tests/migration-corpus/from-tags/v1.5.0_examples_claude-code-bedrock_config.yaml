@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Matthew Jackson
+#
 # Demo: Claude Code (Anthropic protocol) → Busbar → Amazon Nova on Bedrock.
 # The agent speaks Anthropic; Busbar translates to Bedrock Converse and back.
 listen: "127.0.0.1:8080"

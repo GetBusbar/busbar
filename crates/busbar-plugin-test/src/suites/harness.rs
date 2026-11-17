@@ -968,7 +968,7 @@ impl Harness {
         self.open_spec(&self.spec(name, config))
     }
 
-    /// Open an unstamped legacy bag; CONFIG is required even when its contents are unchanged.
+    /// Open an unstamped legacy bag. No CONFIG answer means unchanged: core settles the bag as bound (#432).
     pub fn open_converting(&self, name: &str, config: &[u8]) -> Result<OpenedPort, OpenError> {
         let mut spec = self.spec(name, config);
         spec.purpose = OpenPurpose::ConvertUnstamped;
@@ -1076,6 +1076,13 @@ impl Harness {
     /// The settled answer of instance `name`'s last `open`, once (`Registry::take_settled`).
     pub fn settled(&self, name: &str) -> Option<Settled> {
         self.registry.take_settled(name)
+    }
+
+    /// Mark instance `name`'s next (converting) open as carrying 1.5.5 values at `pointers`, as core's migration
+    /// plan does (`Registry::mark_legacy`): the open sees `"$migrated": {"legacy": [..]}` in its bag, and the
+    /// settled answer is stripped of it.
+    pub fn mark_legacy(&self, name: &str, pointers: &[&str]) {
+        self.registry.mark_legacy(name, pointers);
     }
 
     /// Every line the plugin logged since the harness was built, in order.
