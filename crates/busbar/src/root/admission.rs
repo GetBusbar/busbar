@@ -337,7 +337,7 @@ fn inspect_with_policy(
     // IF r29 l.2764: a native image's authoritative schema is the D_SCHEMA its describe answers, held to core's
     // D_SCHEMA validator. A trusted native candidate is admitted and described (the loader's one admission path),
     // so the inspected schema is its own and a refused describe is the inspect's refusal (#442).
-    if !matches!(judged, Judged::Rejected { .. })
+    if loads_on_inspect(&judged)
         && crate::root::loader::pack_native::is_native(&unpacked.lib_bytes)
             .map_err(Refusal::Validation)?
     {
@@ -594,5 +594,65 @@ mod store_overlay_management {
             .await
             .unwrap();
         assert!(store.read_bytes_async().await.unwrap().is_some());
+    }
+}
+
+/// Which verdicts an inspection may load (dlopen and describe) to read a native image's D_SCHEMA.
+fn loads_on_inspect(judged: &Judged) -> bool {
+    !matches!(judged, Judged::Rejected { .. })
+}
+
+/// DES-443 H1: inspect loads only a Trusted candidate. An operator opt-in (Allowed) or a refused one is shown from
+/// its manifest alone and never loaded, so a read-only preview never executes an untrusted image.
+#[cfg(test)]
+mod inspect_tests {
+    use super::*;
+
+    fn bomb_tarball() -> (Vec<u8>, String) {
+        let path = crate::root::test_plugins::native_schema_bomb_path().unwrap_or_else(|| {
+            crate::root::test_plugins::missing(
+                "native_schema_bomb",
+                crate::root::test_plugins::BUILD_LOADER_EXAMPLES,
+            )
+        });
+        let manifest = crate::root::test_plugins::native_manifest("store", &path, "acme");
+        let name = manifest.name.clone();
+        let lib = std::fs::read(&path).expect("the bomb image reads");
+        let tarball = crate::root::loader::tarball::package(&manifest, "lib.so", &lib)
+            .expect("the unsigned bomb packs");
+        (tarball, name)
+    }
+
+    #[test]
+    fn only_a_trusted_verdict_loads_on_inspect() {
+        assert!(loads_on_inspect(&Judged::Trusted {
+            publisher: "acme".into()
+        }));
+        assert!(!loads_on_inspect(&Judged::Allowed));
+        assert!(!loads_on_inspect(&Judged::Rejected {
+            reason: "unsigned".into()
+        }));
+    }
+
+    #[test]
+    fn an_allowed_candidate_is_shown_from_its_manifest_and_never_loaded() {
+        let (tarball, _) = bomb_tarball();
+        let policy = TrustPolicy {
+            allow_untrusted: true,
+            ..TrustPolicy::default()
+        };
+        let (stated, judged, _) = inspect_with_policy(&tarball, &policy)
+            .expect("an allowed image inspects from its manifest; its D_SCHEMA is never read");
+        assert!(matches!(judged, Judged::Allowed), "{judged:?}");
+        assert!(stated.settings_schema.is_none());
+    }
+
+    #[test]
+    fn a_rejected_candidate_is_shown_from_its_manifest_and_never_loaded() {
+        let (tarball, _) = bomb_tarball();
+        let (stated, judged, _) = inspect_with_policy(&tarball, &TrustPolicy::default())
+            .expect("a rejected image inspects from its manifest");
+        assert!(matches!(judged, Judged::Rejected { .. }), "{judged:?}");
+        assert!(stated.settings_schema.is_none());
     }
 }
