@@ -1059,7 +1059,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1672,7 +1672,7 @@ async fn answer_over_counts(
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
         "models": {"m": {"provider": "wire"}},
         "rate_card": one_lane_rates(),
-        "auth": {"chain": [], "admin_auth": []},
+        "auth": {"chain": []},
         "store": {"module": module, "settings": settings},
         "advanced": {},
     }), &crate::root::boot::axis_test_grammar())
