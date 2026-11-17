@@ -1,5 +1,43 @@
 use super::*;
 
+#[test]
+fn current_credential_causes_survive_policy_without_becoming_quota_or_route_errors() {
+    use crate::governance::current_credential::CurrentCredentialRefusal as Cause;
+    for cause in [
+        Cause::SigningUnavailable,
+        Cause::Expired,
+        Cause::AudienceMismatch,
+        Cause::UntrustedSigner,
+        Cause::Revoked,
+        Cause::SubjectHeld,
+        Cause::MissingKey,
+        Cause::KeyExpired,
+        Cause::DisabledKey,
+        Cause::RotatedKey,
+        Cause::DeletedKey,
+    ] {
+        let failure = SelectedPolicyRefusal::from(cause);
+        assert!(
+            matches!(failure, SelectedPolicyRefusal::CurrentAuthority(actual) if actual == cause)
+        );
+        if matches!(cause, Cause::Expired | Cause::KeyExpired) {
+            assert_eq!(
+                cause.auth_code(),
+                Some(busbar_plugin_abi::kinds::auth::auth::EXPIRED)
+            );
+        } else {
+            assert_eq!(
+                cause.auth_code(),
+                Some(busbar_plugin_abi::kinds::auth::auth::BAD_CREDENTIAL)
+            );
+        }
+    }
+    assert_eq!(
+        SelectedPolicyRefusal::from(Cause::ForeignAuthority),
+        SelectedPolicyRefusal::InvalidBinding
+    );
+}
+
 #[tokio::test]
 async fn initial_install_requires_the_exact_unpublished_app_and_shared_governor() {
     let groups = groups(2);
@@ -186,14 +224,18 @@ fn unlabelled_and_nonmatching_targets_still_require_an_enabled_current_chain() {
         .unwrap();
     assert!(matches!(
         disabled.applicable_rows(&key, "p", None),
-        Err(SelectedPolicyRefusal::CurrentAuthority)
+        Err(SelectedPolicyRefusal::CurrentGroup(
+            busbar_contract::caps::ReasonCode::GroupFrozen
+        ))
     ));
     let removed = compiled(&BTreeMap::new(), Some(&disabled))
         .activate(Some(&disabled), 3, 12)
         .unwrap();
     assert!(matches!(
         removed.applicable_rows(&key, "p", None),
-        Err(SelectedPolicyRefusal::CurrentAuthority)
+        Err(SelectedPolicyRefusal::CurrentGroup(
+            busbar_contract::caps::ReasonCode::ScopeDenied
+        ))
     ));
     assert_eq!(
         key.group.as_deref(),
