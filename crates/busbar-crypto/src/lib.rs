@@ -141,7 +141,7 @@ pub(crate) fn map(e: b::Error) -> Error {
     }
 }
 
-/// The module identity for `/healthz` `crypto_module` and the boot log.
+/// The module identity for `--version`, the boot log and `core/process` `state.crypto.module`.
 #[must_use]
 pub fn module_version() -> &'static str {
     b::module_version()

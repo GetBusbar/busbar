@@ -53,7 +53,8 @@ pub const API: u32 = 3;
 /// facade's contract, so none admits by omission. The software backend admits them.
 pub const EXTERNAL_PLUGINS: bool = true;
 
-/// This backend's name: `[a-z0-9-]`, 1..=8 bytes. Shown in `--version`, `/healthz` and the audit stamp.
+/// This backend's name: `[a-z0-9-]`, 1..=8 bytes. Shown in `--version`, the boot log, `core/process`
+/// `state.crypto.backend` and the audit stamp.
 pub const NAME: &str = "software";
 
 /// A backend failure, as a plain value. `busbar-crypto` maps it with an exhaustive match.
@@ -78,7 +79,7 @@ pub enum Error {
     ProviderUnavailable,
 }
 
-/// The module identity: `/healthz` `crypto_module` and the boot log.
+/// The module identity: `--version`, the boot log and `core/process` `state.crypto.module`.
 #[must_use]
 pub fn module_version() -> &'static str {
     concat!("software ", env!("CARGO_PKG_VERSION"))
