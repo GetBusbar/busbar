@@ -307,3 +307,34 @@ fn a_rootless_registration_seeds_no_configured_approval() {
     .expect("parses");
     assert_eq!(sealed.approved.len(), 1);
 }
+
+/// DES-QE-PLANE-ROOT r2 (review A F2): the legacy trust section does NOT judge a `root` pin's key as an Ed25519 key at
+/// load. `root` means "needs key material", never its form: a `local_program` pin is `root && !peer_key` and its key is
+/// a command path. The plane-root key check lives in `plane_book::approval_entry` (TRUST_APPROVAL) only.
+#[test]
+fn legacy_root_pin_key_text_is_not_judged_at_load() {
+    const LOCAL: &[PinMechanismDecl] = &[PinMechanismDecl {
+        token: "local_program",
+        root: true,
+        peer_key: false,
+    }];
+    let keys: Vec<TrustKeyDecl> = KEYS
+        .iter()
+        .map(|k| TrustKeyDecl {
+            mechanisms: if matches!(k.role, TrustRole::Pin) {
+                LOCAL
+            } else {
+                k.mechanisms
+            },
+            ..*k
+        })
+        .collect();
+    let e = entry("anchor: { mechanism: local_program, key: /usr/local/bin/mcp-server }");
+    let parsed =
+        parse_entry("`bays.dock`", &e, &keys).expect("a command path is a legacy root key");
+    assert_eq!(
+        parsed.pin.and_then(|p| p.key).as_deref(),
+        Some("/usr/local/bin/mcp-server")
+    );
+    assert_eq!(judge_entry("`bays.dock`", &e, &keys), Ok(()));
+}
