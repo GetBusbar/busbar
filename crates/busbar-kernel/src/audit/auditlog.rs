@@ -25,6 +25,10 @@ pub(crate) const KIND_ID_AUDIT: u32 = 3;
 
 const ADMIN_LOG: &str = "admin";
 
+#[path = "native_refusal.rs"]
+mod native_refusal;
+pub use native_refusal::{record_native_refusal, NativeRefusalAudit};
+
 const AUDIT_FRAMING: Framing = Framing::PipeSeparated;
 const AUDIT_DIGESTS_SCOPE: bool = false;
 
