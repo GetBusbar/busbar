@@ -3,7 +3,9 @@
 
 # The busbar audit link line, `busbar.audit.link.v1`
 
-<!-- docs-truth: #315 - no non-test caller of AuditChain::link on dev and record.rs seals every record as digest v7; busbar-audit-verify does not verify link lines or stamps. Confirm at the release-candidate pass. -->
+The offline verifier supports direct Bootstrap-signed pages and breaks under the explicit
+trust requirements in [audit-verify.md](audit-verify.md). Delegated authority proof remains
+unsupported by that tool; a certificate or unsigned WAL position alone is insufficient.
 
 The link line (journal tag `audit.v8`) is the audit line of SEALING-FIX: it is
 linked to its predecessor by a fingerprint and carries no signature of its own.
@@ -38,6 +40,15 @@ then the bytes; a number is its eight big-endian bytes):
 
 The content comes first so it can be hashed before the chain is read; only the
 last three fields are absorbed in chain order.
+
+The following suffix table is embedded by the offline verifier after the v7 content
+fields, including the optional records tail when present:
+
+| Position | Field | Kind |
+|---|---|---|
+| 1 | `linked_ms` | number |
+| 2 | `seq` | number |
+| 3 | `prev_hash` | bytes32 |
 
 | Kind | Framing | Published as |
 |---|---|---|
