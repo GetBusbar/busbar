@@ -439,14 +439,23 @@ impl Drop for PhysicalConnection {
 }
 
 fn head_size(head: &Head) -> Option<usize> {
+    // Retain allocation debt, including unused capacity and the header descriptor array.
+    // Logical lengths alone would refund backing that this immutable Head still owns.
     let mut bytes = head
         .method
-        .len()
-        .checked_add(head.target.len())?
-        .checked_add(head.authority.len())?
-        .checked_add(head.query.as_ref().map_or(0, String::len))?;
+        .capacity()
+        .checked_add(head.target.capacity())?
+        .checked_add(head.authority.capacity())?
+        .checked_add(head.query.as_ref().map_or(0, String::capacity))?
+        .checked_add(
+            head.fields
+                .capacity()
+                .checked_mul(std::mem::size_of::<(String, Vec<u8>)>())?,
+        )?;
     for (name, value) in &head.fields {
-        bytes = bytes.checked_add(name.len())?.checked_add(value.len())?;
+        bytes = bytes
+            .checked_add(name.capacity())?
+            .checked_add(value.capacity())?;
     }
     Some(bytes)
 }

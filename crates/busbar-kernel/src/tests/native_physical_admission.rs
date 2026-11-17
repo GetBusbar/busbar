@@ -517,7 +517,12 @@ fn native_physical_head_charges_unused_descriptor_backing() {
     let mut original = head("/one");
     original.fields = Vec::with_capacity(8);
     assert!(matches!(
-        conn.head(1, original, f.budget.try_enter(AdmissionClass::Data).unwrap(), None),
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
         Err(ArrivalRefusal::Capacity)
     ));
     assert_eq!(f.budget.used(), (0, 0));
@@ -535,7 +540,12 @@ fn native_physical_head_charges_spare_string_backing() {
     original.authority = String::with_capacity(256);
     original.authority.push_str("a");
     assert!(matches!(
-        conn.head(1, original, f.budget.try_enter(AdmissionClass::Data).unwrap(), None),
+        conn.head(
+            1,
+            original,
+            f.budget.try_enter(AdmissionClass::Data).unwrap(),
+            None
+        ),
         Err(ArrivalRefusal::Capacity)
     ));
     assert_eq!(f.budget.used(), (0, 0));
