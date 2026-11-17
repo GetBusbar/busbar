@@ -266,6 +266,43 @@ async fn absent_epoch_is_written_once_and_domain_refusal_does_not_advance_it() {
 }
 
 #[tokio::test]
+async fn concurrent_first_writers_predicate_the_absent_epoch() {
+    let f = Fixture::new().await;
+    f.backend.arm.store(BEFORE_COMMIT, Ordering::SeqCst);
+    let (group, subject) = tokio::join!(f.create(dir::GROUP), async {
+        f.backend.arrived().await;
+        let subject = f.create(dir::SUBJECT).await;
+        f.backend.resume.notify_one();
+        subject
+    });
+    assert!(f.row(&store::record_key(T_GROUP, &group)).await.is_some());
+    assert!(f
+        .row(&store::record_key(T_SUBJECT, &subject))
+        .await
+        .is_some());
+    assert_eq!(f.row(b"E").await, Some(2u64.to_be_bytes().to_vec()));
+}
+
+#[tokio::test]
+async fn guard_release_preserves_directory_epoch() {
+    let f = Fixture::new().await;
+    f.create(dir::SUBJECT).await;
+    ops::release(
+        &Cx {
+            store: &f.core,
+            inst: &f.instance,
+            now: 1,
+            events: &LogEvents,
+        },
+        60,
+        "admin",
+    )
+    .await
+    .expect("guard release");
+    assert_eq!(f.row(b"E").await, Some(1u64.to_be_bytes().to_vec()));
+}
+
+#[tokio::test]
 async fn malformed_or_exhausted_epoch_refuses_without_domain_effects() {
     for value in [vec![0; 7], vec![0; 9], u64::MAX.to_be_bytes().to_vec()] {
         let f = Fixture::new().await;
