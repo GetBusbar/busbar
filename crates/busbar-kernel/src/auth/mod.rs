@@ -309,6 +309,19 @@ impl PendingClaim {
         }
     }
 
+    pub async fn complete_admin_classified(
+        &self,
+    ) -> Result<native_admin::ExecutionAdmission, native_admin::AdminCompletionRefused> {
+        match &self.0 {
+            PendingKind::Native(pending) => pending.complete_classified().await,
+            PendingKind::Legacy { claim, gov } => claim
+                .win(gov.as_deref())
+                .await
+                .then(native_admin::ExecutionAdmission::legacy)
+                .ok_or(native_admin::AdminCompletionRefused::Unavailable),
+        }
+    }
+
     #[must_use]
     pub(crate) fn win_now(&self) -> bool {
         futures::executor::block_on(self.win())
@@ -2691,10 +2704,19 @@ pub(crate) async fn auth_middleware(
             *req.body_mut() = Body::from(original.body_bytes());
             if admin_door_admits(&verdict.door, req.method().as_str(), target) {
                 if let Some(pending) = verdict.claim {
-                    let execution = pending
-                        .complete_admin()
-                        .await
-                        .map_err(|_| admin_unauthorized_response())?;
+                    let execution =
+                        pending
+                            .complete_admin_classified()
+                            .await
+                            .map_err(|error| match error {
+                                native_admin::AdminCompletionRefused::ReplayDenied(_) => {
+                                    admin_unauthorized_response()
+                                }
+                                native_admin::AdminCompletionRefused::ReplayUnknown(_)
+                                | native_admin::AdminCompletionRefused::Unavailable => {
+                                    admin_unavailable_response()
+                                }
+                            })?;
                     let execution = std::sync::Arc::new(execution);
                     let physical = std::sync::Arc::new(
                         physical_pending
