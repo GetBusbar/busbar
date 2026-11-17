@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::response_delivery::CarrierProgressReader;
+use crate::storage::StorageSource;
 
 /// Which way bytes are moving.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -464,6 +465,9 @@ pub struct ConnectionIo {
     pub io: Box<dyn RawIo>,
     /// Observations maintained by that same carrier's private write producer.
     pub progress: Arc<dyn CarrierProgressReader>,
+    /// The trusted listener/origin's actual shared storage account; holding it reserves no bytes.
+    /// Each security or framing allocation must acquire its real backing credit before allocation.
+    pub storage: StorageSource,
 }
 
 impl fmt::Debug for ConnectionIo {
@@ -492,6 +496,9 @@ pub struct SecuredIo {
     /// A TLS implementation supplies its post-handshake plaintext reader, not the raw
     /// ciphertext reader received by [`ConnectionSecurity::wrap`].
     pub progress: Arc<dyn CarrierProgressReader>,
+    /// The original trusted storage origin, preserved across the security wrapper.
+    /// The secured stream privately retains credits for its own separately allocated backing.
+    pub storage: StorageSource,
 }
 
 impl fmt::Debug for SecuredIo {
@@ -509,6 +516,7 @@ impl SecuredIo {
             io: io.io,
             peer_certificate: Box::default(),
             progress: io.progress,
+            storage: io.storage,
         }
     }
 }

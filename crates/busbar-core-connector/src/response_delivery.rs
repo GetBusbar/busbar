@@ -14,6 +14,7 @@ use busbar_contract::response_delivery::{
     CarrierProgress, CompletionRequirement, DeliveryReader, DeliverySnapshot, DeliveryTerminal,
     ResponseKey, ResponseStop, WireClass,
 };
+use busbar_contract::storage::{StorageCredit, StorageSource};
 use futures::task::AtomicWaker;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -245,6 +246,9 @@ pub struct DeliveryLedger {
     spans: VecDeque<Span>,
     entries: Vec<Entry>,
     scratch: Vec<Shadow>,
+    // Declaration order is intentional: all three backing arrays drop before their byte credit.
+    // Fixed self-owning control/Arc layouts retain the explicitly named storage-contract exclusion.
+    storage: StorageCredit,
     slots: Arc<AtomicUsize>,
     wake: Arc<AtomicWaker>,
     max_spans: usize,
@@ -263,6 +267,7 @@ impl fmt::Debug for DeliveryLedger {
         f.debug_struct("DeliveryLedger")
             .field("pending_spans", &self.spans.len())
             .field("live_responses", &self.entries.len())
+            .field("reserved_storage_bytes", &self.storage.len())
             .field("retired", &self.retired)
             .finish_non_exhaustive()
     }
@@ -282,20 +287,48 @@ impl PreparedBatch<'_> {
 }
 
 impl DeliveryLedger {
+    /// Quote requested separately allocated backing using the actual private element layouts.
+    ///
+    /// This covers the retained span deque and entry/scratch vectors, including spare capacity.
+    /// The admitted fixed control-cell count is separate. Self-owning Arc/control layouts and
+    /// allocator overhead are outside the shared storage contract; this is not an RSS estimate.
+    /// A quote alone reserves nothing: the actual StorageSource must fund it before allocation.
+    pub fn required_storage(
+        max_pending_spans: NonZeroUsize,
+        max_live_responses: NonZeroUsize,
+    ) -> Result<usize, ResponseStop> {
+        let spans = max_pending_spans
+            .get()
+            .checked_mul(std::mem::size_of::<Span>());
+        let responses = std::mem::size_of::<Entry>()
+            .checked_add(std::mem::size_of::<Shadow>())
+            .and_then(|bytes| bytes.checked_mul(max_live_responses.get()));
+        spans
+            .and_then(|bytes| responses.and_then(|other| bytes.checked_add(other)))
+            .ok_or(ResponseStop::Capacity)
+    }
+
     /// Allocate finite metadata storage from real admission allowances, without a default cap.
     ///
     /// The runtime separately reserves callback staging bytes/descriptors before copying callback
     /// output. Both staging and this ledger's simultaneous debt must fit its admitted allowance.
     pub fn new(
+        source: &StorageSource,
         max_pending_spans: NonZeroUsize,
         max_live_responses: NonZeroUsize,
     ) -> Result<Self, ResponseStop> {
+        let bytes = Self::required_storage(max_pending_spans, max_live_responses)?;
         let max_spans = max_pending_spans.get();
         let max_responses = max_live_responses.get();
         let max_events = max_responses
             .checked_mul(4)
             .and_then(|count| count.checked_add(max_spans))
             .ok_or(ResponseStop::Capacity)?;
+        // This binding precedes every array: on any allocation error the allocated locals drop
+        // first, then credit. Moving into Self preserves the same backing-before-credit order.
+        let storage = source
+            .try_reserve(bytes)
+            .map_err(|_| ResponseStop::Capacity)?;
         let mut spans = VecDeque::new();
         spans
             .try_reserve_exact(max_spans)
@@ -312,6 +345,7 @@ impl DeliveryLedger {
             spans,
             entries,
             scratch,
+            storage,
             slots: Arc::new(AtomicUsize::new(0)),
             wake: Arc::new(AtomicWaker::new()),
             max_spans,
@@ -336,6 +370,7 @@ impl DeliveryLedger {
         let identity = (key.node, key.incarnation, key.connection_generation);
         if self.retired
             || self.poisoned
+            || self.observed.fault.is_some()
             || key.stream <= self.last_stream
             || key.connection_generation == 0
             || self.identity.is_some_and(|old| old != identity)
@@ -421,7 +456,12 @@ impl DeliveryLedger {
                     return Some(DeliveryControl::Cancel { stream, reason });
                 }
             }
-            if state.release_pending && state.snapshot.terminal.is_none() {
+            if state.release_pending
+                && state.snapshot.terminal.is_none()
+                && !self.retired
+                && !self.poisoned
+                && self.observed.fault.is_none()
+            {
                 state.release_pending = false;
                 state.released = true;
                 return Some(DeliveryControl::Release { stream });
@@ -859,7 +899,7 @@ impl DeliveryLedger {
             return Err(ResponseStop::Integrity);
         }
         drop(state);
-        self.entries.remove(index);
+        self.entries.swap_remove(index);
         Ok(())
     }
 }
