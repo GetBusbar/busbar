@@ -331,7 +331,11 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 }
 
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
+    Arc::new(move |_: &AdminRequest| {
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            door.clone(),
+        )))
+    })
 }
 
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
@@ -357,7 +361,15 @@ fn approved_under(
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    authenticate(&binding, &bindings, &mut walk)?;
+    {
+        let mut future = std::pin::pin!(authenticate(&binding, &bindings, &mut walk));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(answer) = std::future::Future::poll(future.as_mut(), &mut cx)
+        else {
+            panic!("this fixture is a ready door")
+        };
+        answer?;
+    }
     approve(&walk)
 }
 

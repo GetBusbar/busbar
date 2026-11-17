@@ -367,6 +367,16 @@ pub struct Request {
     body: SecureVec,
     now_s: u64,
 }
+impl Drop for Request {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.method.zeroize();
+        self.path.zeroize();
+        self.query.zeroize();
+        self.authority.zeroize();
+        self.peer.zeroize();
+    }
+}
 impl Request {
     pub fn new(req: &AuthIn<'_>) -> Self {
         let copy = |bytes: &[u8]| {

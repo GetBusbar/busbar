@@ -16,6 +16,60 @@ use busbar_kernel::state::App;
 
 use super::credentials::AppCredentials;
 use super::min3_auth::{AuthOwners, OpenedAuth};
+use super::min3_auth::{AuthSet, NativeChain};
+
+/// Assemble every configured native admin position before this candidate is published.
+pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(), String> {
+    let mut chains = BTreeMap::new();
+    let mut unset = BTreeSet::new();
+    for name in &app.admin_chain {
+        if name == busbar_kernel::config::KEYS_MODULE {
+            continue;
+        }
+        if auth.get(name).is_none()
+            && app.admin_modules.operator.unset(name)
+            && app
+                .identity_providers
+                .get(name)
+                .is_none_or(|cfg| cfg.token.is_none())
+        {
+            unset.insert(name.clone());
+            continue;
+        }
+        chains.insert(
+            name.clone(),
+            Arc::new(auth.operator_chain(app, epoch, &[name.as_str()])?),
+        );
+    }
+    app.native_admin = Some(Arc::new(Admin { chains, unset }));
+    Ok(())
+}
+
+struct Admin {
+    chains: BTreeMap<String, Arc<NativeChain>>,
+    unset: BTreeSet<String>,
+}
+impl busbar_kernel::auth::native_admin::NativeAdmin for Admin {
+    fn prepare<'a>(
+        &'a self,
+        name: &'a str,
+        cx: busbar_ports::CallCx,
+        request: busbar_kernel::auth::chain_run::Request,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<busbar_kernel::auth::native_admin::PreparedAnswer, busbar_ports::PortError>,
+    > {
+        Box::pin(async move {
+            if self.unset.contains(name) {
+                return Ok(busbar_kernel::auth::native_admin::PreparedAnswer::NotMine);
+            }
+            let chain = self.chains.get(name).ok_or(busbar_ports::PortError::Call(
+                busbar_plugin_abi::fail::CallError::NotDeclared,
+            ))?;
+            chain.prepare(cx, request).await
+        })
+    }
+}
 
 pub(crate) fn owners(
     app: &App,

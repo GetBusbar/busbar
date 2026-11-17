@@ -526,13 +526,38 @@ pub(crate) fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLoo
 
 #[must_use]
 pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
-    Arc::new(move |request: &super::AdminRequest| {
-        let headers: axum::http::HeaderMap = (request.headers.iter())
-            .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
-            .collect();
-        let snapshot = app.snapshot();
-        busbar_kernel::auth::admin_verdict(&snapshot, &request.method, &request.path, &headers)
-    })
+    Arc::new(
+        move |request: &super::AdminRequest| -> super::AdminDoorFuture {
+            let headers: axum::http::HeaderMap = (request.headers.iter())
+                .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
+                .collect();
+            let snapshot = app.load();
+            let original = busbar_kernel::auth::native_admin::http_request(
+                &request.method,
+                &request.path,
+                &headers,
+                &request.body,
+                busbar_kernel::store::now(),
+            );
+            // The root unit already owns this host request id; zero is never replaced by a wire value.
+            let Some(request_id) = std::num::NonZeroU64::new(request.unit) else {
+                return Box::pin(std::future::ready(
+                    busbar_kernel::auth::AdminDoor::Denied.into(),
+                ));
+            };
+            let id = busbar_kernel::state::InvocationId::from_request_id(request_id);
+            let invocation = busbar_kernel::auth::native_admin::Invocation {
+                handle: Arc::clone(&app),
+                selected: snapshot,
+                id,
+                cx: busbar_kernel::auth::admin_call_context(id),
+                request: Arc::new(original),
+            };
+            Box::pin(
+                async move { busbar_kernel::auth::admin_verdict_for(invocation, &headers).await },
+            )
+        },
+    )
 }
 
 #[must_use]

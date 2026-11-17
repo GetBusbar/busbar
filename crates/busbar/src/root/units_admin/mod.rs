@@ -1565,6 +1565,7 @@ pub(crate) struct AdminWalk {
     /// The replay claim the door's identity asks for, UNWON until every step that may still refuse
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
+    execution: Option<busbar_kernel::auth::native_admin::ExecutionAdmission>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1580,18 +1581,22 @@ impl AdminWalk {
             listed: None,
             principal: None,
             claim: None,
+            execution: None,
             answer: None,
         }
     }
 }
 
-pub(crate) type AdminDoorFn =
-    Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminVerdict + Send + Sync>;
+pub(crate) type AdminDoorFuture =
+    busbar_plugin_abi::host_side::caller::BoxFut<'static, busbar_kernel::auth::AdminVerdict>;
+pub(crate) type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> AdminDoorFuture + Send + Sync>;
 
 #[cfg(test)]
 pub(crate) fn open_door() -> AdminDoorFn {
     Arc::new(|_: &AdminRequest| {
-        busbar_kernel::auth::AdminVerdict::from(busbar_kernel::auth::AdminDoor::Open)
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            busbar_kernel::auth::AdminDoor::Open,
+        )))
     })
 }
 
@@ -1600,11 +1605,9 @@ pub(crate) fn open_door() -> AdminDoorFn {
 pub(crate) fn door_of(
     f: impl Fn(Option<&str>) -> busbar_kernel::auth::AdminDoor + Send + Sync + 'static,
 ) -> AdminDoorFn {
-    Arc::new(
-        move |request: &AdminRequest| -> busbar_kernel::auth::AdminVerdict {
-            f(request.credential.as_deref()).into()
-        },
-    )
+    Arc::new(move |request: &AdminRequest| {
+        Box::pin(std::future::ready(f(request.credential.as_deref()).into()))
+    })
 }
 
 /// A test door that identifies exactly one credential as `id` and denies everything else; the
@@ -1736,15 +1739,15 @@ pub(crate) async fn decide(
 ) -> Outcome {
     use busbar_contract::caps::StepName;
     let at = |step: StepName| move |reason: ReasonCode| Outcome::Refused(step, reason);
-    let ran = decode(walk)
-        .map_err(at(StepName::Decode))
-        .and_then(|()| {
-            authenticate(&units.admin, &units.auth_bindings, walk)
-                .map_err(at(StepName::Authenticate))
-        })
-        .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
-        .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
-        .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    let ran = match decode(walk).map_err(at(StepName::Decode)) {
+        Ok(()) => authenticate(&units.admin, &units.auth_bindings, walk)
+            .await
+            .map_err(at(StepName::Authenticate)),
+        Err(ended) => Err(ended),
+    }
+    .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
+    .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
+    .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
     let ran = match ran {
         Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
         Err(ended) => Err(ended),
@@ -1771,7 +1774,7 @@ pub(crate) fn decode(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     }
 }
 
-pub(crate) fn authenticate(
+pub(crate) async fn authenticate(
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     walk: &mut AdminWalk,
@@ -1783,10 +1786,10 @@ pub(crate) fn authenticate(
             .zip(request.credential.as_deref())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
-    let verdict = walk.admission.as_ref().map_or_else(
-        || (binding.door)(request),
-        busbar_kernel::inbound::RequestAdmission::admin_verdict,
-    );
+    let verdict = match &walk.admission {
+        Some(admission) => admission.admin_verdict(),
+        None => (binding.door)(request).await,
+    };
     walk.effect_context = Some(walk.admission.as_ref().map_or_else(
         || {
             let headers = request
@@ -1857,10 +1860,15 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             .then_some(())
             .ok_or(ReasonCode::Unauthenticated);
     }
-    match walk.claim.take() {
-        Some(pending) if !pending.win().await => Err(ReasonCode::Unauthenticated),
-        _ => Ok(()),
+    if let Some(pending) = walk.claim.take() {
+        walk.execution = Some(
+            pending
+                .complete_admin()
+                .await
+                .map_err(|()| ReasonCode::Unauthenticated)?,
+        );
     }
+    Ok(())
 }
 
 pub(crate) fn verify(walk: &mut AdminWalk, principal: &PrincipalId) -> Result<(), ReasonCode> {
