@@ -9,7 +9,7 @@ use busbar_ffi::LinkedPlugin;
 use busbar_plugin_test::suites::{
     self, AuthCase, AuthIn, Expect, MigrateExpect, Pair, PlaneCase, PlaneIn, TransportCase,
 };
-use busbar_plugin_test::FakeNeeds;
+use busbar_plugin_test::{CallCx, FakeNeeds, LoginAnswer, LoginIn, PortError};
 
 #[allow(dead_code)]
 fn surface(p: &'static LinkedPlugin) {
@@ -68,3 +68,24 @@ fn surface(p: &'static LinkedPlugin) {
 
 #[test]
 fn surface_compiles() {}
+
+#[test]
+fn auth_login_surface_compiles() {
+    // A plugin repository names the complete login call through its one test dev-dependency.
+    async fn login(
+        harness: &suites::harness::Harness,
+        cx: CallCx,
+    ) -> Result<LoginAnswer, PortError> {
+        let auth = harness.open_auth("auth", b"{}").expect("open auth");
+        auth.login(
+            cx,
+            LoginIn::Credential {
+                username: "test-user",
+                password: b"",
+            },
+        )
+        .await
+    }
+
+    let _login = login;
+}
