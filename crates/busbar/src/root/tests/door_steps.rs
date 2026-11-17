@@ -5776,6 +5776,7 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
     let plugin = load_linked::<Auth>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: std::sync::Arc::from("missing-settings-check"),
             max_inflight_cap: 1,
             sink: std::sync::Arc::new(NoSink),

@@ -1267,6 +1267,7 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
     const ARTIFACT: &[u8] = b"signed-retention-test-module";
     let key = test_key(11);
     let binding = || Bind {
+        accept: Default::default(),
         instance: "retention-policy".into(),
         max_inflight_cap: 1,
         sink: Arc::new(NoSink),

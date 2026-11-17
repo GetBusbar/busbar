@@ -41,6 +41,7 @@ fn neutral_plane_function_macro_and_loaded_rows_preserve_the_same_door_and_state
         load_linked::<Plane>(
             row,
             Bind {
+                accept: Default::default(),
                 instance: "neutral-plane-identity".into(),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
@@ -83,6 +84,7 @@ fn neutral_dropped_plane_bytes_enter_the_production_staging_path_once() {
         "neutral-plane-staged",
         &stated,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("neutral-plane-staged"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

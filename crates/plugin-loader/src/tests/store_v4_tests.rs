@@ -794,6 +794,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from("v4-cancel-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
@@ -874,6 +875,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from("v4-test"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),
@@ -986,6 +988,7 @@ mod linked {
         let plugin = load_linked::<StoreV4>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: crate::cold::store_v4::instance("v4-slow-commit"),
                 max_inflight_cap: 32,
                 sink: Arc::new(NoSink),

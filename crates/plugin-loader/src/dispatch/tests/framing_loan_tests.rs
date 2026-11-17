@@ -376,6 +376,7 @@ mod typed_transport_cancellation {
         let plugin = load_linked::<Transport>(
             &LinkedRow::of(fault_door).expect("the SDK transport Statement renders"),
             Bind {
+                accept: Default::default(),
                 instance: "typed-framing-loan-negative".into(),
                 max_inflight_cap: 4,
                 sink: Arc::new(NoSink),

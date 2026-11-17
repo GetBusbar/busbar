@@ -599,6 +599,7 @@ pub fn load_planes(
                 .sink(&instance, c.kind, metrics.clone())
                 .map_err(|e| format!("{instance}: {e}"))?;
             let bind = Bind {
+                accept: Default::default(),
                 instance: Arc::from(instance.as_str()),
                 max_inflight_cap,
                 sink: Arc::new(sink),

@@ -398,6 +398,7 @@ fn fixture_with(
         &LinkedRow::of_kind::<StoreV4>(door as busbar_contract::abi::mechanism::door::DoorFn)
             .unwrap(),
         Bind {
+            accept: Default::default(),
             instance: format!("prepared-{id}").into(),
             max_inflight_cap: 32,
             sink: Arc::new(NoSink),

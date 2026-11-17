@@ -211,6 +211,7 @@ extern "C" fn door() -> &'static Door {
 
 fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
+ accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

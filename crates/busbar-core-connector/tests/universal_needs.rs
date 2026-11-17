@@ -91,6 +91,7 @@ fn the_dispatcher() -> &'static std::sync::Arc<busbar_plugin_loader::dispatch::D
 /// The binding a door here is loaded under.
 fn bind() -> busbar_plugin_loader::dispatch::Bind {
     busbar_plugin_loader::dispatch::Bind {
+        accept: Default::default(),
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(busbar_plugin_loader::dispatch::NoSink),

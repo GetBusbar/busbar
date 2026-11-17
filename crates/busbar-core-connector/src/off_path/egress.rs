@@ -455,6 +455,7 @@ pub(crate) mod doors {
     /// A door's binding on `on`, labelled `instance`.
     pub(crate) fn bind_as(on: &Dispatcher, instance: &str) -> Bind {
         Bind {
+            accept: Default::default(),
             instance: Arc::from(instance),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),

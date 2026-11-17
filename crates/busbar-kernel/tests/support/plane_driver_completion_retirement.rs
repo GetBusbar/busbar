@@ -383,6 +383,7 @@ fn calls() -> (Arc<Calls>, Arc<Control>, usize) {
     let p = dispatch::load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "completion-retirement".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

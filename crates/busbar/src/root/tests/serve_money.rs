@@ -104,6 +104,7 @@ async fn governed_full(
                     &path,
                     &statement,
                     Bind {
+                        accept: Default::default(),
                         instance: Arc::from(variable),
                         max_inflight_cap: 1024,
                         sink: Arc::new(NoSink),

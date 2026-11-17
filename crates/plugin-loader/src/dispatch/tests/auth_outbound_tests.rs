@@ -363,6 +363,7 @@ pub(crate) fn opened() -> OutboundInstance {
     let p = load_linked::<Auth>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(Quiet),
@@ -439,6 +440,7 @@ fn open_with_names_the_plugin_error_text_when_validate_refuses() {
     let p = load_linked::<Auth>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("the-instance-refusing"),
             max_inflight_cap: 64,
             sink: Arc::new(Quiet),

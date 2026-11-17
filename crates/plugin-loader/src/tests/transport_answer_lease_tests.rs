@@ -104,6 +104,7 @@ extern "C" fn door() -> &'static Door {
 
 fn bind() -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from("the-lease-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

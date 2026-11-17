@@ -71,6 +71,7 @@ fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
     let plugin = load_linked::<Transport>(
         row,
         Bind {
+            accept: Default::default(),
             instance,
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),

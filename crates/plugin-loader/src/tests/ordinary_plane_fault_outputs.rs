@@ -75,6 +75,7 @@ fn fault_arrival_and_projection_never_copy_unjudged_output_text() {
         let p = load_linked::<Plane>(
             &LinkedRow::of(fault_door).unwrap(),
             Bind {
+                accept: Default::default(),
                 instance: format!("unjudged-{project}").into(),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),

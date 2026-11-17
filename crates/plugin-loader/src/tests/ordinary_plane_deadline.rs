@@ -23,6 +23,7 @@ fn the_plane_host_dispatcher_reports_real_deadline_without_wake() {
         let p = load_linked::<TestKind>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: format!("plane-host-wake-{missed_wake}").into(),
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),

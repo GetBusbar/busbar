@@ -173,6 +173,7 @@ fn opened(mode: &str) -> Plugin<Export> {
     let p = load_linked::<Export>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("export.ready-after-no-ticket"),
             max_inflight_cap: 4,
             sink: Arc::new(NoSink),

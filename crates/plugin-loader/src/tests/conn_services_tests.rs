@@ -246,6 +246,7 @@ fn bind_as_kind<K: crate::dispatch::Kind>(
         v,
         None,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -1426,6 +1427,7 @@ fn bound_over_needs(
         v,
         None,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -3312,6 +3314,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         v,
         None,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("the-auth-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -3653,6 +3656,7 @@ fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -
         v,
         None,
         Bind {
+            accept: Default::default(),
             instance: Arc::from(label),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -3957,6 +3961,7 @@ mod refresh_driver_generation {
             validate_door::<PlaneShaped>(door).unwrap(),
             None,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from("driver-generation"),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),

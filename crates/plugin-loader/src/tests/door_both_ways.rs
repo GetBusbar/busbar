@@ -21,6 +21,7 @@ pub(crate) struct Loaded<K: Kind> {
 
 pub(crate) fn bind(d: &Dispatcher) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from("both-ways"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

@@ -448,6 +448,7 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
     use crate::dispatch::kinds::auth::Auth;
     use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, LoadError, NoSink};
     let bind = || Bind {
+        accept: Default::default(),
         instance: Arc::from("tail-admit"),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),

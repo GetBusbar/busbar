@@ -54,6 +54,7 @@ fn ways() -> Vec<Way> {
 
 fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
+ accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),

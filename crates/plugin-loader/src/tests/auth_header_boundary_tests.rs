@@ -286,6 +286,7 @@ fn open(door: DoorFn, second: bool) -> AuthInstance {
     let plugin = load_linked::<Auth>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: SELECTED.into(),
             max_inflight_cap: 8,
             sink: sink.bind(),

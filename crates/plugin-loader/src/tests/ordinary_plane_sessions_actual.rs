@@ -176,6 +176,7 @@ fn plugin(d: &Dispatcher) -> Plugin<Plane> {
     let p = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "session-host-boundary".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -321,6 +322,7 @@ fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
         let p = load_linked::<Plane>(
             &LinkedRow::of(door).unwrap(),
             Bind {
+                accept: Default::default(),
                 instance: "public-url-boundary".into(),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),

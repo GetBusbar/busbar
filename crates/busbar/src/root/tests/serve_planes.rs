@@ -62,6 +62,7 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
             &path,
             &stated,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from(instance),
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),

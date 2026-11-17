@@ -28,6 +28,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     let plugin = load_linked::<Export>(
         &LinkedRow::of(neutral_routes::door).expect("the SDK witness descriptor"),
         Bind {
+            accept: Default::default(),
             instance: "serve-http-metrics".into(),
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),

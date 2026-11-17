@@ -118,6 +118,7 @@ fn configured_instances_read_their_own_subset_from_ready_open_extensions() {
         let plugin = load_linked::<Auth>(
             &LinkedRow::of(selected_door).unwrap(),
             Bind {
+                accept: Default::default(),
                 instance: variant.into(),
                 max_inflight_cap: 8,
                 sink: sink.bind(),
