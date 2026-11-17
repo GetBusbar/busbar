@@ -515,7 +515,7 @@ fn admin_plane_boot_guard() {
 }
 
 #[test]
-fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
+fn with_no_plane_registered_pools_is_core_and_a_plane_section_refuses_cleanly() {
     if std::env::var_os("BUSBAR_CONFIG_EMPTY_REGISTRY_CHILD").is_none() {
         let current = std::thread::current();
         let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
@@ -533,17 +533,22 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
         );
         return;
     }
-    let result =
-        busbar_contract::yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
-    let err = result.expect_err(
-        "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
-         is registered to own that section",
-    );
-    let message = err.to_string();
+    // WP1-GAP-plane-sections r3 §2.2: `pools:` is a core section (rule 1), typed with no plane
+    // registered; a section no admitted plane answers to is refused by name (rule 3).
+    let grammar = crate::config::Grammar::empty();
+    let deploy = deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\npools:\n  fast:\n    members: [m]\n",
+        &grammar,
+    )
+    .expect("the core pools: section parses with no plane registered");
+    assert!(deploy.pools.pools.contains_key("fast"));
+    let message = deploy_from_yaml_str("tools:\n  x: 1\n", &grammar)
+        .expect_err("a plane section with no plane registered is refused, not silently accepted")
+        .to_string();
     assert!(
-        message.contains("no plane is registered"),
-        "the refusal must name the actual problem (no plane registered), not merely fail some \
-         other way; got: {message}"
+        message.contains("unknown field `tools`")
+            && message.contains("no admitted plane answers to it"),
+        "the refusal must name the section no plane answers to; got: {message}"
     );
 }
 

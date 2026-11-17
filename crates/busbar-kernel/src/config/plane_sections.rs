@@ -295,32 +295,6 @@ pub fn validate_section_hooks(
     Ok(())
 }
 
-pub fn split_section_for_plane<'de, D, T>(
-    deserializer: D,
-    plane_key: &'static str,
-    validate: impl Fn(&str, &T) -> Result<(), String>,
-) -> Result<busbar_contract::section::Section<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    use serde::de::Error as _;
-    let d = crate::plane_driver::registry::plane_decl_for(plane_key).ok_or_else(|| {
-        D::Error::custom(format!(
-            "no plane is registered to own this config section (looked up by key `{plane_key}`) \
-             — this build has no plane plugin compiled in or installed, so it cannot resolve \
-             config that names a plane-owned section; install a plane plugin or remove the \
-             section from the config"
-        ))
-    })?;
-    busbar_contract::section::split_section(
-        deserializer,
-        d.config_section,
-        d.subject_noun,
-        validate,
-    )
-}
-
 pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)>;
 
