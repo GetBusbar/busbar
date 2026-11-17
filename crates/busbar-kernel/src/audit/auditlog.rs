@@ -102,6 +102,12 @@ pub struct AuditRowInput {
     pub severity: String,
     pub message: String,
     pub data: AuditData,
+    /// The caller's own `X-Request-Id`, kept beside the minted `request_id` (section 7).
+    pub client_request_id: Option<String>,
+    /// The W3C trace id the request arrived in: 32 lowercase hex digits.
+    pub trace_id: Option<String>,
+    /// The operation the request created (an `Idempotency-Key` request).
+    pub operation_id: Option<String>,
     /// The request was admitted on `If-Match: *`: a deliberately unconditional mutation.
     pub unconditional: bool,
 }
@@ -136,16 +142,17 @@ pub(crate) fn row_suffix(ts: u64, row: &AuditRowInput) -> Vec<u8> {
 /// `AuditEntry::hash`): scheme 3's fields after a 0x04 marker, `ts` being `at_ms / 1000`, then `at_ms`
 /// (8 bytes, big-endian), `client_request_id`, `trace_id`, `operation_id` and `on_behalf_of`
 /// (each framed like `request_id`), `unconditional` (one byte, 0x00 or 0x01), then `before_digest`
-/// and `after_digest` (framed like `request_id`). No request feature fills `client_request_id`,
-/// `trace_id`, `operation_id`, `on_behalf_of` or the digests yet, so every row seals them absent.
+/// and `after_digest` (framed like `request_id`). `client_request_id`, `trace_id` and `operation_id`
+/// are the request's (absent on a row no request caused); `on_behalf_of` and the digests are sealed
+/// absent until a release fills them.
 pub(crate) fn row4_suffix(at_ms: u64, row: &AuditRowInput) -> Vec<u8> {
     let mut out = vec![ROW4_SUFFIX_MARKER];
     push_row_fields(&mut out, at_ms / 1000, row);
     out.extend_from_slice(&at_ms.to_be_bytes());
-    // client_request_id, trace_id, operation_id, on_behalf_of
-    push_opt(&mut out, None);
-    push_opt(&mut out, None);
-    push_opt(&mut out, None);
+    push_opt(&mut out, row.client_request_id.as_deref());
+    push_opt(&mut out, row.trace_id.as_deref());
+    push_opt(&mut out, row.operation_id.as_deref());
+    // on_behalf_of
     push_opt(&mut out, None);
     out.push(u8::from(row.unconditional));
     // before_digest, after_digest
@@ -261,7 +268,7 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
     let severity = lossy(take_lp(&mut rest));
     let message = lossy(take_lp(&mut rest));
     let data = AuditData::from_json(&lossy(take_lp(&mut rest))).unwrap_or_default();
-    let (at_ms, unconditional) = if scheme == crate::audit_ring::AUDIT_SCHEME_ROW4 {
+    let (at_ms, correlation, unconditional) = if scheme == crate::audit_ring::AUDIT_SCHEME_ROW4 {
         let at_ms = match rest.split_first_chunk::<8>() {
             Some((at_ms, after)) => {
                 rest = after;
@@ -272,15 +279,21 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
                 None
             }
         };
-        // client_request_id, trace_id, operation_id, on_behalf_of: sealed absent by every writer so far.
-        for _ in 0..4 {
-            let _ = take_opt(&mut rest);
-        }
+        let client_request_id = take_opt(&mut rest);
+        let trace_id = take_opt(&mut rest);
+        let operation_id = take_opt(&mut rest);
+        // on_behalf_of: sealed absent by every writer so far.
+        let _ = take_opt(&mut rest);
         let unconditional = rest.first() == Some(&1);
-        (at_ms, unconditional)
+        (
+            at_ms,
+            (client_request_id, trace_id, operation_id),
+            unconditional,
+        )
     } else {
-        (None, false)
+        (None, (None, None, None), false)
     };
+    let (client_request_id, trace_id, operation_id) = correlation;
     ParsedSuffix {
         ts,
         at_ms,
@@ -299,6 +312,9 @@ pub(crate) fn parse_suffix_entry(content: &[u8]) -> ParsedSuffix {
             severity,
             message,
             data,
+            client_request_id,
+            trace_id,
+            operation_id,
             unconditional,
         },
     }
@@ -341,6 +357,9 @@ fn entry_of(
         severity: row.severity,
         message: row.message,
         data: row.data,
+        client_request_id: row.client_request_id,
+        trace_id: row.trace_id,
+        operation_id: row.operation_id,
         recorded_here,
     }
 }
@@ -905,6 +924,8 @@ pub fn scope_request_sync<T>(request: Option<Arc<AuditRequest>>, work: impl FnOn
 #[derive(Default)]
 struct RequestAudit {
     idempotency_key: Option<String>,
+    /// The operation the request created (ADMIN-API-1.6-ONE-MODEL section 6.4).
+    operation_id: Option<String>,
     /// The request was admitted on `If-Match: *`.
     unconditional: bool,
     /// Reads the config generation the request's change published; called when an applied row is
@@ -924,6 +945,12 @@ pub fn note_idempotency_key(key: &str) {
     with_context(|ctx| ctx.idempotency_key = Some(key.to_string()));
 }
 
+/// The operation the request in flight created; its rows carry its id
+/// (ADMIN-API-1.6-ONE-MODEL section 7.1).
+pub fn note_operation_id(id: &str) {
+    with_context(|ctx| ctx.operation_id = Some(id.to_string()));
+}
+
 /// The request in flight was admitted on `If-Match: *`: its rows are sealed as unconditional
 /// (ADMIN-API-1.6-ONE-MODEL section 6.2).
 pub fn note_unconditional() {
@@ -941,19 +968,28 @@ pub fn note_sections_changed(sections: Vec<String>) {
     with_context(|ctx| ctx.sections = sections);
 }
 
-/// Fill what `row` leaves unset from the request in flight: its id, its `Idempotency-Key`, whether it was
-/// admitted on `If-Match: *`, and, on an applied row only (a rejected one changed nothing), the generation and sections it changed.
+/// Fill what `row` leaves unset from the request in flight: its id, the caller's own id and trace id, its
+/// `Idempotency-Key` and the operation it created, whether it was admitted on `If-Match: *`, and, on an applied row only (a rejected one changed nothing), the generation and sections it changed.
 pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     if row.request_id.is_none() {
         row.request_id = crate::admin::gate::request_id_in_scope();
     }
+    if let Some(correlation) = crate::admin::gate::correlation_in_scope() {
+        if row.client_request_id.is_none() {
+            row.client_request_id = correlation.client_request_id;
+        }
+        if row.trace_id.is_none() {
+            row.trace_id = correlation.trace.map(|trace| trace.trace_id);
+        }
+    }
     let Some(request) = current_request() else {
         return;
     };
-    let (key, unconditional, generation, sections) = {
+    let (key, operation, unconditional, generation, sections) = {
         let ctx = request.context.lock().unwrap_or_else(|e| e.into_inner());
         (
             ctx.idempotency_key.clone(),
+            ctx.operation_id.clone(),
             ctx.unconditional,
             ctx.generation.clone(),
             ctx.sections.clone(),
@@ -962,6 +998,9 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
     row.unconditional |= unconditional;
     if row.idempotency_key.is_none() {
         row.idempotency_key = key;
+    }
+    if row.operation_id.is_none() {
+        row.operation_id = operation;
     }
     if row.outcome == busbar_contract::vocab::OUTCOME_APPLIED {
         if row.config_generation.is_none() {
