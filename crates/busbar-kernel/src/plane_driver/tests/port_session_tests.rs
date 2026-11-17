@@ -163,6 +163,42 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
 }
 
 #[test]
+fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
+    use busbar_plugin_abi::plane::{CARRIER_STDIO, CH_FRAME_NDJSON};
+    for duplicate in [false, true] {
+        let effects = Emitted::default();
+        let mut once = super::Once::default();
+        let mut answer = super::Answer::default();
+        let channel = || PlaneOut::Channel {
+            exchange: 1,
+            carrier: CARRIER_STDIO,
+            flags: 0,
+            framing: CH_FRAME_NDJSON,
+            key: "command",
+            head: busbar_plugin_abi::records::Records::new(&[]),
+        };
+        answer.take(channel(), Origin::Channel, &mut once, &effects);
+        assert_eq!(answer.intents.len(), 1);
+        assert!(answer.violation.is_none());
+        answer.take(
+            if duplicate {
+                channel()
+            } else {
+                PlaneOut::Emit {
+                    carrier: 1,
+                    bytes: b"forbidden",
+                }
+            },
+            Origin::Channel,
+            &mut once,
+            &effects,
+        );
+        assert!(answer.violation.is_some());
+        assert!(effects.0.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
     let script = Script {
         request: vec![It::Emit(5, b"must stay private"), It::ResourceEcho],
