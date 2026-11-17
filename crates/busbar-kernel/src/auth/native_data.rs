@@ -75,6 +75,7 @@ impl NativeDataRoute {
             || mounted.auth != AUTH_PRINCIPAL
             || mounted.effective != AUTH_PRINCIPAL
             || mounted.resource_kinds.is_empty()
+            || seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
             || seat.driver.has_hooks(mounted.route)
             || !owners.chain.is_data()
         {
@@ -260,6 +261,14 @@ impl PendingData {
 }
 
 /// Privately minted after actual policy and replay, not from a public identity callback.
+///
+/// ```compile_fail,E0599
+/// use std::sync::Arc;
+/// use busbar_kernel::auth::{native_admin::PreparedIdentity, native_data::DataAuthorization};
+/// fn fabricate(identity: Arc<dyn PreparedIdentity>) -> DataAuthorization {
+///     DataAuthorization::from_identity(identity)
+/// }
+/// ```
 pub struct DataAuthorization {
     binding: Arc<RequestBinding>,
     route: Arc<NativeDataRoute>,
@@ -321,6 +330,9 @@ impl NativeDataAllocation {
             .binding
             .check_live()
             .map_err(|_| DataRefused::Cancelled)?;
+        if Instant::now() >= authorization.deadline {
+            return Err(DataRefused::Cancelled);
+        }
         let plan = &authorization.route;
         let unit = plan.owners.keys.mint();
         let gate = Arc::new(NativeDataEffectGate::new(
@@ -390,6 +402,8 @@ impl NativeDataAllocation {
         let route = authorization.route.clone();
         let selected = authorization.selected.clone();
         let prepared = authorization.prepared.clone();
+        let binding = authorization.binding.clone();
+        let deadline = authorization.deadline;
         let pending = Pending::new(allocation, routes, None, move |receipt| {
             let refuse = || ClientRefusal {
                 status: 503,
@@ -432,11 +446,15 @@ impl NativeDataAllocation {
             route,
             selected,
             prepared,
+            binding,
+            deadline,
         }
     }
 }
 
 pub struct NativeDataPending {
+    binding: Arc<RequestBinding>,
+    deadline: Instant,
     route: Arc<NativeDataRoute>,
     selected: Arc<SelectedResources>,
     prepared: Arc<PreparedNativeIdentity>,
@@ -445,6 +463,15 @@ pub struct NativeDataPending {
     context: InvocationContext,
 }
 impl NativeDataPending {
+    pub fn is_live(&self) -> bool {
+        self.context.is_live()
+            && Instant::now() < self.deadline
+            && self.binding.check_live().is_ok()
+    }
+
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
     pub fn selected(&self) -> &SelectedResources {
         &self.selected
     }
@@ -459,7 +486,7 @@ impl NativeDataPending {
         driver: &crate::plane_driver::port::PortDriver,
         route: u32,
     ) -> bool {
-        self.context.is_live()
+        self.is_live()
             && self.route.caller.same_incarnation(driver.caller())
             && Arc::ptr_eq(self.route.owners.generation.core(), driver.core())
             && self.route.binding.line().route.rung == route
