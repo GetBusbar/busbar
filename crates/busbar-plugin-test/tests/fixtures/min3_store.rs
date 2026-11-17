@@ -223,6 +223,8 @@ pub struct Plan {
     install: Option<String>,
     recovery: Option<u64>,
     ignore_recovery: bool,
+    teardown_probe: bool,
+    recovery_fail: bool,
 }
 
 impl Plan {
@@ -256,6 +258,8 @@ impl Plan {
             install: text("install"),
             recovery: config.get("recovery").and_then(number),
             ignore_recovery: config.get("ignore_recovery").and_then(Value::as_bool) == Some(true),
+            teardown_probe: config.get("teardown_probe").and_then(Value::as_bool) == Some(true),
+            recovery_fail: config.get("recovery_fail").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -293,6 +297,12 @@ impl<const MODE: u8> Open for Fixture<MODE> {
             if !plan.ignore_recovery {
                 result?;
             }
+        }
+        if plan.teardown_probe {
+            crate::c_migrate::probe_teardown(h);
+        }
+        if plan.recovery_fail {
+            return Err(Fail::failed(busbar_plugin_abi::fail::failed::F_UNAVAILABLE));
         }
         if let Some(handle) = handle {
             // The backend password: resolved and used once, never kept (wiped on drop).

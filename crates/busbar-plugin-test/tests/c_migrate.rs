@@ -21,6 +21,139 @@ use busbar_plugin_abi::plugin::{Endpoints, Open, OPEN_DRY_RUN};
 use busbar_plugin_abi::records::{core_cfg, settled, tag, CoreCfgRec, FailRec, Full, Out, Records};
 use busbar_plugin_abi::types::Status;
 
+mod teardown_fixture {
+    use super::*;
+    use busbar_plugin_abi::host::HostExt;
+    use std::cell::Cell;
+
+    std::thread_local! {
+        pub static DENIED: Cell<usize> = const { Cell::new(0) };
+    }
+    pub struct Witness(pub &'static Host);
+    impl Drop for Witness {
+        fn drop(&mut self) {
+            if self.0.migrate_admit(0).is_err() && self.0.migrate_admit(11).is_err() {
+                DENIED.set(DENIED.get() + 1);
+            }
+        }
+    }
+    impl Open for Witness {
+        async fn open(h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let witness = Self(h);
+            if config.with(|bytes| bytes == b"park") {
+                drop(
+                    busbar_plugin_abi::need::need::secret(busbar_plugin_abi::need::SecretHandle(1))
+                        .await?,
+                );
+            }
+            Ok(witness)
+        }
+        fn check(_h: &Host, _config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+    }
+    impl busbar_plugin_abi::Transport for Witness {
+        type Session = Witness;
+        fn begin(
+            &self,
+            _h: &Host,
+            _conn: &busbar_plugin_abi::transport::ConnInfo<'_>,
+            _out: &mut Out<'_>,
+        ) -> Result<Witness, Fail> {
+            Ok(Witness(self.0))
+        }
+    }
+    busbar_plugin_abi::plugin!(Transport, Witness, name: "migration-teardown");
+}
+
+/// Called inside an admitted Store's initial step, so each nested raw drop must mask authority.
+pub(crate) fn probe_teardown(host: &'static Host) {
+    use busbar_plugin_abi::host::HostExt;
+    use busbar_plugin_abi::host_side::caller::InstanceLimits;
+    use busbar_plugin_abi::host_side::driver::{Image, Instance, InstanceParts, SlotCell};
+    use busbar_plugin_abi::host_side::scrub::Scrub;
+    use std::sync::Arc;
+    let admitted = Admitted::linked(&teardown_fixture::PLUGIN).expect("fixture admission");
+    let lease = || OutLease::new(vec![0; 4096], 4096).expect("free ACTIVE slot");
+    teardown_fixture::DENIED.set(0);
+    for explicit in [false, true] {
+        let OpenAnswer::Chain(chain) =
+            admitted.open::<marker::Transport>(host, b"park".to_vec(), 0, &mut lease())
+        else {
+            panic!("parked fixture chain");
+        };
+        if explicit {
+            assert_eq!(chain.cancel(), Status::OK);
+        } else {
+            drop(chain);
+        }
+        assert!(host.migrate_admit(11).is_ok(), "outer authority restored");
+    }
+    let open = || {
+        let OpenAnswer::Done(Status::OK, Some(instance)) =
+            admitted.open::<marker::Transport>(host, Vec::new(), 0, &mut lease())
+        else {
+            panic!("fixture instance");
+        };
+        instance
+    };
+    let raw = Arc::new(open());
+    let conn = crate::c_opener_refuse::fixture::conn(0);
+    let (status, session) =
+        raw.open_session1(|vt| &vt.begin, busbar_ffi::Arg::view(&conn), &mut lease());
+    assert_eq!(status, Status::OK);
+    drop(session.expect("session token"));
+    drop(raw);
+    let hosted = Instance::new(
+        InstanceParts {
+            image: Arc::new(Image::Linked),
+            identity: Arc::from("migration-teardown"),
+            name: Arc::from("nested"),
+            id: 1,
+            slot: 0x00FF_FF01,
+            cell: Arc::new(SlotCell::new(1, &[0; 64])),
+            epoch: 1,
+            limits: InstanceLimits::default(),
+            max_out: 4096,
+            methods: 0,
+            facts: 0,
+            scrub: Arc::new(Scrub::new()),
+            tether: Box::new(()),
+        },
+        open(),
+    );
+    let mut full = Vec::new();
+    while let Some(out) = OutLease::new(vec![0; 4096], 4096) {
+        full.push(out);
+    }
+    drop(hosted); // SDK close's output-capacity fallback must still deny admission.
+    drop(full);
+    assert_eq!(teardown_fixture::DENIED.get(), 5);
+    assert!(
+        host.migrate_admit(11).is_ok(),
+        "outer authority restored after close"
+    );
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn native_teardown_cannot_inherit_an_enclosing_store_admission() {
+    use busbar_plugin_abi::host_side::entry::StoreMigrationAdmission;
+    use std::sync::Arc;
+    let h = crate::min3_store::booted(
+        crate::min3_store::inline::PLUGIN.plugin(),
+        busbar_plugin_test::FakeNeeds::new(),
+    );
+    let mut spec = h.spec("teardown", br#"{"recovery":11,"teardown_probe":true}"#);
+    let admission = Arc::new(StoreMigrationAdmission::new(true));
+    spec.store_migration = Some(Arc::clone(&admission));
+    drop(
+        h.open_spec(&spec)
+            .expect("outer Store open survives nested teardown"),
+    );
+    assert_eq!(admission.first_refused(), None);
+}
+
 #[cfg(feature = "test-seal")]
 #[test]
 fn store_recovery_gate_is_scoped_to_initial_and_resumed_open() {
@@ -108,6 +241,43 @@ fn explicit_unavailable_key_allows_zero_but_missing_authority_does_not() {
         h.open_spec(&spec)
             .expect("explicit Store admission permits zero"),
     );
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn refused_replacement_preserves_prior_applied_and_terminal_failure_is_vetoed() {
+    use busbar_plugin_abi::host_side::entry::StoreMigrationAdmission;
+    use busbar_plugin_abi::types::KindCode;
+    use busbar_plugin_loader::instance::OpenError;
+    use std::sync::Arc;
+    let h = crate::min3_store::booted(
+        crate::min3_store::inline::PLUGIN.plugin(),
+        busbar_plugin_test::FakeNeeds::new(),
+    );
+    let accepted = h
+        .open_spec(&h.spec("retained", br#"{"id":"prior-applied"}"#))
+        .expect("initial open");
+    for terminal in [false, true] {
+        let bag = format!(
+            r#"{{"recovery":13,"ignore_recovery":true,"settle":true,"recovery_fail":{terminal}}}"#
+        );
+        let mut spec = h.spec("retained", bag.as_bytes());
+        let admission = Arc::new(StoreMigrationAdmission::new(false));
+        spec.store_migration = Some(Arc::clone(&admission));
+        assert!(
+            matches!(h.open_spec(&spec), Err(OpenError::Config { code, .. }) if code == refused::R_CONFIG)
+        );
+        assert_eq!(admission.first_refused(), Some(13));
+        assert!(h.settled("retained").is_none());
+        drop(
+            h.block_on(
+                h.registry()
+                    .reconfigure(KindCode::Store, "retained", b"{}", 1),
+            )
+            .expect("prior Applied config remains reopenable without recovery authority"),
+        );
+    }
+    drop(accepted);
 }
 
 mod suite_fixture {
