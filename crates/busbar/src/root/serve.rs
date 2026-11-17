@@ -2268,17 +2268,6 @@ impl DataRoutes {
         self.answer_with_session(plane, claim, req, None).await
     }
 
-    async fn answer_on_line(
-        self: Arc<Self>,
-        plane: usize,
-        claim: u32,
-        req: DoorRequest,
-        session: std::num::NonZeroU64,
-    ) -> Response {
-        self.answer_with_session(plane, claim, req, Some(session))
-            .await
-    }
-
     async fn answer_with_session(
         self: Arc<Self>,
         plane: usize,

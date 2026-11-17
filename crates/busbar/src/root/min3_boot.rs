@@ -430,11 +430,7 @@ fn plane_instances(
 ) -> Result<Vec<Configured>, String> {
     let mut out: Vec<Configured> = Vec::with_capacity(images.len());
     for image in images {
-        let name = if image.alias.is_empty() {
-            image.identity.clone()
-        } else {
-            image.alias.clone()
-        };
+        let name = instance_name(image).to_owned();
         if let Some(first) = out.iter().find(|one| one.name == name) {
             return Err(format!(
                 "the plane images `{}` and `{}` both answer to the instance name `{name}`; remove one",
@@ -455,6 +451,31 @@ fn plane_instances(
         });
     }
     Ok(out)
+}
+
+/// A plane image's instance name (IF §12.23 rule 1): its alias, else its identity.
+fn instance_name(image: &PlaneImage) -> &str {
+    if image.alias.is_empty() {
+        &image.identity
+    } else {
+        &image.alias
+    }
+}
+
+/// The one plane instance `--stdio` binds: the single admitted plane declaring a ROUTE_LINE route,
+/// read off its describe before any instance opens (WP1-GAP r3 §1.3, A-C4). None or several refuse
+/// the boot (exit 1), naming the instances.
+pub(crate) fn stdio_line_plane(
+    images: &busbar_plugin_loader::instance::Images,
+    planes: &[PlaneImage],
+) -> Result<String, String> {
+    busbar_plugin_loader::instance::plane_sections::stdio_instance(
+        planes
+            .iter()
+            .map(|image| (instance_name(image), images.serves_lines(&image.identity))),
+    )
+    .map(str::to_owned)
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Every configured instance of a kind the MIN-3 path serves, in config order: the secret instances, the store, then
@@ -1110,6 +1131,7 @@ pub(crate) async fn prepare_bootstrap(
     file_images: super::boot::images::FileImages,
     cfg: &RootCfg,
     guard: Guard,
+    stdio: bool,
 ) -> Result<Option<(BootstrapReady, Startup)>, String> {
     let images = file_images.images;
     let transport_images: Vec<String> = images
@@ -1131,6 +1153,11 @@ pub(crate) async fn prepare_bootstrap(
         })
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
+    // WP1-GAP r3 §1.3, A-C4, B1: `--stdio` is judged over the admitted planes' describe here, before
+    // `build` and the boot plan open any instance, so a refusal leaves the Store untouched.
+    if stdio {
+        stdio_line_plane(&images, &planes)?;
+    }
     let built = build(process, guard, cfg, images)?;
     let store_module = cfg
         .store

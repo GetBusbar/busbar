@@ -2573,5 +2573,8 @@ mod endpoint_decode_tests {
 #[path = "tests/transport_endpoint_tests.rs"]
 mod transport_endpoint_tests;
 
+/// The recognizer's plane instance names and the `--stdio` judgement (WP1-GAP r3).
+pub mod plane_sections;
+
 #[cfg(test)]
 mod needs_tests;
