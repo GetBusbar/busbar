@@ -227,6 +227,7 @@ impl ExecutionAdmission {
                     ttl_secs: identity.cache_s().map(u64::from),
                 },
                 resolved: None,
+                signed_authority: None,
             },
             super::module_admin_scope_cap(app, prepared.provider()),
         ))
@@ -246,6 +247,7 @@ impl ExecutionAdmission {
                     ttl_secs: identity.cache_s().map(u64::from),
                 },
                 resolved: None,
+                signed_authority: None,
             },
             super::module_admin_scope_cap(lease.generation(), prepared.provider()),
             identity.expires_at_s(),

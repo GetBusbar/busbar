@@ -496,6 +496,12 @@ impl AdmittedRequest {
             && Arc::ptr_eq(&self.grant, &other.grant)
             && Arc::ptr_eq(&self.governance, &other.governance)
             && Arc::ptr_eq(&self.money, &other.money)
+            && Arc::ptr_eq(&self.routes, &other.routes)
+            && match (self.registered_command(), other.registered_command()) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     /// The original signed verification of this exact registered request, never a key lookup.

@@ -1323,6 +1323,7 @@ async fn run_admin_chain(
                             ttl_secs: identity.cache_s().map(u64::from),
                         },
                         resolved: None,
+                        signed_authority: None,
                     };
                     carried.native = Some(prepared);
                     return (verdict, module_admin_scope_cap(app, name));
