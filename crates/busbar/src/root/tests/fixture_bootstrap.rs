@@ -7,6 +7,9 @@ use busbar_kernel::appbuild::RootRules;
 use busbar_kernel::config::secret::SecretResolver;
 use std::sync::OnceLock;
 
+#[path = "fixture_transport.rs"]
+mod transport;
+
 struct Process {
     resources: busbar_plugin_loader::process::ProcessResources,
     io: crate::root::boot::process::ProcessIo,

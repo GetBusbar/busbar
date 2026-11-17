@@ -2760,6 +2760,7 @@ async fn build_app_native(
         app.config_generation = Arc::clone(&prior.config_generation);
     }
     app.publication_generation = publication_generation;
+    app.selected_predecessor = prior.and_then(|prior| prior.selected_policy.clone());
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;

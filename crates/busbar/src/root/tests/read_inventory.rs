@@ -170,10 +170,27 @@ async fn actual_file_read_owns_replacement_directory_removal_and_disabled_invent
     let path = first_dir.join("fixture.tar.gz");
     std::fs::write(&path, &a).unwrap();
     std::fs::write(second_dir.join("fixture.tar.gz"), &a).unwrap();
-    let process = ProcessResources::new().unwrap();
+    let process = Arc::new(ProcessResources::new().unwrap());
     let first = plugins(&first_dir);
     let held_a = read(&process, &first);
     assert_image(&held_a, "1.6.0", a_digest, 7071);
+    let reader = crate::root::boot_app::ConfigRules {
+        process: Arc::clone(&process),
+    };
+    let prepared = busbar_kernel::config::grammar::prepare_read_for(
+        &PhaseOneIn {
+            plugins: &first,
+            dir: Path::new(&first.dir),
+            pins: &BTreeMap::new(),
+            fetch: busbar_kernel::config::grammar::Fetch::None,
+        },
+        &reader,
+    )
+    .unwrap();
+    let carried = prepared
+        .context::<FileImages>()
+        .expect("the production root reader retains its exact native image admission");
+    assert_image(carried, "1.6.0", a_digest, 7071);
 
     std::fs::write(&path, &b).unwrap();
     let held_b = read(&process, &first);
@@ -198,6 +215,8 @@ async fn actual_file_read_owns_replacement_directory_removal_and_disabled_invent
     // Retained image leases remain executable after replacement and removal from the read.
     check_retained(&process, &held_a).await;
     check_retained(&process, &held_b).await;
+    check_retained(&process, carried).await;
+    assert_image(carried, "1.6.0", a_digest, 7071);
     assert_image(&held_a, "1.6.0", a_digest, 7071);
     assert_image(&held_b, "1.6.1", b_digest, 7072);
 }

@@ -746,7 +746,7 @@ async fn run(
             let conversion = root::min3_boot::prepare_serving(
                 bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
                 &Default::default(), boot_guard,
-            ).unwrap_or_else(|error| die(error));
+            ).await.unwrap_or_else(|error| die(error));
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
@@ -1176,6 +1176,7 @@ async fn run(
     };
 
     let _boot_store_binding = boot_store;
+    let native_bootstrap_sources = bootstrap_ready.sources();
     let serving_ready = root::min3_boot::prepare_serving(
         bootstrap_ready,
         &plugin_process,
@@ -1184,6 +1185,7 @@ async fn run(
         &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
+    .await
     .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
@@ -1436,7 +1438,22 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
-    let root_rules = Arc::new(root_rules.with_native_listeners(Arc::clone(&listener_plan)));
+    let native_candidates = root::min3_candidate::Factory::new(
+        Arc::clone(&plugin_process),
+        native_bootstrap_sources,
+        store_admission
+            .store()
+            .unwrap_or_else(|| die("native candidate factory has no admitted Store")),
+        &native,
+        Arc::clone(&listener_plan),
+        root::plane_node::node(),
+        Arc::clone(&export_observers),
+    );
+    let root_rules = Arc::new(
+        root_rules
+            .with_native_listeners(Arc::clone(&listener_plan))
+            .with_native_candidate(native_candidates),
+    );
     let mut app = Arc::unwrap_or_clone(app);
     app.root_rules = root_rules.clone();
     let owners = root::min3_physical::SlotOwners {
@@ -1450,6 +1467,8 @@ async fn run(
         .assemble(&app, &served, &owners)
         .unwrap_or_else(|error| die(error));
     root::serve::install_native_slots(&mut app, slots).unwrap_or_else(|error| die(error));
+    root::min3_candidate::install_initial(&mut app, Arc::clone(&native), Arc::clone(&services))
+        .unwrap_or_else(|error| die(error));
     let app = Arc::new(app);
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
@@ -1525,7 +1544,10 @@ async fn run(
             spawn(host);
         }
     }
-    let generation_workers = generation_workers.start();
+    let generation_workers =
+        root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
+            .unwrap_or_else(|error| die(error));
+    generation_workers.bind(&app_handle);
     app_handle.on_apply(Box::new(|app| {
         stage_native_inbound(app);
         let _ = root::inbound::publish(app);
@@ -1764,6 +1786,7 @@ async fn run(
                 admin = Some(Box::pin(serve_listener(
                     listener,
                     native,
+                    root::plane_node::node(),
                     native_alpn,
                     bind.tls.clone(),
                     Arc::clone(&tls_secret_resolver),
@@ -1800,6 +1823,7 @@ async fn run(
                             serve_listener(
                                 listener,
                                 native,
+                                root::plane_node::node(),
                                 native_alpn,
                                 tls,
                                 resolver,
@@ -2117,6 +2141,7 @@ fn serve_thread_per_core(
                     serve_listener(
                         listener,
                         native,
+                        root::plane_node::node(),
                         alpn,
                         tls,
                         resolver,
@@ -2144,6 +2169,7 @@ fn serve_thread_per_core(
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     native: Arc<root::listener_native::NativeListener>,
+    node: Arc<root::plane_node::Node>,
     alpn: Vec<Box<str>>,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
@@ -2182,15 +2208,9 @@ async fn serve_listener(
             Some(security)
         }
     };
-    let result = root::listener_native::serve_admitted(
-        listener,
-        native,
-        security,
-        root::plane_node::node(),
-        shutdown,
-        balancer,
-    )
-    .await;
+    let result =
+        root::listener_native::serve_admitted(listener, native, security, node, shutdown, balancer)
+            .await;
     if let Err(e) = result {
         die(format!("server error on '{label}': {e}"));
     }
