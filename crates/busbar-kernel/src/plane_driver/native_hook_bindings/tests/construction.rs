@@ -850,3 +850,94 @@ fn one_frozen_plan_opens_and_selects_each_pools_own_strategy_port() {
         .policy
         .is_none());
 }
+
+fn captured_config() -> RootCfg {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "store: { module: memory }\n",
+        &crate::config::Grammar::empty(),
+    )
+    .unwrap();
+    let mut cfg = crate::config::resolve(&deploy, &Default::default()).unwrap();
+    let mut hook = definition();
+    hook.groups = vec!["team".into()];
+    cfg.hooks.insert("guard".into(), hook);
+    cfg.pools.insert(
+        "seat".into(),
+        crate::config::PoolCfg {
+            gates: vec!["guard".into()],
+            ..Default::default()
+        },
+    );
+    cfg.groups.insert(
+        "child".into(),
+        crate::config::groups::GroupCfg {
+            parent: Some("team".into()),
+            ..Default::default()
+        },
+    );
+    cfg
+}
+
+#[tokio::test]
+async fn owned_capture_survives_consumed_config_and_binds_only_late_candidate_services() {
+    fn transferable<T: Send>(value: T) -> T {
+        value
+    }
+    let mut cfg = captured_config();
+    let inputs = transferable(Inputs::capture(&cfg, "seat".into(), Some("seat".into())).unwrap());
+    cfg.hooks.get_mut("guard").unwrap().on_error = "first".into();
+    cfg.pools.get_mut("seat").unwrap().gates.clear();
+    cfg.groups.get_mut("child").unwrap().parent = None;
+    drop(cfg);
+    let governance = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let cost = Arc::new(CostModel::resolve_parts(None, 0, &BTreeMap::new()));
+    let amendments = Arc::new(NodeAmendments::new());
+    let ports = [("guard".into(), opened(1 << POINT_ROUTE, 0, &[]))]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let bound = inputs
+        .bind(
+            vec![17],
+            &ports,
+            &BTreeMap::new(),
+            governance.clone(),
+            cost.clone(),
+            amendments.clone(),
+        )
+        .unwrap();
+    let picked = bound
+        .tables
+        .select_scope(Some("child"), &bound.groups, "seat", "")
+        .unwrap();
+    assert_eq!(names(&picked.gates), ["guard"]);
+    assert_eq!(picked.gates[0].on_error, PolicyOnError::Reject);
+    assert!(Arc::ptr_eq(&picked.gates[0].port, &ports["guard"].port));
+    assert!(Arc::ptr_eq(&bound.governance, &governance));
+    assert!(Arc::ptr_eq(&bound.cost, &cost));
+    assert!(Arc::ptr_eq(&bound.amendments, &amendments));
+    assert!(bound.active(17));
+    assert!(!bound.active(18));
+    for routes in [vec![], vec![17, 17]] {
+        assert!(inputs
+            .bind(
+                routes,
+                &ports,
+                &BTreeMap::new(),
+                governance.clone(),
+                cost.clone(),
+                amendments.clone()
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn owned_capture_preserves_nonempty_seat_and_pool_refusal() {
+    let cfg = captured_config();
+    assert!(Inputs::capture(&cfg, String::new(), Some("seat".into())).is_err());
+    assert!(Inputs::capture(&cfg, "seat".into(), Some(String::new())).is_err());
+}
