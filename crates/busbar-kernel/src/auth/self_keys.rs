@@ -269,7 +269,7 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
     {
         diag_debug!(
             SELF_SUBJECT_UNSAFE,
-            sub = %sub,
+            sub = ?sub,
             "token-exchange: refusing a principal id unsafe as a self-serve subject (empty, a '/' \
              route separator, a control char, or a leading reserved 'vk_'/'user:'/'group:' prefix)"
         );

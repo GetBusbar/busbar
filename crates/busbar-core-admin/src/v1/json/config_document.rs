@@ -835,13 +835,17 @@ mod tests {
         for path in [
             "/advanced/shutdown/drain_timeout",
             "/advanced/governance/max_pending_checkpoints",
-            "/advanced/shutdown",
             "/advanced/governance",
         ] {
             assert!(
                 restart_paths(&[path.to_owned()]).is_empty(),
                 "retired configuration cannot become restart state: {path}"
             );
+        }
+        // #323: `advanced.shutdown.deregister_delay` is boot-scoped and restart-only, so the
+        // shutdown block that holds it is restart state; its retired drain cap stays out.
+        for path in ["/advanced/shutdown/deregister_delay", "/advanced/shutdown"] {
+            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
         }
         assert_eq!(
             restart_paths(&["/advanced/worker_threads".to_owned()]),

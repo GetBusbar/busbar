@@ -13,7 +13,8 @@
 //!     `starts_with`/`ends_with`/`contains`, where the other side is an identity expression: the field
 //!     `identity`, `plugin` or `former_names`, `name` reached through a stamp, spec, caller, admitted or
 //!     instance, or a value read from a config `module` key;
-//! (ii) a string literal used as a `module:` value, or a struct literal's `identity` field;
+//! (ii) the value of a `module:` config key (YAML or JSON key position) inside a string literal, not prose that
+//!      mentions one, or a struct literal's `identity` field;
 //! (iii) the `word` argument of `outbound_owner(styles, word)`.
 //!
 //! The identity expression is recognised by name (syn has no types), so the accessor names are the list
@@ -140,13 +141,34 @@ pub(crate) fn is_identity_expr(expr: &Expr) -> bool {
     }
 }
 
-/// The values after `module:` in a literal (`module: env`, `"module": "env"`, `module:\n  env`).
+/// The values after a `module:` config key in a literal (`module: env`, `"module": "env"`,
+/// `module:\n  env`, `- module: env`, `{module: env}`).
+///
+/// Only a key position counts: `module` (optionally quoted) is the first thing on its line or follows
+/// `{`, `[`, `,` or a YAML list `-`. Prose that mentions a config line, such as the verbatim 1.5.5
+/// remedy text "an `export:` instance with `module: otlp`", has other text before it and is not a key.
 pub(crate) fn module_values(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("module") {
-        let mut tail = &rest[at + "module".len()..];
-        tail = tail.trim_start_matches(['"', '\'']);
+    let mut from = 0;
+    while let Some(found) = text[from..].find("module") {
+        let at = from + found;
+        from = at + "module".len();
+        let before = text[..at]
+            .trim_end_matches(['"', '\''])
+            .trim_end_matches([' ', '\t']);
+        let key = match before.chars().last() {
+            None | Some('\n' | '\r' | '{' | '[' | ',') => true,
+            // A YAML list item: `-` that starts its line or follows whitespace (not `foo-module:`).
+            Some('-') => before[..before.len() - 1]
+                .chars()
+                .last()
+                .is_none_or(char::is_whitespace),
+            _ => false,
+        };
+        if !key {
+            continue;
+        }
+        let tail = text[from..].trim_start_matches(['"', '\'']);
         if let Some(after) = tail.strip_prefix(':') {
             let value: String = after
                 .trim_start_matches([' ', '\t', '\n', '\r', '"', '\''])
@@ -157,7 +179,6 @@ pub(crate) fn module_values(text: &str) -> Vec<String> {
                 out.push(value);
             }
         }
-        rest = &rest[at + "module".len()..];
     }
     out
 }

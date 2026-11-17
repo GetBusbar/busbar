@@ -516,11 +516,14 @@ impl EnvelopeSink for FlushSink {
     }
 
     fn diag(&self, d: Diagnostic<'_>) {
+        // Plugin text is the plain `text` field, never the message (IF §12.16): the formatter
+        // escapes it, so plugin-echoed caller input cannot open a new field or line.
         let text = String::from_utf8_lossy(d.text);
+        let text = text.as_ref();
         match d.severity {
-            2 => tracing::error!(plugin = %self.plugin, "{text}"),
-            1 => tracing::warn!(plugin = %self.plugin, "{text}"),
-            _ => tracing::info!(plugin = %self.plugin, "{text}"),
+            2 => tracing::error!(plugin = %self.plugin, text, "auth plugin diagnostic"),
+            1 => tracing::warn!(plugin = %self.plugin, text, "auth plugin diagnostic"),
+            _ => tracing::info!(plugin = %self.plugin, text, "auth plugin diagnostic"),
         }
     }
 
