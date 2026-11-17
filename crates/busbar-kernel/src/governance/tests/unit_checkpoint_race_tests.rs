@@ -833,9 +833,10 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
         AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
     };
-    let mut chain = AuditChain::new()
-        .signing_with(AuditSigningKey::from_seed(&[0x5a; 32]))
-        .sealing_as(NODE);
+    // A production chain holds no key: its V8 link line is unsigned, and the journal body is that
+    // line exactly (a stamp vouches for it, SF-4). A test-only per-line signature has no journal
+    // field, so a fixture sealed with one could never round-trip through recovery.
+    let mut chain = AuditChain::new().sealing_as(NODE);
     let inputs = AuditInputs {
         subject: Subject::PrincipalId("race-principal".into()),
         what: What {
