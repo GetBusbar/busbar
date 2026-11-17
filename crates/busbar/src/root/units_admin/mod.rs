@@ -1948,20 +1948,21 @@ pub(crate) async fn authenticate(
         Some(admission) => admission.admin_verdict(),
         None => (binding.door)(request).await,
     };
-    let headers = request
-        .http_headers()
-        .map_err(|_| ReasonCode::DecodeFailed)?;
-    walk.effect_context = Some(walk.admission.as_ref().map_or_else(
-        || {
-            busbar_kernel::auth::effect::Context::new(
+    // Native effects are built only after the actual replay and physical join below. Their
+    // retained proof already owns this snapshot; no HTTP metadata projection is needed here.
+    if walk.physical_pending.is_none() {
+        walk.effect_context = Some(match &walk.admission {
+            Some(admission) => admission.effect_context(),
+            None => busbar_kernel::auth::effect::Context::new(
                 request.method(),
                 request.path(),
-                headers,
+                request
+                    .http_headers()
+                    .map_err(|_| ReasonCode::DecodeFailed)?,
                 &verdict.door,
-            )
-        },
-        busbar_kernel::inbound::RequestAdmission::effect_context,
-    ));
+            ),
+        });
+    }
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -2050,11 +2051,10 @@ fn complete_physical(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
                     .complete_admin(execution.clone())
                     .map_err(|_| ReasonCode::Unauthenticated)?,
             );
-            if let Some(context) = &mut walk.effect_context {
-                context
-                    .attach_physical(physical.clone())
-                    .map_err(|_| ReasonCode::Unauthenticated)?;
-            }
+            walk.effect_context = Some(
+                busbar_kernel::auth::effect::Context::from_physical(physical.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
             walk.request.attach_physical(physical)
         }
         None if walk
