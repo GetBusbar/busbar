@@ -859,7 +859,7 @@ impl DeliveryLedger {
             return Err(ResponseStop::Integrity);
         }
         drop(state);
-        self.entries.remove(index);
+        self.entries.swap_remove(index);
         Ok(())
     }
 }
