@@ -3157,7 +3157,7 @@ pub(crate) fn door_mounts_planned(
     offers: &[TransportOffer],
     plan: Option<(&ListenerPlan, &busbar_kernel::state::App, &str)>,
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use foldhash::HashMap;
 
@@ -3216,7 +3216,7 @@ pub(crate) fn door_mounts_planned(
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
-                methods: method_bit(method.as_str()),
+                methods: listener_method_bits(*method),
                 path_form: if path.contains('{') {
                     PATH_PATTERN
                 } else {

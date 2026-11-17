@@ -40,6 +40,9 @@ pub(crate) enum Seen {
 #[derive(Debug, Clone)]
 pub(crate) enum Out {
     Write(&'static [u8]),
+    Part(u64, &'static [u8]),
+    WireEnd(u64),
+    Quiescent(u64),
     Echo(Vec<u8>),
     Close(bool),
     Head(u64),
@@ -95,6 +98,16 @@ impl Script {
         for out in &outs {
             match out {
                 Out::Write(bytes) => sink(TransportOut::Write(bytes)),
+                Out::Part(stream, bytes) => sink(TransportOut::WirePart {
+                    stream: *stream,
+                    class: WireClass::Payload,
+                    bytes,
+                }),
+                Out::WireEnd(stream) => sink(TransportOut::WireEnd {
+                    stream: *stream,
+                    requirement: CompletionRequirement::Flush,
+                }),
+                Out::Quiescent(stream) => sink(TransportOut::ResponseQuiescent(*stream)),
                 Out::Echo(bytes) => sink(TransportOut::Write(bytes)),
                 Out::Close(abort) => sink(TransportOut::Close { abort: *abort }),
                 Out::Head(stream) => sink(TransportOut::StreamHead {
@@ -1216,6 +1229,117 @@ fn rig() -> Rig {
         counters,
         wiring,
     }
+}
+
+#[tokio::test]
+async fn actual_owner_releases_held_output_then_retains_close_until_input_join() {
+    use busbar_contract::response_delivery::DeliveryTerminal;
+    let mut s = scripted(
+        Box::new(|call| match call {
+            Seen::Emit {
+                stream: 1,
+                piece: E_BODY,
+                ..
+            } => vec![Out::Part(1, b"a"), Out::Full(1)],
+            Seen::Emit {
+                stream: 1,
+                piece: wire::E_RELEASE,
+                ..
+            } => vec![Out::Part(1, b"z"), Out::Writable(1)],
+            Seen::Emit {
+                stream: 1,
+                piece: E_END,
+                ..
+            } => vec![Out::WireEnd(1), Out::Close(false)],
+            Seen::Emit {
+                stream: 1,
+                piece: wire::E_DELIVERY_SETTLED,
+                ..
+            } => vec![Out::Quiescent(1)],
+            _ => Vec::new(),
+        }),
+        None,
+        false,
+    );
+    s.conn.answers.provenance = true;
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (mut peer, server) = tokio::io::duplex(64);
+    let body = async move {
+        let key = ResponseKey {
+            node: 1,
+            incarnation: 1,
+            unit: None,
+            connection_generation: 1,
+            stream: 1,
+        };
+        let (admitted, acknowledged) = oneshot::channel();
+        registration
+            .send(RegisterResponse { key, admitted })
+            .await
+            .unwrap();
+        let handles = acknowledged.await.unwrap().unwrap();
+        let (pieces, receiver) = mpsc::channel(1);
+        r.feeds
+            .send(Feed {
+                stream: 1,
+                pieces: receiver,
+                opened: None,
+            })
+            .await
+            .unwrap();
+        pieces.send(piece(E_BODY, b"input")).await.unwrap();
+        read_exactly(&mut peer, b"a").await;
+        pieces.send(piece(E_END, b"")).await.unwrap();
+        assert!(handles.watch.snapshot().first_payload_written);
+        assert_eq!(handles.watch.snapshot().terminal, None);
+        handles.release.freeze(key, 1).unwrap();
+        handles.release.publish(key, 1).unwrap();
+        let mut tail = Vec::new();
+        peer.read_to_end(&mut tail).await.unwrap();
+        assert_eq!(tail, b"z");
+        assert_eq!(
+            handles.watch.snapshot().terminal,
+            None,
+            "wire close cannot manufacture input EOF"
+        );
+        handles.input.producer_ended();
+        handles.input.reader_eof();
+        assert_eq!(
+            handles.watch.terminal().await.terminal,
+            Some(DeliveryTerminal::Complete)
+        );
+        (r.feeds, r.inbound, r.close, registration, pieces, handles)
+    };
+    let (outcome, _retained) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+    })
+    .await
+    .expect("reserved controls and input join must make progress");
+    assert!(matches!(outcome, Outcome::Closed), "{outcome:?}");
+    let calls = seen(&s.seen);
+    let release = calls
+        .iter()
+        .position(|call| {
+            matches!(
+                call,
+                Seen::Emit {
+                    piece: wire::E_RELEASE,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let end = calls
+        .iter()
+        .position(|call| matches!(call, Seen::Emit { piece: E_END, .. }))
+        .unwrap();
+    assert!(
+        release < end,
+        "E_END stayed held until the independent release made it writable"
+    );
+    assert_eq!(closes(&s.seen), 0);
 }
 
 fn piece(piece: u32, bytes: &[u8]) -> Piece {

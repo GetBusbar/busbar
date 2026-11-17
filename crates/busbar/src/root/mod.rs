@@ -198,6 +198,7 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
@@ -208,6 +209,7 @@ pub(crate) mod migrate_records;
 pub(crate) mod min3_boot;
 pub(crate) mod min3_candidate_secrets;
 pub(crate) mod min3_framers;
+pub(crate) mod min3_listener_plan;
 pub(crate) mod min3_physical;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
