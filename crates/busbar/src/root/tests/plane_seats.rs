@@ -491,6 +491,16 @@ async fn catalog_composition_keeps_model_definitions_out_of_channel_registration
         Handle::current(),
     )
     .unwrap();
+    let registrations: Arc<dyn Upstreams> = shared.upstreams["mcp"].clone();
+    assert!(Arc::ptr_eq(&wiring.inventory_upstreams, &registrations));
+    for pair in shared.catalogs["mcp"].sealed.associations.keys() {
+        assert_eq!(
+            (wiring.inventory_targets)(&pair.0, &pair.1),
+            (shared.catalogs["mcp"].sealed.targets)(&pair.0, &pair.1),
+        );
+        assert!((wiring.inventory_targets)("unowned-pool", &pair.1).is_none());
+    }
+    assert!((wiring.inventory_targets)("mcp", "mcp\u{1f}alpha").is_some());
     let session = wiring.carrier.session();
     session.map.point("alpha");
     assert!(session.map.of(0).is_some());
