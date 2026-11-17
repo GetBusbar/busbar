@@ -15,7 +15,10 @@
 //! `ecdsa_p256::from_pkcs8` accepts any key. Unset, both are refused like everything else.
 
 /// The contract version this stub states.
-#[cfg(not(feature = "api1"))]
+#[cfg(not(any(feature = "api1", feature = "api2")))]
+pub const API: u32 = 3;
+/// The pre-authority contract version.
+#[cfg(all(feature = "api2", not(feature = "api1")))]
 pub const API: u32 = 2;
 /// The contract version a backend written before H0b states.
 #[cfg(feature = "api1")]
@@ -46,6 +49,8 @@ pub enum Error {
     Mismatch,
     /// A self-test failed.
     SelfTest(&'static str),
+    /// Provider unavailable.
+    ProviderUnavailable,
 }
 
 type R<T> = Result<T, Error>;
@@ -100,6 +105,8 @@ pub fn self_test() -> R<()> {
 }
 
 /// Not a hash.
+pub fn sha256_checked(_data: &[u8]) -> R<[u8; 32]> { Err(Error::ProviderUnavailable) }
+
 pub fn sha256(_data: &[u8]) -> [u8; 32] {
     [0; 32]
 }
@@ -389,6 +396,8 @@ pub mod ed25519 {
 
 /// Refused.
 pub mod ecdsa_p256 {
+    /// Refuse public-key validation.
+    pub fn validate_public_key(_pk: &[u8;65]) -> super::R<()> { Err(super::Error::ProviderUnavailable) }
     use super::{scheduled, R, REFUSED, SIGN_CALLS};
 
     /// Refused.

@@ -246,11 +246,10 @@ async fn supervise(
             },
             prepared = preparing.join_next(), if !preparing.is_empty() => {
                 match prepared {
-                    Some(Ok((owner, Ok(prepared)))) => {
+                    Some(Ok((_owner, Ok(prepared)))) => {
                         let (feeds, node) = (feeds.clone(), node.clone());
                         responses.spawn(async move {
-                            let result = prepared.send(&feeds, &node).await;
-                            (owner, result)
+                            prepared.send(&feeds, &node).await
                         });
                     },
                     Some(Ok((owner, Err(error)))) => {
@@ -270,13 +269,13 @@ async fn supervise(
             },
             completed = responses.join_next(), if !responses.is_empty() => {
                 match completed {
-                    Some(Ok((owner, result))) => {
-                        if let Err(error) = ingress.retire(&owner) {
+                    Some(Ok(completed)) => {
+                        if let Err(error) = ingress.retire(&completed.owner) {
                             failure.get_or_insert(error);
                             input_open = false;
                             stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                         }
-                        if let Err(error) = result { failure.get_or_insert(error); }
+                        if let Err(error) = completed.result { failure.get_or_insert(error); }
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));

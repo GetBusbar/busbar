@@ -1074,18 +1074,20 @@ zeroize = "1"
 # busbar-contract links into the binary, and a plugin's rev of busbar never decides what the
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }
-busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Published MIN-3 planes name the GitLab source identity. Resolve their SDK and JSON facade
 # to this same core tree; URL aliases otherwise produce a second SDK/FFI type universe.
-[patch.'https://github.com/GetBusbar/busbar']
+[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "a33d40bc1e034c617f566a7e2d70fef8422f43ba" }
 # Dependency patches are effective only at the consuming workspace root.
 mysql_common = { git = "https://github.com/MattJackson/rust_mysql_common", rev = "f8e1d4f6dbb61ed46e0cae1f1c451f9ffadded39" }
 postgres-protocol = { git = "https://github.com/MattJackson/rust-postgres", rev = "a0a2f6f8f7f3d23dd5204c06ff56768dc75bb3f2" }

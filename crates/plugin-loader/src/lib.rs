@@ -223,6 +223,9 @@ mod ordinary_load_negatives;
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
+#[cfg(test)]
+#[path = "tests/artifact_verifier_parity.rs"]
+mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
@@ -233,6 +236,8 @@ pub mod pack_native;
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),

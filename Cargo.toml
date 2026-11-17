@@ -11,6 +11,9 @@ members = [
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
     "crates/busbar-count",
+    "crates/busbar-json",
+    "crates/busbar-artifact-metadata",
+    "crates/busbar-artifact-verifier",
     "crates/busbar-secure",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
@@ -213,11 +216,14 @@ large_futures = "deny"
 # Plugins that name busbar-contract by git resolve to this tree, so exactly one copy links.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-contract = { path = "crates/busbar-contract" }
+
 # The one crypto backend: busbar-crypto names it by this URL; a private build patches its own in.
 busbar-crypto-backend = { path = "crates/busbar-crypto-backend" }
 
 # Pinned dependency fixes: h2 sensitive fields, WebSocket 1014 and bounded frame diagnostics.
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "a33d40bc1e034c617f566a7e2d70fef8422f43ba" }
 # Dependency patches are effective only at the consuming workspace root.
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }

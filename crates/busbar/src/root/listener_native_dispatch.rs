@@ -13,7 +13,7 @@ use busbar_kernel::inbound::native::{PhysicalAdminExecution, RouteTarget};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 
-use super::delivery::{RegisteredResponse, ResponseAuthority};
+use super::delivery::{CompletedResponse, RegisteredResponse, ResponseAuthority};
 use super::{data, InputError, NativeListener, ReadyInput};
 use crate::root::durability::response_intent::ResponseConnection;
 use crate::root::plane_node::Node;
@@ -25,25 +25,19 @@ pub(super) struct Prepared {
 }
 
 impl Prepared {
-    pub(super) async fn send(
-        self,
-        feeds: &mpsc::Sender<Feed>,
-        node: &Node,
-    ) -> Result<(), InputError> {
-        let completed = self.registered.send_http(self.response, feeds, node).await;
-        if completed.delivery.key().stream != completed.owner.stream() {
-            return Err(InputError::Delivery(
-                busbar_contract::response_delivery::ResponseStop::Integrity,
-            ));
-        }
+    pub(super) async fn send(self, feeds: &mpsc::Sender<Feed>, node: &Node) -> CompletedResponse {
+        let mut completed = self.registered.send_http(self.response, feeds, node).await;
         // The completion keeps the original physical execution and input retirement guard until
         // the same Task's selected monetary terminal has consumed the genuine delivery receipt.
         if let Some(settlement) = self.settlement {
-            settlement
+            if let Err(error) = settlement
                 .finish(&completed.delivery, &completed.snapshot)
-                .await?;
+                .await
+            {
+                completed.result = Err(error);
+            }
         }
-        completed.result
+        completed
     }
 }
 
