@@ -24,6 +24,11 @@ struct Product {
     config: PathBuf,
 }
 
+#[derive(serde::Deserialize)]
+struct PilotConfig {
+    plugins: busbar_kernel::config::PluginsCfg,
+}
+
 impl Drop for Product {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -136,6 +141,21 @@ async fn house_actual_binary_memory_request_and_unauthorized_refusal() {
         );
         config = config.replace(marker, &value);
     }
+    let policy: PilotConfig = busbar_contract::yaml::from_str(&config)
+        .expect("the pilot explicitly configures its signed plugin admission policy");
+    assert!(
+        policy.plugins.enabled,
+        "the pilot loads its supplied plugins"
+    );
+    assert!(
+        !policy.plugins.trust.allow_unsigned,
+        "the house fixture must not bypass signature verification"
+    );
+    assert_eq!(
+        Path::new(&policy.plugins.dir),
+        fixture.join("plugins"),
+        "the product must consume the exact hashed pilot directory"
+    );
     let config_path = fixture.join(format!("house-config-{}.yaml", std::process::id()));
     std::fs::write(&config_path, config).unwrap();
     record_hash(&config_path);
