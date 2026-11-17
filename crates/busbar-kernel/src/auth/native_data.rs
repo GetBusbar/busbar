@@ -59,6 +59,12 @@ pub struct NativeDataRoute {
 }
 
 impl NativeDataRoute {
+    /// Lend the actual inventory retained by this canonical route for pre-auth resource selection.
+    /// A reconstructed inventory with equal entries is not the same authorization owner.
+    pub fn inventory(&self) -> &Arc<ResourceInventory> {
+        &self.owners.inventory
+    }
+
     pub fn bind(
         app: &App,
         seat: &PortSeat,

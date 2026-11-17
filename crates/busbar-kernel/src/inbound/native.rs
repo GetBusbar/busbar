@@ -539,6 +539,12 @@ struct PhysicalBody {
     credit: ByteCredit,
 }
 impl RequestBinding {
+    /// Compare the exact retained physical owner, including after cancellation or retirement.
+    /// An equal wire stream number on another connection conveys no matching authority.
+    pub fn owns_stream(&self, owner: &StreamOwner) -> bool {
+        self.stream == owner.stream && Arc::ptr_eq(&self.state, &owner.state)
+    }
+
     /// The originating publication handle; an equal App in another handle is not equivalent.
     pub fn handle(&self) -> &Arc<AppHandle> {
         &self.handle

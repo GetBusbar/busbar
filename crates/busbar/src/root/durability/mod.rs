@@ -606,4 +606,4 @@ mod signer_tests;
 
 #[cfg(test)]
 #[path = "../tests/response_intent.rs"]
-mod response_intent_tests;
+pub(crate) mod response_intent_tests;

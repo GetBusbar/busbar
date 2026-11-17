@@ -275,7 +275,32 @@ impl ChargedRequestSnapshot {
     /// Share the body without copying; every nonempty Bytes clone/slice retains the full snapshot.
     /// Empty operations must additionally retain the original request admission explicitly.
     pub fn body_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        bytes::Bytes::from_owner(SnapshotBody(Arc::clone(self)))
+        self.owned_bytes(self.body.clone())
+    }
+    /// Share the exact path and query, including an originally present empty query.
+    /// Passing these Bytes to `http::Uri::from_maybe_shared` avoids a second payload copy.
+    pub fn target_bytes(self: &Arc<Self>) -> bytes::Bytes {
+        self.owned_bytes(self.target.clone())
+    }
+    fn owned_bytes(self: &Arc<Self>, range: Range<usize>) -> bytes::Bytes {
+        bytes::Bytes::from_owner(SnapshotSpan {
+            snapshot: Arc::clone(self),
+            range,
+        })
+    }
+    /// Original ordered headers with snapshot-owned values, without a temporary header array.
+    /// `http::HeaderValue::from_maybe_shared` retains each Bytes backing through value clones.
+    /// Header-name parsing and HeaderMap storage are separate allocations, not funded by this view.
+    pub fn header_values(
+        self: &Arc<Self>,
+    ) -> impl Clone + ExactSizeIterator<Item = (&str, bytes::Bytes)> {
+        let mut offset = self.headers.start;
+        self.headers().map(move |(name, value)| {
+            // Capture validated every packed extent; these immutable ranges cannot overflow.
+            let start = offset + 16 + name.len();
+            offset = start + value.len();
+            (name, self.owned_bytes(start..offset))
+        })
     }
     pub fn now_s(&self) -> u64 {
         self.now_s
@@ -334,10 +359,13 @@ impl ChargedRequestSnapshot {
     }
 }
 
-struct SnapshotBody(Arc<ChargedRequestSnapshot>);
-impl AsRef<[u8]> for SnapshotBody {
+struct SnapshotSpan {
+    snapshot: Arc<ChargedRequestSnapshot>,
+    range: Range<usize>,
+}
+impl AsRef<[u8]> for SnapshotSpan {
     fn as_ref(&self) -> &[u8] {
-        self.0.body()
+        self.snapshot.slice(&self.range)
     }
 }
 
