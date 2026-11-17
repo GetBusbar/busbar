@@ -300,8 +300,12 @@ impl Shared {
     }
 
     fn count_custody(&self, stream: u8, level: u32, n: usize) {
-        let Some(checked) = ExportCustodyLevel::from_wire(level) else {
-            return;
+        // The loader owns wire classification; the observer receives only neutral checked levels.
+        let checked = match level {
+            x::CUSTODY_ACCEPTED => ExportCustodyLevel::Accepted,
+            x::CUSTODY_DURABLE => ExportCustodyLevel::Durable,
+            x::CUSTODY_INDEXED => ExportCustodyLevel::Indexed,
+            _ => return,
         };
         let Some(&stream_kind) =
             busbar_contract::export_stream::ExportStream::ALL.get(stream as usize)
