@@ -8,9 +8,6 @@ use busbar_contract::persistence::{AttemptId, DatasetId};
 use futures::FutureExt;
 use std::sync::atomic::Ordering;
 
-#[path = "fixture.rs"]
-mod fixture;
-
 fn header() -> codec::Header {
     codec::Header {
         generation: 1,
@@ -255,6 +252,50 @@ async fn restarted_applied_terminal_preserves_grant_without_replaying_any_candid
 }
 
 #[tokio::test]
+async fn restart_after_lost_main_ack_recovers_atomic_terminal_without_issuing_a_new_operation() {
+    let f = fixture().await;
+    let operation = install(&f).await;
+    let prepared = operation
+        .draft
+        .operation
+        .state
+        .lock()
+        .unwrap()
+        .prepared
+        .clone()
+        .unwrap();
+    f.owner.submit(&prepared.prepare).await.unwrap();
+    f.backend.lose_reply.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        f.owner.submit(&prepared.main).await.unwrap(),
+        SubmitResult::Uncertain
+    ));
+    let before = f.backend.calls();
+    drop(operation);
+    drop(prepared);
+    drop(f.owner);
+    let restarted = CallerIntents::new(
+        f.backend.attach(2).await,
+        f.codec,
+        Arc::new(WriterRetirements::default()),
+    )
+    .unwrap();
+    ready(&restarted).await;
+    assert_eq!(
+        restarted
+            .observe(f.key.encoded())
+            .await
+            .unwrap()
+            .slot
+            .unwrap()
+            .1,
+        codec::Phase::Applied
+    );
+    assert!(restarted.read_current(&f.key).await.unwrap().is_some());
+    assert_eq!(f.backend.calls(), before);
+}
+
+#[tokio::test]
 async fn durable_guard_serializes_replicas_and_terminal_key_cannot_be_silently_discarded() {
     let f = fixture().await;
     let operation = install(&f).await;
@@ -298,4 +339,61 @@ async fn durable_guard_serializes_replicas_and_terminal_key_cannot_be_silently_d
     .unwrap();
     assert_eq!(lost.recover_page().await, Err(Error::Corrupt));
     assert!(matches!(lost.begin_operation(), Err(Error::NotReady)));
+}
+
+#[tokio::test]
+async fn keyed_revoke_read_fences_before_await_and_unsubmitted_drop_releases_it() {
+    let f = fixture().await;
+    let mut installed = install(&f).await;
+    assert_eq!(installed.drive().await.unwrap(), Outcome::Applied);
+    let mut revoke = f.owner.begin_operation().unwrap();
+    f.backend.hang_read.store(true, Ordering::SeqCst);
+    assert!(revoke.read_current(&f.key).now_or_never().is_none());
+    assert_eq!(f.owner.read_current(&f.key).await, Err(Error::Pending));
+    let mut competing = f.owner.begin_operation().unwrap();
+    assert_eq!(competing.read_current(&f.key).await, Err(Error::Pending));
+    drop(revoke);
+    drop(competing);
+    f.backend.hang_read.store(false, Ordering::SeqCst);
+    assert!(f.owner.read_current(&f.key).await.unwrap().is_some());
+    assert_eq!(f.backend.calls(), 2);
+}
+
+#[tokio::test]
+async fn a_delayed_replica_preparation_cannot_resurrect_a_revoked_grant() {
+    let f = fixture().await;
+    let mut installed = install(&f).await;
+    assert_eq!(installed.drive().await.unwrap(), Outcome::Applied);
+    let original = f.owner.read_current(&f.key).await.unwrap().unwrap();
+    let snapshot = f.records.decode(&f.key, &original).unwrap();
+    let other = CallerIntents::new(
+        f.backend.attach(2).await,
+        f.codec.clone(),
+        Arc::new(WriterRetirements::default()),
+    )
+    .unwrap();
+    ready(&other).await;
+    let mut delayed = other
+        .begin_operation()
+        .unwrap()
+        .prepare(
+            f.records
+                .install(&f.key, Some(&snapshot), b"newgrant")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut revoke = f
+        .owner
+        .begin_operation()
+        .unwrap()
+        .prepare(f.records.revoke(&f.key, Some(&snapshot)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(revoke.drive().await.unwrap(), Outcome::Applied);
+    assert_eq!(delayed.drive().await.unwrap(), Outcome::Superseded);
+    let row = f.owner.read_current(&f.key).await.unwrap().unwrap();
+    let final_state = f.records.decode(&f.key, &row).unwrap();
+    assert_eq!(final_state.version().state, GrantState::Revoked);
+    assert!(final_state.version().epoch > snapshot.version().epoch);
 }

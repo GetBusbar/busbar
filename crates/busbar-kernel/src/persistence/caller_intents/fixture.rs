@@ -5,11 +5,11 @@
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
 use busbar_contract::persistence::{
-    control, BackendInfo, Call, ClockObservation, CommitKey, Failure, Page, PersistenceBackend,
-    Scan,
+    control, BackendInfo, Call, ClockObservation, CommitKey, DatasetId, Failure, Page,
+    PersistenceBackend, Read, ReadResult, Scan,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Default)]
 struct Native {
@@ -18,9 +18,10 @@ struct Native {
     slots: BTreeMap<([u8; 16], u64, u32), (u64, [u8; 32], bool)>,
     sent: Vec<[u8; 32]>,
 }
-pub(super) struct Backend {
+pub(crate) struct Backend {
     state: Mutex<Native>,
     pub(super) hang: AtomicBool,
+    pub(super) hang_read: AtomicBool,
     pub(super) lose_reply: AtomicBool,
 }
 fn control_at(key: Vec<u8>) -> Address {
@@ -30,7 +31,7 @@ fn control_at(key: Vec<u8>) -> Address {
     }
 }
 impl Backend {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut state = Native::default();
         state.rows.insert(
             control_at(control::DATASET_KEY.to_vec()),
@@ -47,10 +48,11 @@ impl Backend {
         Self {
             state: Mutex::new(state),
             hang: AtomicBool::new(false),
+            hang_read: AtomicBool::new(false),
             lose_reply: AtomicBool::new(false),
         }
     }
-    pub(super) async fn attach(self: &Arc<Self>, writer: u8) -> Arc<CoreStore> {
+    pub(crate) async fn attach(self: &Arc<Self>, writer: u8) -> Arc<CoreStore> {
         self.state.lock().unwrap().rows.insert(
             control_at(control::writer_key([writer; 16]).to_vec()),
             Secret::new(
@@ -87,8 +89,8 @@ impl Backend {
         let key = [b"writer:".as_slice(), &1u64.to_be_bytes(), &[writer; 16]].concat();
         let address = scoped::migration_address(
             true,
-            super::super::super::boot_identity::INSTANCE,
-            super::super::super::boot_identity::NODE_SCHEMA,
+            crate::persistence::boot_identity::INSTANCE,
+            crate::persistence::boot_identity::NODE_SCHEMA,
             &key,
         )
         .unwrap();
@@ -149,6 +151,9 @@ impl PersistenceBackend for Backend {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
+            if self.hang_read.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
             let state = self.state.lock().unwrap();
             Ok(ReadResult::Values {
                 observed_at: clock(),
