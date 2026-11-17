@@ -1607,7 +1607,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             .map_err(PortError::Call)?;
         // Same whole-answer validation and failure translation as pooled piece. No effect escapes
         // until the caller classifies the validated fixed backing and admits its complete answer.
-        self.finish(Call::Piece(from), &answer, &mut |_| {})?;
+        self.finish(Call::Piece(from), &answer, &mut |_| {}, None, Some(exchange))?;
         Ok(len)
     }
 
