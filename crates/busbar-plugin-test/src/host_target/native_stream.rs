@@ -916,7 +916,9 @@ fn invoke(
     limits: &StreamLimits,
 ) -> Result<Batch, Failure> {
     let mut batch = Batch::default();
-    let mut sink = |out| batch.capture(out, limits.output_records, limits.output_bytes);
+    let mut sink = |out: TransportOut<'_>| {
+        batch.capture(out, limits.output_records, limits.output_bytes);
+    };
     let result = match call {
         Call::Ingest => port.ingest(session, bytes, &mut sink),
         Call::Timer => port.timer(session, &mut sink),
