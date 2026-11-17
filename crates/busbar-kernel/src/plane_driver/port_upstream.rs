@@ -75,7 +75,19 @@ impl Wants {
 
 /// One member the walk picked, as the plane's `Target` states it (operator vocabulary, never a plugin).
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetIdentity {
+    /// A declared registration uses the requesting plane's dialect and request model.
+    Registration,
+    /// A provider model always uses the values resolved in this generation's catalog.
+    Model { dialect: Box<str>, model: Box<str> },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
+    /// Exact pool and member returned by the admitted walk, before display-name conversion.
+    pub pool: Box<str>,
+    pub qualified_member: Box<str>,
+    pub identity: TargetIdentity,
     /// The configured upstream (member) name.
     pub upstream: Box<str>,
     /// The plane-owned provider keys as one canonical JSON object (`{}` when none).
@@ -96,6 +108,10 @@ impl Candidate {
         model: &str,
         f: impl FnOnce(&TargetIn<'_>) -> R,
     ) -> R {
+        let (dialect, model) = match &self.identity {
+            TargetIdentity::Registration => (dialect, model),
+            TargetIdentity::Model { dialect, model } => (dialect.as_ref(), model.as_ref()),
+        };
         let params: Vec<Pair<'_>> = self
             .params
             .iter()
@@ -113,6 +129,7 @@ impl Candidate {
             upstream: &self.upstream,
             provider: &self.provider,
             params: &params,
+            admission: &[],
         })
     }
 }

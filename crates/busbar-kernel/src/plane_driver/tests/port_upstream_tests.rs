@@ -231,6 +231,9 @@ fn req() -> PlaneIn<'static> {
 
 fn candidate(name: &str) -> Candidate {
     Candidate {
+        pool: "pool".into(),
+        qualified_member: "fixture-member".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
         upstream: name.into(),
         provider: "{}".into(),
         base_path: "/v1".into(),
@@ -330,6 +333,7 @@ fn target() -> TargetIn<'static> {
         upstream: "u",
         provider: "{}",
         params: &[],
+        admission: &[],
     }
 }
 
