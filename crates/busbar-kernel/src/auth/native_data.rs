@@ -165,7 +165,7 @@ impl NativeDataRoute {
             }
             Ok(())
         }).map_err(|_| DataRefused::Capacity)??;
-        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Credential)?;
+        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Unavailable)?;
         binding.check_live().map_err(|_| DataRefused::Cancelled)?;
         let NativePreparedAnswer::Identity(prepared) = prepared else {
             return Err(DataRefused::Credential);
