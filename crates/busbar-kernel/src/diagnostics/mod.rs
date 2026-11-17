@@ -285,11 +285,11 @@ diagnostics! {
         "The configuration sets `security.allow_metadata_hosts`, `security.allow_all_metadata: true` or a provider's `allow_metadata_hosts`. In 1.6.0 cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so these 1.5.5 carve-outs are retired. The configuration is refused rather than read with the carve-out ignored. `security.blocked_metadata_hosts` still extends the denylist.",
         "Remove the keys. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
 
-    /// The migration retired a registration's `allow_private` and listed exactly its hosts in `advanced.allow_destinations`.
-    MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", false,
+    /// RETIRED: the migration no longer rewrites a registration's `allow_private`; the key is kept.
+    MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", true,
         "A registration's allow_private was replaced by exact advanced.allow_destinations entries",
-        "An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only.",
-        "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; busbar has no per-destination plaintext switch.";
+        "RETIRED. Nothing emits this code. A registration's `allow_private` is kept: it is core's own boolean at the declared registration and grants private reach to that registration's selected route alone. `advanced.allow_destinations` was removed, and the migration writes no entries to it.",
+        "Nothing to do. Keep `allow_private: true` only on a registration that must reach a private target; cloud metadata stays refused whatever is written.";
 
     /// The migration removed a retired 1.5.5 cloud-metadata carve-out key.
     MIGRATE_METADATA_CARVE_OUT_REMOVED = 3411, Config, Actionable, "migrate-metadata-carve-out-removed", "1.6.0", false,
@@ -315,11 +315,11 @@ diagnostics! {
         "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited.",
         "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); for a server with a private CA, list that CA under `advanced.tls.trust_anchors` (or the server under `advanced.tls.destinations`).";
 
-    /// A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`.
-    CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", false,
+    /// RETIRED: a registration's `allow_private` is core's own key again and is not refused.
+    CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", true,
         "A registration still carries the retired per-registration private-address switch",
-        "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
-        "Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
+        "RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed.",
+        "Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.";
 
     /// RETIRED: configured providers retain private reach on their own core-selected origins.
     CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", true,
