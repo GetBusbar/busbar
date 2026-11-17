@@ -683,6 +683,13 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             .await
         {
             Joined::Done(Ok(end)) => {
+                eprintln!(
+                    "busbar: shutdown audit_stamped_through={} audit_committed_through={}",
+                    end.stamped_through, end.committed_through
+                );
+                if end.final_staged == Some(false) {
+                    eprintln!("busbar: shutdown audit_final=signer_failed");
+                }
                 if let Some(why) = end.halted {
                     eprintln!("busbar: shutdown audit_notary=halted:{why}");
                 }

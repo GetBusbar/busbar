@@ -179,18 +179,18 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
         native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
-    let chain = NativeChain {
-        instances: vec![
+    let chain = NativeChain::operator(
+        vec![
             instance(41, Arc::clone(&first)),
             instance(42, Arc::clone(&second)),
         ],
-        policy: ChainPolicy::new(7, Vec::new()),
-        owners: Arc::new(AuthOwners {
+        ChainPolicy::new(7, Vec::new()),
+        Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
-    };
+    );
     let cx = CallCx {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 1,
@@ -230,15 +230,15 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         native: false,
     });
     let owners = Arc::new(Owners(AtomicUsize::new(0)));
-    let chain = Arc::new(NativeChain {
-        instances: vec![instance(42, port.clone())],
-        policy: ChainPolicy::new(7, Vec::new()),
-        owners: Arc::new(AuthOwners {
+    let chain = Arc::new(NativeChain::operator(
+        vec![instance(42, port.clone())],
+        ChainPolicy::new(7, Vec::new()),
+        Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
             cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
         }),
-    });
+    ));
     let request = Request::new(&AuthIn {
         method: "POST",
         path: "/resource",
@@ -618,4 +618,49 @@ async fn missing_native_admin_coverage_refuses_candidate_construction() {
     });
     let epoch = app.config_generation.load(Ordering::Acquire);
     assert!(crate::root::min3_admin_auth::install(&mut app, empty, epoch).is_err());
+}
+
+#[tokio::test]
+async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
+    use busbar_kernel::auth::native_chain::NativeChain as KernelChain;
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+        native: false,
+    });
+    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let chain = Arc::new(KernelChain::operator(
+        vec![instance(42, port.clone())],
+        ChainPolicy::new(7, Vec::new()),
+        Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners.clone(),
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    ));
+    let request = Request::new(&AuthIn {
+        method: "POST",
+        path: "/resource",
+        query: "a=b",
+        authority: "node",
+        headers: &[],
+        peer: "peer",
+        tls_peer_cert: b"certificate",
+        body: b"body",
+        now_s: 1,
+    });
+    let cx = CallCx {
+        deadline: std::time::Instant::now() + Duration::from_secs(30),
+        request_id: 11,
+        stack: Default::default(),
+    };
+    let PreparedAnswer::Identity(prepared) = chain.prepare(cx, request).await.unwrap() else {
+        panic!("prepared identity")
+    };
+    assert_eq!(prepared.provider(), "provider-42");
+    assert_eq!(prepared.identity().subject(), "client");
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 0);
+    assert!(prepared.claim().await);
+    assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
