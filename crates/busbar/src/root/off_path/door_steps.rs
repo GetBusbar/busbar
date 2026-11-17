@@ -647,56 +647,6 @@ impl Rules {
         }
     }
 
-    /// The async native producer supplies fresh owners and the actual reserved publication
-    /// epoch. This seals only the exclusively owned candidate; no live owner is replaced.
-    pub(crate) fn prepare_native_candidate(
-        &self,
-        app: &mut App,
-        served: &crate::root::serve::Served,
-        owners: &crate::root::min3_physical::SlotOwners,
-    ) -> Result<(), String> {
-        let plan = self
-            .native_listeners
-            .as_ref()
-            .ok_or("candidate has no native listener plan")?;
-        self.check_native_topology(app, plan)?;
-        if app.prepared_generation() != Some(owners.epoch) {
-            return Err("native candidate has no matching reserved publication epoch".into());
-        }
-        let native = served
-            .native
-            .as_ref()
-            .ok_or("candidate has no freshly prepared native owners")?;
-        if native.config_version != app.config_version
-            || !Arc::ptr_eq(&native.auth, &owners.auth)
-            || !Arc::ptr_eq(&native.inventories, &owners.inventories)
-        {
-            return Err("native listener owners belong to another serving candidate".into());
-        }
-        crate::root::min3_admin_auth::install(app, Arc::clone(&owners.auth), owners.epoch)?;
-        let slots = plan.assemble(app, served, owners)?;
-        crate::root::serve::install_native_slots(app, slots)
-    }
-
-    fn check_native_topology(
-        &self,
-        app: &App,
-        plan: &crate::root::min3_listener_plan::NativeListenerPlan,
-    ) -> Result<(), String> {
-        let config = app
-            .config_projection
-            .as_ref()
-            .and_then(|value| value.downcast_ref::<DoorConfig>())
-            .ok_or("native candidate has no root configuration projection")?;
-        let needs = config.listeners.as_ref().map_err(Clone::clone)?;
-        if !needs.needs.is_empty() || needs.binds.as_slice() != plan.binds() {
-            return Err(
-                "native listener topology changed; write the configuration file and restart".into(),
-            );
-        }
-        Ok(())
-    }
-
     /// Rules whose destination guard hears each committed configuration's destinations.
     #[cfg(test)]
     #[must_use]
@@ -749,6 +699,51 @@ impl Rules {
             }
         }
     }
+}
+
+/// The async native producer supplies fresh owners and the actual reserved publication
+/// epoch. This seals only the exclusively owned candidate; no live owner is replaced.
+pub(crate) fn prepare_native_candidate(
+    plan: &crate::root::min3_listener_plan::NativeListenerPlan,
+    app: &mut App,
+    served: &crate::root::serve::Served,
+    owners: &crate::root::min3_physical::SlotOwners,
+) -> Result<(), String> {
+    check_native_topology(app, plan)?;
+    if app.prepared_generation() != Some(owners.epoch) {
+        return Err("native candidate has no matching reserved publication epoch".into());
+    }
+    let native = served
+        .native
+        .as_ref()
+        .ok_or("candidate has no freshly prepared native owners")?;
+    if native.config_version != app.config_version
+        || !Arc::ptr_eq(&native.auth, &owners.auth)
+        || !Arc::ptr_eq(&native.inventories, &owners.inventories)
+    {
+        return Err("native listener owners belong to another serving candidate".into());
+    }
+    crate::root::min3_admin_auth::install(app, Arc::clone(&owners.auth), owners.epoch)?;
+    let slots = plan.assemble(app, served, owners)?;
+    crate::root::serve::install_native_slots(app, slots)
+}
+
+fn check_native_topology(
+    app: &App,
+    plan: &crate::root::min3_listener_plan::NativeListenerPlan,
+) -> Result<(), String> {
+    let config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<DoorConfig>())
+        .ok_or("native candidate has no root configuration projection")?;
+    let needs = config.listeners.as_ref().map_err(Clone::clone)?;
+    if !needs.needs.is_empty() || needs.binds.as_slice() != plan.binds() {
+        return Err(
+            "native listener topology changed; write the configuration file and restart".into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) -> bool {
@@ -862,7 +857,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
                     "native candidate has no complete generation with dormant workers".into(),
                 );
             }
-            self.check_native_topology(app, plan)?;
+            check_native_topology(app, plan)?;
             let config = app
                 .config_projection
                 .as_ref()
