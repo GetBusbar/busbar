@@ -20,7 +20,9 @@ use busbar_contract::transport::trust::Anchors;
 use busbar_kernel::auth_bindings::native::SelectedRouteKey;
 use busbar_kernel::auth_bindings::ProviderBindings;
 use busbar_kernel::config::{min3::UpstreamCfg, RootCfg};
-use busbar_kernel::plane_driver::port_egress::{MemberTarget, SeatMember, SeatPool, Targets};
+use busbar_kernel::plane_driver::port_egress::{
+    MemberTarget, SeatMember, SeatPool, TargetDefinition, Targets,
+};
 use busbar_kernel::plane_driver::port_upstream::TargetIdentity;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, ProviderAuthSelection};
 use busbar_kernel::plane_driver::{MemberRoute, ResponseKeep};
@@ -288,6 +290,7 @@ pub(crate) fn prepare(
         definition.auth = upstream_auth;
         let definition = Arc::new(definition);
         let member_target = MemberTarget {
+            definition: Some(TargetDefinition::new(Arc::clone(&definition))),
             resource: definition.resource.clone(),
             identity: TargetIdentity::Model {
                 dialect: target.dialect.as_str().into(),

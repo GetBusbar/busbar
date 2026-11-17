@@ -216,8 +216,12 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-sqlite",
     "https://github.com/GetBusbar/busbar-store-postgres",
     # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
-    # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
+    # h2 retains upstream sensitive-field fixes plus adopted native serializer provenance.
     "https://github.com/MattJackson/h2",
+    # Adopted HTTP-PROJECTION-PRODUCER r2 and native serializer cohort; exact revs in locks.
+    "https://github.com/MattJackson/http",
+    "https://github.com/MattJackson/hyper",
+    "https://github.com/MattJackson/hyper-util",
     # tungstenite 893a21f1f98011a2665840231330c473836c9a0a (1014 fix plus streaming diagnostic formatting).
     "https://github.com/MattJackson/tungstenite-rs",
     "https://github.com/MattJackson/jobserver-rs",

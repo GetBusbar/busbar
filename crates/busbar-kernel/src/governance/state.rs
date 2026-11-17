@@ -296,15 +296,8 @@ impl GovState {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Option<Arc<VirtualKey>> {
-        let material = self.signing_material()?;
-        let claims = match material.verifier.verify(token, now, expected_aud) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!(reason = %e, "signed-token verify rejected");
-                return None;
-            }
-        };
-        self.standing_key(&claims, now)
+        self.verify_token_authority(token, now, expected_aud)
+            .map(super::current_credential::VerifiedKeyAuthority::into_original_key)
     }
 
     /// WHY `verify_token` refused `token`, as the closed admin 401 reason (ADMIN-API r5 section
@@ -333,10 +326,26 @@ impl GovState {
         claims: &super::signing::TokenClaims,
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
+        self.prepare_current_credentials(now);
+        self.standing_key_cached(claims, now).ok()
+    }
+
+    /// Schedule the existing refresh outside the publication admission guard. A refresh failure
+    /// retains the existing confirmed cache; this does not promise synchronous fleet freshness.
+    pub fn prepare_current_credentials(&self, now: u64) {
         self.sync_revocations_if_stale(now);
+    }
+
+    /// The standing-key policy over already hydrated authority. No refresh is scheduled here.
+    pub(super) fn standing_key_cached(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Result<Arc<VirtualKey>, super::current_credential::CurrentCredentialRefusal> {
+        use super::current_credential::CurrentCredentialRefusal;
         if self.denylist.contains(&claims.sub) {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
-            return None;
+            return Err(CurrentCredentialRefusal::Revoked);
         }
 
         match self.lookup_by_sub(&claims.sub) {
@@ -351,31 +360,35 @@ impl GovState {
                     sub = %claims.sub,
                     "signed-token rejected: the key's self-serve subject is held"
                 );
-                None
+                Err(CurrentCredentialRefusal::SubjectHeld)
             }
             Some(key) if key_row_expired(&key, now) => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the key row's expires_at has passed"
                 );
-                None
+                Err(CurrentCredentialRefusal::KeyExpired)
             }
             Some(key)
                 if key.enabled
                     && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
             {
-                Some(key)
+                Ok(key)
             }
             Some(key) if key.enabled => {
                 tracing::debug!(
                     sub = %claims.sub,
                     "signed-token rejected: the binding was rotated after this token was minted"
                 );
-                None
+                Err(CurrentCredentialRefusal::RotatedKey)
             }
-            _ => {
+            Some(_) => {
                 tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
-                None
+                Err(CurrentCredentialRefusal::DisabledKey)
+            }
+            None => {
+                tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
+                Err(CurrentCredentialRefusal::MissingKey)
             }
         }
     }

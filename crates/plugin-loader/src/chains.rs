@@ -281,6 +281,19 @@ pub(crate) fn decode_described(
         ));
     }
     crate::upstream_paths::validate(kind, &items)?;
+    if kind == KindCode::Transport {
+        busbar_ports::codec::transport::decode_listener_slots(
+            facts.unwrap_or(0),
+            items.iter().map(|(tag, body)| (*tag, body.as_slice())),
+        )
+        .map_err(|_| {
+            invalid(
+                "describe.listener_slots",
+                "invalid initial stream-listener declarations",
+                "at most 64 distinct 1..=128-byte ASCII slots on a server stream transport",
+            )
+        })?;
+    }
     Ok(Described {
         kind,
         methods,
@@ -997,6 +1010,67 @@ mod tests {
         assert_eq!(
             m.label_keys.iter().map(|k| &**k).collect::<Vec<_>>(),
             ["op"]
+        );
+    }
+
+    fn transport_slots(facts: u64, slots: &[&[u8]]) -> Reply {
+        let mut out = Reply::new();
+        mask(
+            &mut out,
+            tag::D_METHODS,
+            busbar_plugin_abi::transport::REQUIRED,
+        );
+        mask(&mut out, tag::D_FACTS, facts);
+        for slot in slots {
+            out.put(0x0182, slot).expect("listener descriptor fits");
+        }
+        out
+    }
+
+    #[test]
+    fn native_listener_slots_are_validated_before_admission() {
+        use busbar_plugin_abi::transport::{FB_CLIENT, FB_DATAGRAM, FB_SERVER};
+        let long = vec![b'a'; 129];
+        let invalid: Vec<(u64, Vec<&[u8]>)> = vec![
+            (FB_SERVER, vec![b""]),
+            (FB_SERVER, vec![b"listen.path"]),
+            (FB_SERVER, vec![b"listen/path"]),
+            (FB_SERVER, vec![b"listen slot"]),
+            (FB_SERVER, vec![b"\xff"]),
+            (FB_SERVER, vec![&long]),
+            (FB_SERVER, vec![b"listen", b"listen"]),
+            (FB_CLIENT, vec![b"listen"]),
+            (FB_SERVER | FB_DATAGRAM, vec![b"listen"]),
+        ];
+        for (facts, slots) in invalid {
+            let out = transport_slots(facts, &slots);
+            let refused = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+                .err()
+                .expect("invalid initial-listener authority is rejected");
+            assert_eq!(refused.code, RefusalCode::DescribeInvalid);
+            assert_eq!(refused.field, "describe.listener_slots");
+        }
+    }
+
+    #[test]
+    fn native_listener_slot_count_is_bounded_and_names_are_exact() {
+        use busbar_plugin_abi::transport::FB_SERVER;
+        let names: Vec<String> = (0..65).map(|n| format!("slot_{n}")).collect();
+        let slots: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+        let out = transport_slots(FB_SERVER, &slots);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_err());
+        let out = transport_slots(FB_SERVER, &slots[..64]);
+        assert!(decode_described(KindCode::Transport, Records::new(out.as_bytes())).is_ok());
+        let out = transport_slots(FB_SERVER, &[b"listen", b"Listen", b"unused-slot"]);
+        let described = decode_described(KindCode::Transport, Records::new(out.as_bytes()))
+            .expect("distinct exact slots");
+        assert_eq!(
+            described
+                .items
+                .iter()
+                .filter(|(tag, _)| *tag == 0x0182)
+                .count(),
+            3
         );
     }
 

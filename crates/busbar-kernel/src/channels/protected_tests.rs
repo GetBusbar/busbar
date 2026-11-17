@@ -4,6 +4,44 @@
 use super::budget::*;
 use super::protected::*;
 
+#[test]
+fn general_reclassification_keeps_the_fixed_backing_charged() {
+    let process = ChannelBudget::new();
+    let unit = process.instance().unit();
+    let mut inspection = ReplyStorage::new(&unit).unwrap();
+    inspection.output_mut()[0] = 42;
+    let general = inspection.into_general().unwrap();
+    assert_eq!(general.output()[0], 42);
+    assert_eq!(unit.used().bytes, OUTPUT_BYTES);
+    assert_eq!(unit.used().completions, 1);
+    // Returning unused staging entitlement permits another protected entry, but keeps the
+    // original general backing charged until its actual owner retires.
+    let second = ReplyStorage::new(&unit).unwrap();
+    assert_eq!(unit.used().bytes, OUTPUT_BYTES + REPLY_BYTES);
+    drop((general, second));
+    assert_eq!(process.used(), Claim::default());
+}
+
+#[test]
+fn saturated_general_reclassification_discards_the_whole_answer() {
+    let process = ChannelBudget::new();
+    let unit = process.instance().unit();
+    let full = unit
+        .reserve(
+            Claim {
+                bytes: UNIT_BYTES - REPLY_BYTES,
+                ..Claim::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(ReplyStorage::new(&unit).unwrap().into_general().is_err());
+    assert_eq!(unit.used().bytes, UNIT_BYTES - REPLY_BYTES);
+    assert_eq!(unit.used().completions, 0);
+    drop(full);
+    assert_eq!(process.used(), Claim::default());
+}
+
 #[tokio::test]
 async fn reply_backing_moves_to_writer_and_stays_charged_through_flush() {
     use tokio::io::AsyncReadExt;

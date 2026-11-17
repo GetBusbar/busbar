@@ -10,49 +10,15 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_ports::auth::Identity;
 use busbar_ports::{CallCx, PortError};
 
-use super::chain_run::Request;
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
-
-/// Snapshot the actual HTTP carrier. Transport adapters with peer/certificate custody extend the
-/// view before snapshotting; an unavailable transport property is represented as absent.
-pub fn http_request(
-    method: &str,
-    target: &str,
-    headers: &axum::http::HeaderMap,
-    body: &[u8],
-    now_s: u64,
-) -> Request {
-    use busbar_plugin_abi::types::{Bytes, Pair, Str};
-    let fields: Vec<_> = headers
-        .iter()
-        .map(|(name, value)| Pair {
-            name: Str::new(name.as_str()),
-            value: Bytes::new(value.as_bytes()),
-        })
-        .collect();
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    Request::new(&busbar_ports::auth::AuthIn {
-        method,
-        path,
-        query,
-        authority: headers
-            .get(axum::http::header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
-        headers: &fields,
-        peer: "",
-        tls_peer_cert: &[],
-        body,
-        now_s,
-    })
-}
 
 pub trait NativeAdmin: Send + Sync {
     fn prepare<'a>(
         &'a self,
         name: &'a str,
         cx: CallCx,
-        request: Request,
+        request: Arc<ChargedRequestSnapshot>,
     ) -> BoxFut<'a, Result<PreparedAnswer, PortError>>;
 }
 
@@ -72,7 +38,7 @@ pub trait PreparedIdentity: Send + Sync {
     fn provider(&self) -> &str;
     fn credential_headers(&self) -> &[Box<str>];
     fn identity(&self) -> &Identity;
-    fn request(&self) -> &Request;
+    fn request(&self) -> &Arc<ChargedRequestSnapshot>;
     fn authorize(&self, now_s: u64) -> Result<(), u32>;
     fn claim(&self) -> BoxFut<'_, bool>;
 }
@@ -91,7 +57,7 @@ pub struct Invocation {
     pub selected: Arc<App>,
     pub id: InvocationId,
     pub cx: CallCx,
-    pub request: Arc<Request>,
+    pub request: Arc<ChargedRequestSnapshot>,
 }
 
 pub(super) struct Pending {
@@ -112,6 +78,7 @@ impl Pending {
     pub(super) async fn complete(&self) -> Result<ExecutionAdmission, AdmissionRefused> {
         // Consume before the first await. A cancelled or failed store call cannot retry this right.
         if self.spent.swap(true, Ordering::AcqRel)
+            || !Arc::ptr_eq(&self.invocation.request, self.prepared.request())
             || self.invocation.cx.request_id != self.invocation.id.request_id().get()
             || std::time::Instant::now() >= self.invocation.cx.deadline
         {
@@ -130,6 +97,7 @@ impl Pending {
         // Publication after the lease is not cancellation of this already-admitted operation.
         Ok(ExecutionAdmission {
             native: Some((lease, Arc::clone(&self.prepared))),
+            origin: Some(self.invocation.clone()),
         })
     }
 }
@@ -138,16 +106,28 @@ impl Pending {
 /// or conversion back to pending, and cloning an Arc to this value does not mint execution rights.
 pub struct ExecutionAdmission {
     native: Option<(AdmissionLease, Arc<dyn PreparedIdentity>)>,
+    origin: Option<Invocation>,
 }
 
 impl ExecutionAdmission {
     pub(super) fn legacy() -> Self {
-        Self { native: None }
+        Self {
+            native: None,
+            origin: None,
+        }
     }
     pub fn native(&self) -> Option<(&AdmissionLease, &dyn PreparedIdentity)> {
         self.native
             .as_ref()
             .map(|(lease, prepared)| (lease, prepared.as_ref()))
+    }
+
+    /// Lend the actual origin for the physical request's final join. Equal generation pointers
+    /// cannot substitute for the originating publication owner, request id or call deadline.
+    pub fn native_origin(&self) -> Option<(&Arc<AppHandle>, CallCx)> {
+        self.origin
+            .as_ref()
+            .map(|origin| (&origin.handle, origin.cx))
     }
 
     pub(super) fn door_for(&self, app: &App) -> Option<super::AdminDoor> {
@@ -199,25 +179,47 @@ impl ExecutionAdmission {
         let Some((_, prepared)) = self.native() else {
             return false;
         };
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        prepared.request().view(|original| {
-            original.method == method
-                && original.path == path
-                && original.query == query
-                && original.body == body
-                && original.headers.len() == headers.len()
-                && original.headers.iter().all(|field| {
-                    let name = field.name.get();
-                    original
-                        .headers
-                        .iter()
-                        .filter(|field| field.name.get().eq_ignore_ascii_case(name))
-                        .map(|field| field.value.get())
-                        .eq(headers
-                            .get_all(name)
-                            .iter()
-                            .map(axum::http::HeaderValue::as_bytes))
-                })
-        })
+        snapshot_matches_http(prepared.request(), method, target, headers, body)
     }
+}
+
+/// Validate an HTTP projection without allocating an ABI Pair view or losing empty-query presence.
+/// This compares content only; execution additionally requires the exact snapshot Arc identity.
+pub fn snapshot_matches_http(
+    original: &ChargedRequestSnapshot,
+    method: &str,
+    target: &str,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> bool {
+    original.method() == method
+        && original.target() == target
+        && original.body() == body
+        && original.headers().len() == headers.len()
+        && original.headers().all(|(name, _)| {
+            original
+                .headers()
+                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value)
+                .eq(headers
+                    .get_all(name)
+                    .iter()
+                    .map(axum::http::HeaderValue::as_bytes))
+        })
+}
+
+/// Keep the exact physical owner both in the transport handoff and in the body lifetime.
+/// The native bridge moves the extension into delivery custody alongside its StreamOwner.
+pub fn retain_physical_response(
+    mut response: axum::response::Response,
+    physical: Arc<crate::inbound::native::PhysicalAdminExecution>,
+) -> axum::response::Response {
+    use http_body_util::BodyExt;
+    response.extensions_mut().insert(physical.clone());
+    let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+    *response.body_mut() = axum::body::Body::new(body.map_frame(move |frame| {
+        let _retain_until_body_drop = &physical;
+        frame
+    }));
+    response
 }

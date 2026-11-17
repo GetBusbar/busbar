@@ -81,7 +81,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
+use busbar_contract::storage::StorageSource;
+use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity};
 use busbar_core_connector::listen::{Admits, Admitted};
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
@@ -206,7 +207,7 @@ pub struct ConnBalancer {
 }
 
 impl ConnBalancer {
-    fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
+    pub(crate) fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
         let mine = self.counts[self.me].0.load(Ordering::Relaxed);
         let (min_idx, min_val) = self
@@ -233,7 +234,7 @@ impl ConnBalancer {
         }
     }
 
-    fn place_local(&self) -> ConnCountGuard {
+    pub(crate) fn place_local(&self) -> ConnCountGuard {
         use std::sync::atomic::Ordering;
         self.counts[self.me].0.fetch_add(1, Ordering::Relaxed);
         ConnCountGuard {
@@ -242,7 +243,7 @@ impl ConnBalancer {
         }
     }
 
-    fn adopt(&self) -> ConnCountGuard {
+    pub(crate) fn adopt(&self) -> ConnCountGuard {
         ConnCountGuard {
             counts: self.counts.clone(),
             idx: self.me,
@@ -250,7 +251,7 @@ impl ConnBalancer {
     }
 }
 
-struct ConnCountGuard {
+pub(crate) struct ConnCountGuard {
     counts: Arc<[PaddedCount]>,
     idx: usize,
 }
@@ -271,7 +272,7 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    let served = Served::new(router, Some(security));
+    let served = Served::new(test_storage(), router, Some(security));
     let admits = SocketAdmits {
         listener,
         backoff: AcceptBackoff::new(),
@@ -280,17 +281,31 @@ pub async fn serve(
     accept_loop(admits, shutdown, balancer, served).await
 }
 
+#[cfg(test)]
+fn test_storage() -> StorageSource {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    ProcessAdmission::new(1).connection_storage(AdmissionClass::Data)
+}
+
 pub(crate) async fn serve_admitted(
+    storage: StorageSource,
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
+    accept_loop(
+        admits,
+        shutdown,
+        balancer,
+        Served::new(storage, router, security),
+    )
+    .await
 }
 
 pub(crate) async fn serve_admitted_framed(
+    storage: StorageSource,
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
@@ -304,7 +319,7 @@ pub(crate) async fn serve_admitted_framed(
             "the data listener requires an accepting transport framer",
         )
     })?;
-    let mut served = Served::new(router, security);
+    let mut served = Served::new(storage, router, security);
     served.framer = Some(framer);
     accept_loop(admits, shutdown, balancer, served).await
 }
@@ -880,6 +895,8 @@ fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
 /// `hardened_conn_builder`), the router, and the connection-security wrap (`None` = plain).
 #[derive(Clone)]
 struct Served {
+    /// Original trusted listener class/account, shared with every connection and retained IO.
+    storage: StorageSource,
     builder: Arc<ConnBuilder<TokioExecutor>>,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
@@ -898,7 +915,11 @@ fn listener_scheme(secured: bool) -> busbar_kernel::plane_routes::ListenerScheme
 }
 
 impl Served {
-    fn new(router: Router, security: Option<Arc<dyn ConnectionSecurity>>) -> Self {
+    fn new(
+        storage: StorageSource,
+        router: Router,
+        security: Option<Arc<dyn ConnectionSecurity>>,
+    ) -> Self {
         let builder = Arc::new(hardened_conn_builder());
         let scheme = if security.is_some() {
             "tls"
@@ -906,6 +927,7 @@ impl Served {
             REQUEST_WIRE
         };
         Self {
+            storage,
             builder,
             router,
             security,
@@ -926,21 +948,22 @@ impl Served {
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }
+        let stream = busbar_core_connector::raw_progress::tcp(stream);
+        let progress = stream.progress();
         let stream = AdmittedIo {
             inner: stream,
             _hold: hold,
             _guard: guard,
         };
-        if self.security.is_none() {
-            return self
-                .io(stream, peer, bytes::Bytes::new(), watcher, drain)
-                .await;
-        }
-        let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
+        let raw = ConnectionIo {
+            io: Box::new(TokioAsyncReadCompatExt::compat(stream)),
+            progress,
+            storage: self.storage.clone(),
+        };
         self.raw(raw, peer, watcher, drain).await;
     }
 
-    async fn raw(self, raw: Box<dyn RawIo>, peer: SocketAddr, watcher: Watcher, drain: Drain) {
+    async fn raw(self, raw: ConnectionIo, peer: SocketAddr, watcher: Watcher, drain: Drain) {
         let wrapped = match &self.security {
             None => busbar_contract::transport::wire::SecuredIo::anonymous(raw),
             Some(security) => {
@@ -958,10 +981,14 @@ impl Served {
                 }
             }
         };
+        let mut wrapped = wrapped;
+        let tls_peer_cert =
+            bytes::Bytes::from(std::mem::take(&mut wrapped.peer_certificate).into_vec());
+        // The whole secured stream retains its genuine reader and original account through serving.
         self.io(
-            FuturesAsyncReadCompatExt::compat(wrapped.io),
+            FuturesAsyncReadCompatExt::compat(wrapped),
             peer,
-            bytes::Bytes::from(wrapped.peer_certificate.into_vec()),
+            tls_peer_cert,
             watcher,
             drain,
         )

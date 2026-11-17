@@ -112,7 +112,12 @@ impl ProcessWires {
         self
     }
 
-    async fn child(&self, upstream: &UpstreamDef) -> Result<Wire, RecordsDenied> {
+    async fn child(
+        &self,
+        upstream: &UpstreamDef,
+        req: &ChannelReq<'_>,
+    ) -> Result<Wire, RecordsDenied> {
+        req.check_command(upstream)?;
         let command = upstream.command.as_ref().ok_or(RecordsDenied::Invalid)?;
         let (program, args) = command.argv.split_first().ok_or(RecordsDenied::Invalid)?;
         pinned(command, program).await?;
@@ -134,11 +139,13 @@ impl ProcessWires {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        req.check_command(upstream)?;
         let spawned = self
             .spawn
             .spawn(&mut spawn)
             .await
             .ok_or(RecordsDenied::Unavailable)?;
+        req.check_command(upstream)?;
         Ok(Wire {
             read: Box::new(spawned.stdout),
             write: Some(Box::new(spawned.stdin)),
@@ -212,7 +219,7 @@ impl Wires for ProcessWires {
     ) -> BoxFut<'a, Result<Wire, RecordsDenied>> {
         Box::pin(async move {
             match req.carrier {
-                CARRIER_STDIO => self.child(upstream).await,
+                CARRIER_STDIO => self.child(upstream, req).await,
                 CARRIER_HTTP => self.held(upstream, req).await,
                 _ => Err(RecordsDenied::Invalid),
             }

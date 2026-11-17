@@ -14,72 +14,235 @@ use busbar_core_admin::{KernelVerb, VerbScope, NEW_VERBS};
 use busbar_core_admin::{AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES};
 use busbar_kernel_ledger::cost::{Money, MoneyError};
 
-/// One admin request, exactly as it arrived.
-///
-/// Owned, because it crosses to the task the operation's body runs on ([`AdminDispatch`]).
-///
-/// NO derived `Debug` — see the hand-written impl below. This value holds the operator's LIVE
-/// credential, twice.
-#[derive(Clone, PartialEq, Eq)]
+/// Immutable original request custody, shared across the operation task and HTTP projection.
+#[derive(Clone)]
 pub(crate) struct AdminRequest {
-    /// The request method.
-    pub method: String,
-    /// The request path, query string and all.
-    pub path: String,
-    /// The credential the caller presented, where one was.
-    pub credential: Option<String>,
-    /// The request headers, in arrival order, names lowercased.
-    pub headers: Vec<(String, String)>,
-    /// The request body.
-    pub body: Vec<u8>,
-    /// The wall clock, in seconds, pinned at arrival. Every step reads this rather than the clock:
-    /// a unit that read the clock twice could be admitted in one window and rate-classed in the
-    /// next.
-    pub at: u64,
-    /// The key of the unit this request is answered as.
-    ///
-    /// Carried on the request because it has to cross the seam WITH it: the operation's body runs on
-    /// a task the seam spawned, and the one effect a body can ask to outlive its own response — the
-    /// drain — is attributed to the unit that asked for it. Without the key travelling here the
-    /// attribution would have to be re-derived on the far side of a task boundary, which is another
-    /// way of saying it would be guessed.
+    snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
+    binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
+    physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+    projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
 
-impl Drop for AdminRequest {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.credential.zeroize();
-        self.headers.zeroize();
-        self.body.zeroize();
-        self.path.zeroize();
+#[derive(Debug)]
+pub(crate) struct AdminHeadersInvalid;
+
+impl AdminRequest {
+    pub(crate) fn from_snapshot(
+        snapshot: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
+        unit: u64,
+    ) -> Self {
+        Self {
+            snapshot,
+            unit,
+            binding: None,
+            physical: None,
+            projection: Arc::new(Mutex::new(None)),
+        }
+    }
+    pub(crate) fn from_binding(
+        binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
+    ) -> Result<Self, busbar_kernel::inbound::request_snapshot::SnapshotError> {
+        let snapshot = binding.snapshot()?;
+        Ok(Self {
+            snapshot,
+            unit: binding.invocation().request_id().get(),
+            binding: Some(binding),
+            physical: None,
+            projection: Arc::new(Mutex::new(None)),
+        })
+    }
+    pub(crate) fn attach_physical(
+        &mut self,
+        physical: Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>,
+    ) -> Result<(), ReasonCode> {
+        if !self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| Arc::ptr_eq(binding, physical.binding()))
+        {
+            return Err(ReasonCode::Unauthenticated);
+        }
+        physical
+            .check_executing()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+        self.physical = Some(physical);
+        Ok(())
+    }
+    pub(crate) fn snapshot(
+        &self,
+    ) -> &Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot> {
+        &self.snapshot
+    }
+    pub(crate) fn method(&self) -> &str {
+        self.snapshot.method()
+    }
+    pub(crate) fn path(&self) -> &str {
+        self.snapshot.target()
+    }
+    pub(crate) fn body(&self) -> &[u8] {
+        self.snapshot.body()
+    }
+    pub(crate) fn at(&self) -> u64 {
+        self.snapshot.now_s()
+    }
+    pub(crate) fn headers(&self) -> impl Clone + ExactSizeIterator<Item = (&str, &[u8])> {
+        self.snapshot.headers()
+    }
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .and_then(|(_, value)| std::str::from_utf8(value).ok())
+    }
+    pub(crate) fn credential(&self) -> Option<&str> {
+        self.header("authorization")
+            .map(|value| {
+                let trimmed = value.trim_start();
+                match trimmed.split_once(' ') {
+                    Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                        rest.trim_start()
+                    }
+                    _ => trimmed,
+                }
+            })
+            .filter(|credential| !credential.is_empty())
+            .or_else(|| {
+                self.header(ADMIN_TOKEN_HEADER)
+                    .filter(|credential| !credential.is_empty())
+            })
+    }
+    pub(crate) fn http_headers(&self) -> Result<axum::http::HeaderMap, AdminHeadersInvalid> {
+        if self.binding.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
+        let mut headers = axum::http::HeaderMap::new();
+        for (name, value) in self.headers() {
+            headers.append(
+                axum::http::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| AdminHeadersInvalid)?,
+                axum::http::HeaderValue::from_bytes(value).map_err(|_| AdminHeadersInvalid)?,
+            );
+        }
+        Ok(headers)
+    }
+
+    pub(crate) fn http_projection(
+        &self,
+    ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
+        self.projection.lock().ok()?.as_ref().cloned()
+    }
+
+    pub(crate) fn attach_projection(
+        &self,
+        projection: busbar_kernel::inbound::http_projection::HttpProjection,
+    ) -> Result<(), AdminHeadersInvalid> {
+        if !Arc::ptr_eq(projection.snapshot(), &self.snapshot) {
+            return Err(AdminHeadersInvalid);
+        }
+        let mut slot = self.projection.lock().map_err(|_| AdminHeadersInvalid)?;
+        if slot.is_some() {
+            return Err(AdminHeadersInvalid);
+        }
+        *slot = Some(Arc::new(projection));
+        Ok(())
     }
 }
 
+impl PartialEq for AdminRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.unit == other.unit && Arc::ptr_eq(&self.snapshot, &other.snapshot)
+    }
+}
+impl Eq for AdminRequest {}
+
 impl std::fmt::Debug for AdminRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const REDACTED: &str = "<redacted>";
-        let presented = self.credential.as_deref().filter(|c| !c.is_empty());
-        let headers: Vec<(&str, &str)> = self
-            .headers
-            .iter()
-            .map(|(name, value)| {
-                let shown = match presented {
-                    Some(credential) if value.contains(credential) => REDACTED,
-                    _ => value.as_str(),
-                };
-                (name.as_str(), shown)
-            })
-            .collect();
         f.debug_struct("AdminRequest")
-            .field("method", &self.method)
-            .field("path", &self.path)
-            .field("credential", &self.credential.as_ref().map(|_| REDACTED))
-            .field("headers", &headers)
-            .field("body", &self.body)
-            .field("at", &self.at)
+            .field("snapshot", &self.snapshot)
             .field("unit", &self.unit)
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestAdminRequest {
+    pub method: String,
+    pub path: String,
+    pub credential: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub at: u64,
+    pub unit: u64,
+}
+
+#[cfg(test)]
+impl AdminRequest {
+    pub(crate) fn test_fixture(input: TestAdminRequest) -> Self {
+        use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+        let process = ProcessAdmission::new(2);
+        let lease = process.try_enter(AdmissionClass::Operator).unwrap();
+        Self::capture_test(input, &lease)
+    }
+    fn capture_test(
+        mut input: TestAdminRequest,
+        lease: &busbar_kernel::limits::process_admission::RequestLease,
+    ) -> Self {
+        use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+        if let Some(credential) = &input.credential {
+            if !input.headers.iter().any(|(name, _)| {
+                name.eq_ignore_ascii_case("authorization")
+                    || name.eq_ignore_ascii_case(ADMIN_TOKEN_HEADER)
+            }) {
+                input
+                    .headers
+                    .push((ADMIN_TOKEN_HEADER.to_owned(), credential.clone()));
+            }
+        }
+        let (path, query) = input.path.split_once('?').unwrap_or((&input.path, ""));
+        let snapshot = ChargedRequestSnapshot::capture(
+            SnapshotInput {
+                method: &input.method,
+                path,
+                query,
+                query_present: input.path.contains('?'),
+                authority: "",
+                headers: input
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_bytes())),
+                peer: "",
+                tls_peer_cert: &[],
+                body: &input.body,
+                now_s: input.at,
+            },
+            lease,
+        )
+        .unwrap();
+        Self::from_snapshot(snapshot, input.unit)
+    }
+    pub(crate) fn edit_for_test(&mut self, edit: impl FnOnce(&mut TestAdminRequest)) {
+        let mut input = TestAdminRequest {
+            method: self.method().to_owned(),
+            path: self.path().to_owned(),
+            credential: self.credential().map(str::to_owned),
+            headers: self
+                .headers()
+                .map(|(name, value)| (name.to_owned(), String::from_utf8(value.to_vec()).unwrap()))
+                .collect(),
+            body: self.body().to_vec(),
+            at: self.at(),
+            unit: self.unit,
+        };
+        let before = input.credential.clone();
+        edit(&mut input);
+        if input.credential != before {
+            input.headers.retain(|(name, _)| {
+                !name.eq_ignore_ascii_case("authorization")
+                    && !name.eq_ignore_ascii_case(ADMIN_TOKEN_HEADER)
+            });
+        }
+        *self = Self::capture_test(input, self.snapshot.request());
     }
 }
 
@@ -676,7 +839,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 &crate::root::kernel::ROOT_CARD,
                 self.amendments.as_deref(),
                 request,
-                self.request.at,
+                self.request.at(),
                 &self.attribution,
             )
             .await;
@@ -738,7 +901,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                         };
                         bound::plane_record_write_effect(
                             request,
-                            self.request.at,
+                            self.request.at(),
                             &*self.planes,
                             self.records.as_ref(),
                         )
@@ -765,7 +928,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                         };
                         bound::commit_upgrade_effect(
                             request,
-                            self.request.at,
+                            self.request.at(),
                             &self.attribution.principal,
                             self.amendments.as_deref(),
                         )
@@ -803,9 +966,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             return audit_keys_page(&self.request.path, view).await;
         }
         if verb == KernelVerb::GetRecords {
-            return Ok(records::records_answer(view, &*self.planes, &self.request.path).await);
+            return Ok(records::records_answer(view, &*self.planes, self.request.path()).await);
         }
-        render_audit_view(verb, &self.request.path, view)
+        render_audit_view(verb, self.request.path(), view)
             .await
             .map(json_answer)
     }
@@ -1651,6 +1814,7 @@ pub(crate) struct AdminWalk {
     /// the request has passed ([`claim`]).
     claim: Option<busbar_kernel::auth::PendingClaim>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    physical_pending: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1667,6 +1831,7 @@ impl AdminWalk {
             principal: None,
             claim: None,
             execution: None,
+            physical_pending: None,
             answer: None,
         }
     }
@@ -1691,7 +1856,7 @@ pub(crate) fn door_of(
     f: impl Fn(Option<&str>) -> busbar_kernel::auth::AdminDoor + Send + Sync + 'static,
 ) -> AdminDoorFn {
     Arc::new(move |request: &AdminRequest| {
-        Box::pin(std::future::ready(f(request.credential.as_deref()).into()))
+        Box::pin(std::future::ready(f(request.credential()).into()))
     })
 }
 
@@ -1850,7 +2015,8 @@ pub(crate) async fn decide(
 }
 
 pub(crate) fn decode(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
-    match busbar_core_admin::admin_codec::verbs::resolve(&walk.request.method, &walk.request.path) {
+    match busbar_core_admin::admin_codec::verbs::resolve(walk.request.method(), walk.request.path())
+    {
         None => Err(ReasonCode::DecodeFailed),
         Some(resolved) => {
             walk.verb = Some(resolved);
@@ -1868,34 +2034,28 @@ pub(crate) async fn authenticate(
     let revoked = || {
         bindings
             .revocations()
-            .zip(request.credential.as_deref())
+            .zip(request.credential())
             .is_some_and(|(set, credential)| set.is_revoked(credential))
     };
     let verdict = match &walk.admission {
         Some(admission) => admission.admin_verdict(),
         None => (binding.door)(request).await,
     };
-    walk.effect_context = Some(walk.admission.as_ref().map_or_else(
-        || {
-            let headers = request
-                .headers
-                .iter()
-                .filter_map(|(name, value)| {
-                    Some((
-                        name.parse::<axum::http::HeaderName>().ok()?,
-                        value.parse::<axum::http::HeaderValue>().ok()?,
-                    ))
-                })
-                .collect();
-            busbar_kernel::auth::effect::Context::new(
-                &request.method,
-                &request.path,
-                headers,
+    // Native effects are built only after the actual replay and physical join below. Their
+    // retained proof already owns this snapshot; no HTTP metadata projection is needed here.
+    if walk.physical_pending.is_none() {
+        walk.effect_context = Some(match &walk.admission {
+            Some(admission) => admission.effect_context(),
+            None => busbar_kernel::auth::effect::Context::new(
+                request.method(),
+                request.path(),
+                request
+                    .http_headers()
+                    .map_err(|_| ReasonCode::DecodeFailed)?,
                 &verdict.door,
-            )
-        },
-        busbar_kernel::inbound::RequestAdmission::effect_context,
-    ));
+            ),
+        });
+    }
     let (principal, grants, listed) = match verdict.door {
         busbar_kernel::auth::AdminDoor::Open => (
             busbar_kernel_identity::principal::ANONYMOUS.to_string(),
@@ -1938,6 +2098,12 @@ pub(crate) async fn authenticate(
 }
 
 pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    if let Some(pending) = &walk.physical_pending {
+        pending
+            .binding()
+            .check_live()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+    }
     if let Some(admission) = &walk.admission {
         if !admission.claim_admin_replay().await {
             return Err(ReasonCode::Unauthenticated);
@@ -1950,7 +2116,7 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             }
             walk.execution = Some(execution);
         }
-        return Ok(());
+        return complete_physical(walk);
     }
     if let Some(pending) = walk.claim.take() {
         let execution = Arc::new(
@@ -1966,7 +2132,33 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
         }
         walk.execution = Some(execution);
     }
-    Ok(())
+    complete_physical(walk)
+}
+
+fn complete_physical(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+    match walk.physical_pending.take() {
+        Some(pending) => {
+            let execution = walk.execution.as_ref().ok_or(ReasonCode::Unauthenticated)?;
+            let physical = Arc::new(
+                pending
+                    .complete_admin(execution.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
+            walk.effect_context = Some(
+                busbar_kernel::auth::effect::Context::from_physical(physical.clone())
+                    .map_err(|_| ReasonCode::Unauthenticated)?,
+            );
+            walk.request.attach_physical(physical)
+        }
+        None if walk
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.native().is_some()) =>
+        {
+            Err(ReasonCode::Unauthenticated)
+        }
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn verify(walk: &mut AdminWalk, principal: &PrincipalId) -> Result<(), ReasonCode> {
@@ -1981,8 +2173,10 @@ pub(crate) fn approve(walk: &AdminWalk) -> Result<(), ReasonCode> {
     let Some(granted) = walk.granted else {
         return Err(ReasonCode::ScopeDenied);
     };
-    let needed =
-        busbar_kernel::admin::scope::admin_required_scope(&walk.request.method, &walk.request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(
+        walk.request.method(),
+        walk.request.path(),
+    );
     if !granted.allows(scope_as_verb_scope(needed)) {
         return Err(ReasonCode::ScopeDenied);
     }
@@ -2017,6 +2211,11 @@ pub(crate) async fn route(
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
     walk: &mut AdminWalk,
 ) -> Result<(), ReasonCode> {
+    if let Some(physical) = &walk.request.physical {
+        physical
+            .check_executing()
+            .map_err(|_| ReasonCode::Unauthenticated)?;
+    }
     let verb = walk
         .verb
         .as_ref()
@@ -2101,18 +2300,22 @@ pub(crate) async fn route(
             None => None,
         };
         let ran = match recovery {
-            RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at).await,
-            RecoveryVerb::StoreRestore => {
-                let backup_ref = backup_ref_of(&request.body).ok_or(ReasonCode::DecodeFailed)?;
+            RecoveryVerb::ChainBreak => {
                 verbs
-                    .store_restore(admin, &actor, granted, request.at, &backup_ref)
+                    .chain_break(admin, &actor, granted, request.at())
+                    .await
+            }
+            RecoveryVerb::StoreRestore => {
+                let backup_ref = backup_ref_of(request.body()).ok_or(ReasonCode::DecodeFailed)?;
+                verbs
+                    .store_restore(admin, &actor, granted, request.at(), &backup_ref)
                     .await
             }
         };
         ran.map(|()| applied_answer())
     } else {
         verbs
-            .execute(verb, admin, &actor, granted, request.at, &request.body)
+            .execute(verb, admin, &actor, granted, request.at(), request.body())
             .await
     };
     walk.answer = Some(answer.map_err(|refusal| verbs_reason(refusal.reason))?);
@@ -2211,7 +2414,7 @@ fn verbs_reason(reason: busbar_core_admin::ReasonCode) -> ReasonCode {
 
 pub(crate) fn audit(walk: &AdminWalk, ended: &Outcome) -> busbar_contract::AuditFacts {
     let Some(resolved) = walk.verb else {
-        return unresolved_facts(Some(&walk.request.method), ended);
+        return unresolved_facts(Some(walk.request.method()), ended);
     };
     let applied = matches!(ended, Outcome::Completed)
         && walk
@@ -2319,3 +2522,43 @@ mod records_tests;
 #[cfg(test)]
 #[path = "tests/ledger_recovery_actual.rs"]
 mod ledger_recovery_actual;
+
+/// Test transport boundary: use actual process admission and gathering, never a fabricated lease.
+/// These service fixtures exercise the Admin consumer, not native socket/physical admission.
+#[cfg(test)]
+pub(crate) async fn charged_http_for_test(
+    request: axum::http::Request<axum::body::Body>,
+) -> axum::http::Request<axum::body::Body> {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::{
+        input_body,
+        process_admission::{AdmissionClass, ProcessAdmission},
+    };
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Operator).unwrap();
+    let (mut parts, body) = request.into_parts();
+    let bytes = input_body::gather(body, &lease, 1 << 24).await.unwrap();
+    let snapshot = ChargedRequestSnapshot::capture_header_map(
+        SnapshotInput {
+            method: parts.method.as_str(),
+            path: parts.uri.path(),
+            query: parts.uri.query().unwrap_or(""),
+            query_present: parts.uri.query().is_some(),
+            authority: parts
+                .uri
+                .authority()
+                .map_or("", |authority| authority.as_str()),
+            headers: &parts.headers,
+            peer: "",
+            tls_peer_cert: &[],
+            body: &bytes,
+            now_s: busbar_kernel::store::now(),
+        },
+        &lease,
+    )
+    .unwrap();
+    drop(bytes);
+    parts.extensions.insert(lease);
+    parts.extensions.insert(snapshot.clone());
+    axum::http::Request::from_parts(parts, axum::body::Body::from(snapshot.body_bytes()))
+}

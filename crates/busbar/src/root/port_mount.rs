@@ -39,14 +39,16 @@ use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
 use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_admin;
+use busbar_kernel::plane_driver::port_admission::{AdmittedUnit, Pending};
 use busbar_kernel::plane_driver::port_auth::{
     self, subject_identity, Credentials, Presented, Principal,
 };
-use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
+use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
-use busbar_kernel::plane_driver::HeadFields;
+use busbar_kernel::plane_driver::request_admission::RequestAllocation;
+use busbar_kernel::plane_driver::{HeadFields, NativeAdmissionError};
 use busbar_kernel::plane_grants::{IngressVerifier, ReplayGuard};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteFuture, PlaneRouteSpec};
 use busbar_kernel::state::{App, AppHandle};
@@ -344,15 +346,22 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
+async fn chain_principal(
+    ctx: &PlaneReqCtx,
+    bearer: Option<&str>,
+) -> (
+    Seen,
+    Option<GovCtx>,
+    Option<busbar_kernel::auth::SignedRequestAuthority>,
+) {
     let Some(token) = bearer else {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return (Seen::Rejected, None);
+        return (Seen::Rejected, None, None);
     };
     if app.auth.is_open() {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     }
     let target = ctx
         .uri
@@ -367,9 +376,19 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Opti
         None,
     )
     .await;
+    let signed = match &verdict {
+        busbar_kernel::auth::ChainVerdict::Identified {
+            signed_authority, ..
+        } => signed_authority.clone(),
+        _ => None,
+    };
     match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
-        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
-        Err(why) => (seen_of(Err(why)), None),
+        Ok((principal, gov)) => (
+            seen_of(Ok((principal, GovCtx::default()))),
+            Some(gov),
+            signed,
+        ),
+        Err(why) => (seen_of(Err(why)), None, None),
     }
 }
 
@@ -431,6 +450,7 @@ fn models_of(ctx: &PlaneReqCtx) -> Vec<String> {
 }
 
 /// A request the governance book refused to admit: the status its limit maps to, the wait it names (if any).
+#[cfg(test)]
 pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
     let (refusal, retry_after) = blocked_client(blocked);
     let mut response = response_of(port_auth::plain_refusal(&refusal));
@@ -465,35 +485,17 @@ fn retry_header(response: &mut PlaneResponse, retry_after: Option<u64>) {
     }
 }
 
-/// The request as a billed unit: admitted through its resolved key's budget chain and opened on the plane money.
-/// `None` = not billed (no billing installed, no governed key on the request, or no app generation to price
-/// under): the request runs with audit rows only.
-fn open_unit(
+/// Allocate only the unit identity. The retained task's checked pool receipt owns the later
+/// monetary admission; allocation itself charges nothing and acquires no governor hold.
+fn allocate_unit(
     seat: &PortSeat,
     billing: Option<&PortBilling>,
     ctx: &PlaneReqCtx,
-    arrived: u64,
-) -> Result<Option<Unit>, LimitBlocked> {
-    let Some(billing) = billing else {
-        return Ok(None);
-    };
-    let Some(key) = ctx.gov.as_ref().and_then(|gov| gov.key.clone()) else {
-        return Ok(None);
-    };
-    let Some(app) = app_of(&ctx.engine) else {
-        return Ok(None);
-    };
-    let mode = busbar_kernel::config::groups::ExhaustionMode::FinishUnit;
-    billing
-        .open(Admit {
-            instance: &seat.instance,
-            classes: seat.driver.usage_classes(),
-            key,
-            cost: Arc::clone(&app.cost),
-            mode,
-            arrived,
-        })
-        .map(Some)
+) -> Option<Unit> {
+    let billing = billing?;
+    ctx.gov.as_ref()?.key.as_ref()?;
+    app_of(&ctx.engine)?;
+    Some(billing.allocate(seat.driver.usage_classes()))
 }
 
 /// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
@@ -566,28 +568,27 @@ async fn answer(
     let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
         Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
         None if resolves_credential(route.effective) => {
-            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            let (seen, gov, signed_authority) = chain_principal(&ctx, bearer.as_deref()).await;
             ctx.gov = gov;
+            ctx.signed_authority = signed_authority;
             seen
         }
         None => Seen::Anonymous,
     };
-    let unit = match open_unit(seat, billing, &ctx, now_s) {
-        Ok(unit) => unit,
-        Err(blocked) => {
-            let (refusal, retry_after) = blocked_client(&blocked);
-            let mut response =
-                match seat
-                    .driver
-                    .render_refusal_now(route.route, http_in(&ctx), refusal)
-                {
-                    Ok(items) => response_of(items),
-                    Err(_) => blocked_response(&blocked),
-                };
-            retry_header(&mut response, retry_after);
-            return response;
+    // The occurrence proof owns its original key. An unrelated resolved key may not
+    // select the payer before the atomic one-shot registration below.
+    if let Some(authority) = &ctx.signed_authority {
+        if !ctx
+            .gov
+            .as_ref()
+            .and_then(|gov| gov.key.as_ref())
+            .is_some_and(|key| Arc::ptr_eq(key, authority.original_key()))
+        {
+            return failed(StatusCode::UNAUTHORIZED);
         }
-    };
+    }
+    let mut unit = allocate_unit(seat, billing, &ctx);
+
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
             billing: billing.clone(),
@@ -596,7 +597,7 @@ async fn answer(
         }),
         _ => None,
     };
-    let invocation = match (&unit, generation) {
+    let invocation = match (&mut unit, generation) {
         (Some(unit), Some(generation)) => match generation.native_unit(seat, unit, &ctx) {
             Ok(invocation) => Some(invocation),
             Err(why) => {
@@ -606,6 +607,71 @@ async fn answer(
         },
         (Some(_), None) => return failed(StatusCode::SERVICE_UNAVAILABLE),
         (None, _) => None,
+    };
+    let retry_after = Arc::new(Mutex::new(None));
+    let admission = match (unit, &invocation, billing) {
+        (Some(unit), Some(invocation), Some(billing)) => {
+            let Some(app) = app_of(&ctx.engine) else {
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            let allocation = match RequestAllocation::new(
+                invocation.context.clone(),
+                Arc::clone(&app.cost),
+                now_s,
+            ) {
+                Ok(allocation) => allocation,
+                Err(_) => return failed(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            let Some(original_route) = seat.retain_route(&invocation.context, route.route) else {
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            let billing = billing.clone();
+            let classes = seat.driver.usage_classes();
+            let route_id = route.route;
+            let retry_after = Arc::clone(&retry_after);
+            Some(Arc::new(
+                Pending::new(
+                    allocation,
+                    Arc::clone(&seat.request_routes),
+                    unit.journal.clone(),
+                    move |receipt| {
+                        use busbar_kernel::refusal::RefusalMap;
+                        let unavailable = || {
+                            busbar_kernel::refusal::CoreRefusals::new()
+                                .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                        };
+                        let receipt = receipt.begin().map_err(|_| unavailable())?;
+                        let request = billing
+                            .admit_existing(
+                                receipt,
+                                classes,
+                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(
+                                    Arc::from([]),
+                                ),
+                                busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                            )
+                            .map_err(|error| match error {
+                                NativeAdmissionError::Blocked(blocked) => {
+                                    let (refusal, wait) = blocked_client(&blocked);
+                                    *retry_after.lock().unwrap_or_else(PoisonError::into_inner) =
+                                        wait;
+                                    refusal
+                                }
+                                _ => unavailable(),
+                            })?;
+                        let rollback = billing
+                            .admission_rollback(&request)
+                            .map_err(|_| unavailable())?;
+                        AdmittedUnit::ordinary(request, unit, rollback).map_err(|_| unavailable())
+                    },
+                )
+                .with_channel_budget(seat.channel_budget.unit())
+                .with_current_rates(ctx.handle.selected_rate_admission())
+                .with_route(original_route),
+            ))
+        }
+        (None, None, _) => None,
+        _ => return failed(StatusCode::SERVICE_UNAVAILABLE),
     };
     let (principal, identity) = match &seen {
         Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
@@ -649,7 +715,7 @@ async fn answer(
         };
         let input = ServeIn {
             request,
-            admission: None,
+            admission,
             invocation: invocation.as_ref().map(|owner| owner.context.clone()),
             route: route.route,
             http,
@@ -657,7 +723,7 @@ async fn answer(
             audience: seat.audience.as_deref().unwrap_or_default(),
             now_s,
             principal,
-            unit,
+            unit: None,
             upstream: seat.upstream.clone(),
             client: Some(Arc::new(pipe)),
             carrier: seat.carrier.clone(),
@@ -686,7 +752,7 @@ async fn answer(
         }
         served
     });
-    tokio::select! {
+    let mut response = tokio::select! {
         head = &mut head_rx => match head {
             Ok((status, fields)) => with_head(status, fields, Body::new(PipeBody(body_rx))),
             // The session ended without writing a head.
@@ -697,7 +763,10 @@ async fn answer(
             Ok((status, fields)) => with_head(status, fields, Body::new(PipeBody(body_rx))),
             Err(_) => finished(done),
         },
-    }
+    };
+    let wait = *retry_after.lock().unwrap_or_else(PoisonError::into_inner);
+    retry_header(&mut response, wait);
+    response
 }
 
 /// One spec per (data route, verb) of every seat, catalog routes included. `ingress` is what an

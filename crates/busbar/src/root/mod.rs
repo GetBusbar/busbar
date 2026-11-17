@@ -198,6 +198,7 @@ pub mod linked;
     )
 )]
 pub mod listener;
+pub(crate) mod listener_native;
 pub(crate) mod loader;
 pub(crate) mod measurements;
 /// The migrate-on-boot seam: step 1 (the stamp) and step 5 (the write and re-exec).
@@ -370,3 +371,7 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(root_stdio);
 #[cfg(test)]
 owner_test_sources!(root_http);
+
+pub(crate) mod selected_report;
+#[cfg(test)]
+mod selected_report_tests;

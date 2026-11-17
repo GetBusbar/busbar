@@ -10,10 +10,22 @@ use std::sync::Arc;
 
 use crate::config::groups::{valid_selected_identifier, GroupCfg, LimitCfg, LimitMetric};
 use crate::cost::CostModel;
+use crate::plane_driver::port_upstream::TargetIdentity;
+use crate::plane_driver::PreparedRateAttempt;
+use crate::state::App;
 
+use super::current_credential::CurrentCredentialRefusal;
 use super::selected_resource::RateMetric;
 
+impl super::GovState {
+    pub(crate) fn selected_rates(&self) -> &Arc<super::selected_resource::SelectedRates> {
+        &self.selected_rates
+    }
+}
+
 const MAX_APPLICABLE: usize = 32;
+
+pub use crate::plane_driver::image_identity::PlaneImageIdentity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SelectedTargetKind {
@@ -61,7 +73,199 @@ pub struct SelectedPolicy {
     identity: Arc<()>,
 }
 
+/// Current-policy refusal occurs before the governor owns any reservation or prepared token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectedPolicyRefusal {
+    CurrentAuthority(CurrentCredentialRefusal),
+    CurrentGroup(busbar_contract::caps::ReasonCode),
+    StalePolicyTarget,
+    InvalidBinding,
+}
+
+impl From<CurrentCredentialRefusal> for SelectedPolicyRefusal {
+    fn from(cause: CurrentCredentialRefusal) -> Self {
+        match cause {
+            CurrentCredentialRefusal::ForeignAuthority => Self::InvalidBinding,
+            other => Self::CurrentAuthority(other),
+        }
+    }
+}
+
+struct CurrentRequest<'a> {
+    key: Arc<busbar_contract::records::VirtualKey>,
+    seat: &'a crate::plane_driver::port::PortSeat,
+}
+
 impl SelectedPolicy {
+    /// Resolve only under AppHandle's short admission gate, from its one current App load.
+    /// This borrows the original attempt; refusal leaves its monetary custody untouched.
+    pub(crate) fn resolve_current(
+        &self,
+        current: &App,
+        prepared: &PreparedRateAttempt,
+        now: u64,
+    ) -> Result<ResolvedSelectedRules, SelectedPolicyRefusal> {
+        use SelectedPolicyRefusal::{InvalidBinding, StalePolicyTarget};
+        let receipt = prepared.receipt();
+        let selected = prepared.selection();
+        if !receipt.accepts_walk(selected.walk()) {
+            return Err(InvalidBinding);
+        }
+        let origin = prepared.original_route().ok_or(InvalidBinding)?;
+        if origin.route() != prepared.route() {
+            return Err(InvalidBinding);
+        }
+        let CurrentRequest { key, seat } = self.current_request(current, receipt, origin, now)?;
+        if !seat
+            .request_routes
+            .allows_current_selection(receipt, selected, &key)
+        {
+            return Err(StalePolicyTarget);
+        }
+        check_current_target(
+            seat,
+            selected.target(),
+            selected.definition().ok_or(InvalidBinding)?,
+        )?;
+        self.bind_rows(&key, prepared.instance(), prepared.resource())
+    }
+
+    /// Read-only candidate evidence for hooks. It grants no dispatch and creates no holds.
+    /// Metadata must come from the actual original candidate/TargetDefinition; authority
+    /// remains the admitted request plus its retained original route and current credential.
+    pub(crate) fn resolve_headroom(
+        &self,
+        current: &App,
+        receipt: &crate::plane_driver::request_admission::AdmittedRequest,
+        origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
+        candidate: &crate::plane_driver::port_upstream::Candidate,
+        definition: &crate::upstreams::UpstreamDef,
+        now: u64,
+    ) -> Result<ResolvedSelectedRules, SelectedPolicyRefusal> {
+        let CurrentRequest { key, seat } = self.current_request(current, receipt, origin, now)?;
+        if !seat
+            .request_routes
+            .allows_current_candidate(receipt, candidate, &key)
+        {
+            return Err(SelectedPolicyRefusal::StalePolicyTarget);
+        }
+        check_current_target(seat, candidate, definition)?;
+        self.bind_rows(
+            &key,
+            receipt.context().instance(),
+            candidate.resource.as_deref(),
+        )
+    }
+
+    /// One shared authentication/image check for reservation and read-only headroom.
+    /// Refresh scheduling belongs outside the gate; current_key uses hydrated cached state.
+    fn current_request<'a>(
+        &self,
+        current: &'a App,
+        receipt: &crate::plane_driver::request_admission::AdmittedRequest,
+        origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
+        now: u64,
+    ) -> Result<CurrentRequest<'a>, SelectedPolicyRefusal> {
+        use SelectedPolicyRefusal::{InvalidBinding, StalePolicyTarget};
+        if !current
+            .selected_policy
+            .as_ref()
+            .is_some_and(|policy| std::ptr::eq(self, policy.as_ref()))
+            || !Arc::ptr_eq(&self.cost, &current.cost)
+        {
+            return Err(InvalidBinding);
+        }
+        let governance = current.governance.as_ref().ok_or(InvalidBinding)?;
+        if !receipt.is_live()
+            || !receipt.matches_governance(governance)
+            || !valid_selected_identifier(&receipt.key().id)
+            || !valid_selected_identifier(receipt.context().instance())
+            || !origin.accepts(receipt.context(), origin.route())
+        {
+            return Err(InvalidBinding);
+        }
+        let mut seats = current
+            .port_seats
+            .iter()
+            .filter(|seat| seat.instance == receipt.context().instance());
+        let seat = seats.next().ok_or(StalePolicyTarget)?;
+        if seats.next().is_some() || !origin.matches_current(seat) {
+            return Err(StalePolicyTarget);
+        }
+        // Installed only by one-shot original signed request registration. Unsupported native
+        // provider current authority never falls back to a key lookup or signed generation.
+        let key = receipt
+            .signed_authority()
+            .ok_or(InvalidBinding)?
+            .current_key(governance, now, seat.audience.as_deref())
+            .map_err(SelectedPolicyRefusal::from)?;
+        if key.id != receipt.key().id {
+            return Err(InvalidBinding);
+        }
+        Ok(CurrentRequest { key, seat })
+    }
+
+    fn bind_rows(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        instance: &str,
+        resource: Option<&str>,
+    ) -> Result<ResolvedSelectedRules, SelectedPolicyRefusal> {
+        Ok(ResolvedSelectedRules {
+            key_id: key.id.clone().into_boxed_str(),
+            instance: instance.into(),
+            resource: resource.map(Box::from),
+            rows: self.applicable_rows(key, instance, resource)?,
+            policy_revision: self.revision,
+            activated_minute: self.activated_minute,
+        })
+    }
+
+    /// Pure row projection after the resolver has checked actual current authority. This
+    /// cannot construct a bound result or reserve anything on its own.
+    fn applicable_rows(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        instance: &str,
+        resource: Option<&str>,
+    ) -> Result<Box<[ResolvedSelectedRule]>, SelectedPolicyRefusal> {
+        use busbar_contract::caps::ReasonCode;
+        use SelectedPolicyRefusal::{CurrentGroup, InvalidBinding};
+        let chain = self
+            .cost
+            .chain_for(key)
+            .map_err(|_| CurrentGroup(ReasonCode::ScopeDenied))?;
+        let mut rows = Vec::new();
+        for &index in chain.group_indices() {
+            let group = self.cost.groups().get(index).ok_or(InvalidBinding)?;
+            if !group.enabled {
+                return Err(CurrentGroup(ReasonCode::GroupFrozen));
+            }
+            let rules = self.groups.get(&group.name).ok_or(InvalidBinding)?;
+            for rule in rules.iter().filter(|rule| {
+                rule.instance.as_ref() == instance && Some(rule.resource.as_ref()) == resource
+            }) {
+                if rows.len() == MAX_APPLICABLE {
+                    return Err(InvalidBinding);
+                }
+                let metric = match rule.metric {
+                    LimitMetric::Requests => RateMetric::Requests,
+                    LimitMetric::Tokens => RateMetric::Tokens,
+                    _ => return Err(InvalidBinding),
+                };
+                rows.push(ResolvedSelectedRule {
+                    group_id: group.name.clone().into_boxed_str(),
+                    rule_id: rule.id.clone(),
+                    metric,
+                    threshold: rule.threshold,
+                    policy_revision: self.revision,
+                    activated_minute: rule.activated_minute.unwrap_or(self.activated_minute),
+                });
+            }
+        }
+        Ok(rows.into_boxed_slice())
+    }
+
     /// Run against the same validated groups, CostModel and actual target set that the
     /// candidate App will publish. Ordinary group/pool validation remains with its owner.
     pub fn compile(
@@ -207,6 +411,102 @@ impl SelectedPolicy {
     }
 }
 
+fn check_current_target(
+    seat: &crate::plane_driver::port::PortSeat,
+    original: &crate::plane_driver::port_upstream::Candidate,
+    original_definition: &crate::upstreams::UpstreamDef,
+) -> Result<(), SelectedPolicyRefusal> {
+    use SelectedPolicyRefusal::{InvalidBinding, StalePolicyTarget};
+    if original
+        .resource
+        .as_deref()
+        .is_some_and(|value| !valid_selected_identifier(value))
+    {
+        return Err(InvalidBinding);
+    }
+    let target = seat
+        .upstream
+        .as_ref()
+        .and_then(|upstream| upstream.target(&original.pool, &original.qualified_member))
+        .ok_or(StalePolicyTarget)?;
+    if target.identity != original.identity
+        || target.resource != original.resource
+        || target.provider != original.provider
+        || target.base_path != original.base_path
+        || target.flags != original.flags
+        || target.params != original.params
+        || (matches!(original.identity, TargetIdentity::Registration)
+            && target.registered_upstream.as_deref() != Some(original.upstream.as_ref()))
+    {
+        return Err(StalePolicyTarget);
+    }
+    let current_definition = target
+        .definition
+        .as_ref()
+        .ok_or(StalePolicyTarget)?
+        .as_arc();
+    if original_definition.resource != original.resource
+        || current_definition.resource != target.resource
+        || !compatible_definition(original_definition, current_definition)
+    {
+        return Err(StalePolicyTarget);
+    }
+    Ok(())
+}
+
+/// Compare actual retained destination policy, not a plane projection or Arc identity.
+/// The selected pair already fixes target identity; model allocation names may change when
+/// unrelated routes are inserted. Registration names are checked separately by the resolver.
+fn compatible_definition(
+    original: &crate::upstreams::UpstreamDef,
+    current: &crate::upstreams::UpstreamDef,
+) -> bool {
+    use crate::upstreams::{StdioCommand, UpstreamDef, UpstreamTls};
+    let UpstreamDef {
+        name: _,
+        resource,
+        allow_private,
+        url,
+        command,
+        tls,
+        auth,
+    } = original;
+    let UpstreamTls {
+        pin_spki,
+        client_identity,
+        trust,
+    } = tls;
+    resource == &current.resource
+        && allow_private == &current.allow_private
+        && url == &current.url
+        && auth == &current.auth
+        && pin_spki == &current.tls.pin_spki
+        && client_identity == &current.tls.client_identity
+        && match (trust, &current.tls.trust) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.sha256 == b.sha256 && a.der == b.der,
+            _ => false,
+        }
+        && match (command, &current.command) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                let StdioCommand {
+                    argv,
+                    env,
+                    cwd,
+                    pin,
+                    idle_s,
+                } = a;
+                argv == &b.argv
+                    && env == &b.env
+                    && cwd == &b.cwd
+                    && pin == &b.pin
+                    && idle_s == &b.idle_s
+            }
+            _ => false,
+        }
+}
+
 fn compile_row(
     group: &str,
     limit: &LimitCfg,
@@ -234,6 +534,27 @@ fn compile_row(
 }
 
 impl PendingSelectedPolicy {
+    /// Install only on the owned initial App before AppHandle exists. Reload replacement
+    /// must use AppHandle's publication gate and the actual predecessor instead.
+    pub fn install_initial(self, app: &mut App) -> Result<(), &'static str> {
+        if app.selected_policy.is_some()
+            || self.previous.is_some()
+            || !Arc::ptr_eq(&self.cost, &app.cost)
+        {
+            return Err("initial selected policy does not belong to this unpublished App");
+        }
+        let governance = app
+            .governance
+            .as_ref()
+            .ok_or("initial selected policy requires the application's shared governance")?;
+        let minute = governance
+            .selected_rates()
+            .activation_minute()
+            .map_err(|_| "initial selected policy activation clock is unavailable")?;
+        app.selected_policy = Some(Arc::new(self.activate(None, 1, minute)?));
+        Ok(())
+    }
+
     /// O(1) move at the actual publication boundary, after sampling the shared governor clock.
     /// Root must use its admission gate and atomically publish the resulting complete App.
     pub fn activate(

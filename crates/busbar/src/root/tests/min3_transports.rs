@@ -11,10 +11,20 @@ use busbar_ports::PortError;
 use super::*;
 
 /// A framer that declares `protocols` and answers nothing (the table reads only `protocols`).
-struct Framer(Box<[Box<str>]>);
+struct Framer {
+    protocols: Box<[Box<str>]>,
+    slots: Box<[Box<str>]>,
+    alpn: Box<[Box<str>]>,
+    facts: u64,
+}
 
-fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
-    Arc::new(Framer(protocols.iter().map(|p| Box::from(*p)).collect()))
+pub(crate) fn framer(protocols: &[&str]) -> Arc<dyn TransportPort> {
+    Arc::new(Framer {
+        protocols: protocols.iter().map(|p| Box::from(*p)).collect(),
+        slots: Box::default(),
+        alpn: Box::default(),
+        facts: 0,
+    })
 }
 
 fn unanswered() -> PortError {
@@ -26,17 +36,24 @@ fn unanswered() -> PortError {
 }
 
 impl TransportPort for Framer {
-    fn alpn(&self, _: u32) -> &[Box<str>] {
-        &[]
+    fn listener_slots(&self) -> &[Box<str>] {
+        &self.slots
+    }
+    fn alpn(&self, role: u32) -> &[Box<str>] {
+        if role == busbar_plugin_abi::transport::ROLE_SERVER {
+            &self.alpn
+        } else {
+            &[]
+        }
     }
     fn defaults(&self, _: u32) -> &[(Box<str>, Box<str>)] {
         &[]
     }
     fn protocols(&self) -> &[Box<str>] {
-        &self.0
+        &self.protocols
     }
     fn facts(&self) -> u64 {
-        0
+        self.facts
     }
     fn begin(
         &self,
@@ -218,4 +235,94 @@ fn two_instances_declaring_one_protocol_refuse_the_boot_naming_both() {
         refused.contains("`transport-ws`") && refused.contains("`ws-fork`"),
         "{refused}"
     );
+}
+
+pub(crate) fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
+    ServedTransport {
+        instance: Arc::from(instance),
+        port: Arc::new(Framer {
+            protocols: Box::default(),
+            slots: slots.iter().map(|slot| Box::from(*slot)).collect(),
+            alpn: Box::new([Box::from("h2"), Box::from("http/1.1")]),
+            facts: busbar_plugin_abi::transport::FB_SERVER,
+        }),
+    }
+}
+
+#[test]
+fn native_initial_binding_selects_the_exact_declaring_instance_and_server_offer() {
+    use crate::root::min3_framers::NativeFramers;
+    let one = initial("independent-publisher", &["listen", "future_slot"]);
+    let port = Arc::clone(&one.port);
+    let framers = NativeFramers::new(vec![served("upgrade-only", &["listen"]), one]);
+    let selected = framers.for_slot("listen").expect("explicit supplier");
+    assert_eq!(selected.instance.as_ref(), "independent-publisher");
+    assert!(Arc::ptr_eq(&selected.port, &port));
+    assert_eq!(
+        busbar_core_connector::framed_stream::session::server_alpn(&*selected.port),
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+    assert!(framers.for_slot("Listen").is_err(), "slots are exact");
+    assert_eq!(
+        framers
+            .upgrade("LISTEN")
+            .expect("upgrade namespace")
+            .instance
+            .as_ref(),
+        "upgrade-only"
+    );
+}
+
+#[test]
+fn missing_and_duplicate_native_initial_suppliers_refuse_without_order_fallback() {
+    use crate::root::min3_framers::NativeFramers;
+    assert!(NativeFramers::new(vec![
+        initial("server-only", &[]),
+        served("protocol-only", &["listen"])
+    ])
+    .for_slot("listen")
+    .is_err());
+    for names in [["first", "second"], ["second", "first"]] {
+        let framers = NativeFramers::new(
+            names
+                .into_iter()
+                .map(|name| initial(name, &["listen"]))
+                .collect(),
+        );
+        let error = framers
+            .for_slot("listen")
+            .err()
+            .expect("ambiguous slot refused");
+        assert!(error.contains("`first`") && error.contains("`second`"));
+    }
+}
+
+#[test]
+fn replacing_native_framers_keeps_the_selected_old_generation_alive() {
+    use crate::root::min3_framers::NativeFramers;
+    let old = initial("old-supplier", &["listen"]);
+    let weak = Arc::downgrade(&old.port);
+    let current = NativeFramers::new(vec![old]);
+    let accepted = current.clone();
+    drop(current);
+    let replacement = NativeFramers::new(vec![initial("new-supplier", &["listen"])]);
+    assert_eq!(
+        accepted
+            .for_slot("listen")
+            .expect("old generation")
+            .instance
+            .as_ref(),
+        "old-supplier"
+    );
+    assert_eq!(
+        replacement
+            .for_slot("listen")
+            .expect("new generation")
+            .instance
+            .as_ref(),
+        "new-supplier"
+    );
+    assert!(weak.upgrade().is_some());
+    drop(accepted);
+    assert!(weak.upgrade().is_none());
 }
