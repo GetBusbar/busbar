@@ -220,12 +220,22 @@ impl Calls<'_> {
         }
         let mut signals = RequestedSignals::default();
         for &signal in &hook.signals {
+            if matches!(
+                signal,
+                crate::hooks::Signal::CandidateBreakerState
+                    | crate::hooks::Signal::CandidateLatencyP95Ms
+            ) {
+                return Err(format!(
+                    "hook attachment `{name}` requests signal `{}` with no native encoding",
+                    signal.name()
+                ));
+            }
             signals.insert(signal);
         }
         Ok(Call {
             name: Arc::from(name),
             port: opened.port.clone(),
-            timeout: policy_timeout(hook.timeout_ms),
+            timeout: policy_timeout(hook.timeout_ms).min(opened.timeout),
             prompt: hook.prompt,
             user: hook.user,
             signals,
