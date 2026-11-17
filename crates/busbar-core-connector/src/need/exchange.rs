@@ -201,7 +201,7 @@ async fn exchange<P: Reply>(
     let (stream, h2) = crate::io::timeout_on(io.runtime(), connect_budget, async {
         let route = admission.dial(host, port, https).await?;
         let net = io
-            .connect_route(&authority, &route, None, req.timeout)
+            .connect_route(req.instance, &authority, &route, None, req.timeout)
             .await?;
         let pair = if https {
             let plan = TlsPlan {
