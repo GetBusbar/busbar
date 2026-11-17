@@ -11,6 +11,27 @@
 //!
 //! `unsafe` here: the aliases of the entries that take an instance pointer (`EntryFn0..=EntryFn5`,
 //! `ResumeFn`, `CancelFn`, `CloseFn`). `DescribeFn` and `OpenFn` take no raw pointer and are safe.
+//!
+//! # Entry safety contract
+//!
+//! These function-pointer types cannot express the relationship between an opaque instance address,
+//! its image's table and a live host handle. Before calling an entry, the host must establish:
+//!
+//! - The function belongs to the same admitted image as `inst`; a non-null `inst` is the still-live,
+//!   correctly aligned allocation returned by that image's `Inst::into_instance`. The image stays
+//!   mapped throughout the call. Null is allowed only where the alias below explicitly permits it.
+//! - Arguments and output satisfy their raw-view contracts for the entire call. For an async start
+//!   or resume, argument/result storage remains immutable and allocated until the chain retires;
+//!   `ChainBufs` owns that storage, and `Chain::drop` cancels before its buffers are freed.
+//! - A session/chain token has one active caller (I6), including cancellation and consuming entries.
+//!   The host's `Session` and `Chain` require exclusive borrows; closing the instance cannot overlap
+//!   any call. Different sessions may run concurrently because the plugin is `Send + Sync`.
+//!
+//! `host::invoke0..=invoke5`, `Chain::resume`, `cancel_raw` and `Instance::drop` are the call sites;
+//! `shim` implements the corresponding callee contracts. Synchronous entries borrow the instance;
+//! only `CloseFn` releases its allocation. Session end/cancel removes its slot, and chain completion
+//! or cancel drops its future before host buffers can be freed. Rust references cannot carry these
+//! ownership relationships across the fixed C ABI, so the aliases retain explicit caller obligations.
 
 #![allow(unsafe_code)]
 
@@ -28,19 +49,40 @@ use crate::shim::{
 
 mechanism! {
 /// A kind entry with no argument: `(inst, h, out)`. Higher-ranked over the call's `'a`.
+/// # Safety
+/// Uphold this module's entry safety contract; `inst` must be non-null.
 pub type EntryFn0 = for<'a> unsafe extern "C" fn(*const c_void, &'static Host, &'a mut RawOut) -> Status;
 /// A kind entry with one raw argument (a session method's first is its token).
+/// # Safety
+/// Uphold this module's entry safety contract, including token exclusivity when applicable;
+/// `inst` must be non-null.
 pub type EntryFn1<A1> =
     for<'a> unsafe extern "C" fn(*const c_void, &'static Host, Arg<'a, A1>, &'a mut RawOut) -> Status;
+/// A kind entry with two raw arguments.
+/// # Safety
+/// Uphold this module's entry safety contract for both arguments and any session token;
+/// `inst` must be non-null.
 pub type EntryFn2<A1, A2> = for<'a> unsafe extern "C" fn(
     *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, &'a mut RawOut,
 ) -> Status;
+/// A kind entry with three raw arguments.
+/// # Safety
+/// Uphold this module's entry safety contract for all arguments and any session token;
+/// `inst` must be non-null.
 pub type EntryFn3<A1, A2, A3> = for<'a> unsafe extern "C" fn(
     *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, &'a mut RawOut,
 ) -> Status;
+/// A kind entry with four raw arguments.
+/// # Safety
+/// Uphold this module's entry safety contract for all arguments and any session token;
+/// `inst` must be non-null.
 pub type EntryFn4<A1, A2, A3, A4> = for<'a> unsafe extern "C" fn(
     *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, Arg<'a, A4>, &'a mut RawOut,
 ) -> Status;
+/// A kind entry with five raw arguments.
+/// # Safety
+/// Uphold this module's entry safety contract for all arguments and the session token;
+/// `inst` must be non-null.
 pub type EntryFn5<A1, A2, A3, A4, A5> = for<'a> unsafe extern "C" fn(
     *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, Arg<'a, A4>, Arg<'a, A5>,
     &'a mut RawOut,
@@ -50,12 +92,23 @@ pub type DescribeFn = for<'a> extern "C" fn(&'static Host, &'a mut RawOut) -> St
 /// Cold. `config` = the bound JSON; flags: DRY_RUN. OK + INSTANCE, or NEED (an open chain), or a FAIL.
 pub type OpenFn = for<'a> extern "C" fn(&'static Host, Arg<'a, Bytes<'static>>, u32, &'a mut RawOut) -> Status;
 /// Continue a chain; `inst` null for open chains.
+/// # Safety
+/// Uphold this module's entry safety contract. Own the chain token exclusively for the poll;
+/// retain all previous buffers and `results` until retirement. Null selects this image's open slab.
 pub type ResumeFn = for<'a> unsafe extern "C" fn(
     *const c_void, &'static Host, Arg<'a, u64>, Arg<'a, Bytes<'static>>, &'a mut RawOut,
 ) -> Status;
 /// Drop a chain (bit 63 clear) or a session (bit 63 set); `inst` null = the open slab. Idempotent.
+/// # Safety
+/// Uphold this module's entry safety contract. Exclude concurrent calls for this token, even when
+/// cancelling repeatedly; idempotence permits sequential stale calls, not concurrent live removal.
+/// Keep chain buffers alive until this call returns. Null selects this image's open slab.
 pub type CancelFn = unsafe extern "C" fn(*const c_void, Token) -> Status;
 /// Drop the instance with its chains and sessions, the plugin value last.
+/// # Safety
+/// Null is a no-op. Otherwise transfer the live allocation from this image's INSTANCE answer exactly
+/// once, after all entries and handle borrows have ended. Nothing may access it after this call.
+/// Keep the image mapped through all field destructors and the allocation's release (`drop_inst`).
 pub type CloseFn = unsafe extern "C" fn(*const c_void) -> Status;
 }
 

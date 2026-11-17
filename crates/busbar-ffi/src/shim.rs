@@ -11,6 +11,22 @@
 //!
 //! `unsafe` here: `enter` (def and body); per shim its def and its `enter` block; plus the slot
 //! `get_mut` of the session shims and of `resume`, and the `drop_inst` block of `close`.
+//!
+//! # Entry safety contract
+//!
+//! Every instance-taking entry implements the corresponding `vt` alias's safety contract. `M` must
+//! be the image that allocated `inst`, and the allocation must remain live for the complete entry.
+//! `enter` only reconstructs a shared borrow; it does not validate an arbitrary address or lock a slot.
+//! Session entries, resume, end and cancel therefore additionally require exclusive access to their
+//! token (I6), supplied by the host handle's exclusive borrow. Token generation checks reject stale
+//! identities but do not serialize two simultaneous entries for the same live identity.
+//!
+//! The host keeps borrowed argument/output memory valid for each synchronous call and retains async
+//! argument/result buffers until the chain is retired. Async shims store borrowed futures only in the
+//! entered instance's chain table; completion, cancellation and instance teardown drop those futures
+//! before their plugin or host buffers. No shim other than `close` frees the instance. Each declaration
+//! below states its additional ownership obligation; its body records the individual pointer/slot
+//! operation. These are C ABI caller obligations, not checks performed by `contain`.
 
 #![allow(unsafe_code)]
 
@@ -224,6 +240,9 @@ fn contain(f: impl FnOnce() -> Status) -> Status {
 /// # Safety
 /// `inst` is null or the address `Inst::into_instance` returned for this image's `InstOf<M>`, whose
 /// `close` has not run (the host's `Instance` holds it and calls with `&self`; `Drop` is the only close).
+/// For non-null input it must remain allocated, aligned and initialized for the entire chosen `'e`;
+/// there must be no overlapping mutable borrow of the whole instance. All callers below keep the
+/// returned shared borrow inside the guarded entry; this helper does not extend the allocation's life.
 unsafe fn enter<'e, M: Image>(inst: *const c_void) -> Option<&'e InstOf<M>> {
     // SAFETY: by the contract the pointer is null or a live `InstOf<M>` that outlives the entry.
     unsafe { inst.cast::<InstOf<M>>().as_ref() }
@@ -250,6 +269,9 @@ fn drive_new<M: Image>(
 
 // ---- sync methods ----
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn0`: this is `M`'s live instance, borrowed only for
+/// the call. The adapter receives a shared plugin borrow and cannot free the instance.
 pub(crate) unsafe extern "C" fn sync0<M: Call0<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -264,6 +286,9 @@ pub(crate) unsafe extern "C" fn sync0<M: Call0<S>, const S: usize>(
     contain(|| <M as Call0<S>>::call(i.plugin(), h, &mut out))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn1`; `a1` and output remain valid throughout the
+/// shared-plugin call. The instance is retained by the host, not consumed here.
 pub(crate) unsafe extern "C" fn sync1<M: Call1<A1, S>, A1: RawArg, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -279,6 +304,9 @@ pub(crate) unsafe extern "C" fn sync1<M: Call1<A1, S>, A1: RawArg, const S: usiz
     contain(|| <M as Call1<A1, S>>::call(i.plugin(), h, a1, &mut out))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn2`; both arguments and output remain valid
+/// throughout the shared-plugin call. The instance is retained by the host.
 pub(crate) unsafe extern "C" fn sync2<
     M: Call2<A1, A2, S>,
     A1: RawArg,
@@ -300,6 +328,9 @@ pub(crate) unsafe extern "C" fn sync2<
     contain(|| <M as Call2<A1, A2, S>>::call(i.plugin(), h, a1, a2, &mut out))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn3`; all arguments and output remain valid
+/// throughout the shared-plugin call. The instance is retained by the host.
 pub(crate) unsafe extern "C" fn sync3<
     M: Call3<A1, A2, A3, S>,
     A1: RawArg,
@@ -325,6 +356,9 @@ pub(crate) unsafe extern "C" fn sync3<
 
 // ---- session openers and the consuming end ----
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn1`. The new session is inserted into this same
+/// instance; the host owns the returned token and must retain the instance until end/cancel.
 pub(crate) unsafe extern "C" fn opener1<M: Opener1<A1, S>, A1: RawArg, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -348,6 +382,9 @@ pub(crate) unsafe extern "C" fn opener1<M: Opener1<A1, S>, A1: RawArg, const S: 
     )
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn2`. The new session is inserted into this same
+/// instance; the host owns the returned token and must retain the instance until end/cancel.
 pub(crate) unsafe extern "C" fn opener2<
     M: Opener2<A1, A2, S>,
     A1: RawArg,
@@ -377,6 +414,10 @@ pub(crate) unsafe extern "C" fn opener2<
     )
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn1`, with exclusive ownership of the session
+/// token through removal and the adapter call. The removed session is consumed here; the host must
+/// retire its handle before allowing another use, while retaining the instance through this call.
 pub(crate) unsafe extern "C" fn end0<M: End0<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -401,6 +442,9 @@ pub(crate) unsafe extern "C" fn end0<M: End0<S>, const S: usize>(
 
 // ---- methods on a live session: the token resolves to `&mut Session` ----
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn1`. Exclude every other access/removal of this
+/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
 pub(crate) unsafe extern "C" fn session0<M: Session0<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -427,6 +471,9 @@ pub(crate) unsafe extern "C" fn session0<M: Session0<S>, const S: usize>(
     })
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn2`. Exclude every other access/removal of this
+/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
 pub(crate) unsafe extern "C" fn session1<M: Session1<A1, S>, A1: RawArg, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -454,6 +501,9 @@ pub(crate) unsafe extern "C" fn session1<M: Session1<A1, S>, A1: RawArg, const S
     })
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn3`. Exclude every other access/removal of this
+/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
 pub(crate) unsafe extern "C" fn session2<
     M: Session2<A1, A2, S>,
     A1: RawArg,
@@ -487,6 +537,9 @@ pub(crate) unsafe extern "C" fn session2<
     })
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn4`. Exclude every other access/removal of this
+/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
 pub(crate) unsafe extern "C" fn session3<
     M: Session3<A1, A2, A3, S>,
     A1: RawArg,
@@ -523,6 +576,9 @@ pub(crate) unsafe extern "C" fn session3<
 }
 
 #[allow(clippy::too_many_arguments)]
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn5`. Exclude every other access/removal of this
+/// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.
 pub(crate) unsafe extern "C" fn session4<
     M: Session4<A1, A2, A3, A4, S>,
     A1: RawArg,
@@ -575,6 +631,9 @@ macro_rules! start_chain {
     };
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn0`. Keep this instance alive until any returned
+/// chain retires: `tie` erases the plugin borrow, and `drive_new` parks it only in this instance.
 pub(crate) unsafe extern "C" fn start0<M: Start0<S>, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -589,6 +648,9 @@ pub(crate) unsafe extern "C" fn start0<M: Start0<S>, const S: usize>(
     start_chain!(M, i, out, |id| <M as Start0<S>>::start(i.plugin(), h))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn1`. Retain the instance and immutable argument
+/// storage until any returned chain retires; its future borrows the plugin and its chained argument.
 pub(crate) unsafe extern "C" fn start1<M: Start1<A1, S>, A1: AsyncArg, const S: usize>(
     inst: *const c_void,
     h: &'static Host,
@@ -608,6 +670,9 @@ pub(crate) unsafe extern "C" fn start1<M: Start1<A1, S>, A1: AsyncArg, const S: 
     ))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn2`. Retain the instance and both immutable
+/// argument buffers until any returned chain retires; the future is parked only in this instance.
 pub(crate) unsafe extern "C" fn start2<
     M: Start2<A1, A2, S>,
     A1: AsyncArg,
@@ -634,6 +699,9 @@ pub(crate) unsafe extern "C" fn start2<
     ))
 }
 
+/// # Safety
+/// Uphold the module entry contract and `vt::EntryFn4`. Retain the instance and all immutable
+/// argument buffers until any returned chain retires; the future is parked only in this instance.
 pub(crate) unsafe extern "C" fn start4<
     M: Start4<A1, A2, A3, A4, S>,
     A1: AsyncArg,
@@ -695,6 +763,10 @@ pub(crate) extern "C" fn open<M: Image>(
 }
 
 /// Continue a chain (§6.4 step 4). `inst` null = the image's open slab.
+/// # Safety
+/// Uphold the module entry contract and `vt::ResumeFn`. The caller exclusively owns `tok` for this
+/// poll and retains all argument/results storage through chain retirement. A non-null instance is
+/// `M`'s live allocation; null selects `M::global`. Completion/fault removes and drops the chain here.
 pub(crate) unsafe extern "C" fn resume<M: Image>(
     inst: *const c_void,
     h: &'static Host,
@@ -737,6 +809,10 @@ pub(crate) unsafe extern "C" fn resume<M: Image>(
 }
 
 /// Drop a chain or a session (§6.4 step 5). Unknown, free or stale: a no-op OK.
+/// # Safety
+/// Uphold the module entry contract and `vt::CancelFn`: serialize this token against every other
+/// entry and keep its instance/image and any chain buffers live until its destructor finishes.
+/// Repeated stale cancellation is permitted only sequentially; it does not lock a live slot.
 pub(crate) unsafe extern "C" fn cancel<M: Image>(inst: *const c_void, tok: Token) -> Status {
     // SAFETY: the host passes null (an open chain) or this image's live INSTANCE address.
     let i = unsafe { enter::<M>(inst) };
@@ -753,6 +829,10 @@ pub(crate) unsafe extern "C" fn cancel<M: Image>(inst: *const c_void, tok: Token
 }
 
 /// Drop the instance: chains, sessions, then the plugin (§6.4 step 9).
+/// # Safety
+/// Uphold `vt::CloseFn`: null or the uniquely owned, still-live `InstOf<M>` allocation from this
+/// image. All entries and host borrows have ended, and no later access is permitted. `drop_inst`
+/// drops fields in declaration order and releases the allocation without a second value drop.
 pub(crate) unsafe extern "C" fn close<M: Image>(inst: *const c_void) -> Status {
     if inst.is_null() {
         return Status::OK;
