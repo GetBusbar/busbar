@@ -398,9 +398,9 @@ pub mod plumbing {
         run()
     }
 
-    fn allocation(site: AllocationSite) -> Result<(), Overflow> {
-        #[cfg(test)]
-        if REFUSE_ALLOCATION.with(|state| match state.get() {
+    #[cfg(test)]
+    fn allocation_refused(site: AllocationSite) -> bool {
+        REFUSE_ALLOCATION.with(|state| match state.get() {
             Some((wanted, left)) if wanted == site => {
                 if left == 0 {
                     true
@@ -410,11 +410,12 @@ pub mod plumbing {
                 }
             }
             _ => false,
-        }) {
-            return Err(Overflow);
-        }
-        let _ = site;
-        Ok(())
+        })
+    }
+
+    #[cfg(not(test))]
+    const fn allocation_refused(_: AllocationSite) -> bool {
+        false
     }
 
     trait Reservation {
@@ -436,7 +437,9 @@ pub mod plumbing {
         type Error = Overflow;
         fn reserve<T>(values: &mut Vec<T>) -> Result<(), Self::Error> {
             if values.len() == values.capacity() {
-                allocation(AllocationSite::Metadata)?;
+                if allocation_refused(AllocationSite::Metadata) {
+                    return Err(Overflow);
+                }
                 values.try_reserve(1).map_err(|_| Overflow)?;
             }
             Ok(())
@@ -449,6 +452,12 @@ pub mod plumbing {
         Size,
         Allocation,
         Full(crate::records::Full),
+    }
+
+    pub(super) fn row_shape(key: usize, value: usize) -> Result<(u32, usize), RowErr> {
+        let key_len = u32::try_from(key).map_err(|_| RowErr::Size)?;
+        let total = key.checked_add(value).ok_or(RowErr::Size)?;
+        Ok((key_len, total))
     }
 
     /// Emit an admitted row using operation-owned scratch. Dirty input and every exit are volatile-wiped.
@@ -466,10 +475,11 @@ pub mod plumbing {
         }
         let scratch = RowScratch(scratch);
         scratch.0.zeroize();
-        let key_len = u32::try_from(key.len()).map_err(|_| RowErr::Size)?;
-        let total = key.len().checked_add(value.len()).ok_or(RowErr::Size)?;
+        let (key_len, total) = row_shape(key.len(), value.len())?;
         if scratch.0.capacity() < total {
-            allocation(AllocationSite::Row).map_err(|_| RowErr::Allocation)?;
+            if allocation_refused(AllocationSite::Row) {
+                return Err(RowErr::Allocation);
+            }
             *scratch.0 = SecureVec::with_capacity(total).map_err(|_| RowErr::Allocation)?;
         }
         scratch.0.extend(key).map_err(|_| RowErr::Allocation)?;

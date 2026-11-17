@@ -69,7 +69,13 @@ fn finish(mut w: Reply) -> Reply {
 }
 
 fn fault(w: Reply) -> Option<CommitErr> {
-    decode_commit(Records::new(w.as_bytes())).err()
+    let legacy = decode_commit(Records::new(w.as_bytes())).err();
+    assert_eq!(
+        try_decode_commit(Records::new(w.as_bytes())).err(),
+        legacy.map(PrepareErr::Commit),
+        "fallible and legacy decoding must reject the same wire records"
+    );
+    legacy
 }
 
 #[test]
@@ -557,4 +563,14 @@ fn row_full_and_writer_panic_leave_reusable_empty_scratch() {
     assert!(scratch.is_empty());
     write_row(&mut Reply::new(), &mut scratch, b"next", b"row").unwrap();
     assert!(scratch.is_empty());
+}
+
+#[test]
+fn row_size_checks_do_not_require_constructing_oversized_slices() {
+    assert_eq!(row_shape(0, 0).unwrap(), (0, 0));
+    assert_eq!(row_shape(3, 5).unwrap(), (3, 8));
+    assert!(matches!(row_shape(1, usize::MAX), Err(RowErr::Size)));
+    if let Some(too_long) = (u32::MAX as usize).checked_add(1) {
+        assert!(matches!(row_shape(too_long, 0), Err(RowErr::Size)));
+    }
 }
