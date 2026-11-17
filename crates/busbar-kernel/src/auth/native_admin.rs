@@ -97,6 +97,7 @@ impl Pending {
         // Publication after the lease is not cancellation of this already-admitted operation.
         Ok(ExecutionAdmission {
             native: Some((lease, Arc::clone(&self.prepared))),
+            origin: Some(self.invocation.clone()),
         })
     }
 }
@@ -105,16 +106,28 @@ impl Pending {
 /// or conversion back to pending, and cloning an Arc to this value does not mint execution rights.
 pub struct ExecutionAdmission {
     native: Option<(AdmissionLease, Arc<dyn PreparedIdentity>)>,
+    origin: Option<Invocation>,
 }
 
 impl ExecutionAdmission {
     pub(super) fn legacy() -> Self {
-        Self { native: None }
+        Self {
+            native: None,
+            origin: None,
+        }
     }
     pub fn native(&self) -> Option<(&AdmissionLease, &dyn PreparedIdentity)> {
         self.native
             .as_ref()
             .map(|(lease, prepared)| (lease, prepared.as_ref()))
+    }
+
+    /// Lend the actual origin for the physical request's final join. Equal generation pointers
+    /// cannot substitute for the originating publication owner, request id or call deadline.
+    pub fn native_origin(&self) -> Option<(&Arc<AppHandle>, CallCx)> {
+        self.origin
+            .as_ref()
+            .map(|origin| (&origin.handle, origin.cx))
     }
 
     pub(super) fn door_for(&self, app: &App) -> Option<super::AdminDoor> {
