@@ -488,7 +488,7 @@ pub fn read_seal(signature: &str) -> Option<Result<SealBytes, String>> {
     })())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn sealed_keys_version(signature: &str) -> Option<u64> {
     let (keys, _) = read_seal(signature)?.ok()?;
     let v = json::parse_value(&keys).ok()?;
