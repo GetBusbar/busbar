@@ -777,8 +777,6 @@ pub struct GovState {
 
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
 
-    admin_token_hash: RwLock<Option<String>>,
-
     budget: Sharded<BudgetCell>,
 
     selected_rates: Arc<selected_resource::SelectedRates>,

@@ -285,11 +285,11 @@ diagnostics! {
         "The configuration sets `security.allow_metadata_hosts`, `security.allow_all_metadata: true` or a provider's `allow_metadata_hosts`. In 1.6.0 cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it, so these 1.5.5 carve-outs are retired. The configuration is refused rather than read with the carve-out ignored. `security.blocked_metadata_hosts` still extends the denylist.",
         "Remove the keys. A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.";
 
-    /// The migration retired a registration's `allow_private` and listed exactly its hosts in `advanced.allow_destinations`.
-    MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", false,
+    /// RETIRED: the migration no longer rewrites a registration's `allow_private`; the key is kept.
+    MIGRATE_PRIVATE_REACH_TO_ALLOWLIST = 3410, Config, Actionable, "migrate-private-reach-to-allowlist", "1.6.0", true,
         "A registration's allow_private was replaced by exact advanced.allow_destinations entries",
-        "An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only.",
-        "Review the listed hosts. Move a non-loopback `http://` registration to `https://`; busbar has no per-destination plaintext switch.";
+        "RETIRED. Nothing emits this code. A registration's `allow_private` is kept: it is core's own boolean at the declared registration and grants private reach to that registration's selected route alone. `advanced.allow_destinations` was removed, and the migration writes no entries to it.",
+        "Nothing to do. Keep `allow_private: true` only on a registration that must reach a private target; cloud metadata stays refused whatever is written.";
 
     /// The migration removed a retired 1.5.5 cloud-metadata carve-out key.
     MIGRATE_METADATA_CARVE_OUT_REMOVED = 3411, Config, Actionable, "migrate-metadata-carve-out-removed", "1.6.0", false,
@@ -315,11 +315,11 @@ diagnostics! {
         "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited.",
         "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); for a server with a private CA, list that CA under `advanced.tls.trust_anchors` (or the server under `advanced.tls.destinations`).";
 
-    /// A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`.
-    CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", false,
+    /// RETIRED: a registration's `allow_private` is core's own key again and is not refused.
+    CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", true,
         "A registration still carries the retired per-registration private-address switch",
-        "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.",
-        "Delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.";
+        "RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed.",
+        "Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.";
 
     /// RETIRED: configured providers retain private reach on their own core-selected origins.
     CONFIG_PROVIDER_DESTINATION_REFUSED = 3025, Config, Actionable, "config-provider-destination-refused", "1.6.0", true,
@@ -739,11 +739,12 @@ diagnostics! {
         "A unit's drained usage report named a class that no installed plane declares as billable, no configured `units:` entry names, and is not one of the reserved four. The unit's one line is still written with every count, but its money is REFUSED rather than priced: a class nobody declared is never billed at zero and never dropped. Every read of the balance the line sits on refuses until it is explained.",
         "The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.";
 
-    /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// auth.chain is written empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// A configuration with no `auth:` block is refused with it at validation (#358).
     OPEN_RELAY_NO_AUTH = 8014, Governance, Actionable, "open-relay-no-auth", "1.6.0", false,
         "auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)",
-        "The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.",
-        "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
+        "The auth chain is written empty (`auth: { chain: [] }`, the operator's explicit open-relay acknowledgement), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. A configuration with no `auth:` block is refused with this code instead of booting: busbar never runs an open relay by omission, and the 1.5.5 upgrade writes no `auth:` block for you (it reports the missing block as an action item with the same remedy). Acceptable only for local development.",
+        "Add `auth: { chain: [] }` explicitly to run an open relay (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain (`auth: { chain: [keys] }` with virtual keys minted through the admin API, and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
 
     /// A stored recoverable credential opens under neither at-rest key, so it does not authenticate.
     CREDENTIAL_AT_REST_UNOPENABLE = 8023, Governance, Actionable, "credential-at-rest-unopenable", "1.6.0", false,
@@ -1864,6 +1865,30 @@ diagnostics! {
         "`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.",
         "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default).";
 
+    /// A cleartext write past the negotiation window on a connection to a destination plaintext is not admitted to.
+    CONFIG_PLAINTEXT_NOT_ADMITTED = 3141, Config, Actionable, "config-plaintext-not-admitted", "1.6.0", false,
+        "Plaintext is not admitted to this destination",
+        "A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `advanced.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.",
+        "Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `advanced.tls.destinations` with `plaintext: true`.";
+
+    /// A plugin instance declares an endpoint that would be dialled without TLS and has no `insecure_transport` acceptance.
+    CONFIG_PLAINTEXT_ENDPOINT_REFUSED = 3160, Config, Fatal, "config-plaintext-endpoint-refused", "1.6.0", false,
+        "A plugin instance would connect without TLS",
+        "At `check`, a plugin instance declared an endpoint busbar would dial without TLS (a TCP, `http://` or unix-socket destination with no TLS) and the instance has no `insecure_transport` acceptance for it. busbar 1.6.0 connects only over verified TLS and nothing is exempt, not loopback and not unix sockets. The configuration is refused before any connection is opened.",
+        "Turn on TLS for the connection and make the server's certificate verifiable (a CA under `advanced.tls.trust_anchors`, or a pin under `advanced.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: \"<why this is acceptable>\" }` to the instance's block.";
+
+    /// A plane seat or plugin instance runs with an `insecure_transport` acceptance.
+    CONFIG_INSECURE_TRANSPORT_ACCEPTED = 3162, Config, Actionable, "config-insecure-transport-accepted", "1.6.0", false,
+        "A plugin instance runs with insecure_transport accepted",
+        "An instance's `insecure_transport` acceptance admits plaintext, unverified TLS or both to the destinations the line names. Anything sent to them, credentials included, can be read and altered by anyone who can intercept the network path. The acceptance is recorded as a `config.insecure_transport_accepted` audit row.",
+        "Remove the instance's `insecure_transport` once the server offers verifiable TLS.";
+
+    /// An `insecure_transport` acceptance is malformed, names an unknown key, or covers nothing the instance declares.
+    CONFIG_INSECURE_TRANSPORT_INVALID = 3163, Config, Fatal, "config-insecure-transport-invalid", "1.6.0", false,
+        "An insecure_transport acceptance is invalid",
+        "An `insecure_transport` block was refused at load: it is not a map, its `accept` list is empty, repeated or names an unknown value (the values are `plaintext` and `unverified_tls`), it names a key other than `accept` and `reason`, its `reason` is missing or unusable, or none of the instance's declared endpoints needs the acceptance. The line names the path and the key.",
+        "Fix or delete the block. `accept` takes `plaintext`, `unverified_tls` or both, once each, with a `reason`; an acceptance an instance does not need is refused, so remove it.";
+
     /// An `advanced.tls.destinations` wildcard covers a single label.
     CONFIG_WILDCARD_OVER_PUBLIC_SUFFIX = 3145, Config, Fatal, "config-wildcard-over-public-suffix", "1.6.0", false,
         "A destination wildcard is too wide",
@@ -1900,6 +1925,12 @@ diagnostics! {
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
         "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
+
+    /// The host's own outbound framer could not render the request before any answer.
+    EGRESS_LOCAL_FRAMER_FAILED = 5052, Proxy, Actionable, "egress-local-framer-failed", "1.6.0", false,
+        "The local egress framer failed",
+        "The engine's local outbound framer could not render the request before any answer. The log identifies the pool, member and framing fault. The request is refused as an internal error without charging member health.",
+        "Inspect the framing fault and the named pool and member in the log. Report a reproducible local framing failure with the engine version and request shape, excluding credentials and secret content.";
 
     /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,

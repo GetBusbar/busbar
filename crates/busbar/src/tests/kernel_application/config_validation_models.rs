@@ -35,7 +35,8 @@ fn make_root_cfg(
             admin_listen: Some(fixture_plaintext()),
             inert: Vec::new(),
         },
-        auth: None,
+        // #358: the open posture is written explicitly; omission is refused.
+        auth: Some(config::AuthCfg::default_none()),
 
         providers: providers
             .into_iter()

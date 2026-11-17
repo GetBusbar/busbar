@@ -10,7 +10,9 @@ use super::*;
 use crate::off_path::plane_door::*;
 use crate::plane_driver::registry::BuildCtx;
 
-const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
+// A section the door fold treats as a named-definition map; the plane-named ones (`tools`, `agents`)
+// are retired with their sections (WP1-GAP-plane-sections r3), the fold keys on the word only.
+const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[1];
 
 #[test]
 fn an_admin_capture_stays_one_encoded_path_segment() {

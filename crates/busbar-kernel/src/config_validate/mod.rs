@@ -65,6 +65,26 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// #358: the one-line remedy for a configuration with no `auth:` block, given by the boot refusal
+/// and by the 1.5.5 upgrade's action item alike. `auth: { chain: [] }` is the one explicit
+/// open-relay acknowledgement; nothing writes it for the operator (owner ruling L1: refuse, give
+/// remedy, no auto-write).
+pub const OPEN_RELAY_REMEDY: &str = "add `auth: { chain: [] }` explicitly to run an open relay \
+     (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain \
+     (`auth: { chain: [keys] }` with virtual keys minted through the admin API)";
+
+/// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block would serve
+/// every caller unauthenticated and spend the configured provider credentials. It is refused with
+/// [`OPEN_RELAY_REMEDY`]; the open posture boots only when the operator writes it.
+#[must_use]
+fn open_relay_by_omission(listen: &str) -> String {
+    let code = crate::diagnostics::OPEN_RELAY_NO_AUTH.banner();
+    format!(
+        "no `auth:` block ({code}): busbar refuses to boot as an open relay that anyone who can \
+         reach {listen} may use to spend the configured provider credentials; {OPEN_RELAY_REMEDY}"
+    )
+}
+
 /// BUSBAR-3136: a retired 1.5.5 cloud-metadata carve-out key (`security.allow_metadata_hosts`,
 /// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) is refused: cloud
 /// metadata is refused for every outbound connection and no configuration admits it.
@@ -195,6 +215,9 @@ fn judge_with_plugins(
     // #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener with neither TLS nor its explicit
     // acceptance refuses, loopback included, with the one-line remedy. Nothing writes the acceptance.
     errors.extend(crate::config::listener_acceptance::refusals(cfg));
+    if cfg.auth.is_none() {
+        errors.push(open_relay_by_omission(&cfg.listen));
+    }
 
     {
         let b = cfg.limits.reasoning_effort_budgets;
@@ -942,26 +965,6 @@ fn judge_with_plugins(
                 .into(),
             );
         }
-    }
-
-    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    if cfg.endpoint_resource(endpoint_section).is_some()
-        && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
-    {
-        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
-        let key = decl.map(|d| d.key).unwrap_or("endpoint");
-        let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
-        errors.push(
-            coded::config_plane_open_to_anonymous(format!(
-            "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
-             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
-             runs with WILDCARD grants over every registered subject on that plane. It also leaves \
-             `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. \
-             Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth plugin), or \
-             remove the `{key}:` block if this deployment is not a {noun}."
-        ))
-            .into(),
-        );
     }
 
     if let Some(auth) = &cfg.auth {

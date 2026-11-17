@@ -382,6 +382,20 @@ fn rule_1b_allows_only_plugin_test_as_a_direct_dev_edge_and_only_when_enabled() 
         "{found:?}"
     );
     assert!(dep_findings(&bad, false).is_empty());
+    // C-DEV-EDGES (IF §14): a dev edge on busbar-transport-http, busbar-kernel or busbar-core-connector each
+    // fails the job on its own.
+    for crate_name in [
+        "busbar-transport-http",
+        "busbar-kernel",
+        "busbar-core-connector",
+    ] {
+        let one = meta(&format!(r#"{{"name":"{crate_name}","kind":"dev"}}"#));
+        let found = dep_findings(&one, true);
+        assert!(
+            found.len() == 1 && found[0].contains(crate_name) && found[0].contains("rule 1b"),
+            "{crate_name}: {found:?}"
+        );
+    }
     let ok = meta(r#"{"name":"busbar-plugin-test","kind":"dev"}"#);
     assert!(dep_findings(&ok, true).is_empty());
 }

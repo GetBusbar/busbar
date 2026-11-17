@@ -115,7 +115,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         operator_overlay_names: Vec::new(),
         grammar: crate::config::GrammarField::bound(crate::config::Grammar::empty()),
 
-        endpoint: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,
@@ -138,8 +137,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
-        plane_raw: Default::default(),
-        declared_raw: Default::default(),
+        instance_sections: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),

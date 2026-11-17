@@ -204,6 +204,22 @@ config; explicit `{ env: NAME }` secret references still resolve environment val
 `RUST_LOG` and the `TOKIO_WORKER_THREADS` fallback remain available. `BUSBAR_DATA_DIR` is still
 used for registry data; it does not restore the retired journal.
 
+### A configuration with no `auth:` block
+
+1.5.5 booted a configuration with no `auth:` block (or an empty one) as an open relay: every
+caller that could reach the listener used the configured provider credentials, with only a
+banner. 1.6.0 never boots an open relay by omission: it refuses a configuration with no `auth:`
+block (BUSBAR-8014).
+
+The one-time upgrade does not write an `auth:` block for you. It reports the missing block as an
+action item (BUSBAR-8014) and the first 1.6.0 boot refuses it. Both give the same remedy: add
+`auth: { chain: [] }` explicitly to run an open relay, or configure a chain
+(`auth: { chain: [keys] }` with virtual keys minted through the admin API).
+
+`auth: { chain: [] }` is the one explicit open-relay acknowledgement. It is bannered on stderr and
+logged at ERROR at every boot, and audited as `open_relay` in the `node.boot` event. The MCP
+plane refuses to boot behind it.
+
 ### Grants and hooks
 
 The migrator adds `auth.role_bindings.<provider>."*": {}` for non-key providers in `auth.chain`
@@ -477,3 +493,123 @@ keys are refused. The current startup Store frame bound is fixed at 64 MiB;
 datagram LINE pairings retain their former unlimited default. The shutdown drain
 budget is fixed at 20 seconds and the governed settlement backlog cap at 20,000.
 Released 1.5.5 configurations do not contain these pre-release settings.
+
+## Other changes from 1.5.5
+
+These changes were recorded as owner rulings or adopted designs. Each is a difference you can
+see after the upgrade. Nothing here is carried back by an alias, a deprecated spelling or a
+compatibility flag: 1.6.0 removes a 1.5.5 surface rather than keeping it beside the new one. The
+[changelog](../CHANGELOG.md) lists the remaining behavior changes release by release.
+
+### Command line
+
+Core owns the whole command line; no plugin of any kind defines a flag.
+
+- `busbar --stdio` serves the one configured plane line route on the process's own stdin and
+  stdout, for a host that runs Busbar as a child process. Pre-release builds spelled the MCP
+  form `--mcp-stdio`; that spelling is an unknown argument. See
+  [the MCP stdio entry point](mcp.md#inbound-busbar---stdio).
+- `--migrate-config`, `--migrate-overlay` and `--safe-mode` are gone, as described above.
+  `--ignore-overlay` replaces `--safe-mode`.
+
+### Listener TLS
+
+A listener without TLS refuses boot unless the operator sets an explicit, audited acceptance.
+There is no loopback exception, and the upgrade does not write the acceptance for you. The
+refusal names the one-line fix. The data listener's acceptance is `listen_insecure_transport`
+and the admin listener's is `admin_listen_insecure_transport`; each is stated with a reason, like
+the outbound `insecure_transport` setting under [transport security](#transport-security).
+Because 1.5.5's default admin listener is plaintext on loopback, a 1.5.5 configuration that
+relied on it refuses its first 1.6.0 boot until you either configure TLS for that listener
+or record the acceptance.
+
+### Authentication, keys and sign-in
+
+- **The admin token becomes a digest on the first boot.** The first 1.6.0 boot replaces the
+  1.5.5 admin token (an `identity-providers.<name>.token:` secret reference) with a one-way
+  SHA-256 digest in `config.yaml`, in the admin-tokens plugin's `settings: {sha256: [...]}`.
+  Core resolves the reference once during the migration; the plugin never reads the 1.5.5 form.
+  There is no opt-out and the boot warns. The digest is never logged; the audit label is
+  `sha256[<index>]` plus the generation. Rotate the token through the admin API, not by editing
+  the file. Keep the plaintext token wherever your clients read it from: Busbar no longer holds it.
+- **`keys` is still core's.** Virtual keys are minted only by `POST /api/v1/admin/keys` for a
+  principal holding `full` admin scope. No authentication plugin mints keys.
+- **Operator plugins are first-party only.** `plugins.trust.operator` is reserved; a
+  configuration that sets it is refused with a named error.
+- **A node with a measured clock skew above 5 seconds refuses virtual-key and stateless-ticket
+  admission.** The store's clock is the only expiry authority. 1.5.5 served these requests on
+  any skew. A stale measurement does not refuse. Keep node clocks synchronized.
+- **An identified principal that earns no grant is refused with `401`.** 1.5.5 admitted it
+  ungoverned and booked its spend to `anonymous`. The migrator's wildcard role bindings,
+  described under [grants and hooks](#grants-and-hooks), keep existing access; narrow them.
+- **A key whose stored `expires_at` has passed is refused with `401`**, and the refusal is
+  audited. 1.5.5 enforced only the signed token's own expiry.
+- **A disabled key stays disabled and a revoked key is permanent.** A login or refresh no longer
+  re-enables a key an administrator disabled, and a revoked key cannot be restored by a login,
+  a refresh or an admin `PATCH`. The refusal answers `403` with `BUSBAR-4043`; the `PATCH` on a
+  revoked key answers `409` with `BUSBAR-4044`. `DELETE` is still the reset.
+- **The key refresh link rotates only from Busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
+  rotates only on a same-origin browser navigation; otherwise it re-shows the current key.
+- **Sign-in is rate limited.** Hosted credential sign-in refuses repeated failures per account
+  and per client source with `429`, and an administrator credential refused repeatedly is
+  throttled. See the changelog for the limits and audit records.
+- **An identity provider that is unavailable answers `503`, not `401`.** A rejected credential is
+  still `401`.
+- `POST /api/v1/admin/ledger/amend-rate-history` needs only a `full` admin grant;
+  `auth.operator_pub` is gone, so stop signing corrections.
+
+### Configuration reading
+
+- **YAML is read as YAML 1.2.** A NEL character (U+0085) is content, not a line break, and an
+  alias bomb is refused even inside a field that is otherwise ignored. 1.5.5 differed on both;
+  the owner accepted the differences.
+- **A configuration refusal begins with its diagnostic code and ends with a link.** Each line
+  reads `BUSBAR-NNNN: <what is wrong>. See <link>`, under a header that carries its own code (for
+  example `BUSBAR-3131` on an export definition, under `BUSBAR-3015`). Update scripts that match
+  the bare 1.5.5 text.
+- `RUST_LOG` is read strictly: an invalid value stops boot with `BUSBAR-9007`, where 1.5.5
+  silently logged at `info`.
+- A provider `api_key` reference that does not resolve refuses boot and any apply or reload.
+  An upstream that needs no credential declares `api_key: none`; the migration does not insert it.
+- `auth.policy.require_if_match` is spelled `auth.require_if_match`, and the browser-login
+  `max_failures` setting is removed: the limit is fixed at 3.
+
+### Plugins and diagnostics
+
+- **1.5.5 plugins are refused.** Each plugin ABI version is its 1.5.5 value plus one and must
+  match exactly. A 1.5.5 build, including the published 1.5.5 stores, is refused cleanly with an
+  explanation, an audit record and a download link; rebuild or install the 1.6.0 release.
+  Third-party authors follow the [SDK migration note](plugin-sdk-migration-1.6.md).
+- **Plugin diagnostic codes are in plugin form.** Core codes are `BUSBAR-NNNN`. Every plugin,
+  first-party or not, uses `BUSBAR-<PLUGIN>-NNNN`; a bad or duplicate declaration is refused for
+  that plugin only, is audited, and boot continues. The 1.5.5 plugin codes 7070 to 7073 are now
+  in that form. Update log matching.
+- A URL-userinfo credential is sent only over a secured connection; http userinfo to a private
+  host is refused at dial time and audited.
+
+### Requests and callers
+
+- **A request that repeats a key Busbar decides on is refused.** The LLM plane answers `400`
+  with an audited refusal when the top-level JSON repeats `model`, `stream`, `max_tokens` or
+  another routing or budget key, rather than forwarding the shadowed value.
+- **A malformed rewrite under fallback forwards the original request unmodified** to the named
+  fallback; it never forwards a half-rewritten one.
+- **A Decisions policy hook that rejects returns the native interface's generic refusal**, not
+  the hook's own message text. Status codes, refusal types and the no-upstream-call guarantee
+  are unchanged.
+- **Embedding floats are written as the shortest `f32` text.** A consumer that compared the old
+  longer text byte for byte sees different digits for the same value.
+- **A hook with `on_error: reject` whose transform fails answers `503`;** 1.5.5 passed the
+  request through.
+- **A request that asks for a stream gets a stream** in the caller's dialect, even when the
+  upstream answered with one whole body.
+- **An explicit operator-acknowledged open relay stays available** as an audited opt-in for pools
+  that claim it; it is never the default.
+- **Plane trust approvals are keyed by plane instance name** and their digests are written
+  `sha256:<hex>`. A 1.5.5 A2A `fingerprint` in another form reads as drift until you approve the
+  agent again.
+
+### Support policy
+
+Each `x.y` line receives security fixes until the later of 12 months after `x.y.0` or 6 months
+after the next `x.y.0`. 1.5.5 is the only supported source for this upgrade.
