@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! WP3 step 2 (the secret kind's native cutover), red first: the kernel's secret resolver resolves a reference
-//! through the native secret image that answers its module, never through a legacy door axis that links the same
-//! module. The axis is process-global, so this test owns its own binary and publishes a door axis there.
+//! through the native secret image its resolver carries, ahead of the installed axis that answers the same
+//! module. The axis is process-global, so this test owns its own binary and publishes one there.
 
 use std::sync::Arc;
 
@@ -16,16 +16,16 @@ use busbar_kernel::config::secret::SecretResolver;
 
 const MODULE: &str = "test-native-first";
 
-/// The legacy door instance: what the reference must never reach.
-struct Door;
-impl SecretCalls for Door {
+/// The installed axis's instance: what a resolver with a native source of its own does not reach.
+struct Installed;
+impl SecretCalls for Installed {
     fn resolve(&self, _settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
-        Ok(Secret::new(b"from-the-door".to_vec()))
+        Ok(Secret::new(b"from-the-axis".to_vec()))
     }
 }
 
-struct DoorAxis;
-impl SecretAxis for DoorAxis {
+struct InstalledAxis;
+impl SecretAxis for InstalledAxis {
     fn sugars(&self) -> Sugars {
         Sugars::default()
     }
@@ -36,7 +36,7 @@ impl SecretAxis for DoorAxis {
         module == MODULE
     }
     fn shared(&self, _module: &str) -> Result<Arc<dyn SecretCalls>, String> {
-        Ok(Arc::new(Door))
+        Ok(Arc::new(Installed))
     }
     fn open(
         &self,
@@ -44,17 +44,17 @@ impl SecretAxis for DoorAxis {
         _settings: Option<&Settings>,
         _resolve: &dyn Fn(&SecretRef) -> Result<SecretBytes, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
-        Ok(Arc::new(Door))
+        Ok(Arc::new(Installed))
     }
 }
 
-static DOOR_AXIS: DoorAxis = DoorAxis;
+static INSTALLED_AXIS: InstalledAxis = InstalledAxis;
 
 fn publish() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         busbar_kernel::preflight::publish_root_rows(busbar_kernel::preflight::RootInstall {
-            secret_axis: Some(&DOOR_AXIS),
+            secret_axis: Some(&INSTALLED_AXIS),
             ..Default::default()
         });
     });
@@ -84,13 +84,12 @@ fn a_reference_resolves_through_the_native_image_not_the_door() {
     assert_eq!(text, Secret::new("from-the-native-image".to_string()));
 }
 
+/// A resolver bound to no source of its own resolves through the kernel's one secret seam, the installed axis
+/// (in a build, the root's native secret axis).
 #[test]
-fn a_resolver_with_no_native_image_never_falls_back_to_the_door() {
+fn a_resolver_with_no_source_of_its_own_resolves_through_the_axis() {
     publish();
-    let refused = SecretResolve::resolve_string(&SecretResolver::builtins_only(), &reference())
-        .expect_err("no native image answers, so nothing resolves");
-    assert!(
-        !refused.contains("from-the-door"),
-        "the door is never consulted: {refused}"
-    );
+    let text = SecretResolve::resolve_string(&SecretResolver::builtins_only(), &reference())
+        .expect("the axis answers the module");
+    assert_eq!(text, Secret::new("from-the-axis".to_string()));
 }

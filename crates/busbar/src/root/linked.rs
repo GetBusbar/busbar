@@ -15,10 +15,6 @@ pub struct Linked {
     pub images: &'static [LinkedImage],
     pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
 
-    pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
-
-    pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
-
     pub plane_door_declares: &'static [(
         &'static str,
         busbar_contract::abi::mechanism::door::DoorFn,
@@ -328,38 +324,31 @@ pub fn register_protocols(linked: &Linked) {
 }
 
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets, linked.secret_declares, linked.former) {
-        Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: linked.stores,
-            registry_build: Some(crate::root::boot::registry_rows),
-            endpoint_locate: Some(crate::root::boot::locate_provider_destination),
-            plugins_fetch: Some(crate::root::boot::plugins_fetch),
-            hook_axis: Some(crate::root::hooks::axis),
-            hook_names: crate::LINKED_HOOK_NAMES,
-            store_axis: Some(store_axis),
-            secret_axis: Some(secrets),
-            secret_admit: Some(crate::root::boot::admit_secrets),
-            secret_snapshot: Some(secret_snapshot),
+    busbar_kernel::preflight::install_linked_rows(RootInstall {
+        stores: linked.stores,
+        registry_build: Some(crate::root::boot::registry_rows),
+        endpoint_locate: Some(crate::root::boot::locate_provider_destination),
+        plugins_fetch: Some(crate::root::boot::plugins_fetch),
+        hook_axis: Some(crate::root::hooks::axis),
+        hook_names: crate::LINKED_HOOK_NAMES,
+        store_axis: Some(store_axis),
+        // WP3 step 2: the native secret images, through custody; their set is the images prepare's.
+        secret_axis: Some(&crate::root::native_secrets::NATIVE),
 
-            rate_apply: Some(&crate::root::kernel::CardRepricer),
-            rate_epoch: Some(&crate::root::kernel::CardRepricer),
-            export_axis: Some(&crate::root::exports::EXPORTS),
-            admission: Some(&crate::root::admission::ADMISSION),
-            durable: Some(&crate::root::admission::DURABLE),
-            hook_answers: Some(crate::root::admission::hook_answers),
-            auth_chain_module: Some(crate::root::admission::auth_chain_module),
-            dispatch_latched: Some(crate::root::admission::dispatch_latched),
-            auth_axis: Some(crate::root::dispatch::auth_axis),
+        rate_apply: Some(&crate::root::kernel::CardRepricer),
+        rate_epoch: Some(&crate::root::kernel::CardRepricer),
+        export_axis: Some(&crate::root::exports::EXPORTS),
+        admission: Some(&crate::root::admission::ADMISSION),
+        durable: Some(&crate::root::admission::DURABLE),
+        hook_answers: Some(crate::root::admission::hook_answers),
+        auth_chain_module: Some(crate::root::admission::auth_chain_module),
+        dispatch_latched: Some(crate::root::admission::dispatch_latched),
+        auth_axis: Some(crate::root::dispatch::auth_axis),
 
-            in_process_auth: None,
-            config_projection: Some(crate::root::door_steps::door_config),
-            admitted_grammar: Some(crate::root::boot::admitted_grammar),
-        }),
-        Err(refusal) => {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
-        }
-    }
+        in_process_auth: None,
+        config_projection: Some(crate::root::door_steps::door_config),
+        admitted_grammar: Some(crate::root::boot::admitted_grammar),
+    });
 }
 
 fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis> {
@@ -381,87 +370,11 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::Persis
     })
 }
 
-static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRows> =
-    std::sync::OnceLock::new();
-
-pub(crate) fn link_secrets(
-    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
-    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
-    former: &[LinkedFormer],
-) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
-    if let Some(rows) = SECRETS.get() {
-        return Ok(rows);
-    }
-    let rows = build_secrets(doors, declares, former)?;
-    Ok(SECRETS.get_or_init(|| rows))
-}
-
-/// The secret rows over `doors`, each answering also to the words its [`LinkedFormer`] row gives.
-pub(crate) fn build_secrets(
-    doors: &[busbar_contract::abi::mechanism::door::DoorFn],
-    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
-    former: &[LinkedFormer],
-) -> Result<crate::root::loader::secret_calls::SecretRows, String> {
-    let mut rows = crate::root::loader::secret_calls::SecretRows::new(
-        crate::root::dispatch::dispatcher,
-        conns,
-    )
-    .with_logs(|| crate::root::boot::plugin_logs().clone())
-    .with_disk_lane(disk_run);
-    for door in doors {
-        let name = door_statement(*door)
-            .map(|(name, _)| name)
-            .unwrap_or_default();
-        rows.link_with_former(*door, &words_of(former, "secret", &name))
-            .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
-    }
-    for (door, json) in declares {
-        rows.declare_linked(*door, json)?;
-    }
-    Ok(rows)
-}
-
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
     std::sync::OnceLock::new();
 
 pub(crate) fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
     DISK.get_or_init(std::sync::Arc::default).clone()
-}
-
-fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
-    disk_lane().run(job).map_err(str::to_string)
-}
-
-fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
-    crate::root::connector::installed().map(|one| {
-        crate::root::connector::admit(
-            std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
-        )
-    })
-}
-
-/// Takes the dropped-in secret set a config transaction found; the returned restore puts it back if
-/// the transaction publishes nothing ([`busbar_kernel::preflight::RootInstall::secret_snapshot`]).
-fn secret_snapshot() -> busbar_kernel::preflight::SecretRestoreFn {
-    let found = secret_rows().dropped();
-    Box::new(move || {
-        secret_rows().restore_if_changed(found);
-    })
-}
-
-/// The process's one secret axis: this build's linked secret sources, whichever reader asks first.
-/// It is never an unlinked set, so a reader that runs before boot publishes the axis reads the
-/// same admitted source declarations boot does.
-pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
-    link_secrets(
-        crate::LINKED.secrets,
-        crate::LINKED.secret_declares,
-        crate::LINKED.former,
-    )
-    .unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    })
 }
 
 pub fn register_planes() {
@@ -891,10 +804,6 @@ pub fn seal(units: &[&RootUnit]) {
 #[cfg(test)]
 #[path = "tests/linked.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "tests/linked_secret_sources.rs"]
-mod secret_source_tests;
 
 #[cfg(all(test, linked_operator_auth, linked_section_pools))]
 #[path = "tests/linked_auth.rs"]

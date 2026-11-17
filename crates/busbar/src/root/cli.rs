@@ -465,9 +465,7 @@ pub(crate) fn validate_judged(
             .map(|_| ())
             .map_err(|errors| errors.join("\n  - "))
     };
-    // The dropped-in secret modules start judged, checked through a read-scoped view: none of them
-    // is admitted onto the live axis (SECRET-SHORTHAND-BOOT §3.6, B4).
-    let view = crate::root::boot::start_secret_view();
+    // The native secret images the start stage prepared (WP3 step 2): one source for every reader.
     let registry = config_validate::check(
         &cfg,
         config_validate::Check {
@@ -476,7 +474,7 @@ pub(crate) fn validate_judged(
             root: &destination_guard,
             fetch: None,
             resolve_builtins: true,
-            secret_axis: Some(&view),
+            secret_axis: Some(&crate::root::native_secrets::NATIVE),
         },
     )
     .map_err(ValidateRefusal::Check)?;

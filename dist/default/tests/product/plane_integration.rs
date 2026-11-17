@@ -98,7 +98,7 @@ fn resolved(sections: &str) -> RootCfg {
     std::fs::write(&operator_token, "admintok")
         .expect("write the actual file-backed operator input");
     auth.signing_key = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         signing_key.to_string_lossy().into_owned(),
     ));
@@ -108,7 +108,7 @@ fn resolved(sections: &str) -> RootCfg {
         .find(|entry| busbar_kernel::config::names_operator(&entry.module))
         .expect("the actual operator module");
     operator.token = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         operator_token.to_string_lossy().into_owned(),
     ));

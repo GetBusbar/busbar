@@ -90,6 +90,19 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    /// Publish these images' secret grammar as the process's native secret axis (WP3 step 2): the one source of the
+    /// secret words `--validate`, `--list-plugins`, the start grammar and every later read use. Called by the boot
+    /// for the images it serves, never by a per-read phase one (which mutates nothing).
+    pub(crate) fn publish_secrets(&self) {
+        crate::root::native_secrets::NATIVE.publish_images(
+            &self.grammar,
+            self.proofs
+                .iter()
+                .filter(|(_, proof)| proof.digest.is_none())
+                .map(|(identity, _)| identity.as_str()),
+        );
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,
@@ -244,4 +257,30 @@ pub(crate) fn fixture(
         grammar,
         proofs,
     })
+}
+
+/// The process's one set of plugin resources (a process installs its plugin sinks once): made by the start stage,
+/// before the start grammar, and reused by the boot.
+pub(crate) fn process() -> Result<Arc<ProcessResources>, String> {
+    static PROCESS: std::sync::OnceLock<Result<Arc<ProcessResources>, String>> =
+        std::sync::OnceLock::new();
+    PROCESS
+        .get_or_init(|| ProcessResources::new().map(Arc::new))
+        .clone()
+}
+
+/// The start stage's native image prepare (WP3 step 2): the configured `plugins:` block's images verified,
+/// read and described (no instance opens), and their secret grammar published as the native secret axis, before
+/// the start scan and the start grammar. So `--validate`, `--list-plugins` and the start grammar read the native
+/// secret words, from the one source every later read uses. With no readable `plugins:` block the linked images
+/// alone are prepared.
+pub(crate) fn publish_start() -> Result<(), String> {
+    let process = process()?;
+    let plugins = super::configured_block().unwrap_or_else(|| busbar_kernel::config::PluginsCfg {
+        enabled: false,
+        ..Default::default()
+    });
+    let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
+    prepared.publish_secrets();
+    Ok(())
 }

@@ -186,7 +186,7 @@ async fn serve_admission_with_inputs(
         .expect("configured authentication")
         .admin_auth[0]
         .token = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));

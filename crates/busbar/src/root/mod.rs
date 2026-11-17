@@ -274,6 +274,7 @@ pub mod principal_transition;
 pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
+pub(crate) mod native_secrets;
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;

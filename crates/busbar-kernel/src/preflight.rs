@@ -116,13 +116,6 @@ pub enum BuildNote<'r> {
 pub type EndpointLocate =
     fn(&Arc<dyn PluginRows>, &str) -> Result<crate::config_validate::ProviderDestination, String>;
 
-pub type SecretAdmit = for<'a> fn(
-    &'a Arc<dyn PluginRows>,
-    &'a config::PluginsCfg,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>,
->;
-
 pub struct RegistryIn<'a> {
     pub linked: Vec<LinkedRow>,
 
@@ -188,16 +181,9 @@ pub struct RootInstall {
     pub hook_names: &'static [&'static str],
     /// The root's store axis: what boot opens the configured store through.
     pub store_axis: Option<StoreAxisOf>,
-    /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
-    /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
+    /// The root's secret axis: the native secret images it admitted, linked or dropped in, resolved
+    /// through custody (WP3 step 2; `None`: no secret image resolves outside a resolver's own source).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,
-    /// The root's secret admission ([`SecretAdmit`]): what puts a build's dropped-in secret
-    /// plugins on [`Self::secret_axis`]. `None` = no dropped-in secret plugin joins the axis.
-    pub secret_admit: Option<SecretAdmit>,
-    /// The root's snapshot of the dropped-in secret set [`Self::secret_admit`] replaces: taken
-    /// before a config transaction, restored when the transaction ends without publishing, so an
-    /// unpublished generation's set never stays on the live axis. `None` = nothing to restore.
-    pub secret_snapshot: Option<SecretSnapshotTake>,
     /// The root's rate holder ([`crate::rate_apply::RateApply`]): what every rate resolution, at
     /// boot and on each apply/reload, is staged with and raised to. `None` = no holder hears an
     /// apply (a build with no root ledger).
@@ -249,13 +235,6 @@ pub struct RootInstall {
 /// [`RootInstall::admitted_grammar`].
 pub type AdmittedGrammar =
     fn(&dyn PluginRows) -> Result<Option<config::Grammar>, config::GrammarRefusal>;
-
-/// Puts the live dropped-in secret set back as it was when it was taken, if the live set differs
-/// from it (by name, version and image). An unchanged set is left alone, with its cached checkers.
-pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
-
-/// Takes the live dropped-in secret set and returns what puts it back ([`SecretRestoreFn`]).
-pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
 
 pub type HookAnswers = fn(&dyn PluginRows, &str) -> bool;
 

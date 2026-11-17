@@ -4,7 +4,7 @@ fn source_path(value: impl AsRef<str>) -> busbar_contract::secret_ref::SecretRef
     use busbar_contract::secret::SecretAxis as _;
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
-    crate::root::linked::secret_rows()
+    crate::root::native_secrets::linked_for_tests()
         .sugars()
         .reference_for_role(
             busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,

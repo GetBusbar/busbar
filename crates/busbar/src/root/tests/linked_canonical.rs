@@ -96,10 +96,6 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     }));
     let exports = linked_exports(crate::LINKED.export_doors).expect("the export rows state");
     rows.extend(exports.iter().map(Row::of));
-    for door in crate::LINKED.secrets {
-        let c = Candidate::linked(*door).expect("a linked secret states itself");
-        rows.push(Row::of_door(&c, "secret"));
-    }
     let entries = entries(REGISTRY);
     let mut skipped = Vec::new();
 

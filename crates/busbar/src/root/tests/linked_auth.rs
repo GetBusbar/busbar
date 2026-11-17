@@ -1254,7 +1254,7 @@ type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);
 fn env_ref(var: &str) -> SecretRef {
     use busbar_contract::secret::SecretAxis as _;
     link();
-    crate::root::linked::secret_rows()
+    crate::root::native_secrets::linked_for_tests()
         .sugars()
         .get("env")
         .expect("the linked env source declares the `env:` sugar")
