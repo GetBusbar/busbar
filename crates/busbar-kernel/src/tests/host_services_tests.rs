@@ -1144,6 +1144,46 @@ impl Offload for Arc<Held> {
 }
 
 #[test]
+fn native_record_drain_waits_for_admitted_unpolled_store_housekeeping() {
+    struct NoCredentials;
+    impl CredentialRead for NoCredentials {
+        fn installed(&self) -> bool {
+            false
+        }
+        fn read(&self, _: &str, _: &str) -> (busbar_contract::Secret<String>, bool) {
+            panic!("record upkeep must not read credentials")
+        }
+    }
+    let backend = Arc::new(NativeBackend::default());
+    let store = Arc::new(ready(native_attach(backend)));
+    let held = Arc::new(Held::default());
+    let services = KernelServices::from_inputs(CoreServicesInputs {
+        persistence: Arc::clone(&store),
+        pool: Arc::new(Arc::clone(&held)),
+        signer: None,
+        demotions: demotions(&store),
+        demotion_owner: None,
+        tickets: None,
+        standing: Arc::new(|principal, _| Some(Arc::clone(principal))),
+        judge: Arc::new(FakeGuard::default()),
+        credentials: Arc::new(NoCredentials),
+        disk: Arc::default(),
+    });
+    services.trust_resync_tick();
+    assert_eq!(
+        held.0.lock().unwrap().len(),
+        1,
+        "actual Store upkeep is admitted but not polled"
+    );
+    assert!(
+        !services.drain(Duration::ZERO),
+        "an empty record queue cannot certify an admitted Store job as drained"
+    );
+    assert_eq!(held.drain(), 1);
+    assert!(services.drain(Duration::ZERO));
+}
+
+#[test]
 fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let r = rig();
     let held = Arc::new(Held::default());
