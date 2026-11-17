@@ -1354,6 +1354,8 @@ pub struct ExpiredPass {
     pub invalid: usize,
     pub remaining: usize,
     pub records: super::undrained::PassCounts,
+    /// Receipt generations of closed writers swept by the owner-row step (DES-264 §3.5).
+    pub swept: usize,
 }
 
 impl PredecessorFence {
@@ -1456,6 +1458,17 @@ impl PredecessorFence {
                 }
             }
         }
+        // DES-264 §3.5: the crash sweep, driven by owner rows, at most EXPIRED_PASS_MAX of them.
+        // A separate candidate per generation, only for writers whose close is decided.
+        if !stopped() {
+            match self.core.sweep_owner_rows(EXPIRED_PASS_MAX).await {
+                Ok((swept, _)) => pass.swept = swept,
+                Err(error) => tracing::warn!(
+                    ?error,
+                    "the receipt crash sweep did not finish; the next pass continues"
+                ),
+            }
+        }
         if pass.remaining > 0 {
             crate::diag_warn!(
                 crate::diagnostics::EXPIRED_WRITERS_REMAINING,
@@ -1485,6 +1498,7 @@ impl PredecessorFence {
             skipped_live = pass.skipped_live,
             invalid = pass.invalid,
             remaining = pass.remaining,
+            swept = pass.swept,
             refused = %refused.join("; "),
             "expired_writers"
         );

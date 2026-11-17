@@ -19,12 +19,13 @@
 //! Principal-transition receipts are class D ([`DerivedOp`]): re-derived from a persisted plan,
 //! never minted here.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::{
     persistence::{
-        Address, Candidate, Decision, ExpectedValue, Mutation, NamespaceId, Predicate,
-        PreparedCandidate, CANDIDATE_VERSION,
+        control, Address, Candidate, Decision, ExpectedValue, Mutation, NamespaceId, Predicate,
+        PreparedCandidate, Read, ReadResult, Scan, CANDIDATE_VERSION,
     },
     records::OpId,
     Secret,
@@ -44,6 +45,9 @@ pub const GEN_OPS: u64 = 1024;
 /// Owner rows of receipt generations: key `framed(b'G', [gen8])`, value the minting writer.
 /// Fixed ASCII, core-private and not a control namespace.
 pub(crate) const OWNERS: NamespaceId = NamespaceId(*b"busbar.recopgen1");
+
+/// `keys::framed(b'R', [RECORD_OPERATIONS, op])`: 1 + 4 + 16 + 4 + 16.
+pub(crate) const RECEIPT_KEY_LENGTH: u64 = 41;
 
 /// Draws of a fresh gen8 before an open gives up (each redraw is a proven collision).
 const OPEN_DRAWS: usize = 8;
@@ -175,11 +179,40 @@ pub(crate) fn receipts_namespace(gen8: [u8; 8]) -> NamespaceId {
     partition::namespace(RECORD_OPERATIONS, &[&gen8])
 }
 
+/// `52 ‖ 00000010 ‖ "busbar.recordop1" ‖ 00000010 ‖ gen8`: 33 bytes, the receipt key's first
+/// 33 bytes for every op of the generation.
+pub(crate) fn receipts_prefix(gen8: [u8; 8]) -> Result<Vec<u8>, AccessError> {
+    let mut prefix =
+        keys::framed(b'R', &[&RECORD_OPERATIONS.0]).map_err(|_| AccessError::Overloaded)?;
+    prefix.extend_from_slice(&16u32.to_be_bytes());
+    prefix.extend_from_slice(&gen8);
+    Ok(prefix)
+}
+
 pub(crate) fn owner_address(gen8: [u8; 8]) -> Result<Address, AccessError> {
     Ok(Address {
         namespace: OWNERS.0,
         key: keys::framed(b'G', &[&gen8]).map_err(|_| AccessError::Overloaded)?,
     })
+}
+
+fn owner_gen8(key: &[u8]) -> Option<[u8; 8]> {
+    match keys::components(key, b'G').ok()?.as_slice() {
+        [gen8] => (*gen8).try_into().ok(),
+        _ => None,
+    }
+}
+
+/// The range delete of a generation's receipts and the delete of its owner row.
+fn sweep_mutations(gen8: [u8; 8]) -> Result<Vec<Mutation>, AccessError> {
+    Ok(vec![
+        Mutation::DeleteRange {
+            namespace: receipts_namespace(gen8),
+            prefix: receipts_prefix(gen8)?,
+            exact_key_length: RECEIPT_KEY_LENGTH,
+        },
+        Mutation::Delete(owner_address(gen8)?),
+    ])
 }
 
 #[derive(Debug, Default)]
@@ -199,12 +232,21 @@ impl Minting {
 /// The open in flight: its drawn gen8 and its exact retained candidate.
 type Retained = ([u8; 8], PreparedCandidate);
 
+#[derive(Default)]
+struct Sweeps {
+    /// Sweeps whose outcome is not decided yet, retried with their exact candidate.
+    retained: Vec<([u8; 8], PreparedCandidate, bool)>,
+    /// Owner-row paging cursor (in memory; restarts from the beginning after a restart).
+    cursor: Option<Vec<u8>>,
+}
+
 /// One CoreStore's receipt-identity minter and its sweep custody.
 #[derive(Default)]
 pub(crate) struct RecordOps {
     minting: Mutex<Minting>,
     drained: Arc<Drained>,
     opening: tokio::sync::Mutex<Option<Retained>>,
+    sweeps: tokio::sync::Mutex<Sweeps>,
 }
 
 impl std::fmt::Debug for RecordOps {
@@ -240,6 +282,44 @@ impl RecordOps {
             op,
             generation: current,
         })
+    }
+
+    fn take_drained(&self) -> Vec<[u8; 8]> {
+        std::mem::take(&mut *self.drained.lock())
+    }
+
+    fn requeue(&self, gen8: [u8; 8]) {
+        self.drained.lock().push(gen8);
+    }
+}
+
+/// What one maintenance pass did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RecordOpsPass {
+    pub opened: bool,
+    /// Generations swept (this writer's drained ones and closed writers' found by owner row).
+    pub swept: usize,
+    /// Sweeps still undecided and retained.
+    pub retained: usize,
+}
+
+enum Settled {
+    Done,
+    Retain,
+    Again,
+}
+
+fn settled(result: &SubmitResult) -> Settled {
+    match result {
+        SubmitResult::Decided(decision) => match decision.as_ref() {
+            // ConditionConflict: another node swept it, or the owner row moved on.
+            Decision::Applied(_) | Decision::ConditionConflict => Settled::Done,
+            // This writer is fenced: the crash sweep of whoever closed it takes over.
+            Decision::Fenced | Decision::Stale => Settled::Done,
+            Decision::OpIdConflict | Decision::TimeGuardFailed { .. } => Settled::Done,
+        },
+        SubmitResult::NoEffect(_) => Settled::Again,
+        SubmitResult::Uncertain | SubmitResult::Reconcile | SubmitResult::Busy => Settled::Retain,
     }
 }
 
@@ -352,6 +432,221 @@ impl CoreStore {
             }
         }
         Err(AccessError::Entropy)
+    }
+
+    /// The background step (one settle tick): open the next generation when the current one is
+    /// half used, sweep this writer's drained generations, and read one owner-row page for
+    /// closed writers' generations.
+    pub async fn maintain_record_ops(&self) -> Result<RecordOpsPass, AccessError> {
+        let mut pass = RecordOpsPass::default();
+        if self.record_ops.minting().needs_open() {
+            pass.opened = self.open_record_generation().await?;
+        }
+        pass.swept += self.sweep_drained().await?;
+        let page = self.limits().scan_items;
+        let (swept, retained) = self.sweep_owner_rows(page).await?;
+        pass.swept += swept;
+        pass.retained = retained;
+        Ok(pass)
+    }
+
+    /// Sweep every drained generation of this writer: `Exact(owner row = own writer)`, then
+    /// the range delete and the owner-row delete. A generation not decided stays queued.
+    async fn sweep_drained(&self) -> Result<usize, AccessError> {
+        let mut drained = self.record_ops.take_drained().into_iter();
+        let mut swept = 0;
+        let mut sweeps = self.record_ops.sweeps.lock().await;
+        let result = async {
+            let writer = self.authority()?.writer;
+            for gen8 in drained.by_ref() {
+                let predicates = vec![Predicate {
+                    address: owner_address(gen8)?,
+                    expected: ExpectedValue::Exact(Secret::new(writer.to_vec())),
+                }];
+                swept += self
+                    .submit_sweep(&mut sweeps, gen8, predicates, true)
+                    .await?;
+            }
+            Ok::<(), AccessError>(())
+        }
+        .await;
+        for gen8 in drained {
+            self.record_ops.requeue(gen8);
+        }
+        result.map(|()| swept)
+    }
+
+    /// Submit one sweep. Returns 1 if it was decided. An undecided sweep is retained with its
+    /// exact candidate; one with no effect is queued again if it is this writer's (`own`), and
+    /// otherwise found again by the owner-row paging.
+    async fn submit_sweep(
+        &self,
+        sweeps: &mut Sweeps,
+        gen8: [u8; 8],
+        predicates: Vec<Predicate>,
+        own: bool,
+    ) -> Result<usize, AccessError> {
+        let requeue = |gen8| {
+            if own {
+                self.record_ops.requeue(gen8);
+            }
+        };
+        let candidate = PreparedCandidate::new(Candidate {
+            id: self.next_id()?,
+            codec: CANDIDATE_VERSION,
+            predicates,
+            mutations: sweep_mutations(gen8)?,
+            time: None,
+            result: Secret::new(vec![]),
+        })
+        .map_err(|_| AccessError::Corrupt)?;
+        let submission = match self.submit(candidate.clone()).await {
+            Ok(submission) => submission,
+            Err(error) => {
+                requeue(gen8);
+                return Err(error);
+            }
+        };
+        Ok(match settled(&submission.result) {
+            Settled::Done => 1,
+            Settled::Retain => {
+                sweeps.retained.push((gen8, candidate, own));
+                0
+            }
+            Settled::Again => {
+                requeue(gen8);
+                0
+            }
+        })
+    }
+
+    async fn retry_sweeps(&self, sweeps: &mut Sweeps) -> usize {
+        let mut swept = 0;
+        for (gen8, candidate, own) in std::mem::take(&mut sweeps.retained) {
+            match self
+                .retry(PendingId(candidate.candidate().id.operation))
+                .await
+            {
+                Ok(submission) => match settled(&submission.result) {
+                    Settled::Done => swept += 1,
+                    Settled::Retain => sweeps.retained.push((gen8, candidate, own)),
+                    Settled::Again if own => self.record_ops.requeue(gen8),
+                    Settled::Again => {}
+                },
+                // Collected by another driver: a fresh sweep is idempotent (owner row Exact).
+                Err(AccessError::UnknownOperation) if own => self.record_ops.requeue(gen8),
+                Err(AccessError::UnknownOperation) => {}
+                Err(_) => sweeps.retained.push((gen8, candidate, own)),
+            }
+        }
+        swept
+    }
+
+    /// The crash sweep, driven by owner rows: read at most `budget` owner rows from the
+    /// in-memory cursor (wrapping at the end); for each owned by another writer whose control
+    /// row is closed, sweep its generation under `Exact` on the closed bytes and on the owner
+    /// row. Returns (generations swept, sweeps still retained).
+    pub(crate) async fn sweep_owner_rows(
+        &self,
+        budget: usize,
+    ) -> Result<(usize, usize), AccessError> {
+        let own = self.authority()?.writer;
+        let mut sweeps = self.record_ops.sweeps.lock().await;
+        let mut swept = self.retry_sweeps(&mut sweeps).await;
+        let mut read = 0;
+        let mut closed: BTreeMap<[u8; 16], Option<Secret<Vec<u8>>>> = BTreeMap::new();
+        while read < budget {
+            let page = self
+                .backend()
+                .scan(Arc::new(Scan {
+                    dataset: self.info().dataset,
+                    namespace: OWNERS,
+                    prefix: vec![b'G'],
+                    after: sweeps.cursor.clone(),
+                    generation: None,
+                    allow_change: true,
+                    max_items: (budget - read).min(self.limits().scan_items),
+                    max_bytes: self.limits().scan_bytes,
+                }))
+                .await
+                .map_err(AccessError::Backend)?;
+            read += page.rows.len().max(1);
+            sweeps.cursor = page.next.clone();
+            let seal = crate::seal::lend();
+            for (at, value) in page.rows {
+                let Some(gen8) = owner_gen8(&at.key) else {
+                    continue;
+                };
+                let Ok(writer) = <[u8; 16]>::try_from(value.expose(&seal).as_slice()) else {
+                    continue;
+                };
+                if writer == own {
+                    continue;
+                }
+                if !closed.contains_key(&writer) {
+                    let row = self.closed_writer_row(writer).await?;
+                    closed.insert(writer, row);
+                }
+                let Some(Some(control_row)) = closed.get(&writer) else {
+                    continue;
+                };
+                let predicates = vec![
+                    Predicate {
+                        address: Address {
+                            namespace: control::NAMESPACE.0,
+                            key: control::writer_key(writer).to_vec(),
+                        },
+                        expected: ExpectedValue::Exact(control_row.clone()),
+                    },
+                    Predicate {
+                        address: at.clone(),
+                        expected: ExpectedValue::Exact(value.clone()),
+                    },
+                ];
+                swept += self
+                    .submit_sweep(&mut sweeps, gen8, predicates, false)
+                    .await?;
+            }
+            if page.next.is_none() {
+                break;
+            }
+        }
+        Ok((swept, sweeps.retained.len()))
+    }
+
+    /// The writer's control row bytes if it decodes and is closed; `None` otherwise.
+    async fn closed_writer_row(
+        &self,
+        writer: [u8; 16],
+    ) -> Result<Option<Secret<Vec<u8>>>, AccessError> {
+        let observed = self
+            .backend()
+            .read(Arc::new(Read {
+                dataset: self.info().dataset,
+                addresses: vec![Address {
+                    namespace: control::NAMESPACE.0,
+                    key: control::writer_key(writer).to_vec(),
+                }],
+                time: None,
+            }))
+            .await
+            .map_err(AccessError::Backend)?;
+        let ReadResult::Values {
+            observed_at,
+            mut values,
+        } = observed
+        else {
+            return Err(AccessError::Corrupt);
+        };
+        if observed_at.authority != self.info().clock_authority || values.len() != 1 {
+            return Err(AccessError::Corrupt);
+        }
+        let Some(row) = values.pop().flatten() else {
+            return Ok(None);
+        };
+        let closed = control::Writer::decode(row.expose(&crate::seal::lend()))
+            .is_some_and(|writer| writer.live().is_empty());
+        Ok(closed.then_some(row))
     }
 
     /// Test seam: the current generation has already minted `minted` ids.
