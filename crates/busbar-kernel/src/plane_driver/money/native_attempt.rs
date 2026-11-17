@@ -4,14 +4,20 @@
 //! Linear input to the selected-resource governor. Selection and preparation minting remain
 //! private to the money consumer; configuration metadata alone cannot authorize an attempt.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use busbar_contract::MeterClassId;
 
 use super::UnitMoney;
+use crate::governance::unit_checkpoint::partitions::{AttemptPartition, Finality, Transport};
 use crate::governance::AdmitGrant;
 use crate::invocation::InvocationContext;
 use crate::plane_driver::port_session::UpExchange;
+use busbar_plugin_abi::records::RecErr;
+use busbar_ports::codec::fallback_usage::{
+    AttemptEnd, AttemptState, AttemptUsage, Completeness, Declaration, UsageSource,
+};
 
 /// One prepared exchange under an actual request admission.
 ///
@@ -62,6 +68,80 @@ impl std::fmt::Debug for PreparedRateAttempt {
         f.debug_struct("PreparedRateAttempt")
             .finish_non_exhaustive()
     }
+}
+
+/// A whole accepted factual update, still private until the money/checkpoint owner publishes it.
+/// This does not mint live selection authority, perform rate effects or select a money table.
+struct StagedAttemptFacts {
+    partition: AttemptPartition,
+    rounded: bool,
+}
+
+fn stage_attempt_facts(
+    before: &AttemptPartition,
+    physical_classes: &BTreeSet<String>,
+    declaration: Declaration<'_>,
+    reports: &[AttemptUsage<'_>],
+    end: Option<AttemptEnd>,
+) -> Result<StagedAttemptFacts, RecErr> {
+    if before.preparation == 0
+        || !before.dispatch.is_some_and(|dispatch| dispatch != 0)
+        || before.transport != Transport::Committed
+        || before.finality != Finality::Live
+        || physical_classes
+            .iter()
+            .any(|class| !declaration.is_attempt_class(class))
+        || before
+            .usage
+            .classes
+            .keys()
+            .any(|class| !declaration.is_attempt_class(class))
+    {
+        return Err(RecErr::Size);
+    }
+    let state = AttemptState {
+        attempt: before.preparation,
+        exchange: 0,
+        sealed: false,
+    };
+    let mut partition = before.clone();
+    let mut rounded = false;
+    for report in reports {
+        declaration.validate_attempt_usage(state, *report)?;
+        let (count, was_rounded) =
+            super::super::usage::scaled(report.amount, report.scale).ok_or(RecErr::Size)?;
+        rounded |= was_rounded;
+        let facts = partition
+            .usage
+            .classes
+            .entry(report.class.to_owned())
+            .or_default();
+        match report.source {
+            UsageSource::Reported => facts.reported = Some(count),
+            UsageSource::Floor => facts.floor = Some(count),
+            UsageSource::Estimated => facts.estimated = Some(count),
+        }
+        if physical_classes.contains(report.class) {
+            if let Some(selected) = facts.selected() {
+                facts.rate_high_water = facts.rate_high_water.max(selected.count);
+            }
+        }
+    }
+    if let Some(end) = end {
+        let reported: Vec<&str> = partition
+            .usage
+            .classes
+            .iter()
+            .filter_map(|(class, facts)| facts.reported.is_some().then_some(class.as_str()))
+            .collect();
+        declaration.validate_attempt_end(state, end, &reported)?;
+        partition.finality = match end.completeness {
+            Completeness::Complete => Finality::Complete,
+            Completeness::Partial => Finality::Partial,
+            Completeness::Unknown => Finality::Unknown,
+        };
+    }
+    Ok(StagedAttemptFacts { partition, rounded })
 }
 
 #[cfg(test)]
