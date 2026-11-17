@@ -111,7 +111,7 @@ impl CallerIntents {
         let mut scan = self.recovery.lock().await;
         if scan.pending.is_none() && scan.keys.is_empty() && !scan.page_end {
             let schema = if scan.intents { INTENT } else { GUARD };
-            let page = match self.scoped.scan(schema, b"", scan.cursor.as_ref()).await {
+            let page = match self.scoped.page(schema, b"", scan.cursor.as_ref()).await {
                 Ok(page) => page,
                 Err(scoped::Error::Backend(busbar_contract::persistence::Failure::StaleScan)) => {
                     scan.cursor = None;
