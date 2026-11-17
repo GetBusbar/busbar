@@ -16,6 +16,8 @@ use crate::redacted::Secret;
 pub const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.fence.v1\0");
 /// Singleton dataset fence key within [`NAMESPACE`].
 pub const DATASET_KEY: &[u8] = b"d";
+/// Singleton declared-restore key within [`NAMESPACE`] (DES-331 §B2).
+pub const RESTORE_KEY: &[u8] = b"r";
 
 /// Adapter-maintained namespace generation records. The key is the namespace's
 /// exact sixteen bytes and a present value is its nonzero little-endian u64.
@@ -66,6 +68,9 @@ pub enum Key {
     /// One live execution epoch of a writer, `'e' ‖ writer ‖ epoch u64 BE`: present iff
     /// `retired_through < epoch <= admitted_through` for that writer.
     Epoch([u8; 16], u64),
+    /// The dataset's declared-restore state ([`Restore`], [`RESTORE_KEY`]); absent means the
+    /// dataset was never restored (restore epoch 0).
+    Restore,
 }
 
 impl Key {
@@ -73,6 +78,9 @@ impl Key {
     pub fn decode(key: &[u8]) -> Option<Self> {
         if key == DATASET_KEY {
             return Some(Self::Dataset);
+        }
+        if key == RESTORE_KEY {
+            return Some(Self::Restore);
         }
         let (&tag, rest) = key.split_first()?;
         let (writer, epoch) = rest.split_at_checked(16)?;
@@ -134,6 +142,16 @@ pub fn replacement(
         Key::Epoch(..) => (previous.is_none() && next == EPOCH_VALUE)
             .then_some(())
             .ok_or(Failure::Refused),
+        Key::Restore => {
+            let old = match previous {
+                Some(old) => Some(Restore::decode(old).ok_or(Failure::Corrupt)?),
+                None => None,
+            };
+            let next = Restore::decode(next).ok_or(Failure::Refused)?;
+            Restore::permits_successor(old, next)
+                .then_some(())
+                .ok_or(Failure::Refused)
+        }
     }
 }
 
@@ -589,6 +607,95 @@ impl Writer {
             && next.encode().is_some()
             && next.retired_through >= self.retired_through
             && next.admitted_through >= self.admitted_through
+    }
+}
+
+/// Where a declared restore stands (DES-331 §B2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreState {
+    /// A node entered restore quarantine on this dataset; nothing is declared yet.
+    Pending,
+    /// The restore at this epoch is declared.
+    Declared,
+}
+
+/// The declared-restore row ([`RESTORE_KEY`]). Absent means restore epoch 0, never restored;
+/// it is written only on the restore path and never deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restore {
+    /// Restores declared on this dataset so far.
+    pub epoch: u64,
+    /// Pending or declared.
+    pub state: RestoreState,
+    /// Store time (UNIX seconds) of the declaration of `epoch`; zero before the first one.
+    pub declared_at: u64,
+    /// Digest of the declaration of `epoch`; zero before the first one.
+    pub declaration_digest: [u8; 32],
+}
+
+impl Restore {
+    const MAGIC: &'static [u8; 8] = b"BSR1\0\0\0\0";
+    /// Encoded length.
+    pub const LEN: usize = 64;
+
+    /// Fixed versioned representation: magic, epoch u64 LE, state (1 pending, 2 declared), seven
+    /// reserved zero bytes, `declared_at` u64 LE, the declaration digest.
+    #[must_use]
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let mut bytes = [0; Self::LEN];
+        bytes[..8].copy_from_slice(Self::MAGIC);
+        bytes[8..16].copy_from_slice(&self.epoch.to_le_bytes());
+        bytes[16] = match self.state {
+            RestoreState::Pending => 1,
+            RestoreState::Declared => 2,
+        };
+        bytes[24..32].copy_from_slice(&self.declared_at.to_le_bytes());
+        bytes[32..].copy_from_slice(&self.declaration_digest);
+        bytes
+    }
+
+    /// Exactly one known-version row; anything else is malformed.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::LEN || &bytes[..8] != Self::MAGIC || bytes[17..24] != [0; 7] {
+            return None;
+        }
+        let state = match bytes[16] {
+            1 => RestoreState::Pending,
+            2 => RestoreState::Declared,
+            _ => return None,
+        };
+        Some(Self {
+            epoch: u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+            state,
+            declared_at: u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+            declaration_digest: bytes[32..].try_into().ok()?,
+        })
+    }
+
+    /// The only transitions: absent -> pending at epoch 0; declared(e) -> pending(e), keeping
+    /// the declaration it carries; pending(e) -> declared(e + 1) naming a nonzero time and
+    /// digest. There is no way back to "never restored": a mistaken quarantine is declared.
+    #[must_use]
+    pub fn permits_successor(previous: Option<Self>, next: Self) -> bool {
+        match (previous, next.state) {
+            (None, RestoreState::Pending) => {
+                next.epoch == 0 && next.declared_at == 0 && next.declaration_digest == [0; 32]
+            }
+            (Some(old), RestoreState::Pending) => {
+                old.state == RestoreState::Declared
+                    && next.epoch == old.epoch
+                    && next.declared_at == old.declared_at
+                    && next.declaration_digest == old.declaration_digest
+            }
+            (Some(old), RestoreState::Declared) => {
+                old.state == RestoreState::Pending
+                    && old.epoch.checked_add(1) == Some(next.epoch)
+                    && next.declared_at != 0
+                    && next.declaration_digest != [0; 32]
+            }
+            (None, RestoreState::Declared) => false,
+        }
     }
 }
 
