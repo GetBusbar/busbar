@@ -72,6 +72,11 @@ impl DeliveryWatch {
         lock(&self.0.state).snapshot
     }
 
+    /// Read the actual cancellation latch before the output owner has settled delivery.
+    pub fn cancellation(&self) -> Option<ResponseStop> {
+        lock(&self.0.state).cancel
+    }
+
     /// Await the single frozen terminal; cancellation of this waiter changes no delivery fact.
     pub async fn terminal(&self) -> DeliverySnapshot {
         loop {

@@ -89,6 +89,34 @@ pub struct ResponseKey {
     pub stream: u64,
 }
 
+/// The final neutral command after every response-producing effect has resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseDisposition {
+    /// End the selected response; absence of status is preserved.
+    End {
+        /// The status already selected by the response owner, if any.
+        status: Option<u16>,
+    },
+    /// Refuse under the existing neutral refusal status contract.
+    Refuse {
+        /// A refusal status in 400..=599.
+        status: u16,
+        /// Whether the final response owner already submitted its head.
+        head_sent: bool,
+    },
+}
+
+/// Immutable response intent facts, not a signing, release or delivery capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalResponseIntent {
+    /// The original root-admitted response identity.
+    pub key: ResponseKey,
+    /// Checked ordinal of the actual final response publication operation.
+    pub final_publication_ordinal: u64,
+    /// The terminal command fixed before waiting for terminal transport credit.
+    pub disposition: ResponseDisposition,
+}
+
 /// A bounded, content-free reason that response delivery stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseStop {
