@@ -342,6 +342,17 @@ impl Grammar {
         &self.report
     }
 
+    /// Exact admission metadata correspondence, independent of diagnostic-only redaction or
+    /// pending-fetch report lines. Every authority-bearing field still participates in equality.
+    #[must_use]
+    pub fn same_authority(&self, other: &Self) -> bool {
+        let mut left = self.clone();
+        let mut right = other.clone();
+        left.report.clear();
+        right.report.clear();
+        left == right
+    }
+
     /// This grammar as an admin response may show it (SECRET-SHORTHAND-BOOT §3.9): a refusal names
     /// the item and its cause class, never a file, a trust setting or the inventory; the report
     /// is one pointer to the plugin listing, which a caller reads under its own authority.
