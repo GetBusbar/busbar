@@ -168,4 +168,56 @@ impl ExecutionAdmission {
             super::module_admin_scope_cap(app, prepared.provider()),
         ))
     }
+
+    pub(super) fn who(&self) -> Option<super::AdminWho> {
+        let (lease, prepared) = self.native()?;
+        let identity = prepared.identity();
+        super::admin_who_of(
+            lease.generation(),
+            super::ChainVerdict::Identified {
+                module: prepared.provider().to_owned(),
+                principal: super::Principal {
+                    id: identity.subject().to_owned(),
+                    name: None,
+                    roles: identity.groups().map(str::to_owned).collect(),
+                    ttl_secs: identity.cache_s().map(u64::from),
+                },
+                resolved: None,
+            },
+            super::module_admin_scope_cap(lease.generation(), prepared.provider()),
+            identity.expires_at_s(),
+        )
+    }
+
+    pub(super) fn matches_http(
+        &self,
+        method: &str,
+        target: &str,
+        headers: &axum::http::HeaderMap,
+        body: &[u8],
+    ) -> bool {
+        let Some((_, prepared)) = self.native() else {
+            return false;
+        };
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        prepared.request().view(|original| {
+            original.method == method
+                && original.path == path
+                && original.query == query
+                && original.body == body
+                && original.headers.len() == headers.len()
+                && original.headers.iter().all(|field| {
+                    let name = field.name.get();
+                    original
+                        .headers
+                        .iter()
+                        .filter(|field| field.name.get().eq_ignore_ascii_case(name))
+                        .map(|field| field.value.get())
+                        .eq(headers
+                            .get_all(name)
+                            .iter()
+                            .map(axum::http::HeaderValue::as_bytes))
+                })
+        })
+    }
 }

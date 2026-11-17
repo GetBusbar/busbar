@@ -2483,9 +2483,42 @@ pub(crate) async fn auth_middleware(
                 crate::guest::Claimant::Clean(name) if name == "core")
                     && matches!(admission.selected_line().auth, crate::guest::LineAuth::None)
             });
-        let (door, strips, who) = if let Some(admission) =
-            inbound.as_ref().filter(|_| !deferred_core_admin)
-        {
+        let completed = req
+            .extensions()
+            .get::<std::sync::Arc<native_admin::ExecutionAdmission>>()
+            .filter(|e| e.native().is_some())
+            .cloned();
+        let (door, strips, who) = if let Some(execution) = completed {
+            let body = std::mem::replace(req.body_mut(), Body::empty());
+            let bytes = axum::body::to_bytes(body, body_limit).await.map_err(|_| {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body exceeds configured limit",
+                )
+                    .into_response()
+            })?;
+            *req.body_mut() = Body::from(bytes.clone());
+            let (lease, prepared) = execution.native().ok_or_else(admin_unauthorized_response)?;
+            if !std::sync::Arc::ptr_eq(lease.generation(), &app)
+                || !execution.matches_http(
+                    req.method().as_str(),
+                    target,
+                    inbound_headers.unwrap_or_else(|| req.headers()),
+                    &bytes,
+                )
+            {
+                return Err(admin_unauthorized_response());
+            }
+            let door = execution
+                .door_for(lease.generation())
+                .ok_or_else(admin_unauthorized_response)?;
+            let strips = prepared
+                .identity()
+                .strip()
+                .map(|name| Strip::field(name.to_owned()))
+                .collect();
+            (door, strips, execution.who())
+        } else if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
             let verdict = admission.admin_verdict();
             if admin_door_admits(&verdict.door, req.method().as_str(), target)
                 && !admission.claim_admin_replay().await
