@@ -423,3 +423,10 @@ keys are refused. The current startup Store frame bound is fixed at 64 MiB;
 datagram LINE pairings retain their former unlimited default. The shutdown drain
 budget is fixed at 20 seconds and the governed settlement backlog cap at 20,000.
 Released 1.5.5 configurations do not contain these pre-release settings.
+
+### Audit verifying-key pages
+
+`GET /api/v1/admin/audit/keys` now returns public keys under `items` with
+`next_cursor`, while retaining its algorithm, signature domain and recipe metadata.
+Pass `limit` (default 200, maximum 1000) and follow `next_cursor` until it is null.
+Keys are ordered by `key_id`; only public verifying material is returned.

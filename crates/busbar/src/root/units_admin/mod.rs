@@ -453,8 +453,6 @@ async fn render_audit_view(
                 });
             view.range_page(from, to, cursor).await
         }
-        KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
-
         _ => Err(GovernanceError::NotFound),
     }
 }
@@ -782,6 +780,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .audit
             .as_deref()
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        if verb == KernelVerb::GetAuditKeys {
+            return audit_keys_page(&self.request.path, view).await;
+        }
         if verb == KernelVerb::GetRecords {
             return Ok(records::records_answer(view, &*self.planes, &self.request.path).await);
         }
@@ -789,6 +790,71 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .await
             .map(json_answer)
     }
+}
+
+async fn audit_keys_page(
+    target: &str,
+    view: &dyn AuditView,
+) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
+    use busbar_core_admin::v1::contract::LIST_LIMIT_DEFAULT;
+    use busbar_core_admin::v1::json::cursor;
+
+    let uri = target
+        .parse()
+        .map_err(|_| busbar_core_admin::GovernanceError::Validation)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<std::collections::HashMap<String, String>>::try_from_uri(&uri)
+            .map_err(|_| busbar_core_admin::GovernanceError::Validation)?;
+    let window = match cursor::window(&query, "audit-keys", "", LIST_LIMIT_DEFAULT) {
+        Ok(window) => window,
+        Err(response) => {
+            let (parts, body) = (*response).into_parts();
+            let bytes = axum::body::to_bytes(body, 64 * 1024)
+                .await
+                .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+            return Ok(AdminAnswer {
+                status: parts.status.as_u16(),
+                headers: parts
+                    .headers
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.as_str().to_string(),
+                            value.to_str().unwrap_or_default().to_string(),
+                        )
+                    })
+                    .collect(),
+                body: bytes.to_vec(),
+            });
+        }
+    };
+    let body: json::Value = json::parse_value(expose::keys_body(&view.keys()).as_bytes())
+        .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+    let mut body = body
+        .into_object()
+        .ok_or(busbar_core_admin::GovernanceError::Store)?;
+    let keys = body
+        .remove(&"keys")
+        .and_then(|keys| keys.as_array().map(|keys| keys.to_vec()))
+        .ok_or(busbar_core_admin::GovernanceError::Store)?;
+    let page = cursor::keyset(
+        keys,
+        &window,
+        "audit-keys",
+        "",
+        |key| key["key_id"].as_str().unwrap_or_default().to_string(),
+        false,
+    );
+    body.insert("items", json::Value::from(page.items));
+    body.insert(
+        "next_cursor",
+        page.next_cursor
+            .map_or_else(json::Value::new_null, json::Value::from),
+    );
+    json::to_vec(&json::Value::from(body))
+        .map(json_answer)
+        .map_err(|_| busbar_core_admin::GovernanceError::Store)
 }
 
 fn json_answer(body: Vec<u8>) -> AdminAnswer {
