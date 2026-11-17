@@ -87,21 +87,18 @@ pub fn initialize_with_records(
     let registered = control::Writer {
         retired_through: 0,
         admitted_through: 1,
+    };
+    let mut changes = vec![(
+        address(control::DATASET_KEY.to_vec()),
+        None,
+        Secret::new(root.to_vec()),
+    )];
+    for mutation in control::writer_put(writer, None, registered).ok_or(InvalidFence::Transition)? {
+        let Mutation::Put { address, value } = mutation else {
+            return Err(InvalidFence::Transition);
+        };
+        changes.push((address, None, value));
     }
-    .encode()
-    .ok_or(InvalidFence::Transition)?;
-    let mut changes = vec![
-        (
-            address(control::DATASET_KEY.to_vec()),
-            None,
-            Secret::new(root.to_vec()),
-        ),
-        (
-            address(control::writer_key(writer).to_vec()),
-            None,
-            Secret::new(registered.to_vec()),
-        ),
-    ];
     for (at, value) in records {
         if at.namespace == control::NAMESPACE.0 || at.namespace == control::GENERATION_NAMESPACE.0 {
             return Err(InvalidFence::Transition);

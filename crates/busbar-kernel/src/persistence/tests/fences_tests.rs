@@ -79,7 +79,7 @@ fn initialization_records_are_absent_puts_outside_reserved_namespaces() {
     )
     .unwrap();
     assert!(control::initialization(&prepared, dataset));
-    assert_eq!(prepared.candidate().mutations.len(), 3);
+    assert_eq!(prepared.candidate().mutations.len(), 4);
     for namespace in [control::NAMESPACE.0, control::GENERATION_NAMESPACE.0] {
         assert!(matches!(
             initialize_with_records(

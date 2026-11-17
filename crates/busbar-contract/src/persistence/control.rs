@@ -139,7 +139,7 @@ pub fn replacement(
 
 /// Recognize initial authority together with opaque initial records. This validates
 /// the candidate shape only: every address has one Absent predicate and one Put.
-/// Exactly the dataset root and initial writer occupy the control namespace;
+/// Exactly the dataset root, initial writer and its epoch-1 row occupy the control namespace;
 /// additional records cannot use either reserved adapter namespace.
 ///
 /// Core fences it with `Absent(root)`; no store check.
@@ -151,7 +151,7 @@ pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) ->
         || candidate.id.dataset != dataset
         || candidate.id.writer_epoch != 1
         || candidate.id.execution_epoch != 1
-        || candidate.predicates.len() < 2
+        || candidate.predicates.len() < 3
         || candidate.predicates.len() != candidate.mutations.len()
         || !candidate.result.0.is_empty()
         || candidate.time.is_some()
@@ -168,6 +168,7 @@ pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) ->
         match Key::decode(key)? {
             Key::Dataset => Some(1),
             Key::Writer(writer) if writer == candidate.id.writer => Some(2),
+            Key::Epoch(writer, 1) if writer == candidate.id.writer => Some(4),
             _ => None,
         }
     };
@@ -214,6 +215,7 @@ pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) ->
                         admitted_through: 1,
                     })
             }
+            4 => value.0 == EPOCH_VALUE,
             _ => false,
         };
         if !valid {
@@ -221,7 +223,7 @@ pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) ->
         }
         controls |= kind;
     }
-    controls == 3
+    controls == 7
 }
 
 /// Per-writer fence key; identifiers are never reused after restore.
@@ -634,6 +636,10 @@ mod tests {
                     address: writer.clone(),
                     expected: ExpectedValue::Absent,
                 },
+                Predicate {
+                    address: epoch_row([2; 16], 1),
+                    expected: ExpectedValue::Absent,
+                },
             ],
             mutations: vec![
                 Mutation::Put {
@@ -660,6 +666,10 @@ mod tests {
                         .to_vec(),
                     ),
                 },
+                Mutation::Put {
+                    address: epoch_row([2; 16], 1),
+                    value: Secret::new(EPOCH_VALUE.to_vec()),
+                },
             ],
             time: None,
             result: Secret::new(Vec::new()),
@@ -667,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_grants_only_one_absent_root_and_initial_writer() {
+    fn initialization_grants_only_one_absent_root_writer_and_epoch() {
         use super::super::Address;
         use crate::Secret;
         let dataset = initial().id.dataset;
@@ -728,30 +738,30 @@ mod tests {
             let dataset = candidate.id.dataset;
             assert!(!init(candidate, dataset));
         };
-        rejected(|c| c.predicates[2].expected = ExpectedValue::Exact(Secret::new(Vec::new())));
-        rejected(|c| c.predicates[2].address.key.push(0));
+        rejected(|c| c.predicates[3].expected = ExpectedValue::Exact(Secret::new(Vec::new())));
+        rejected(|c| c.predicates[3].address.key.push(0));
         rejected(|c| {
             c.predicates.pop();
         });
         rejected(|c| {
             c.predicates.push(Predicate {
-                address: c.predicates[2].address.clone(),
+                address: c.predicates[3].address.clone(),
                 expected: ExpectedValue::Absent,
             });
         });
         rejected(|c| {
             c.mutations.push(Mutation::Put {
-                address: c.predicates[2].address.clone(),
+                address: c.predicates[3].address.clone(),
                 value: Secret::new(Vec::new()),
             });
         });
         rejected(|c| {
             c.predicates.push(Predicate {
-                address: c.predicates[2].address.clone(),
+                address: c.predicates[3].address.clone(),
                 expected: ExpectedValue::Absent,
             });
             c.mutations.push(Mutation::Put {
-                address: c.predicates[2].address.clone(),
+                address: c.predicates[3].address.clone(),
                 value: Secret::new(vec![]),
             });
         });
@@ -764,13 +774,13 @@ mod tests {
                 expected: ExpectedValue::Absent,
             });
             c.mutations.push(Mutation::Put {
-                address: c.predicates[2].address.clone(),
+                address: c.predicates[3].address.clone(),
                 value: Secret::new(vec![]),
             });
         });
-        rejected(|c| c.mutations[2] = Mutation::Delete(c.predicates[2].address.clone()));
+        rejected(|c| c.mutations[3] = Mutation::Delete(c.predicates[3].address.clone()));
         rejected(|c| {
-            c.mutations[2] = Mutation::DeleteRange {
+            c.mutations[3] = Mutation::DeleteRange {
                 namespace: NamespaceId([8; 16]),
                 prefix: vec![],
                 exact_key_length: 1,
@@ -781,8 +791,8 @@ mod tests {
                 namespace: NAMESPACE.0,
                 key: writer_key([7; 16]).to_vec(),
             };
-            c.predicates[2].address = address.clone();
-            c.mutations[2] = Mutation::Put {
+            c.predicates[3].address = address.clone();
+            c.mutations[3] = Mutation::Put {
                 address,
                 value: Secret::new(
                     Writer {
@@ -800,8 +810,8 @@ mod tests {
                 namespace: GENERATION_NAMESPACE.0,
                 key: vec![8; 16],
             };
-            c.predicates[2].address = address.clone();
-            c.mutations[2] = Mutation::Put {
+            c.predicates[3].address = address.clone();
+            c.mutations[3] = Mutation::Put {
                 address,
                 value: Secret::new(1u64.to_le_bytes().to_vec()),
             };

@@ -163,6 +163,11 @@ pub fn initialization(
         id: backend.info().dataset,
         writer_epoch: 1,
     };
+    let mut mutations = vec![Mutation::Put {
+        address: root.clone(),
+        value: Secret::new(dataset.encode().expect("root").to_vec()),
+    }];
+    mutations.extend(control::writer_put(writer, None, open()).expect("initial writer effects"));
     candidate(
         backend,
         writer,
@@ -176,17 +181,12 @@ pub fn initialization(
                 address: writer_at(writer),
                 expected: ExpectedValue::Absent,
             },
-        ],
-        vec![
-            Mutation::Put {
-                address: root,
-                value: Secret::new(dataset.encode().expect("root").to_vec()),
-            },
-            Mutation::Put {
-                address: writer_at(writer),
-                value: Secret::new(open().encode().expect("writer").to_vec()),
+            Predicate {
+                address: control::epoch_row(writer, 1),
+                expected: ExpectedValue::Absent,
             },
         ],
+        mutations,
     )
 }
 
