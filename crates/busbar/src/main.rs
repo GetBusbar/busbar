@@ -746,7 +746,8 @@ async fn run(
             .unwrap_or_else(|| die("the configured Store has no admitted MIN-3 instance"));
         if bootstrap_ready.converting() {
             let conversion = root::min3_boot::prepare_serving(
-                bootstrap_ready, &plugin_process, conversion_images, &base_cfg, boot_guard,
+                bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
+                &Default::default(), boot_guard,
             ).unwrap_or_else(|error| die(error));
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
@@ -888,8 +889,11 @@ async fn run(
             .unwrap_or_else(|error| die(error));
             // This branch precedes governors, usage recovery, correction tasks and listeners.
             // Reconstruct the same effective config that normal application boot consumes.
-            let mut effective = config::resolve(&deploy, &defs)
-                .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+            let provider_planes = root::min3_provider_plan::descriptors(&effective_images)
+                .unwrap_or_else(|error| die(error));
+            let mut effective = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+                .unwrap_or_else(|_| die("principal transition effective configuration refused"))
+                .config;
             if let Some(doc) = overlay_doc.as_ref() {
                 config::overlay::merge_into(&mut effective, doc.clone());
             }
@@ -1052,8 +1056,12 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg =
-        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
+    let provider_planes =
+        root::min3_provider_plan::descriptors(&effective_images).unwrap_or_else(|error| die(error));
+    let resolved = config::resolve_with_provider_planes(&deploy, &defs, &provider_planes)
+        .unwrap_or_else(|errs| die_list("config errors", errs));
+    let mut cfg = resolved.config;
+    let provider_catalogs = resolved.catalogs;
     boot_instances
         .check(&cfg)
         .unwrap_or_else(|error| die(error));
@@ -1182,6 +1190,7 @@ async fn run(
         &plugin_process,
         effective_images,
         &cfg,
+        &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));

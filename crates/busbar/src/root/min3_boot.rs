@@ -887,6 +887,7 @@ impl Steps<'_> {
         // `insecure_transport.accept`.
         let seat = SeatShared {
             upstreams: self.seat.upstreams.clone(),
+            catalogs: self.seat.catalogs.clone(),
             signals: Arc::clone(&self.seat.signals),
             secrets: Arc::new(SpawnCustody(prefix)),
             kernel: Arc::clone(&self.seat.kernel),
@@ -939,6 +940,7 @@ impl Steps<'_> {
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
+                request_routes: wiring.request_routes,
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
@@ -1061,6 +1063,11 @@ pub(crate) struct BootstrapReady {
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
     hook_plan: hooks::Plan,
+    provider_plan: super::min3_provider_plan::Plan,
+    provider_catalogs: busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
+    implicit_auth: std::collections::BTreeSet<String>,
+    staged_catalogs:
+        std::collections::BTreeMap<String, super::min3_provider_catalog::StagedCatalog>,
     auth_policy: busbar_kernel::config::min3::Min3Config,
     request_body_cap: usize,
     built: Built,
@@ -1230,8 +1237,10 @@ pub(crate) fn prepare_serving(
     process: &busbar_plugin_loader::process::ProcessResources,
     effective_images: super::boot::images::FileImages,
     cfg: &RootCfg,
+    catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
 ) -> Result<ServingReady, String> {
+    let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
         built: bootstrap_built,
         instances: before,
@@ -1271,6 +1280,19 @@ pub(crate) fn prepare_serving(
         Arc::clone(process.ids()),
     ));
     let mut instances = configured(cfg, &planes)?;
+    let authored_auth: std::collections::BTreeSet<_> = instances
+        .iter()
+        .filter(|instance| instance.kind == KindCode::Auth)
+        .map(|instance| instance.name.clone())
+        .collect();
+    let implicit_auth = provider_plan
+        .auth
+        .iter()
+        .filter(|instance| !authored_auth.contains(&instance.name))
+        .map(|instance| instance.name.clone())
+        .collect();
+    instances.retain(|instance| instance.kind != KindCode::Auth);
+    instances.extend(std::mem::take(&mut provider_plan.auth));
     if !converting {
         instances.extend(transports::configured(cfg, &registry, &transports)?);
     }
@@ -1279,6 +1301,59 @@ pub(crate) fn prepare_serving(
     } else {
         declared_planes(&registry, &mut instances)?
     };
+    let mut staged_catalogs = std::collections::BTreeMap::new();
+    let registrations = declared
+        .iter()
+        .map(|(name, split)| {
+            busbar_kernel::plane_driver::port_egress::SeatPool::of(name, &split.definitions)
+                .map(|pool| (name.clone(), pool))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let mut next_destination = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.destination.get()))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1)
+                .ok_or("catalog destination IDs exhausted")
+        })?;
+    let mut next_need = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.need.0))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1).ok_or("catalog Need IDs exhausted")
+        })?;
+    for (name, catalog) in catalogs {
+        let registration = registrations
+            .get(name)
+            .ok_or_else(|| format!("plane {name}: catalog has no admitted registration owner"))?;
+        let definitions = &declared
+            .get(name)
+            .ok_or("catalog owner lost its definitions")?
+            .definitions;
+        let mut allocations = super::min3_provider_catalog::Allocations::new();
+        for pair in catalog.targets().keys() {
+            let destination = busbar_kernel_egress::ports::DestinationId::new(next_destination);
+            next_destination = next_destination
+                .checked_add(1)
+                .ok_or("catalog destination IDs exhausted")?;
+            let need = busbar_contract::conn::NeedId(next_need);
+            next_need = next_need
+                .checked_add(1)
+                .ok_or("catalog Need IDs exhausted")?;
+            allocations.insert(
+                pair.clone(),
+                super::min3_provider_catalog::Allocation {
+                    destination,
+                    need,
+                    upstream: format!("catalog-{}", destination.get()).into(),
+                },
+            );
+        }
+        let staged = provider_plan.stage(cfg, catalog, &allocations, registration, definitions)?;
+        staged_catalogs.insert(name.clone(), staged);
+    }
     let mut leases = bootstrap.into_leases();
     for (index, _, _) in &mut leases.opened {
         let old = before
@@ -1366,6 +1441,10 @@ pub(crate) fn prepare_serving(
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
         hook_plan,
+        provider_plan,
+        provider_catalogs: catalogs.clone(),
+        implicit_auth,
+        staged_catalogs,
         auth_policy: cfg.min3.clone(),
         request_body_cap: cfg.limits.request_body_max_bytes,
         built,
@@ -1412,6 +1491,10 @@ pub(crate) async fn finish(
 > {
     let ServingReady {
         hook_plan,
+        provider_plan,
+        mut provider_catalogs,
+        implicit_auth,
+        mut staged_catalogs,
         auth_policy,
         request_body_cap,
         built,
@@ -1455,12 +1538,13 @@ pub(crate) async fn finish(
             .iter()
             .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
             .collect(),
+        catalogs: Default::default(),
         signals: Arc::clone(&shared.signals),
         secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
-    let steps = Steps {
+    let mut steps = Steps {
         registry: &built.registry,
         instances: &specs,
         services,
@@ -1626,6 +1710,11 @@ pub(crate) async fn finish(
     let mut normalized = Vec::new();
     let mut plane_checks = Vec::new();
     for (index, instance) in instances.iter().enumerate() {
+        // Provider bindings synthesize these instances from admitted style metadata. They
+        // have no authored identity-provider block to rewrite during normalization.
+        if instance.kind == KindCode::Auth && implicit_auth.contains(&instance.name) {
+            continue;
+        }
         let identity = built
             .registry
             .identity_of(&instance.identity)
@@ -1698,6 +1787,52 @@ pub(crate) async fn finish(
         owners,
         Duration::from_secs(auth_policy.unknown_key_refresh_s),
     )?);
+    use busbar_kernel::retry::{RetryPolicy, RetrySite};
+    let retry = RetryPolicyImpl::default();
+    let cache = Arc::new(busbar_kernel::custody::CredCache::new(
+        auth_policy.outbound,
+        move |attempt, error| retry.next(RetrySite::AuthOutbound, attempt, error),
+        |key, event| {
+            let action = match event {
+                busbar_kernel::custody::CredEvent::Backoff => "outbound_credential_backoff",
+                busbar_kernel::custody::CredEvent::NoLifetime => "outbound_credential_no_lifetime",
+            };
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                action,
+                &format!("auth:{}:upstream:{}", key.auth_instance, key.upstream),
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        },
+    ));
+    let rows = staged_catalogs
+        .values_mut()
+        .flat_map(super::min3_provider_catalog::StagedCatalog::take_auth_rows)
+        .collect();
+    let outbound = super::min3_outbound_auth::prepare(
+        &provider_plan.bindings,
+        rows,
+        &auth,
+        &provider_plan.styles,
+        cache,
+    )?;
+    for (name, staged) in staged_catalogs {
+        let pools = provider_plan
+            .pools
+            .get(&name)
+            .ok_or("staged catalog has no retained pool policy")?
+            .clone();
+        let catalog = super::plane_seats::CatalogSeat {
+            plan: Arc::new(
+                provider_catalogs
+                    .remove(&name)
+                    .ok_or("staged catalog lost its exact resolved plan")?,
+            ),
+            sealed: staged.seal(&outbound)?,
+            pools,
+        };
+        steps.seat.catalogs.insert(name, Arc::new(catalog));
+    }
     let hooks = hooks.ok_or("native planes have no frozen hook construction inputs")?;
     for (index, who, port) in opened_planes {
         let (_, spec) = specs

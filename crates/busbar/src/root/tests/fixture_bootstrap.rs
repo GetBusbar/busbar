@@ -310,6 +310,7 @@ impl ServingFixture {
                     .into_iter()
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
+                catalogs: Default::default(),
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
