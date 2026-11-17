@@ -339,3 +339,7 @@ mod tests {
         assert!(!t.failing.load(Ordering::Relaxed), "recovered");
     }
 }
+
+#[cfg(test)]
+#[path = "tickets_funded_tests.rs"]
+mod funded_tests;
