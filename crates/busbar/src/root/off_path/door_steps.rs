@@ -543,6 +543,7 @@ pub(crate) struct Rules {
     pub(crate) member_tls_sections: Mutex<Vec<&'static str>>,
     pub(crate) listeners: Option<Arc<crate::root::serve::ListenerPlan>>,
     native_listeners: Option<Arc<crate::root::min3_listener_plan::NativeListenerPlan>>,
+    native_candidate: Option<Arc<crate::root::min3_candidate::Factory>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     pub(crate) owned_anchors: Mutex<Vec<&'static str>>,
     /// The declaring sections of the door planes the boot bound but did not open (their section
@@ -588,6 +589,7 @@ impl Rules {
             member_tls_sections: Mutex::new(Vec::new()),
             listeners: None,
             native_listeners: None,
+            native_candidate: None,
             owned_anchors: Mutex::new(Vec::new()),
             unopened: Mutex::new(Vec::new()),
             guard,
@@ -614,6 +616,15 @@ impl Rules {
         next
     }
 
+    pub(crate) fn with_native_candidate(
+        &self,
+        candidate: Arc<crate::root::min3_candidate::Factory>,
+    ) -> Self {
+        let mut next = self.copy_rules();
+        next.native_candidate = Some(candidate);
+        next
+    }
+
     fn copy_rules(&self) -> Self {
         Self {
             reader: Arc::clone(&self.reader),
@@ -625,6 +636,7 @@ impl Rules {
             ),
             listeners: self.listeners.clone(),
             native_listeners: self.native_listeners.clone(),
+            native_candidate: self.native_candidate.clone(),
             owned_anchors: Mutex::new(
                 self.owned_anchors
                     .lock()
@@ -804,7 +816,10 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         'a,
         Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
     > {
-        self.reader.prepare_candidate(cfg, plugins)
+        match &self.native_candidate {
+            Some(candidate) => candidate.prepare(cfg),
+            None => self.reader.prepare_candidate(cfg, plugins),
+        }
     }
 
     fn grammar(

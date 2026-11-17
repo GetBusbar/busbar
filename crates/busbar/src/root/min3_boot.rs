@@ -237,6 +237,12 @@ impl std::fmt::Debug for Booted {
 }
 
 impl Booted {
+    pub(crate) fn has_exports(&self) -> bool {
+        self._opened
+            .iter()
+            .any(|(_, _, port)| matches!(port, Some(OpenedPort::Export(_))))
+    }
+
     /// The boot's one summary line: what ran, never a value.
     fn describe(&self) -> String {
         let held = |secret: &Option<SecureVec>| {
@@ -1857,7 +1863,10 @@ pub(super) async fn finish_with_store(
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
             policy
-                .compile(Arc::clone(&environment.app.cost), None)
+                .compile(
+                    Arc::clone(&environment.app.cost),
+                    environment.app.selected_predecessor(),
+                )
                 .map_err(|errors| errors.join("\n"))?,
         ),
         (None, None) if converting => None,
