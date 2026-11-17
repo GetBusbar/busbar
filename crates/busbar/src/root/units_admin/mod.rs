@@ -117,7 +117,6 @@ pub(crate) trait AdminDispatch: Send + Sync {
         request: &AdminRequest,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
         _execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
-        _trust: Option<&busbar_kernel::host_services::TrustDecisionAuthority>,
     ) -> AdminAnswer {
         match admission {
             Some(admission) => self.execute_admitted(verb, request, admission).await,
@@ -131,7 +130,6 @@ struct AdmittedDispatch {
     inner: Arc<dyn AdminDispatch>,
     admission: Option<busbar_kernel::inbound::RequestAdmission>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
-    trust: Option<busbar_kernel::host_services::TrustDecisionAuthority>,
 }
 
 #[async_trait::async_trait]
@@ -143,7 +141,6 @@ impl AdminDispatch for AdmittedDispatch {
                 request,
                 self.admission.as_ref(),
                 self.execution.as_ref(),
-                self.trust.as_ref(),
             )
             .await
     }
@@ -1711,10 +1708,6 @@ pub(crate) struct AdminWalk {
     /// not written too (TRUST-ADMIN-PRODUCER-DESIGN r3 condition A-C4b). Never a header, never
     /// stored with a replayed answer.
     trust_audited: Arc<std::sync::atomic::AtomicBool>,
-    /// The trust decision authority the admin gate built from this request's own verdict (r3
-    /// condition B-C1): what a plane route the request reaches may decide trust under. Host-only;
-    /// `None` = no trust verb was granted.
-    trust_authority: Option<busbar_kernel::host_services::TrustDecisionAuthority>,
 }
 
 impl AdminWalk {
@@ -1732,7 +1725,6 @@ impl AdminWalk {
             execution: None,
             answer: None,
             trust_audited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            trust_authority: None,
         }
     }
 }
@@ -1996,27 +1988,6 @@ pub(crate) async fn authenticate(
         walk.granted = Some(VerbScope::ReadOnly);
     }
 
-    // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2a, condition B-C1: the authority a plane route may decide
-    // trust under comes only from this verdict, under the rules `approve` applies to the trust
-    // verbs themselves: full scope, and a non-empty verb list must name the verb. An open door
-    // is `anonymous`; no grant, no authority.
-    let admits = |verb: KernelVerb| {
-        grants.allows(Rung::Full)
-            && listed
-                .as_ref()
-                .is_none_or(|list| list.admits(busbar_core_admin::verb_name(verb), Rung::Full))
-    };
-    let (approve, revoke) = (
-        admits(KernelVerb::TrustApprove),
-        admits(KernelVerb::TrustRevoke),
-    );
-    walk.trust_authority =
-        (approve || revoke).then(|| busbar_kernel::host_services::TrustDecisionAuthority {
-            principal: principal.clone(),
-            approve,
-            revoke,
-        });
-
     if listed.is_some() {
         walk.listed = listed;
     }
@@ -2113,17 +2084,15 @@ pub(crate) async fn route(
     let granted = walk.granted.ok_or(ReasonCode::ScopeDenied)?;
     let request = &walk.request;
 
-    let dispatch: Arc<dyn AdminDispatch> =
-        if walk.admission.is_some() || walk.execution.is_some() || walk.trust_authority.is_some() {
-            Arc::new(AdmittedDispatch {
-                inner: Arc::clone(&binding.dispatch),
-                admission: walk.admission.clone(),
-                execution: walk.execution.clone(),
-                trust: walk.trust_authority.clone(),
-            })
-        } else {
-            Arc::clone(&binding.dispatch)
-        };
+    let dispatch: Arc<dyn AdminDispatch> = if walk.admission.is_some() || walk.execution.is_some() {
+        Arc::new(AdmittedDispatch {
+            inner: Arc::clone(&binding.dispatch),
+            admission: walk.admission.clone(),
+            execution: walk.execution.clone(),
+        })
+    } else {
+        Arc::clone(&binding.dispatch)
+    };
 
     if mints_its_own_identity(verb) {
         walk.answer = Some(dispatch.execute(verb, request).await);

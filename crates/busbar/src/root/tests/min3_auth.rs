@@ -551,7 +551,7 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
         busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path).unwrap();
     let verb = crate::root::units_admin::kernel_verb(&resolved).unwrap();
     let answer = dispatch
-        .execute_authorized(verb, &request, None, Some(&execution), None)
+        .execute_authorized(verb, &request, None, Some(&execution))
         .await;
     assert_eq!(answer.status, 200);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
@@ -560,7 +560,7 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
     changed.body = b"different body".to_vec();
     assert_eq!(
         dispatch
-            .execute_authorized(verb, &changed, None, Some(&execution), None)
+            .execute_authorized(verb, &changed, None, Some(&execution))
             .await
             .status,
         401

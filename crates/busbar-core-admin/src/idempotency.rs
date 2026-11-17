@@ -540,11 +540,9 @@ pub mod durable {
         retained: &[u8],
         settled: &Settled,
     ) -> Result<bool, String> {
+        // Held generations are written in order from 0 (`claim_held`): walk them to the retained one.
         let id = record_id(key);
-        let head = held_head(store, &id)
-            .await
-            .map_err(|why| format!("{why:?}"))?;
-        let mut generation = head.generation;
+        let mut generation = 0;
         for _ in 0..MAX_GENERATIONS {
             let row = held_record_id(&id, generation);
             let Some(stored) = store
@@ -565,6 +563,9 @@ pub mod durable {
                     identity.push(0);
                     identity.extend_from_slice(&busbar_contract::abi::sdk::digest::sha256(&body));
                     let digest = busbar_contract::abi::sdk::digest::sha256(&identity);
+                    use busbar_kernel::persistence::scoped::{
+                        Expected, Mutation, Predicate, Request,
+                    };
                     let request = Request {
                         op_id: digest[..16].try_into().expect("fixed digest length"),
                         predicates: vec![Predicate {

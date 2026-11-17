@@ -727,3 +727,172 @@ async fn unreadable_receipt_is_answered_truthfully() {
     );
     assert!(!message.contains("nothing was done"), "{message}");
 }
+
+const PIN_CANARY: &str = "pin-material-canary-5c3e";
+
+/// A bound-custody kernel admitting `inst/cp`, declared under a pin whose operator material is the
+/// canary and sighted at its declared fingerprint `fp`.
+async fn pinned_kernel() -> Arc<busbar_kernel::host_services::KernelServices> {
+    use busbar_contract::services::{Caller, HostServices};
+    use busbar_kernel::host_services::InstanceFacts;
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::{DeclaredPin, TrustEntry};
+    let kernel = Arc::new(bound_kernel().await);
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: Some(DeclaredPin {
+                            mechanism: "fingerprint".into(),
+                            root: false,
+                            peer_key: false,
+                            key: Some(PIN_CANARY.into()),
+                            fingerprint: Some("fp".into()),
+                        }),
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .await
+        .unwrap();
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let _ = kernel.trust_sight(&caller, "cp", "fp", Box::new(|_| {}));
+    kernel
+}
+
+async fn decide_directly(
+    kernel: &busbar_kernel::host_services::KernelServices,
+    body: &[u8],
+    operation: Option<&str>,
+    audited: &std::sync::atomic::AtomicBool,
+) -> AdminAnswer {
+    super::trust_decide_effect(
+        body,
+        busbar_kernel::trust::book::Ruling::Approve,
+        Some(kernel),
+        "op",
+        operation,
+        audited,
+    )
+    .await
+    .expect("the decision answers")
+    .answer
+}
+
+/// G3: a stale review is refused as `reviewed_digest_stale`, changes nothing, keeps nothing, and is
+/// audited by the kernel's typed row (the host flag is set).
+#[tokio::test]
+async fn stale_review_refuses_without_mutation_and_names_the_key() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let kernel = pinned_kernel().await;
+    let before = kernel.trust_rows();
+    let audited = AtomicBool::new(false);
+    let answer = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"not-current"}"#,
+        None,
+        &audited,
+    )
+    .await;
+    assert_eq!(answer.status, 409);
+    assert_eq!(error_of(&answer)["reason"], "reviewed_digest_stale");
+    assert_eq!(
+        kernel.trust_rows(),
+        before,
+        "a stale review changes nothing"
+    );
+    assert!(
+        busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+            .kept_decisions()
+            .await
+            .expect("custody is bound")
+            .decisions
+            .is_empty(),
+        "nothing was kept"
+    );
+    assert!(
+        audited.load(Ordering::SeqCst),
+        "the kernel wrote the typed row"
+    );
+}
+
+/// G16: the kept decision echoes the request's `Idempotency-Key` and its principal.
+#[tokio::test]
+async fn decision_row_echoes_the_operation_id() {
+    use busbar_kernel::trust::book::DecidedBy;
+    let kernel = pinned_kernel().await;
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    let answer = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"fp"}"#,
+        Some("op-123"),
+        &audited,
+    )
+    .await;
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    let kept = busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+        .kept_decisions()
+        .await
+        .expect("custody is bound");
+    assert_eq!(kept.decisions.len(), 1);
+    assert_eq!(kept.decisions[0].operation.as_deref(), Some("op-123"));
+    assert_eq!(
+        kept.decisions[0].decided_by,
+        Some(DecidedBy::Principal { id: "op".into() })
+    );
+}
+
+/// G9 (root carriers): the operator's pin material never appears in a decision answer, a refusal,
+/// `GET /trust`, or the redacted kept decisions.
+#[tokio::test]
+async fn no_pin_material_anywhere() {
+    let kernel = pinned_kernel().await;
+    let audited = std::sync::atomic::AtomicBool::new(false);
+    let refused = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"other"}"#,
+        None,
+        &audited,
+    )
+    .await;
+    let decided = decide_directly(
+        &kernel,
+        br#"{"key":"inst/cp","expected_digest":"fp"}"#,
+        Some("op-9"),
+        &audited,
+    )
+    .await;
+    let listed = super::trust_list_effect(Some(&kernel)).expect("listed");
+    let kept = busbar_kernel::trust::TrustReadout::over(Arc::clone(&kernel))
+        .kept_decisions()
+        .await
+        .expect("custody is bound");
+    for (carrier, bytes) in [
+        ("refusal", refused.body),
+        ("decision", decided.body),
+        ("GET /trust", listed.body),
+        ("kept decisions", format!("{kept:?}").into_bytes()),
+    ] {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(PIN_CANARY),
+            "{carrier} carries pin material"
+        );
+    }
+}

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use busbar_kernel::host_services::{InstanceFacts, KernelServices};
 use busbar_kernel::trust::book::KeyState;
 use busbar_kernel::trust::reverify::Policy;
