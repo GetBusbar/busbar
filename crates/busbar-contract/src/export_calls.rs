@@ -406,3 +406,59 @@ pub struct ExportLossFacts {
     /// Whether the event records delivery loss, capture refusal or integrity failure.
     pub kind: ExportLossKind,
 }
+
+/// A checked positive custody acknowledgement; NONE and unknown wire values are not levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportCustodyLevel {
+    Accepted,
+    Durable,
+    Indexed,
+}
+
+impl ExportCustodyLevel {
+    #[must_use]
+    pub const fn from_wire(level: u32) -> Option<Self> {
+        use crate::abi::export::{CUSTODY_ACCEPTED, CUSTODY_DURABLE, CUSTODY_INDEXED};
+        match level {
+            CUSTODY_ACCEPTED => Some(Self::Accepted),
+            CUSTODY_DURABLE => Some(Self::Durable),
+            CUSTODY_INDEXED => Some(Self::Indexed),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Durable => "durable",
+            Self::Indexed => "indexed",
+        }
+    }
+}
+
+/// Host-owned observation vocabulary. Instance identity is bound by the constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportObservation {
+    Dropped {
+        reason: ExportDropReason,
+        lines: u64,
+    },
+    Custody {
+        stream: crate::export_stream::ExportStream,
+        level: ExportCustodyLevel,
+        lines: u64,
+    },
+    /// The sole capture-refusal reason is admission_rejected, counted per occurrence.
+    CaptureRefused,
+    IntegrityFailed,
+    /// Absolute retained ciphertext line count while its key is unavailable; never a loss.
+    Held {
+        lines: u64,
+    },
+}
+
+/// One logical instance's observer, shared with every generation and capture producer.
+pub trait ExportObserver: Send + Sync + 'static {
+    fn observe(&self, observation: ExportObservation);
+}

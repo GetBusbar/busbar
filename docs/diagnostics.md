@@ -294,6 +294,28 @@ The journal refused the terminal audit original before native confirmation. The 
 
 **What to do:** Check store availability and journal custody pressure. A closed journal can also indicate shutdown. Do not assume an upstream operation was undone when its terminal audit failed.
 
+<a id="export-loss-observed"></a>
+### BUSBAR-2052 — An exporter first observed lost delivery or failed evidence
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `export-loss-observed`
+
+The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.
+
+**What to do:** Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.
+
+<a id="export-loss-unconfirmed"></a>
+### BUSBAR-2053 — Exporter loss evidence remains unconfirmed or a producer reported after quiescence
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `export-loss-unconfirmed`
+
+The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.
+
+**What to do:** Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.
+
 ## 3xxx — Config
 
 <a id="config-overlay-corrupt-refuse-write"></a>
