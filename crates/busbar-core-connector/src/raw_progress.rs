@@ -208,6 +208,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for RawCarrier<S> {
 #[cfg(test)]
 pub(crate) fn test_io(
     io: Box<dyn busbar_contract::transport::wire::RawIo>,
+    storage: busbar_contract::storage::StorageSource,
 ) -> busbar_contract::transport::wire::ConnectionIo {
     use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
     let io = RawCarrier::new(io.compat());
@@ -215,6 +216,7 @@ pub(crate) fn test_io(
     busbar_contract::transport::wire::ConnectionIo {
         io: Box::new(io.compat()),
         progress,
+        storage,
     }
 }
 

@@ -81,7 +81,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
+use busbar_contract::storage::StorageSource;
+use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity};
 use busbar_core_connector::listen::{Admits, Admitted};
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
@@ -271,7 +272,7 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    let served = Served::new(router, Some(security));
+    let served = Served::new(test_storage(), router, Some(security));
     let admits = SocketAdmits {
         listener,
         backoff: AcceptBackoff::new(),
@@ -280,17 +281,31 @@ pub async fn serve(
     accept_loop(admits, shutdown, balancer, served).await
 }
 
+#[cfg(test)]
+fn test_storage() -> StorageSource {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    ProcessAdmission::new(1).connection_storage(AdmissionClass::Data)
+}
+
 pub(crate) async fn serve_admitted(
+    storage: StorageSource,
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
+    accept_loop(
+        admits,
+        shutdown,
+        balancer,
+        Served::new(storage, router, security),
+    )
+    .await
 }
 
 pub(crate) async fn serve_admitted_framed(
+    storage: StorageSource,
     admits: impl Admits,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
@@ -304,7 +319,7 @@ pub(crate) async fn serve_admitted_framed(
             "the data listener requires an accepting transport framer",
         )
     })?;
-    let mut served = Served::new(router, security);
+    let mut served = Served::new(storage, router, security);
     served.framer = Some(framer);
     accept_loop(admits, shutdown, balancer, served).await
 }
@@ -880,6 +895,8 @@ fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
 /// `hardened_conn_builder`), the router, and the connection-security wrap (`None` = plain).
 #[derive(Clone)]
 struct Served {
+    /// Original trusted listener class/account, shared with every connection and retained IO.
+    storage: StorageSource,
     builder: Arc<ConnBuilder<TokioExecutor>>,
     router: Router,
     security: Option<Arc<dyn ConnectionSecurity>>,
@@ -898,7 +915,11 @@ fn listener_scheme(secured: bool) -> busbar_kernel::plane_routes::ListenerScheme
 }
 
 impl Served {
-    fn new(router: Router, security: Option<Arc<dyn ConnectionSecurity>>) -> Self {
+    fn new(
+        storage: StorageSource,
+        router: Router,
+        security: Option<Arc<dyn ConnectionSecurity>>,
+    ) -> Self {
         let builder = Arc::new(hardened_conn_builder());
         let scheme = if security.is_some() {
             "tls"
@@ -906,6 +927,7 @@ impl Served {
             REQUEST_WIRE
         };
         Self {
+            storage,
             builder,
             router,
             security,
@@ -936,6 +958,7 @@ impl Served {
         let raw = ConnectionIo {
             io: Box::new(TokioAsyncReadCompatExt::compat(stream)),
             progress,
+            storage: self.storage.clone(),
         };
         self.raw(raw, peer, watcher, drain).await;
     }
@@ -958,14 +981,30 @@ impl Served {
                 }
             }
         };
-        self.io(wrapped, peer, watcher, drain).await;
+        let mut wrapped = wrapped;
+        let tls_peer_cert =
+            bytes::Bytes::from(std::mem::take(&mut wrapped.peer_certificate).into_vec());
+        // The whole secured stream retains its genuine reader and original account through serving.
+        self.io(
+            FuturesAsyncReadCompatExt::compat(wrapped),
+            peer,
+            tls_peer_cert,
+            watcher,
+            drain,
+        )
+        .await;
     }
 
-    async fn io(self, mut io: SecuredIo, peer: SocketAddr, watcher: Watcher, drain: Drain) {
-        let tls_peer_cert = bytes::Bytes::from(std::mem::take(&mut io.peer_certificate).into_vec());
-        // Keep the genuine logical reader with its stream through the entire serving lifetime,
-        // including the plaintext path. The verified certificate is separately handed to admission.
-        let io = FuturesAsyncReadCompatExt::compat(io);
+    async fn io<I>(
+        self,
+        io: I,
+        peer: SocketAddr,
+        tls_peer_cert: bytes::Bytes,
+        watcher: Watcher,
+        drain: Drain,
+    ) where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         if let Some(framer) = self.framer {
             let secured = self.security.is_some();
             framed::serve(
