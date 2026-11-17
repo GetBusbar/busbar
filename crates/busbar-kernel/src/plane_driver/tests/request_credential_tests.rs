@@ -116,6 +116,9 @@ async fn signed_verifier_receipt_binds_once_to_the_original_record_before_money(
     assert!(proof.current_key(&gov, 1001, None).is_some());
     ctx.retire();
     assert!(admitted.signed_authority().is_none());
+    assert!(admitted.matches_money_identity(&admitted.book, &admitted.open, &admitted.grant));
+    assert!(!admitted.matches_money_identity(&admitted.book, &Arc::new(()), &admitted.grant));
+    assert!(!admitted.matches_money(&admitted.book, &admitted.open, &admitted.grant));
 }
 
 #[tokio::test]
