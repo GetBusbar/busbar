@@ -503,6 +503,24 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         &super::door_steps::raw_sections(cfg),
     )?);
     out.extend(hooks::configured(cfg)?);
+    let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
+    providers.sort_by_key(|(name, _)| *name);
+    for (name, provider) in providers {
+        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+            continue;
+        }
+        out.push(Configured {
+            kind: KindCode::Auth,
+            identity: provider.module.clone(),
+            name: name.clone(),
+            config: provider
+                .settings
+                .encode()
+                .map_err(|error| format!("identity-providers.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "identity-providers", name),
+        });
+    }
     for (name, def) in &cfg.export_defs {
         out.push(Configured {
             kind: KindCode::Export,
