@@ -1,0 +1,16 @@
+[package]
+name = "busbar-artifact-metadata"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Read-only artifact metadata shared by the contract and standalone verifier."
+license = "Apache-2.0"
+
+[dependencies]
+busbar-json = { path = "../busbar-json" }
+serde = { workspace = true }
+time = { workspace = true, features = ["formatting"] }
+
+[lints]
+workspace = true

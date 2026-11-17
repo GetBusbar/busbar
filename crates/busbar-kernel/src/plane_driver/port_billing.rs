@@ -14,6 +14,10 @@
 //! fee and takes its concurrency hold; usage is settled from what the plane reports); its pool and lane are the
 //! plane-qualified instance name (the serving member's lane is not known until the egress walk is ported); and
 //! the instance names no fee units, so no flat-fee refund rule applies.
+//!
+//! Configured native routing instead uses [`PortBilling::allocate`] before the retained task
+//! resolves its route, then [`PortBilling::admit_existing`] with the resulting checked receipt.
+//! The allocation and monetary insertion keep the same unit; attempt selection never re-admits it.
 
 use std::sync::Arc;
 
@@ -24,7 +28,9 @@ use busbar_contract::UnitKey;
 use super::money::{FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 use super::port::Unit;
 use super::port_money::PortMoney;
+use super::request_admission::{AdmittedRequest, CommittingRequest};
 use super::AuditSink;
+use super::{NativeAdmissionError, ParentMoney};
 use crate::config::groups::ExhaustionMode;
 use crate::cost::CostModel;
 use crate::door::UnitKeyMint;
@@ -66,6 +72,40 @@ impl std::fmt::Debug for PortBilling {
 }
 
 impl PortBilling {
+    pub fn admission_rollback(
+        &self,
+        request: &AdmittedRequest,
+    ) -> Result<super::AdmissionRollback, NativeAdmissionError> {
+        self.money.admission_rollback(request)
+    }
+
+    pub fn settle_admitted(
+        &self,
+        request: &AdmittedRequest,
+        end: UnitEnd,
+    ) -> Result<bool, NativeAdmissionError> {
+        self.money.settle_admitted(request, end)
+    }
+
+    pub fn admit_existing_selected(
+        &self,
+        request: CommittingRequest,
+        declaration: super::port_session::RequestDeclaration,
+        generation: Generation,
+        attempt_limit: std::num::NonZeroU32,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<super::NativeRequestMoney, NativeAdmissionError> {
+        self.money.admit_existing_selected(
+            request,
+            declaration,
+            generation,
+            attempt_limit,
+            fee,
+            mode,
+        )
+    }
+
     #[must_use]
     pub fn new(
         money: Arc<PlaneMoney>,
@@ -87,6 +127,53 @@ impl PortBilling {
     pub fn with_journal(mut self, journal: Arc<dyn super::HookJournal>) -> Self {
         self.journal = Some(journal);
         self
+    }
+
+    /// Allocate the real unit before route resolution. This creates no monetary Open, charge
+    /// or grant. Root registers this same key in the checked pre-admission invocation phase.
+    #[must_use]
+    pub fn allocate(&self, classes: Arc<[String]>) -> Unit {
+        self.unit(self.keys.mint(), classes)
+    }
+
+    /// Attach books to the DATA allocation's original registered unit without minting another.
+    pub fn allocated_data(
+        &self,
+        allocation: &crate::auth::native_data::NativeDataAllocation,
+        classes: Arc<[String]>,
+    ) -> Result<Unit, NativeAdmissionError> {
+        let context = allocation.context();
+        if !context.is_live() || context.principal().is_none() {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let generation = context
+            .generation()
+            .routing_generation()
+            .ok_or(NativeAdmissionError::NotLive)?;
+        let mut unit = self.unit(UnitKey::new(context.unit()), classes);
+        unit.ctx.generation = generation;
+        Ok(unit)
+    }
+
+    pub fn admit_existing(
+        &self,
+        request: CommittingRequest,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+        mode: ExhaustionMode,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        self.money.admit_existing(request, classes, fee, mode)
+    }
+
+    pub fn admit_existing_child(
+        &self,
+        request: CommittingRequest,
+        parent: &ParentMoney,
+        classes: Arc<[String]>,
+        fee: FeeRefund,
+    ) -> Result<AdmittedRequest, NativeAdmissionError> {
+        self.money
+            .admit_existing_child(request, parent, classes, fee)
     }
 
     /// Admits the request and opens it as a unit. A refusal (`LimitBlocked`) opened nothing and charged nothing.
@@ -118,7 +205,11 @@ impl PortBilling {
             },
             Arc::new(grant),
         );
-        Ok(Unit {
+        Ok(self.unit(unit, classes))
+    }
+
+    fn unit(&self, unit: UnitKey, classes: Arc<[String]>) -> Unit {
+        Unit {
             money: PortMoney::new(
                 Arc::clone(&self.money) as Arc<dyn super::cancel::MoneySeam>,
                 classes,
@@ -134,7 +225,7 @@ impl PortBilling {
                 kernel_verb_only: false,
             },
             journal: self.journal.clone(),
-        })
+        }
     }
 
     /// Open an ordinary child under its live parent's actual admission and rate era. The

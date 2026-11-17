@@ -47,6 +47,8 @@ pub(crate) fn described(
 }
 
 struct Owners {
+    admitted_images: Arc<crate::root::boot::images::FileImages>,
+    channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
     planes: Vec<PlaneImage>,
@@ -295,10 +297,12 @@ impl ServingFixture {
         let hook_inputs = hooks::Environment::new(hook_plan, app)?;
         hook_inputs.check_pools(&instances)?;
         let steps = Steps {
+            images: &self.owners.admitted_images,
             registry: &built.registry,
             instances: &specs,
             services: Some(services),
             seats: Mutex::default(),
+            inventory_inputs: Mutex::default(),
             invocations: Mutex::default(),
             shared: Arc::clone(&shared),
             directory: provisioning.directory,
@@ -311,6 +315,10 @@ impl ServingFixture {
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
                 catalogs: Default::default(),
+                channel_budgets: self
+                    .owners
+                    .channel_accounts
+                    .for_instances(&built.registry, &instances)?,
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
@@ -368,7 +376,10 @@ pub(crate) async fn open(
     policy: Arc<dyn RootRules>,
 ) -> Result<Fixture, String> {
     let process = process()?;
-    let images = super::super::boot::images::fixture(&process.resources, plugins)?;
+    let images = Arc::new(super::super::boot::images::fixture(
+        &process.resources,
+        plugins,
+    )?);
     let protected = images.protect(cfg)?;
     let planes = images
         .aliases
@@ -388,7 +399,7 @@ pub(crate) async fn open(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
         cfg,
-        images.images,
+        images.images.clone(),
     )?;
     let configured = configured(cfg, &[])?;
     let specs = specifications(&configured, cfg.public_url.as_deref(), false);
@@ -437,6 +448,8 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
+        admitted_images: images,
+        channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
         planes,
@@ -583,4 +596,140 @@ impl busbar_contract::persistence::PersistenceBackend for Backend {
     {
         self.inner.clock(dataset)
     }
+}
+
+#[tokio::test]
+async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_a_candidate() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct MissingRuntime {
+        inner: Arc<dyn RootRules>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl RootRules for MissingRuntime {
+        fn grammar(
+            &self,
+            input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+        ) -> Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal> {
+            self.inner.grammar(input)
+        }
+        fn check(&self, cfg: &RootCfg) -> Result<(), String> {
+            self.inner.check(cfg)
+        }
+        fn prepare_candidate<'a>(
+            &'a self,
+            _: &'a RootCfg,
+            _: &'a PluginsCfg,
+        ) -> BoxFut<
+            'a,
+            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+        > {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async { Err("native fixture has no serving candidate owner".into()) })
+        }
+    }
+
+    #[cfg(distribution_root)]
+    crate::dist_root_install::install();
+    let library_path = crate::root::test_plugins::application_store_library();
+    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
+        .expect("actual Store rendering reads")
+        .expect("actual Store exports its declaration");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("actual Store declaration is valid")
+        .name;
+    let directory = crate::root::test_plugins::scratch("initial-runtime-candidate-boundary");
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("actual Store image reads");
+    std::fs::write(
+        directory.join("store.tar.gz"),
+        crate::root::test_plugins::signed(
+            &crate::root::test_plugins::key(0x5a),
+            manifest,
+            &library,
+        ),
+    )
+    .expect("stage signed actual Store");
+    crate::root::linked::register_stores(&crate::LINKED);
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": crate::root::test_plugins::application_store_settings(&directory)},
+    }), &crate::root::boot::axis_test_grammar()).expect("actual Store deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("actual Store deployment resolves");
+    let admitted =
+        crate::root::test_plugins::bootstrap_fresh_application_store(&cfg, &plugins, &directory)
+            .await
+            .expect("actual signed Store is provisioned and admitted once");
+    let resolver = admitted
+        .rules
+        .secret_resolver(&cfg, &plugins)
+        .await
+        .expect("same admitted bootstrap secret owner");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let rules: Arc<dyn RootRules> = Arc::new(MissingRuntime {
+        inner: admitted.rules,
+        calls: Arc::clone(&calls),
+    });
+    let (app, rotate, limits) =
+        busbar_kernel::appbuild::build_boot_app(busbar_kernel::appbuild::BootBuild {
+            cfg,
+            judged: None,
+            plugins_cfg: plugins.clone(),
+            overlay_path: None,
+            base_hook_names: Default::default(),
+            base_group_names: Default::default(),
+            config_paths: (None, None),
+            rules: &rules,
+            boot_store: Arc::clone(&admitted.core),
+            secret_resolver: Arc::clone(&resolver),
+        })
+        .await
+        .expect("owned initial build does not attempt runtime OPEN before NodeBook");
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    assert!(Arc::ptr_eq(&app.secret_resolver, &resolver));
+    assert_eq!(
+        app.prepared_generation(),
+        None,
+        "initial native finish awaits confirmed boot identity"
+    );
+    if let Some(rotate) = rotate {
+        rotate.await;
+    }
+    drop(limits);
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let before = app.config_generation.load(Ordering::Acquire);
+    let runtime = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        Some(&app),
+        &rules,
+        Some(Arc::clone(&admitted.core)),
+        false,
+    )
+    .await;
+    assert_eq!(
+        runtime
+            .err()
+            .expect("missing real runtime producer refuses"),
+        "native fixture has no serving candidate owner"
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(app.config_generation.load(Ordering::Acquire), before);
+    drop(app);
+    drop(rules);
+    drop(admitted.core);
+    drop(resolver);
+    std::fs::remove_dir_all(directory).expect("remove finished actual Store fixture");
 }

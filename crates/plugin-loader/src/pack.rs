@@ -449,7 +449,7 @@ pub(crate) fn envelope(signed: &[u8], key: &ReleaseKey, sig: &[u8]) -> Result<Ve
                 .into(),
         );
     }
-    if !wire::verify(key, signed, sig) {
+    if !wire::verify(key, signed, sig).map_err(|error| error.to_string())? {
         return Err(format!(
             "the signature does not verify over the signed bytes with {} key {}",
             key.algorithm(),

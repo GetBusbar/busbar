@@ -214,6 +214,7 @@ impl Served {
     pub(crate) fn spawn_work_recovery(
         &self,
         app: Arc<busbar_kernel::state::AppHandle>,
+        admission: Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
         mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
@@ -270,7 +271,7 @@ impl Served {
                     .unwrap_or_default();
                 let cycle = async {
                     for routes in live {
-                        routes.recover_work(app.load()).await;
+                        routes.recover_work(app.load(), &admission).await;
                     }
                     if let Some(native) = &native {
                         crate::root::min3_boot::recover_ports(native, app.load()).await;
@@ -1695,6 +1696,40 @@ pub(crate) fn data_routes_with_dispatch(
     ))
 }
 
+/// Project only the candidate retained by this request. A current global handle is never
+/// consulted, so a reload cannot substitute a different physical route token mid-request.
+pub(crate) fn native_slot(
+    app: &busbar_kernel::state::App,
+    slot: &str,
+) -> Option<Arc<crate::root::min3_physical::NativeSlot>> {
+    app.config_projection
+        .as_ref()?
+        .downcast_ref::<crate::root::door_steps::DoorConfig>()?
+        .native_slots
+        .get(slot)
+        .cloned()
+}
+
+/// Install a complete prepared map on an unpublished candidate; the caller publishes App
+/// only after every slot has passed its actual transport/route/class checks.
+pub(crate) fn install_native_slots(
+    app: &mut busbar_kernel::state::App,
+    slots: crate::root::min3_physical::NativeSlots,
+) -> Result<(), String> {
+    if slots.iter().any(|(name, slot)| name != slot.slot()) {
+        return Err("native slot map key differs from its physical owner".into());
+    }
+    let mut config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<crate::root::door_steps::DoorConfig>())
+        .ok_or("native listener candidate has no root configuration projection")?
+        .clone();
+    config.native_slots = slots;
+    app.config_projection = Some(Arc::new(config));
+    Ok(())
+}
+
 impl ListenerPlan {
     fn core_lines(&self, app: &busbar_kernel::state::App) -> Vec<(String, RouteMethod, RouteAuth)> {
         let mut lines = busbar_kernel::base_data_core_lines(app);
@@ -2120,6 +2155,9 @@ impl ListenerPlan {
         app: &busbar_kernel::state::App,
         at: &str,
     ) -> Option<Arc<busbar_kernel::router::PreparedListener>> {
+        if let Some(slot) = native_slot(app, at) {
+            return Some(Arc::clone(slot.prepared()));
+        }
         self.config(app)
             .ok()?
             .listener_routes
@@ -3120,7 +3158,7 @@ pub(crate) fn door_mounts_planned(
     offers: &[TransportOffer],
     plan: Option<(&ListenerPlan, &busbar_kernel::state::App, &str)>,
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use foldhash::HashMap;
 
@@ -3179,7 +3217,7 @@ pub(crate) fn door_mounts_planned(
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
-                methods: method_bit(method.as_str()),
+                methods: listener_method_bits(*method),
                 path_form: if path.contains('{') {
                     PATH_PATTERN
                 } else {
@@ -4081,6 +4119,7 @@ impl DataRoutes {
     pub(crate) async fn recover_work(
         self: &Arc<Self>,
         app: Arc<busbar_kernel::state::App>,
+        admission: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
     ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
@@ -4142,6 +4181,11 @@ impl DataRoutes {
                     body: bytes::Bytes::new(),
                     carrier: 0,
                 };
+                let Ok(request) = admission
+                    .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+                else {
+                    continue;
+                };
                 let principal = PrincipalId::new(key.id.as_str());
                 let (caller, reply) = IngressCaller::new();
                 let routes = self.clone();
@@ -4157,6 +4201,7 @@ impl DataRoutes {
                             arrival,
                             None,
                             None,
+                            &request,
                         )
                         .await
                 };

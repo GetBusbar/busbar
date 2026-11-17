@@ -11,6 +11,11 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 pub mod activation;
+mod selected_rates;
+pub use selected_rates::SelectedRateAdmission;
+pub(crate) use selected_rates::{
+    SelectedCommitRejected, SelectedHeadroomRejected, SelectedRateRejected,
+};
 
 pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
 
@@ -58,6 +63,7 @@ pub struct App {
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    pub(crate) publication_generation: Option<Arc<crate::config::generation::Reservation>>,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -387,6 +393,9 @@ pub struct App {
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
     pub cost: std::sync::Arc<crate::cost::CostModel>,
+    /// Current immutable selected-resource rules. Native candidate publication installs this
+    /// alongside its CostModel; absence never authorizes a selected attempt.
+    pub selected_policy: Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -641,6 +650,15 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// The durable epoch reserved for this unpublished candidate by its retained transaction.
+    /// A boot has no transaction reservation and uses its separately confirmed initial identity.
+    pub fn prepared_generation(&self) -> Option<u64> {
+        self.publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+            .map(|held| held.epoch())
+    }
+
     pub(crate) fn assemble(
         parts: AppParts,
         tslots: Arc<crate::telemetry::AppSlots>,
@@ -655,6 +673,7 @@ impl App {
             port_seats,
             exports,
             root_rules,
+            publication_generation: None,
             config_projection,
             config_tables,
             store,
@@ -807,6 +826,7 @@ impl App {
             governance,
             secret_resolver,
             cost,
+            selected_policy: None,
             plugins_dir,
             plugins_cfg,
             plugin_admission,
@@ -1188,7 +1208,7 @@ impl AppHandle {
     /// Reserve the durable generation without invalidating the still-published generation.
     /// Only successful publication updates the shared fence; failed activation may leave a gap
     /// in durable numbering, but cannot revoke the currently serving auth policy.
-    async fn reserve_generation(&self) -> Result<u64, String> {
+    pub(crate) async fn reserve_generation(&self) -> Result<u64, String> {
         let cell = self.load().config_generation.clone();
         let prior = cell.load(std::sync::atomic::Ordering::Acquire);
         match crate::persistence::boot_identity::live() {
@@ -1248,6 +1268,16 @@ impl AppHandle {
         };
 
         let prior = self.load();
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(self, &prior)?;
+            if generation != Some(held.epoch()) {
+                return Err("candidate publication epoch differs from its prepared owners".into());
+            }
+        }
         for decl in crate::plane_driver::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
@@ -1279,6 +1309,13 @@ impl AppHandle {
             next.config_generation
                 .store(generation, std::sync::atomic::Ordering::Release);
         }
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.publish();
+        }
         self.current.store(next.clone());
         *published = true;
         drop(admission);
@@ -1304,15 +1341,41 @@ impl AppHandle {
         Ok(())
     }
 
+    pub(crate) fn check_candidate_generation(&self, next: &App) -> Result<(), String> {
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(self, &self.load())?;
+        }
+        Ok(())
+    }
+
+    async fn candidate_generation(&self, next: &App) -> Result<u64, String> {
+        match next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            Some(held) => {
+                held.check(self, &self.load())?;
+                Ok(held.epoch())
+            }
+            None => self.reserve_generation().await,
+        }
+    }
+
     pub async fn commit_and_swap(
         &self,
         next: Arc<App>,
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        let generation = self.reserve_generation().await?;
+        let generation = self.candidate_generation(&next).await?;
         self.swap_with_commit(
             next.clone(),
             None,
@@ -1356,6 +1419,7 @@ impl AppHandle {
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
         let expected = self.load();
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(expected.overlay_path.clone());
         let prepared = match preparation {
@@ -1367,7 +1431,7 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
-        let generation = self.reserve_generation().await?;
+        let generation = self.candidate_generation(&next).await?;
         let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
             next.clone(),

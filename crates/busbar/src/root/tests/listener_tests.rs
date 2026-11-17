@@ -11,16 +11,48 @@ use tokio::sync::oneshot;
 
 struct HelloWrap;
 
+struct ObserveWrap(
+    std::sync::Mutex<
+        Option<std::sync::Arc<dyn busbar_contract::response_delivery::CarrierProgressReader>>,
+    >,
+);
+
+impl busbar_contract::transport::wire::ConnectionSecurity for ObserveWrap {
+    fn wrap<'a>(
+        &'a self,
+        io: busbar_contract::transport::wire::ConnectionIo,
+    ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
+        assert_eq!(io.progress.snapshot().written_plaintext, 0);
+        *self.0.lock().unwrap() = Some(std::sync::Arc::clone(&io.progress));
+        Box::pin(async move { Ok(busbar_contract::transport::wire::SecuredIo::anonymous(io)) })
+    }
+}
+
+#[tokio::test]
+async fn accepted_socket_hands_security_its_actual_raw_write_observer() {
+    let security = std::sync::Arc::new(ObserveWrap(std::sync::Mutex::new(None)));
+    let (addr, _stop) = spawn_secured_server(security.clone()).await;
+    let bytes = healthz_after(addr, b"").await;
+    assert!(bytes.starts_with(b"HTTP/1.1 200"));
+    let progress = security.0.lock().unwrap().as_ref().unwrap().snapshot();
+    assert_eq!(progress.written_plaintext, bytes.len() as u64);
+    assert_eq!(
+        progress.complete_records_plaintext,
+        progress.written_plaintext
+    );
+    assert_eq!(progress.fault, None);
+}
+
 impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     fn wrap<'a>(
         &'a self,
-        mut io: Box<dyn busbar_contract::transport::wire::RawIo>,
+        mut io: busbar_contract::transport::wire::ConnectionIo,
     ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
         Box::pin(async move {
             use futures::io::AsyncReadExt as _;
             let mut line = Vec::new();
             let mut byte = [0_u8; 1];
-            while io.read(&mut byte).await? == 1 && byte[0] != b'\n' {
+            while io.io.read(&mut byte).await? == 1 && byte[0] != b'\n' {
                 line.push(byte[0]);
             }
             if line == b"LET-ME-IN" {
@@ -188,6 +220,7 @@ async fn body_read_timeout_trips_on_stalled_body() {
             axum::routing::post(|body: String| async move { body }),
         );
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -331,6 +364,7 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             axum::routing::post(|body: String| async move { body }),
         );
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -389,6 +423,7 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
             axum::routing::post(|body: String| async move { body }),
         );
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -477,6 +512,7 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
             axum::routing::post(|body: bytes::Bytes| async move { body.len().to_string() }),
         );
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -566,6 +602,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
             axum::routing::post(|body: String| async move { body }),
         );
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -1135,6 +1172,7 @@ async fn a_listener_states_its_scheme_on_every_request() {
             let _ = rx.await;
         };
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             scheme_router(),
             None,
@@ -1169,6 +1207,7 @@ async fn an_oversize_body_sent_slowly_still_reads_its_413() {
             )
             .layer(axum::extract::DefaultBodyLimit::max(1024));
         super::serve_admitted(
+            super::test_storage(),
             super::SocketAdmits::new(listener),
             router,
             None,
@@ -1396,6 +1435,7 @@ async fn shutdown_retires_the_listening_socket_before_an_accepted_request_finish
     let (stop, stopped) = oneshot::channel::<()>();
     let (observed, shutdown_observed) = oneshot::channel::<()>();
     let serving = tokio::spawn(super::serve_admitted(
+        super::test_storage(),
         listener,
         router,
         None,

@@ -307,7 +307,7 @@ async fn send(
         .expect("the request builds");
     let response = router
         .clone()
-        .oneshot(request)
+        .oneshot(charged_http_for_test(request).await)
         .await
         .expect("the mounted router answers");
     let status = response.status().as_u16();

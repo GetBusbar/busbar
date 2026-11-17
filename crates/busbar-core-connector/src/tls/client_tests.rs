@@ -93,7 +93,7 @@ fn server(chain: &[Vec<u8>], key: &[u8], client_ca: Option<&[u8]>) -> Tls {
             Some(verifier) => builder.with_client_cert_verifier(verifier),
             None => builder.with_no_client_auth(),
         };
-        builder.with_single_cert(certs, key)
+        crate::off_path::tls::select_server_output(builder.with_single_cert(certs, key)?)
     })
     .unwrap();
     Tls::new(config)
@@ -113,7 +113,13 @@ async fn dial_config(server: Tls, config: rustls::ClientConfig, name: &str) -> R
     let (server_io, client_io) = tokio::io::duplex(8192);
     let serving = tokio::spawn(async move {
         let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(server_io));
-        let mut secured = server.wrap(raw).await.map_err(|e| e.to_string())?;
+        let mut secured = server
+            .wrap(crate::raw_progress::test_io(
+                raw,
+                crate::tls::tests::storage(),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
         let mut buf = [0u8; 4];
         futures::io::AsyncReadExt::read_exact(&mut secured, &mut buf)
             .await
@@ -132,7 +138,13 @@ async fn dial_config(server: Tls, config: rustls::ClientConfig, name: &str) -> R
     );
     let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(client_io));
     let client = async {
-        let mut secured = dial.wrap(raw).await.map_err(|e| e.to_string())?;
+        let mut secured = dial
+            .wrap(crate::raw_progress::test_io(
+                raw,
+                crate::tls::tests::storage(),
+            ))
+            .await
+            .map_err(|e| e.to_string())?;
         futures::io::AsyncWriteExt::write_all(&mut secured, b"ping")
             .await
             .map_err(|e| e.to_string())?;

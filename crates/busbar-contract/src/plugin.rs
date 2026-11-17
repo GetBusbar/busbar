@@ -270,16 +270,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestKernelSeal;
 
-/// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
-#[must_use]
-pub fn valid_semver(v: &str) -> bool {
-    let core = v.split(['-', '+']).next().unwrap_or("");
-    let parts: Vec<&str> = core.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-}
+pub use busbar_artifact_metadata::plugin::valid_semver;
 
 #[cfg(test)]
 #[path = "tests/kind_verb_tests.rs"]

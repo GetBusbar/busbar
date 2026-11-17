@@ -1863,7 +1863,19 @@ async fn build_app_native(
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
+    let publication_generation = config::generation::reserve(prior).await?;
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
+    };
     let prepared_resolver = preparation
         .as_ref()
         .map(|preparation| preparation.secret_resolver());
@@ -2747,6 +2759,7 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.publication_generation = publication_generation;
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;

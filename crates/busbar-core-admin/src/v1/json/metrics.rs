@@ -5,15 +5,18 @@
 //! registry, three representations chosen by `Accept`. The text forms come from core's own encoder
 //! (`crate::metrics_text`); the JSON form is the same families, generalised from `/telemetry`.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use busbar_contract::abi::export as kinds;
 use busbar_contract::export_calls::Family;
+use busbar_kernel::export::BudgetedScrapeRefusal;
 use busbar_kernel::export::ScrapeRefusal;
+use busbar_kernel::limits::output::{Captured, OutputBuffer, OutputError};
+use busbar_kernel::limits::process_admission::RequestLease;
 use serde::{Serialize, Serializer};
 
 use super::{err_json, err_json_cond};
@@ -21,10 +24,6 @@ use crate::metrics_text::{encode, Format};
 use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::AdminError;
 use busbar_kernel::state::AppHandle;
-
-/// The size of the largest body served so far: the next scrape reserves it up front, so a scrape
-/// grows its buffer at most on the first time a larger registry is seen.
-static BODY_HINT: AtomicUsize = AtomicUsize::new(4096);
 
 /// The representation `Accept` selects.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,23 +61,52 @@ pub(crate) fn negotiate(headers: &HeaderMap) -> Representation {
     Representation::Text(Format::Prometheus)
 }
 
-pub(crate) async fn get(State(handle): State<Arc<AppHandle>>, headers: HeaderMap) -> Response {
+pub(crate) async fn get(
+    State(handle): State<Arc<AppHandle>>,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
+    request: Option<Extension<RequestLease>>,
+) -> Response {
+    let Some(Extension(request)) = request else {
+        return missing_lease();
+    };
     let app = handle.load();
-    match busbar_kernel::export::app_families(&app).await {
-        Ok(families) => render(&families, negotiate(&headers)),
-        Err(refusal) => refused(refusal),
+    match busbar_kernel::export::app_families_budgeted(&app, &request).await {
+        Ok(families) => render(families, negotiate(&headers)),
+        Err(BudgetedScrapeRefusal::Source(refusal)) => refused(refusal),
+        Err(BudgetedScrapeRefusal::Output(error)) => output_refused(error),
     }
 }
 
 pub(crate) async fn get_hooks(
     State(handle): State<Arc<AppHandle>>,
-    headers: HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
+    request: Option<Extension<RequestLease>>,
 ) -> Response {
+    let Some(Extension(request)) = request else {
+        return missing_lease();
+    };
     let app = handle.load();
-    render(
-        &busbar_kernel::export::hook_families(&app),
-        negotiate(&headers),
-    )
+    match busbar_kernel::export::hook_families_budgeted(&app, &request) {
+        Ok(families) => render(families, negotiate(&headers)),
+        Err(error) => output_refused(error),
+    }
+}
+
+fn missing_lease() -> Response {
+    // Preserve the established six-field envelope and request-id correlation. Its emergency
+    // allocation policy is a separate explicit adoption hold, not a static-body guarantee.
+    err_json(&AdminError::Unavailable(
+        "metric output is unavailable".into(),
+    ))
+}
+
+fn output_refused(error: OutputError) -> Response {
+    // Projection guards and partial output owners have already retired at this boundary.
+    error.report();
+    match error {
+        OutputError::Capacity => missing_lease(),
+        OutputError::Allocation | OutputError::Encoding => err_json(&AdminError::Internal),
+    }
 }
 
 /// The refusal an unreadable registry answers. An operator's `telemetry.enabled: false` is
@@ -96,36 +124,92 @@ pub(crate) fn refused(refusal: ScrapeRefusal) -> Response {
     }
 }
 
-pub(crate) fn render(families: &[Family], representation: Representation) -> Response {
-    let (content_type, body) = match representation {
-        Representation::Text(format) => {
-            let mut out = String::with_capacity(BODY_HINT.load(Ordering::Relaxed));
-            encode(&mut out, families, format);
-            BODY_HINT.fetch_max(out.len() + out.len() / 16, Ordering::Relaxed);
-            (format.content_type(), out.into_bytes())
+pub(crate) fn render(
+    mut families: Captured<Vec<Family>>,
+    representation: Representation,
+) -> Response {
+    let result = (|| {
+        if representation == Representation::Json {
+            families.reserve_encoding(json_scratch(families.value())?)?;
         }
-        Representation::Json => match json_body(families) {
-            Some(body) => (busbar_contract::protocol::APPLICATION_JSON, body),
-            None => return err_json(&AdminError::Internal),
-        },
+        encode_response(families.value(), families.request(), representation)
+    })();
+    drop(families);
+    match result {
+        Ok(response) => response,
+        Err(error) => output_refused(error),
+    }
+}
+
+fn encode_response(
+    families: &[Family],
+    request: &RequestLease,
+    representation: Representation,
+) -> Result<Response, OutputError> {
+    let mut out = OutputBuffer::with_capacity(request, 0)?;
+    let content_type = match representation {
+        Representation::Text(format) => {
+            if encode(&mut out, families, format).is_err() {
+                return Err(out.failure().unwrap_or(OutputError::Encoding));
+            }
+            format.content_type()
+        }
+        Representation::Json => {
+            if busbar_contract::json::to_writer(&mut out, &Document { families }).is_err() {
+                return Err(out.failure().unwrap_or(OutputError::Encoding));
+            }
+            busbar_contract::protocol::APPLICATION_JSON
+        }
     };
-    (
+    Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "no-store"),
             (header::VARY, "Accept"),
         ],
-        body,
+        out.into_bytes()?,
     )
-        .into_response()
+        .into_response())
 }
 
-fn json_body(families: &[Family]) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(BODY_HINT.load(Ordering::Relaxed));
-    busbar_contract::json::to_writer(&mut out, &Document { families }).ok()?;
-    BODY_HINT.fetch_max(out.len() + out.len() / 16, Ordering::Relaxed);
-    Some(out)
+fn json_scratch(families: &[Family]) -> Result<usize, OutputError> {
+    let mut scratch = 4096usize;
+    let mut longest = 64usize; // Closed Document field names and numeric/error control storage.
+    let mut add = |count: usize, width: usize| -> Result<(), OutputError> {
+        scratch = count
+            .max(4)
+            .checked_mul(width)
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| scratch.checked_add(n))
+            .ok_or(OutputError::Capacity)?;
+        Ok(())
+    };
+    for family in families {
+        longest = longest
+            .max(family.name.len())
+            .max(family.help.as_ref().map_or(0, String::len));
+        let mut pairs = 0usize;
+        for sample in &family.samples {
+            longest = longest.max(sample.name.len()).max(sample.value.len());
+            pairs = pairs
+                .checked_add(sample.labels.len())
+                .ok_or(OutputError::Capacity)?;
+            for (key, value) in &sample.labels {
+                longest = longest.max(key.len()).max(value.len());
+            }
+            add(sample.labels.len(), std::mem::size_of::<(&str, &str)>())?;
+        }
+        add(pairs, std::mem::size_of::<&str>())?; // LabelNames seen set
+        add(family.samples.len(), std::mem::size_of::<(&str, &str)>())?; // Group buckets
+        add(family.samples.len(), std::mem::size_of::<Bucket<'_>>())?; // Serialized bucket view
+    }
+    let sonic = longest
+        .checked_mul(6)
+        .and_then(|n| n.checked_add(35))
+        .and_then(|n| n.checked_mul(6))
+        .ok_or(OutputError::Capacity)?;
+    scratch.checked_add(sonic).ok_or(OutputError::Capacity)
 }
 
 /// `{families: [...], cursor: null}`. The cursor is `null` until the series cursor of MR7 lands;

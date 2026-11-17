@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use busbar_plugin_abi::plane::MAX_FANOUT;
 use tokio::sync::mpsc;
 
+use super::authority::ChannelAuthority;
 use super::SessionSignals;
+use crate::plugin_records::RecordsDenied;
 
 /// What a session's task receives: delivered by it as piece(FROM_CORE, 0, flags, bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +28,12 @@ struct Member {
     tx: mpsc::Sender<Signalled>,
 }
 
-type Key = (u64, Box<[u8]>);
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Scope {
+    Legacy(u64),
+    Command(u64, ChannelAuthority),
+}
+type Key = (Scope, Box<[u8]>);
 
 #[derive(Default)]
 struct Table {
@@ -63,7 +70,7 @@ impl SignalRegistry {
         subject: Option<[u8; 32]>,
         tx: mpsc::Sender<Signalled>,
     ) -> Registered {
-        let key: Key = (instance, key.into());
+        let key: Key = (Scope::Legacy(instance), key.into());
         let mut table = self.lock();
         table.next += 1;
         let session = table.next;
@@ -80,6 +87,36 @@ impl SignalRegistry {
         }
     }
 
+    /// Register under the actual command admission. A repeated key in another unit/Open is unrelated.
+    pub fn register_command(
+        self: &Arc<Self>,
+        instance: u64,
+        authority: &ChannelAuthority,
+        key: &[u8],
+        tx: mpsc::Sender<Signalled>,
+    ) -> Result<Registered, RecordsDenied> {
+        if !authority.is_live() || key.is_empty() || key.len() > super::carrier::MAX_KEY {
+            return Err(RecordsDenied::Invalid);
+        }
+        let key = (Scope::Command(instance, authority.clone()), key.into());
+        let mut table = self.lock();
+        table.next = table
+            .next
+            .checked_add(1)
+            .ok_or(RecordsDenied::Unavailable)?;
+        let session = table.next;
+        table.by_key.entry(key.clone()).or_default().push(Member {
+            session,
+            subject: None,
+            tx,
+        });
+        Ok(Registered {
+            registry: Arc::clone(self),
+            key,
+            session,
+        })
+    }
+
     /// `plane_signal_dropped_total`: deliveries a full session channel refused.
     #[must_use]
     pub fn dropped(&self) -> u64 {
@@ -91,7 +128,7 @@ impl SignalRegistry {
     pub fn live(&self, instance: u64, key: &[u8]) -> usize {
         self.lock()
             .by_key
-            .get(&(instance, Box::<[u8]>::from(key)))
+            .get(&(Scope::Legacy(instance), Box::<[u8]>::from(key)))
             .map_or(0, Vec::len)
     }
 
@@ -121,8 +158,38 @@ impl SessionSignals for SignalRegistry {
         flags: u32,
         bytes: &[u8],
     ) -> u32 {
+        self.deliver(
+            &(Scope::Legacy(instance), key.into()),
+            subject,
+            flags,
+            bytes,
+        )
+    }
+
+    fn signal_command(
+        &self,
+        instance: u64,
+        authority: &ChannelAuthority,
+        key: &[u8],
+        flags: u32,
+        bytes: &[u8],
+    ) -> u32 {
+        if !authority.is_live() {
+            return 0;
+        }
+        self.deliver(
+            &(Scope::Command(instance, authority.clone()), key.into()),
+            None,
+            flags,
+            bytes,
+        )
+    }
+}
+
+impl SignalRegistry {
+    fn deliver(&self, key: &Key, subject: Option<[u8; 32]>, flags: u32, bytes: &[u8]) -> u32 {
         let table = self.lock();
-        let Some(members) = table.by_key.get(&(instance, Box::<[u8]>::from(key))) else {
+        let Some(members) = table.by_key.get(key) else {
             return 0;
         };
         let mut accepted = 0;
