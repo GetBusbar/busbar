@@ -704,6 +704,10 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn protected_resources(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<String> {
+        self.reader.protected_resources(cfg)
+    }
+
     fn grammar(
         &self,
         input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,

@@ -139,6 +139,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oauth_as_protected_resources_match_the_http_instances_routes() {
+        let sections = std::collections::BTreeMap::from([
+            (
+                "decisions",
+                busbar_contract::yaml::from_str("canonical_uri: https://dec.example\n").unwrap(),
+            ),
+            (
+                "mcp",
+                busbar_contract::yaml::from_str("canonical_uri: https://tools.example\n").unwrap(),
+            ),
+            (
+                "quiet",
+                busbar_contract::yaml::from_str("greeting: hi\n").unwrap(),
+            ),
+        ]);
+        assert_eq!(
+            plane_audiences(&sections, |instance| instance == "mcp"),
+            vec!["https://tools.example".to_owned()]
+        );
+        assert!(plane_audiences(&sections, |_| false).is_empty());
+        assert!(plane_audiences(&sections, |instance| instance == "quiet").is_empty());
+    }
+
+    #[test]
     fn core_keys_come_from_the_typed_parse() {
         for key in [
             "listen",
@@ -154,4 +178,21 @@ mod tests {
         assert!(!is_core_key("mcp"));
         assert!(!is_core_key("tools"));
     }
+}
+
+/// The audiences of the recognized plane sections that serve HTTP routes: each section's
+/// `canonical_uri`, in instance-name order. `serves_http` is the root reader's judgement of the
+/// instance's admitted routes (the loader's route records); a section that states no
+/// `canonical_uri` has no audience to protect.
+#[must_use]
+pub fn plane_audiences(
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    serves_http: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    sections
+        .iter()
+        .filter(|(instance, _)| serves_http(instance))
+        .filter_map(|(_, section)| section.get("canonical_uri")?.as_str().map(str::to_owned))
+        .collect()
 }
