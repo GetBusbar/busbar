@@ -22,6 +22,13 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Upgrade notes
 
+- **Pool-scoped keys reach only their pools on every path (security, #462).** A key restricted to
+  some pools now reaches only those pools on every plane path, native and legacy. Before, a plane
+  seat with no declared scope kind let it walk every pool and reach every command registration. A
+  key restricted this way is now refused (`Scope`) on a plane route unless the request's own
+  resource selection covers it, and it loses the walk if it is narrowed after admission. A key with
+  no restriction is unchanged. An empty resource selection never admits any key.
+
 - **Credential sign-in attempt limiter (security).** Hosted LDAP/AD-style sign-in had no attempt
   limit, so anyone could lock any directory account or guess passwords at line rate. Now:
   - Hosted credential sign-in refuses the 4th failed attempt for one account within 15 minutes with 429 "Too many sign-in attempts" and Retry-After, without contacting the directory.

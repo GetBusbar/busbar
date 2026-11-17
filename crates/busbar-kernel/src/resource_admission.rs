@@ -644,11 +644,6 @@ impl SelectedResources {
                 && descriptor.candidate.qualified_member.as_ref() == member
         })
     }
-    /// A registration W_UPSTREAM is admitted only when a selected tuple resolves to it (K2).
-    pub fn grants_upstream(&self, upstream: &str) -> bool {
-        self.selected_descriptors()
-            .any(|descriptor| descriptor.candidate.upstream.as_ref() == upstream)
-    }
     /// Resolve the actual host-selected target before the plane encodes exchange zero.
     /// Method/path cannot select authority: two admitted descriptors with the same
     /// complete target inputs are ambiguous and refuse, even if their endpoints agree.

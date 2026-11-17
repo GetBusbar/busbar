@@ -63,11 +63,10 @@ impl RequestRoutes {
         else {
             return false;
         };
-        let allowed = |name: &str| {
-            self.scope_kind
-                .as_ref()
-                .is_none_or(|kind| current_key.scope_allowed(kind, name))
-        };
+        // The admission rule again, on the current key and the request's own selection:
+        // a key narrowed after admission loses the walk (K2, PM ruling 1 on #462).
+        let allowed =
+            |name: &str| self.scope_admits(current_key, request.selection.as_deref(), name);
         if let RequestDomain::Registration(name) = request.domain() {
             return self.registration.as_ref().is_some_and(|registration| {
                 &registration.pool == name

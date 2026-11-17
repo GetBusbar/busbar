@@ -119,18 +119,31 @@ impl RequestRoutes {
     /// key's grant of that kind. With no declared kind, a keyed unit is admitted only by an
     /// unrestricted key or by its own non-empty authorized selection, which then narrows
     /// the walk to the selected tuples; `None` never means allow.
+    /// The admission walk and the current-key re-check both use this one rule.
     fn scope_admits(
         &self,
         key: &VirtualKey,
         selection: Option<&SelectedResources>,
         name: &str,
     ) -> bool {
-        if selection.is_some_and(|selected| !selected.scope_allowed(key)) {
-            return false;
+        match selection {
+            Some(selected) => {
+                selected.scope_allowed(key)
+                    && self
+                        .scope_kind
+                        .as_ref()
+                        .is_none_or(|kind| key.scope_allowed(kind, name))
+            }
+            None => self.key_admits(key, name),
         }
+    }
+
+    /// The key's own grant of `name` in this seat's declared kind. With no declared kind,
+    /// only an unrestricted key holds it.
+    fn key_admits(&self, key: &VirtualKey, name: &str) -> bool {
         match &self.scope_kind {
             Some(kind) => key.scope_allowed(kind, name),
-            None => selection.is_some() || key.allowed_scopes.is_none(),
+            None => key.allowed_scopes.is_none(),
         }
     }
 
@@ -329,6 +342,7 @@ impl RequestAllocation {
             domain,
             walk,
             command: None,
+            selection: self.selection.clone(),
             armed: true,
         })
     }
@@ -353,6 +367,7 @@ pub struct RequestPoolReceipt {
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     command: Option<SelectedCommand>,
+    selection: Option<Arc<SelectedResources>>,
     armed: bool,
 }
 impl RequestPoolReceipt {
@@ -488,6 +503,7 @@ impl CommittingRequest {
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
             command: self.route.command.clone(),
+            selection: self.route.selection.clone(),
             money,
             grant,
             governance,
@@ -513,6 +529,7 @@ pub struct AdmittedRequest {
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     command: Option<SelectedCommand>,
+    selection: Option<Arc<SelectedResources>>,
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     governance: Arc<GovState>,
