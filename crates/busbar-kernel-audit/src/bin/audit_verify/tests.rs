@@ -736,3 +736,29 @@ fn the_link_recipe_is_verified_from_its_own_page_alone() {
         assert!(LINK.contains(field), "the link page does not state {field}");
     }
 }
+
+/// The node serves `/api/v1/admin/audit/keys` as a page: the envelope, the keys under `items`, and
+/// `next_cursor`. The verifier takes that unmodified response; a page with more to fetch is not a
+/// whole key set and is refused.
+#[test]
+fn the_served_audit_keys_response_is_the_trusted_key_input() {
+    let built = keys();
+    let mut served = json::json!({
+        "recipe": built["recipe"].clone(),
+        "signature_domain": built["signature_domain"].clone(),
+        "algorithm": built["algorithm"].clone(),
+        "items": [{
+            "key_id": signer().key_id(),
+            "algorithm": SIGNATURE_ALGORITHM,
+            "public_key": signer().public_key_hex(),
+        }],
+        "next_cursor": null,
+    });
+    let (_, range, _) = chain();
+    assert!(verify(&served, &range, None).is_ok());
+    served["next_cursor"] = json::json!("audit-keys.next");
+    assert!(
+        verify(&served, &range, None).is_err(),
+        "one page of several is not the key set"
+    );
+}
