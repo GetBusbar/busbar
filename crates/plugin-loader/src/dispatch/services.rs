@@ -170,12 +170,6 @@ impl Issue {
     }
 }
 
-/// One ticket's bound hook children, by the caller's incarnation.
-type Children = HashMap<
-    busbar_contract::services::Incarnation,
-    Arc<dyn busbar_contract::services::HookChildInvocation>,
->;
-
 /// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
 /// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
@@ -188,8 +182,6 @@ pub struct ServiceStore {
     shards: [Mutex<HashMap<Ticket, Held>>; SHARDS],
     /// The last epoch minted.
     epochs: AtomicU64,
-    /// Each ticket's bound hook children, by the caller's incarnation: unbound by ticket.
-    children: Mutex<HashMap<Ticket, Children>>,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
@@ -228,27 +220,6 @@ impl Drop for Forgotten {
 }
 
 impl ServiceStore {
-    pub(crate) fn unbind_child(&self, ticket: Ticket) {
-        let unbound = self
-            .children
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&ticket);
-        drop(unbound);
-    }
-    fn child(
-        &self,
-        ticket: Ticket,
-        caller: &Caller,
-    ) -> Option<Arc<dyn busbar_contract::services::HookChildInvocation>> {
-        self.children
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&ticket)
-            .and_then(|bound| bound.get(caller.incarnation()))
-            .cloned()
-    }
-
     fn shard(&self, worker: u32) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.shards[worker as usize % SHARDS]
             .lock()
@@ -2386,16 +2357,13 @@ service! {
     }
 }
 
+/// `hook.child`: hook child dispatch is not served in 1.6.0, so every caller the access table admits
+/// is REFUSED.
+pub const NO_HOOK_CHILD: &str = "hook child dispatch is not served";
+
 service! {
-    hook_child, scoped, op::HOOK_CHILD, svc::HookChildIn, |served, route, head, caller, i| {
-        if check_bufs(&i.into).is_err() { return Answered::fault(); }
-        let Some(body) = blob_of(i.body, "hook_child.body") else { return Answered::fault(); };
-        let Some(child) = served.store.child(head.handle.ticket, caller) else {
-            return Answered::bare(Outcome::Refused, "no child grant on this hook invocation");
-        };
-        let req = Fp::of(&[&body]);
-        // SAFETY: checked caller-owned response buffers, retained only during this crossing.
-        unsafe { pended(&served, &route, &head, req, Some(&i.into), |later| child.request(caller, body, later)) }
+    hook_child, slot, op::HOOK_CHILD, svc::HookChildIn, |_, _, _, _i| {
+        Answered::bare(Outcome::Refused, NO_HOOK_CHILD)
     }
 }
 

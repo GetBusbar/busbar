@@ -78,7 +78,6 @@ impl<I: InFrame, O: OutFrame> Future for Ticketed<I, O> {
 impl<I, O> Drop for Ticketed<I, O> {
     fn drop(&mut self) {
         drop(self.reply.take());
-        self.dispatcher.services().unbind_child(self.ticket);
         self.dispatcher.recycle(self.ticket);
     }
 }
