@@ -3,7 +3,10 @@
 
 //! One verifier, with explicit authority around every cryptographic primitive.
 use crate::{release_trust as release, sign};
-use busbar_contract::crypto::verification::{Authority, Context, Failure};
+use busbar_contract::crypto::verification::Context;
+pub use busbar_contract::crypto::verification::{
+    Authority, Failure, Operation, Phase, Unavailable,
+};
 
 /// Policy/input refusal is distinct from unavailable verification authority or provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +27,8 @@ impl From<&str> for VerificationError<String> {
     }
 }
 impl<E> VerificationError<E> {
-    pub(crate) fn map_refused<F>(self, map: impl FnOnce(E) -> F) -> VerificationError<F> {
+    /// Transform only the proof refusal, retaining operational unavailability unchanged.
+    pub fn map_refused<F>(self, map: impl FnOnce(E) -> F) -> VerificationError<F> {
         match self {
             Self::Refused(error) => VerificationError::Refused(map(error)),
             Self::Unavailable(error) => VerificationError::Unavailable(error),
