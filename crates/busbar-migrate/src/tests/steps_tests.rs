@@ -113,7 +113,7 @@ fn module_words_are_left_as_written() {
         "redis",
     ] {
         let source = format!(
-            "store: {{module: {module}}}\nsecrets:\n  busbar-hashicorp-vault: {{address: x}}\n"
+            "store: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
         );
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {

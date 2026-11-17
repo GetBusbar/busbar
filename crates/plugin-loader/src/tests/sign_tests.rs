@@ -621,7 +621,8 @@ fn version_ordering_is_numeric_not_lexical() {
     assert!(version_at_least("2.0.0", "1.99.99"));
     assert!(version_at_least("1.4.0", "1.4.0"), "equal clears the floor");
     assert!(!version_at_least("1.3.9", "1.4.0"));
-    assert!(version_at_least("1.4.0-rc1", "1.4.0"));
+    // DES-359 r3 L11 (PM ruling 2026-11-17): a pre-release sorts below its release.
+    assert!(!version_at_least("1.4.0-rc1", "1.4.0"));
     assert!(!version_at_least("not-a-version", "0.0.1"));
 }
 
@@ -1702,7 +1703,9 @@ fn overflowing_min_version_components_refuse_a_real_signed_artifact() {
         "18446744073709551616.0.0"
     ));
     assert!(version_at_least("1.0.0", "0.18446744073709551616.0"));
-    assert!(version_at_least("0001.0000.0000-rc1+build", "1.0.0"));
+    // DES-359 r3 L11 (PM ruling 2026-11-17): a pre-release sorts below its release; build metadata never counts.
+    assert!(!version_at_least("0001.0000.0000-rc1+build", "1.0.0"));
+    assert!(version_at_least("0001.0000.0000+build", "1.0.0"));
     assert!(version_at_least(
         "00000000000000000000000000000000000000000000001.0.0",
         "1.0.0"
@@ -1845,4 +1848,52 @@ fn signing_from_a_fixed_seed_matches_the_rfc_8032_known_answers() {
             .verify_strict(&message, &Signature::from_bytes(&wire))
             .expect("the RFC signature verifies strictly");
     }
+}
+
+/// #359 SEC-L11 (DES-359 r3, B-R2): SemVer 2.0 precedence. A pre-release sorts below its release;
+/// identifiers compare left to right, numeric ones numerically without leading zeros or narrowing,
+/// numeric below alphanumeric; a shorter list is lower; build metadata never counts; an empty floor
+/// still clears.
+#[test]
+fn version_floors_follow_semver_precedence() {
+    assert!(!version_at_least("1.6.0-rc.1", "1.6.0"));
+    assert!(version_at_least("1.6.0", "1.6.0-rc.1"));
+    assert!(version_at_least("1.6.0-rc.2", "1.6.0-rc.1"));
+    assert!(version_at_least("1.6.0-rc.10", "1.6.0-rc.2"));
+    assert!(!version_at_least("1.6.0-rc.2", "1.6.0-rc.10"));
+    assert!(version_at_least("1.6.0-rc.02", "1.6.0-rc.2"));
+    assert!(version_at_least("1.6.0-rc.2", "1.6.0-rc.02"));
+    assert!(!version_at_least("1.6.0-alpha", "1.6.0-alpha.1"));
+    assert!(!version_at_least("1.6.0-1", "1.6.0-alpha"));
+    assert!(version_at_least(
+        "1.6.0-rc.99999999999999999999",
+        "1.6.0-rc.99999999999999999998"
+    ));
+    assert!(version_at_least("1.6.0+b1", "1.6.0+b2"));
+    assert!(version_at_least("1.6.0-rc.3", ""));
+    assert!(
+        !version_at_least("1.6.0-rc.3", "1.6.0"),
+        "a 1.6.0 high-water mark refuses rc.3"
+    );
+}
+
+/// #359 SEC-L11: a first-party rc release under an rc floor still loads, and under its release floor
+/// it does not.
+#[test]
+fn a_first_party_rc_build_clears_an_rc_floor_but_not_its_release_floor() {
+    let release = test_key(1);
+    let artifact = b"first-party rc bytes";
+    let mut rc = manifest("busbar-store-gamma-plugin", "gamma", FIRST_PARTY_PUBLISHER);
+    rc.version = "1.6.0-rc.3".into();
+    let rc = seal_test_artifact(&release, rc, artifact);
+    let mut pol = policy(Some(&release), &[], false);
+    pol.first_party_high_water
+        .insert("busbar-store-gamma-plugin".into(), "1.6.0-rc.2".into());
+    assert!(evaluate(artifact, &rc, &pol).is_ok());
+    pol.first_party_high_water
+        .insert("busbar-store-gamma-plugin".into(), "1.6.0".into());
+    assert_eq!(
+        evaluate(artifact, &rc, &pol).unwrap_err().kind,
+        RejectKind::AntiDowngrade
+    );
 }

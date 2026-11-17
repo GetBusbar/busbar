@@ -200,9 +200,16 @@ fn the_kernel_asks_the_same_judge() {
         j.judge_name("http://93.184.216.34/x", EGRESS_DEFAULT, false),
         Ok(())
     );
+    // Plaintext in the loopback class reaches loopback only. The address is public: no global
+    // allowlist admits a private one any more (UPSTREAMS-DECLARED r3 §2.4), and a private
+    // address is refused before its scheme is read (asserted below as DEST_INTERNAL).
+    assert_eq!(
+        j.judge_name("http://93.184.216.34/x", EGRESS_LOOPBACK_ALLOWED, false),
+        Err(DEST_PLAINTEXT)
+    );
     assert_eq!(
         j.judge_name("http://\x310.1.2.3/x", EGRESS_LOOPBACK_ALLOWED, false),
-        Err(DEST_PLAINTEXT)
+        Err(DEST_INTERNAL)
     );
     assert_eq!(
         j.judge_name("http://127.0.0.1:9/x", EGRESS_LOOPBACK_ALLOWED, false),

@@ -120,10 +120,10 @@ fn a_dropped_lane_commit_runs_to_completion() {
         .open_store("lane-drop", config.as_bytes())
         .unwrap_or_else(|e| panic!("open failed: {e:?}"));
     let (init, key) = initialization(&*store.backend);
-    let gave_up = h.block_on(tokio::time::timeout(
-        Duration::from_millis(50),
-        store.backend.commit(init, key),
-    ));
+    // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
+    let gave_up = h.block_on(async {
+        tokio::time::timeout(Duration::from_millis(50), store.backend.commit(init, key)).await
+    });
     assert!(gave_up.is_err(), "the commit was still running at 50 ms");
     assert_eq!(counts(id).commits, 0, "not recorded before its sleep ends");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -144,7 +144,7 @@ fn a_need_from_a_lane_store_is_fault_need_not_allowed() {
         let mut needs = FakeNeeds::new();
         needs.secret("/secret", b"backend-password-1");
         let h = booted(plugin, needs);
-        let opened = h.open_store("needs", br#"{"secret":"vault:db"}"#);
+        let opened = h.open_store("needs", br#"{"secret":{"vault":"db"}}"#);
         match opened {
             Err(OpenError::Call(CallError::Fault(FaultReason::NeedNotAllowed(_))))
                 if lane_store => {}

@@ -205,8 +205,10 @@ fn min3_lib(kind: busbar_plugin_abi::types::KindCode, layout: u64) -> Vec<u8> {
 #[test]
 fn a_min3_transport_image_is_left_to_the_min3_registry_and_another_kinds_stamp_is_still_refused() {
     use busbar_plugin_abi::types::KindCode;
-    let manifest = || {
-        statement(
+    // A native manifest lists its alias in former_names exactly once (sign.rs native rule).
+    let manifest = || crate::sign::Manifest {
+        former_names: vec!["delta".into()],
+        ..statement(
             busbar_contract::abi::mechanism::kind::TRANSPORT,
             "busbar-transport-delta",
             "delta",

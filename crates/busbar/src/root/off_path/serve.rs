@@ -3548,56 +3548,6 @@ pub(crate) fn door_mounts_planned(
     })
 }
 
-pub(crate) fn line_routes(
-    served: Served,
-    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
-) -> Result<Arc<DataRoutes>, String> {
-    use busbar_kernel::guest::GuestList;
-    let mut lines_of = Vec::new();
-    let mut of_line = foldhash::HashMap::default();
-    for (p, plane) in served.planes.iter().enumerate() {
-        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
-                continue;
-            }
-            let rung =
-                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[], &[])?;
-            of_line.insert((plane.instance.clone(), rung), (p, rung));
-            lines_of.push(line);
-        }
-    }
-    let guests =
-        GuestList::seal(lines_of).map_err(|refusal| guest_refusal("the line carrier", refusal))?;
-    let post = served.post.clone().unwrap_or_else(|| {
-        Arc::new(crate::root::plane_node::NodeEndPost::new(
-            crate::root::plane_node::node(),
-        ))
-    });
-    let routes = DataRoutes::new(DispatchSnapshot {
-        live: served
-            .planes
-            .iter()
-            .map(|plane| plane.live.current())
-            .collect(),
-        entries: arrival_entries(&served),
-        served,
-        claim_doors: None,
-        post,
-        pin,
-        guests,
-        of_line,
-        frames: Mutex::default(),
-    })?;
-    if let Some(nests) = &routes.served.nests {
-        nests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Arc::downgrade(&routes));
-    }
-    Ok(routes)
-}
-
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
     let tail: Vec<PlaneRouteSpec> = served

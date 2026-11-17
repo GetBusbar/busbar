@@ -5,6 +5,9 @@
 #[path = "rig.rs"]
 mod rig;
 
+#[path = "stdio_boot.rs"]
+mod stdio_boot;
+
 #[path = "../../../../dist/default/tests/product/auth_plugin_chain_trust.rs"]
 mod auth_plugin_chain_trust;
 

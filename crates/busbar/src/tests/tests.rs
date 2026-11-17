@@ -922,23 +922,6 @@ async fn one_seal_after_two_reloads() {
     );
 }
 
-#[test]
-fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
-    let planted: &[crate::root::linked::CliHelpRow] = &[(
-        "flag",
-        "    --planted-serve      serve the planted plane on stdin/stdout",
-    )];
-    assert!(line_serve_requested(
-        &[planted],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(
-        &[],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(&[planted], &Argv::parse(["busbar"])));
-}
-
 /// The crate root denies `dead_code`, `unused_imports` and `unused_macros` outside tests. An
 /// item-level `allow` or `expect` naming one of them would silence that, so every such escape in
 /// this crate's source, build script and generators is listed here by file, and each listed one is
@@ -1076,4 +1059,14 @@ fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
         "principal transition base Store opening refused",
         "a principal transition summary carries no inner detail"
     );
+}
+
+/// #428: on dev no plane states a CLI row, so the stdio trigger was unreachable. Core's own
+/// `--stdio` selects line serving through `main`'s CLI path on every build, and nothing else does
+/// (WP1-GAP r3 §1.3).
+#[test]
+fn stdio_selects_line_serving_through_mains_cli_path() {
+    assert!(line_serve_requested(&Argv::parse(["--stdio"])));
+    assert!(!line_serve_requested(&Argv::parse(Vec::<String>::new())));
+    assert!(!line_serve_requested(&Argv::parse(["--mcp-stdio"])));
 }
