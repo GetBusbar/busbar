@@ -22,6 +22,7 @@ impl super::super::EndPost for Posted {
 pub(crate) struct CommandAdmissionFixture {
     pub request: AdmittedRequest,
     pub definition: Arc<UpstreamDef>,
+    pub caller: Caller,
     money: super::super::PlaneMoney,
     _owner: NativeInvocationAdmission,
 }
@@ -48,7 +49,7 @@ impl CommandAdmissionFixture {
         ));
         let context = InvocationContext::new(
             Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
-            caller,
+            caller.clone(),
             1,
         )
         .unwrap();
@@ -84,6 +85,7 @@ impl CommandAdmissionFixture {
         Self {
             request,
             definition,
+            caller,
             money,
             _owner: owner,
         }
