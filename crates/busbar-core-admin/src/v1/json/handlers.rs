@@ -4844,6 +4844,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         );
     }
 
+    super::kinds::doc::trust_components(&mut gen);
     let mut schemas = gen.definitions().clone();
     schemas.insert(
         "ConfigSettingsMutationView".to_string(),

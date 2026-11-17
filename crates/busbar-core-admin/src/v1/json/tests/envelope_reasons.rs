@@ -122,6 +122,15 @@ const CODE_REASONS: &[&str] = &[
 ];
 
 #[cfg(feature = "openapi-schema")]
+/// TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1 and §4.6: the stable trust decision reasons.
+const TRUST_REASONS: &[&str] = &[
+    "reviewed_digest_required",
+    "reviewed_digest_stale",
+    "decision_in_progress",
+    "outcome_not_applied",
+];
+
+#[cfg(feature = "openapi-schema")]
 const PLUGIN_REFUSALS: &[&str] = &[
     "integrity",
     "signature",
@@ -279,6 +288,7 @@ fn reason_table_is_closed() {
         .iter()
         .chain(ADDED_REASONS)
         .chain(CODE_REASONS)
+        .chain(TRUST_REASONS)
         .map(|s| s.to_string())
         .collect();
     let have: std::collections::BTreeSet<String> = table.keys().cloned().collect();

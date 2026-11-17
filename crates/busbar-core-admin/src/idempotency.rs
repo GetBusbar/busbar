@@ -528,6 +528,79 @@ pub mod durable {
         }
     }
 
+    /// Settle a retained receipt terminally (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.6): the held row of
+    /// `key` that still retains exactly `retained` becomes `settled`, compare-and-set on its stored
+    /// bytes, so a later replay (also after a restart) reads the final answer without asking the
+    /// effect's owner again. `Ok(false)`: no held row of this key retains those bytes any more (a
+    /// concurrent replay settled it first) or none ever did.
+    pub async fn settle_retained(
+        store: &ScopedStore,
+        key: &(String, String),
+        now: u64,
+        retained: &[u8],
+        settled: &Settled,
+    ) -> Result<bool, String> {
+        let id = record_id(key);
+        let head = held_head(store, &id)
+            .await
+            .map_err(|why| format!("{why:?}"))?;
+        let mut generation = head.generation;
+        for _ in 0..MAX_GENERATIONS {
+            let row = held_record_id(&id, generation);
+            let Some(stored) = store
+                .get(REPLAY_KIND, row.as_bytes())
+                .await
+                .map_err(|e| format!("{e:?}"))?
+            else {
+                return Ok(false);
+            };
+            let found = decode(stored.expose(&busbar_kernel::seal::lend()));
+            match found {
+                Some((held, _, Settled::Retained(bytes)))
+                    if held == generation && bytes == retained =>
+                {
+                    let body = encode(generation, now, settled);
+                    let mut identity = b"busbar.admin.held-settle.v1\0".to_vec();
+                    identity.extend_from_slice(row.as_bytes());
+                    identity.push(0);
+                    identity.extend_from_slice(&busbar_contract::abi::sdk::digest::sha256(&body));
+                    let digest = busbar_contract::abi::sdk::digest::sha256(&identity);
+                    let request = Request {
+                        op_id: digest[..16].try_into().expect("fixed digest length"),
+                        predicates: vec![Predicate {
+                            schema: REPLAY_KIND.into(),
+                            key: row.clone().into_bytes(),
+                            expected: Expected::Exact(stored),
+                        }],
+                        mutations: vec![Mutation::Put {
+                            schema: REPLAY_KIND.into(),
+                            key: row.into_bytes(),
+                            value: Secret::new(body),
+                        }],
+                    };
+                    return match store.conditional_native(&request).await {
+                        Ok(Outcome::Applied) => Ok(true),
+                        Ok(Outcome::ConditionConflict) => Ok(false),
+                        other => Err(format!(
+                            "the retained idempotency settlement was not confirmed: {other:?}"
+                        )),
+                    };
+                }
+                Some((held, _, _)) if held == generation => {
+                    generation = generation
+                        .checked_add(1)
+                        .ok_or_else(|| "held idempotency generations exhausted".to_string())?;
+                }
+                _ => {
+                    return Err(format!(
+                    "the held idempotency record `{row}` in the store is not one this build wrote"
+                ))
+                }
+            }
+        }
+        Ok(false)
+    }
+
     fn advance_held(settled: Settled, written_at: u64, now: u64) -> Result<(), Refused> {
         match settled {
             Settled::Retained(receipt) => Err(Refused::Retained(receipt)),

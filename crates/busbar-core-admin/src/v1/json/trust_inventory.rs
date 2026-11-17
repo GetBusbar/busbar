@@ -138,7 +138,9 @@ pub struct Unavailable(pub String);
 
 const NOT_INSTALLED: &str = "native trust custody is not installed";
 
-fn key_row(row: &busbar_kernel::trust::book::KeyRow) -> TrustKeyRow {
+/// One trust key as `GET /trust` and the `subjects`/`items` views carry it (the one projection).
+#[must_use]
+pub fn key_row(row: &busbar_kernel::trust::book::KeyRow) -> TrustKeyRow {
     TrustKeyRow {
         key: row.key(),
         instance: row.instance.clone(),

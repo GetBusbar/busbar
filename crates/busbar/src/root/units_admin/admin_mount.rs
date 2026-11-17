@@ -330,6 +330,7 @@ pub(crate) type Errand = (
     AdminRequest,
     Option<busbar_kernel::inbound::RequestAdmission>,
     Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    Option<busbar_kernel::host_services::TrustDecisionAuthority>,
     tokio::sync::oneshot::Sender<AdminAnswer>,
 );
 
@@ -348,14 +349,14 @@ impl RouterDispatch {
     ) -> Self {
         let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
         runtime.spawn(async move {
-            while let Some((request, admission, execution, reply)) = inbox.recv().await {
+            while let Some((request, admission, execution, trust, reply)) = inbox.recv().await {
                 let inner = inner.clone();
                 let replays = replays.clone();
 
                 tokio::spawn(async move {
                     let unit = request.unit;
                     let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
-                        .scoping(call(inner, &request, &replays, admission, execution))
+                        .scoping(call(inner, &request, &replays, admission, execution, trust))
                         .await;
                     let _ = reply.send(answer);
                 });
@@ -371,6 +372,7 @@ async fn call(
     replays: &Arc<KeyReplayCache>,
     admission: Option<busbar_kernel::inbound::RequestAdmission>,
     execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+    trust: Option<busbar_kernel::host_services::TrustDecisionAuthority>,
 ) -> AdminAnswer {
     use tower::ServiceExt;
 
@@ -381,6 +383,10 @@ async fn call(
         builder = builder.header(name.as_str(), value.as_str());
     }
     builder = builder.extension(Arc::clone(replays));
+    // Only the admin gate's own verdict built this (r3 condition B-C1); none, no trust decision.
+    if let Some(trust) = trust {
+        builder = builder.extension(trust);
+    }
     if let Some(admission) = admission {
         builder = builder.extension(admission);
     }
@@ -414,7 +420,7 @@ async fn call(
 #[async_trait::async_trait]
 impl AdminDispatch for RouterDispatch {
     async fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
-        self.dispatch(request, None, None).await
+        self.dispatch(request, None, None, None).await
     }
 
     async fn execute_admitted(
@@ -423,7 +429,8 @@ impl AdminDispatch for RouterDispatch {
         request: &AdminRequest,
         admission: &busbar_kernel::inbound::RequestAdmission,
     ) -> AdminAnswer {
-        self.dispatch(request, Some(admission.clone()), None).await
+        self.dispatch(request, Some(admission.clone()), None, None)
+            .await
     }
 
     async fn execute_authorized(
@@ -432,9 +439,15 @@ impl AdminDispatch for RouterDispatch {
         request: &AdminRequest,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
         execution: Option<&Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+        trust: Option<&busbar_kernel::host_services::TrustDecisionAuthority>,
     ) -> AdminAnswer {
-        self.dispatch(request, admission.cloned(), execution.cloned())
-            .await
+        self.dispatch(
+            request,
+            admission.cloned(),
+            execution.cloned(),
+            trust.cloned(),
+        )
+        .await
     }
 }
 
@@ -444,11 +457,12 @@ impl RouterDispatch {
         request: &AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
         execution: Option<Arc<busbar_kernel::auth::native_admin::ExecutionAdmission>>,
+        trust: Option<busbar_kernel::host_services::TrustDecisionAuthority>,
     ) -> AdminAnswer {
         let (reply, answer) = tokio::sync::oneshot::channel();
         if self
             .errands
-            .send((request.clone(), admission, execution, reply))
+            .send((request.clone(), admission, execution, trust, reply))
             .is_err()
         {
             return unavailable_answer();
@@ -659,7 +673,7 @@ pub(crate) fn mount_node(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
     book: &crate::root::durability::NodeBook,
     retired_operator_key: Option<[u8; 32]>,
-    late: &Arc<crate::root::serve::Services>,
+    trust: Option<Arc<busbar_kernel::host_services::KernelServices>>,
     retired_breaker: crate::root::adapters::BreakerPolicy,
 ) -> Result<axum::Router, busbar_kernel::persistence::scoped::Error> {
     let _ = (retired_operator_key, retired_breaker);
@@ -701,8 +715,7 @@ pub(crate) fn mount_node(
 
             units.admin.replay_store = Some(Arc::clone(&replay_store));
 
-            let late = Arc::clone(late);
-            units.admin.trust = Arc::new(move || late.kernel());
+            units.admin.trust = trust.clone();
 
             match app.load().governance.clone() {
                 Some(gov) => {
