@@ -8,6 +8,14 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64 as HealthCounter};
 use std::sync::TryLockError;
 
+/// Request telemetry captures refused, by `reason` (DES-337 catalogue).
+pub(crate) const TELEMETRY_REQUEST_CAPTURE_REFUSALS_TOTAL: &str =
+    "busbar_telemetry_request_capture_refusals_total";
+/// Request telemetry store cells, by `state` (DES-337 catalogue).
+pub(crate) const TELEMETRY_REQUEST_CELLS: &str = "busbar_telemetry_request_cells";
+/// Bytes reserved by the request telemetry store (DES-337 catalogue).
+pub(crate) const TELEMETRY_REQUEST_RESERVED_BYTES: &str = "busbar_telemetry_request_reserved_bytes";
+
 const LABELS: [&str; 4] = ["plane", "phase", "pool", "ingress_protocol"];
 const OUTCOMES: [&str; 5] = ["ok", "exhausted", "client_error", "error", ""];
 const LOSS: [&str; 6] = [
@@ -512,7 +520,7 @@ impl RequestStore {
                 for _ in 0..12 {
                     output::series_labels(
                         scope,
-                        "busbar_telemetry_request_capture_refusals_total",
+                        TELEMETRY_REQUEST_CAPTURE_REFUSALS_TOTAL,
                         [("reason", "source_unavailable")].into_iter(),
                         1,
                     )?;
@@ -536,7 +544,7 @@ impl RequestStore {
                     out,
                     SCRAPE_KIND_GAUGE,
                     &Key::from_parts(
-                        "busbar_telemetry_request_cells",
+                        TELEMETRY_REQUEST_CELLS,
                         vec![metrics::Label::new("state", state)],
                     ),
                     vec![("", None, value.to_string())],
@@ -545,7 +553,7 @@ impl RequestStore {
             put(
                 out,
                 SCRAPE_KIND_GAUGE,
-                &Key::from_name("busbar_telemetry_request_reserved_bytes"),
+                &Key::from_name(TELEMETRY_REQUEST_RESERVED_BYTES),
                 vec![("", None, self.reserved_bytes.to_string())],
             );
             for (reason, count) in [
@@ -564,7 +572,7 @@ impl RequestStore {
                     out,
                     SCRAPE_KIND_COUNTER,
                     &Key::from_parts(
-                        "busbar_telemetry_request_capture_refusals_total",
+                        TELEMETRY_REQUEST_CAPTURE_REFUSALS_TOTAL,
                         vec![metrics::Label::new("reason", reason)],
                     ),
                     vec![("", None, count.to_string())],

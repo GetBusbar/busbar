@@ -169,6 +169,83 @@ The `pool` label is always a configured pool name or the sentinel `unresolved` (
 
 Deeper observability rides the single `export:` surface: a `kind: export` module for traces and another for per-request logs, each an instance under `export:`. All export destinations are governed by the one destination guard: private-address targets are refused by default <!-- docs-truth: depends on !2676 (unmerged): advanced.block_private_addresses is deleted and the guard is fixed on --> and a cloud-metadata target is always refused. A registration that must reach a private address opts in per registration with `allow_private` <!-- docs-truth: depends on #302 (unmerged): per-registration allow_private returns, advanced.allow_destinations is deleted -->; there is no global allow list. A module may also permit plaintext `http://` to loopback for a local collector; see the plugin's own documentation. Because `export:` is a NAMED map, several instances of one module are allowed: for example two log-delivery instances, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
 
+### Metric reference
+
+Every `busbar_` family the host emits, or lets a plane emit on its behalf, with its type, fixed label
+keys, unit and help text. The table is generated from the host metric catalogue, and a docs test
+fails when it drifts. The key and key-bucket gauges also carry the key's mint labels, which are
+operator-chosen and not listed.
+
+<!-- metric-catalogue:begin (generated from busbar_kernel::snapshot::catalogue::HOST_METRICS; regenerate with UPDATE_DIAGNOSTICS=1 and the busbar catalogue_tests) -->
+| Metric | Type | Labels | Unit | Help |
+|---|---|---|---|---|
+| `busbar_admission_denied_total` | counter | `gate` | none | Work refused by a bounded admission gate, by gate |
+| `busbar_audit_stage_failures_total` | counter | none | none | Terminal audit originals refused before native confirmation |
+| `busbar_billing_tap_decode_fail_total` | counter | `protocol`, `reason` | none | Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason |
+| `busbar_billing_truncated_total` | counter | none | none | Same-protocol non-stream responses whose billing-side buffer hit the translate-body cap before the usage block, so the request billed zero tokens |
+| `busbar_breaker_trips_total` | counter | `pool`, `lane` | none | Circuit-breaker trips, by pool and lane |
+| `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | count | Budget-group cap minus derived spend for the current window |
+| `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | count | Derived spend (abstract minor units) per budget-group bucket for its current window, recomputed from the token ledger x the current rate card at scrape time |
+| `busbar_bucket_tokens` | gauge | `bucket`, `model`, `tier` | none | Per-(bucket, model, tier) tokens in the bucket's current budget window (key buckets add the key's mint labels, budget-group buckets add group and window; derived from the token ledger at scrape time) |
+| `busbar_build_info` | gauge | `version` | none | Build identity: always 1, labelled with the running version |
+| `busbar_card_history_alarms_total` | counter | none | none | Rate-card history alarms raised by the prices runtime |
+| `busbar_export_audit_integrity_failures_total` | counter | `instance` | none | Export audit integrity failure occurrences by instance |
+| `busbar_export_capture_refusals_total` | counter | `instance`, `reason` | none | Export capture admission refusals by instance and bounded reason |
+| `busbar_export_custody_total` | counter | `instance`, `stream`, `level` | none | Accepted export lines by instance, stream and checked custody level |
+| `busbar_export_dropped_total` | counter | `instance`, `reason` | none | Terminally discarded export lines by instance and bounded reason |
+| `busbar_export_held_lines` | gauge | `instance`, `reason` | none | Current retained export ciphertext lines with an unavailable key by instance |
+| `busbar_failovers_total` | counter | `pool`, `reason` | none | Failover events, by pool and reason |
+| `busbar_file_logs_dropped_total` | counter | none | none | Request-log file appends shed because the sink's bounded in-flight append pool was saturated |
+| `busbar_governed_admissions_live` | gauge | none | count | Governed admissions alive: released only after the unit's terminal checkpoint is staged (scrape-time) |
+| `busbar_hook_project_over_cap_total` | counter | `part` | none | Hooked-request projections the host refused because a plane asked for more room than the request can need, by part (arena, messages, signals) |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | none | Needs (OPEN, STARTTLS, FETCH) admitted under an instance's insecure_transport acceptance, by kind, instance and accept; pooled reuse included, not TCP dials |
+| `busbar_journal_quarantined_total` | counter | none | none | Journal segments whose damaged remainder boot recovery moved into a quarantine file |
+| `busbar_key_spend_cents` | gauge | `key` | count | Per-virtual-key accumulated spend in cents for the current budget window, plus the key's mint labels (scrape-time) |
+| `busbar_key_tokens_total` | gauge | `key` | count | Per-virtual-key accumulated tokens consumed in the current budget window, plus the key's mint labels (scrape-time) |
+| `busbar_lane_available` | gauge | `pool`, `lane` | count | Per-(pool,lane) availability from the shared classify taxonomy: 1 = would admit, 0 = unavailable for any reason (breaker/capacity/dead/budget) (scrape-time) |
+| `busbar_lane_available_permits` | gauge | `pool`, `lane` | count | Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample) |
+| `busbar_lane_inflight` | gauge | `pool`, `lane` | count | Per-(pool,lane) in-flight requests (held concurrency permits) (scrape-time) |
+| `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | milliseconds | Per-(pool,lane) honest lower bound (ms) on when an unavailable lane could next serve; 0 when available or no self-recovery basis (scrape-time) |
+| `busbar_lane_request_duration_seconds` | histogram | `pool`, `target`, `model`, `instance` | seconds | Request duration in seconds by lane, labelled pool, target, model and instance |
+| `busbar_lane_state` | gauge | `pool`, `lane` | count | Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped (scrape-time) |
+| `busbar_login_attempts_total` | counter | `method`, `outcome` | none | Credential submissions, by login method and outcome |
+| `busbar_login_throttled_total` | counter | `method`, `limiter` | none | Throttled credential submissions, by login method and limiter |
+| `busbar_metering_pending_coalesced_total` | counter | none | none | Metering cells coalesced into a per-bucket overflow sentinel because the write-behind accumulator was at its cap (sustained store outage); totals preserved, per-key attribution collapsed |
+| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | seconds | End-to-end mounted-plane request duration in seconds, by plane |
+| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | none | Total mounted-plane requests, by plane, ingress protocol, pool, and outcome |
+| `busbar_plugin_inspect_cap_refusals_total` | counter | none | none | Plugin inspections refused because the process opened its cap of distinct images for inspection |
+| `busbar_plugin_inspect_slot_held_seconds` | gauge | none | seconds | How long the one plugin inspection slot has been held, in seconds (0 when free) |
+| `busbar_plugin_label_refused_total` | counter | none | none | Plugin-reported metric labels the host refused |
+| `busbar_plugin_observations_dropped_total` | counter | none | none | Plugin back-channels (reported metrics and diagnostics) dropped because the bounded observer intake was full |
+| `busbar_plugin_request_headers_truncated_total` | counter | none | none | Plugin route requests whose forwarded headers were truncated to the plugin cap |
+| `busbar_plugin_response_headers_rejected_total` | counter | none | none | Plugin route responses whose headers the host rejected |
+| `busbar_plugin_text_cut_total` | counter | `plugin`, `field` | none | Over-cap values received in plugin and hook replies, by plugin and field |
+| `busbar_pool_queued` | gauge | `pool` | count | Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time) |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | seconds | End-to-end request duration in seconds |
+| `busbar_request_phase_client_errors_total` | counter | `plane`, `phase`, `pool`, `ingress_protocol`, `process_boot_nonce` | none | Request phase observations whose outcome was client_error |
+| `busbar_request_phase_duration_bin_total` | counter | `plane`, `phase`, `pool`, `ingress_protocol`, `process_boot_nonce`, `upper_bound_ms` | none | Request phase observations per exclusive duration bin, by upper bound in milliseconds (+Inf for the last bin) |
+| `busbar_request_phase_duration_count_total` | counter | `plane`, `phase`, `pool`, `ingress_protocol`, `process_boot_nonce` | none | Request phase observations, cumulative since the process booted |
+| `busbar_request_phase_duration_seconds` | histogram | `plane`, `phase`, `pool`, `ingress_protocol`, `outcome` | seconds | Request phase duration observations, by plane, phase, pool, ingress protocol and outcome; exported as the request phase count, sum, error and bin counters |
+| `busbar_request_phase_duration_sum_us_total` | counter | `plane`, `phase`, `pool`, `ingress_protocol`, `process_boot_nonce` | microseconds | Sum of request phase durations in microseconds, cumulative since the process booted |
+| `busbar_request_phase_errors_total` | counter | `plane`, `phase`, `pool`, `ingress_protocol`, `process_boot_nonce` | none | Request phase observations whose outcome was exhausted or error |
+| `busbar_request_phase_observations_dropped_total` | counter | `reason` | none | Request phase observations the bounded request store could not record, by reason |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | none | Total ingress requests, by ingress protocol, pool, and outcome |
+| `busbar_route_policy_rejections_total` | counter | `policy`, `pool`, `status` | none | Requests deliberately rejected by the routing policy's reject verb, by policy name, pool, and status |
+| `busbar_route_policy_selections_total` | counter | `policy`, `pool` | none | Requests whose routing policy produced a ranked order, by policy name and pool |
+| `busbar_store_slots` | gauge | `state` | none | Store slot-queue entries by state (free, in_flight, in_doubt, resolved_uncollected, reconcile); the states add up to the pending operations |
+| `busbar_tap_notifications_dropped_total` | counter | none | none | Fire-and-forget tap notifications dropped because the in-flight cap was reached |
+| `busbar_telemetry_overflow_replays_total` | counter | none | none | Full histogram buffers replayed into the recorder on the request thread because the slot already had two buffers parked or the 8 MiB park budget was spent |
+| `busbar_telemetry_request_capture_refusals_total` | counter | `reason` | none | Request telemetry captures refused, by reason |
+| `busbar_telemetry_request_cells` | gauge | `state` | none | Request telemetry store cells, by state (reserved or observed) |
+| `busbar_telemetry_request_reserved_bytes` | gauge | none | bytes | Bytes reserved by the request telemetry store |
+| `busbar_translations_total` | counter | `from`, `to` | none | Cross-protocol translations, by source and target protocol |
+| `busbar_unit_checkpoints_terminal` | gauge | none | count | Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped at 20,000) (scrape-time) |
+| `busbar_unit_refusals_total` | counter | `reason`, `instance` | none | Units that did not complete, by closed reason and plane instance |
+| `busbar_upstream_attempts_total` | counter | `pool`, `lane` | none | Upstream call attempts, by pool and lane |
+| `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | none | Upstream failures, by pool, lane, and breaker disposition |
+| `busbar_webhook_logs_dropped_total` | counter | none | none | Request-log webhook deliveries shed because the bounded delivery pool was saturated |
+<!-- metric-catalogue:end -->
+
 ## Response headers
 
 Every response header Busbar injects that reveals the gateway (as opposed to a header it relays or translates from an upstream, or one the protocol requires) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly, so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart). `reload_to_apply` flags `advanced.response_headers` when you change it live.
