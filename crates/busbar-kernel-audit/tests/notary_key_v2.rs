@@ -138,7 +138,7 @@ fn shared_linked_reader_and_head_preserve_certificate_positions() {
     assert!(verify_linked_chain(std::slice::from_ref(&later)).is_err());
     verify_linked_window(std::slice::from_ref(&later)).unwrap();
     assert!(verify_linked_window(&[later, parsed]).is_err());
-    let head = busbar_kernel_audit::head_from_journal_body(&body)
+    let head = busbar_kernel_audit::journal::head_from_journal_body(&body)
         .unwrap()
         .unwrap();
     assert_eq!(head.node, record.node);

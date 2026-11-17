@@ -57,7 +57,7 @@ async fn fixture_with_running_cut(clock: Arc<DrainClock>) -> (Fixture, Arc<Flush
     let audit = Arc::new(audit);
     let gate = Arc::new(FlushGate::default());
     *fixture.seen.backend.cut.lock().unwrap() = Some(gate.clone());
-    audit.start_notary(1, clock, None);
+    audit.start_notary(1, clock, None, Arc::clone(&fixture.book.durability));
     fixture.book.audit = Some(audit);
     for unit in 1..=(RETAIN_TAIL + 3 * CUT_BATCH) {
         Durability::seal_unit(
@@ -457,7 +457,7 @@ impl Fixture {
         self.seen
             .gov
             .attach_unit_checkpoint_sink(
-                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal)
+                crate::root::durability::unit_checkpoint_sink(&self.book.durability, journal, None)
                     .unwrap(),
             )
             .await

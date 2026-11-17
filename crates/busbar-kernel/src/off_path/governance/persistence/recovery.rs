@@ -817,7 +817,7 @@ impl<'a> History<'a> {
 
 /// How a verification treats this node's own selected journal head.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Pin {
+enum HeadPin {
     /// Prove and confirm this node's ownership. Every write path and owned
     /// check uses it. A pinned History requires the exact head; a History
     /// beside the live owner requires a prefix of its admitted head.
@@ -1155,25 +1155,25 @@ impl StoreRecovery {
     /// complete ancestry and ownership, beside its own live journal.
     async fn verify_written_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = self.continuing();
-        self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+        self.verify_checkpoint_with_history(event, true, HeadPin::Strict, &mut history)
             .await?;
         self.keep_verified(&history);
         Ok(())
     }
     async fn verify_origin_at(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
         let mut history = self.history();
-        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+        self.verify_origin_with_history(event, HeadPin::Strict, &mut history)
             .await
     }
     async fn verify_origin_with_history(
         &self,
         event: &RecoveryEvent,
-        pin: Pin,
+        pin: HeadPin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
         let local = match pin {
-            Pin::Strict => Some(self.owned_with_history(history).await?),
-            Pin::Live => None,
+            HeadPin::Strict => Some(self.owned_with_history(history).await?),
+            HeadPin::Live => None,
         };
         let current = head(&self.store, &event.operation_id).await?;
         let initial = match &current {
@@ -1236,14 +1236,14 @@ impl StoreRecovery {
         owned: bool,
     ) -> Result<(), RecoveryError> {
         let mut history = self.history();
-        self.verify_checkpoint_with_history(event, owned, Pin::Strict, &mut history)
+        self.verify_checkpoint_with_history(event, owned, HeadPin::Strict, &mut history)
             .await
     }
     async fn verify_checkpoint_with_history(
         &self,
         event: &RecoveryEvent,
         owned: bool,
-        pin: Pin,
+        pin: HeadPin,
         history: &mut History<'_>,
     ) -> Result<(), RecoveryError> {
         let (tip, raw) = head(&self.store, &event.operation_id)
@@ -1271,7 +1271,7 @@ impl StoreRecovery {
         }
         self.verify_origin_with_history(event, pin, history).await?;
         history.finish().await?;
-        if pin == Pin::Strict {
+        if pin == HeadPin::Strict {
             // Beside the live owner, `owned_with_history` already proved this
             // proof extends to the owner's live head, original by original,
             // and checked that exact live head's H and O rows and admission in
@@ -1654,13 +1654,13 @@ impl StoreRecovery {
             None
         };
         if selected.as_ref().is_some_and(|s| s.selected == *event) {
-            self.verify_checkpoint_with_history(event, true, Pin::Strict, &mut history)
+            self.verify_checkpoint_with_history(event, true, HeadPin::Strict, &mut history)
                 .await?;
             self.keep_verified(&history);
             return Ok(None);
         }
         event.follows(selected.as_ref().map(|s| &s.selected))?;
-        self.verify_origin_with_history(event, Pin::Strict, &mut history)
+        self.verify_origin_with_history(event, HeadPin::Strict, &mut history)
             .await?;
         self.owned_with_history(&mut history).await?;
         self.keep_verified(&history);
@@ -2634,7 +2634,7 @@ impl RecoverySink for StoreRecovery {
                 self.verify_checkpoint_with_history(
                     &selection.selected,
                     false,
-                    Pin::Live,
+                    HeadPin::Live,
                     &mut history,
                 )
                 .await?;

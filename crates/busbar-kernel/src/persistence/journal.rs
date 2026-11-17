@@ -171,6 +171,14 @@ impl VerifiedHead {
     pub(crate) fn hash(&self) -> [u8; 32] {
         self.head.hash
     }
+    #[cfg(test)]
+    pub(crate) fn same_head(&self, other: &Self) -> bool {
+        self.head == other.head
+    }
+    #[cfg(test)]
+    pub(crate) fn records_seal(&self) -> [u8; 32] {
+        self.records_seal
+    }
 }
 
 #[cfg(test)]

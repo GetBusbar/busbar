@@ -1953,8 +1953,8 @@ async fn recovery_history_restarts_from_the_cut_base() {
     let restarts = journal_walk_restarts();
     let mut racing = History::observing(&recovery.store, &journal);
     let actual = racing.proof(journal.node()).await.unwrap();
-    assert!(actual.head == expected.head);
-    assert_eq!(actual.records_seal, expected.records_seal);
+    assert!(actual.same_head(&expected));
+    assert_eq!(actual.records_seal(), expected.records_seal());
     assert!(
         journal_walk_restarts() > restarts,
         "recovery uses the shared journal restart accounting"
