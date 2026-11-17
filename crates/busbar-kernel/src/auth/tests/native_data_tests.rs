@@ -586,11 +586,19 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     );
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 1);
     assert_eq!(f.calls.calls.load(Ordering::SeqCst), 1);
+    let receipt = pending.execution().unwrap().money().clone();
     drop(pending);
     assert!(!context.is_live());
     assert!(!context.effects_allowed());
     assert!(binding.check_executing().is_err());
-    money.settle_end(busbar_contract::UnitKey::new(context.unit()), 499);
+    let ended = crate::plane_driver::money::UnitEnd {
+        caller_status: 499,
+        cut: false,
+        refused_unspent: true,
+    };
+    assert!(money.settle_admitted(&receipt, ended).unwrap());
+    assert!(!money.settle_admitted(&receipt, ended).unwrap());
+    assert_eq!(money.open_units(), 0);
     drop(owner);
 }
 
@@ -970,4 +978,55 @@ fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
         "refused DATA revocation cannot alter the existing custody row"
     );
     core.units().ended(ordinary);
+}
+
+#[tokio::test]
+async fn native_data_task_refuses_substituted_physical_request_id() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let pending = Arc::new(
+        NativeDataAllocation::register(authorized)
+            .unwrap()
+            .into_pending(|_| panic!("foreign request id cannot acquire money")),
+    );
+    let calls = PlaneCalls(AtomicUsize::new(0));
+    let effects = DataEffects(&pending);
+    let answer = pending
+        .snapshot()
+        .with_auth_input(|request| {
+            crate::plane_driver::port_session::Task::begin(
+                &calls,
+                &busbar_ports::plane::PlaneIn {
+                    route: pending.selected().request().route(),
+                    flags: 0,
+                    auth: AUTH_PRINCIPAL,
+                    method: request.method,
+                    path: request.path,
+                    query: request.query,
+                    headers: request.headers,
+                    identity: pending.identity().identity_records(),
+                    request_id: cx.request_id + 1,
+                    carrier: 0,
+                    work: "",
+                    ticket_record: &[],
+                },
+                request.body,
+                &effects,
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        answer,
+        Err(crate::plane_driver::port_session::SessionError::NotDriven)
+    ));
+    assert_eq!(calls.0.load(Ordering::SeqCst), 0);
+    assert!(pending.execution().is_none());
 }
