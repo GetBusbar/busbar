@@ -72,6 +72,13 @@ impl std::fmt::Debug for PortBilling {
 }
 
 impl PortBilling {
+    pub fn admission_rollback(
+        &self,
+        request: &AdmittedRequest,
+    ) -> Result<super::AdmissionRollback, NativeAdmissionError> {
+        self.money.admission_rollback(request)
+    }
+
     pub fn settle_admitted(
         &self,
         request: &AdmittedRequest,

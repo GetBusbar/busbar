@@ -26,6 +26,36 @@ impl From<ReasonCode> for NativeAdmissionError {
     }
 }
 
+/// Owns an ordinary callback's admission until physical startup and Pending validation succeed.
+/// The factory checks the actual book/Open/grant; no caller-supplied cleanup closure is accepted.
+pub struct AdmissionRollback {
+    money: Arc<PlaneMoney>,
+    request: Option<AdmittedRequest>,
+}
+
+impl AdmissionRollback {
+    /// Transfer ongoing settlement responsibility to the existing retained response owner.
+    pub fn commit(mut self) {
+        self.request.take();
+    }
+}
+
+impl Drop for AdmissionRollback {
+    fn drop(&mut self) {
+        if let Some(request) = self.request.take() {
+            let _ = self.money.settle_admitted(
+                &request,
+                UnitEnd {
+                    caller_status: 500,
+                    cut: false,
+                    refused_unspent: true,
+                },
+            );
+            request.context().retire();
+        }
+    }
+}
+
 /// Until installation commits, only this owner refunds the newly acquired admission.
 /// It is never a fee participant, and it cannot refund an existing Open's charge.
 struct PendingAdmission {
@@ -62,6 +92,33 @@ impl Drop for PendingAdmission {
 }
 
 impl PlaneMoney {
+    pub fn admission_rollback(
+        self: &Arc<Self>,
+        request: &AdmittedRequest,
+    ) -> Result<AdmissionRollback, NativeAdmissionError> {
+        let all = self.shard(request.unit());
+        let open = all
+            .get(&request.unit())
+            .ok_or(NativeAdmissionError::NotLive)?;
+        let grant = open.grant.as_ref().ok_or(NativeAdmissionError::NotLive)?;
+        if !request.matches_money_identity(&self.book, &open.identity, grant)
+            || !request.matches_governance(&self.gov)
+            || open.finished
+            || open.ledgered
+            || open.abandoned
+            || open.last.iter().any(|count| count.amount != 0)
+        {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        if open.native.is_some() {
+            return Err(NativeAdmissionError::SelectedTerminalRequired);
+        }
+        Ok(AdmissionRollback {
+            money: self.clone(),
+            request: Some(request.clone()),
+        })
+    }
+
     /// Bind the retained Task's declaration before the admitted phase can expose host effects.
     /// Routing supplies its actual captured generation and complete reachable attempt ceiling;
     /// neither value substitutes for the checked allocation or the original monetary grant.
