@@ -1241,6 +1241,16 @@ fn denied_status(denied: &RecordsDenied) -> u32 {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
+    /// Resolve only prerequisites whose results are needed to bind the enforcement stage.
+    pub fn resolve_before_hooks(
+        &mut self,
+        first: Answer,
+        resolver: &Resolver<'_>,
+        effects: &dyn Effects,
+    ) -> Result<Vec<Answer>, SessionError> {
+        self.resolve(first, resolver, effects)
+    }
+
     /// Resolves the intents of `first` and of every answer their results provoke. Answers come back in delivery
     /// order, `first` first, each with its intents taken (resolved), so the caller applies their client items,
     /// forward and facts as it would any answer.
