@@ -189,6 +189,21 @@ impl NativeRequestMoney {
                     return Err(NativeAdmissionError::Declaration)
                 }
             };
+            let unspent = open.last.iter().all(|count| count.amount == 0)
+                && snapshot
+                    .partitions
+                    .as_ref()
+                    .expect("checked partitions")
+                    .attempts
+                    .iter()
+                    .all(|attempt| {
+                        attempt.usage.classes.values().all(|facts| {
+                            [facts.reported, facts.floor, facts.estimated]
+                                .into_iter()
+                                .flatten()
+                                .all(|count| count.is_zero())
+                        })
+                    });
             let terminal = match self.money.gov.finish_selected_checkpoint_with_fee(
                 snapshot,
                 Some(expected),
@@ -208,7 +223,7 @@ impl NativeRequestMoney {
                 all.remove(&self.request.unit())
                     .expect("same checked Open under shard"),
                 terminal,
-                end.refused_unspent && !has_bill,
+                end.refused_unspent && unspent,
             )
         };
         if release_request {
@@ -304,7 +319,9 @@ fn delivery_facts(
 
 impl PlaneMoney {
     /// The callback guard proves no Task effect or connector attempt has started. Transfer its
-    /// empty failed terminal before consuming the original fee participant outside money locks.
+    /// failed terminal before consuming the original fee participant outside money locks.
+    /// An initial request answer may already have reported session quantities or original fee
+    /// markers before a later admission check refuses; retain them with the failed disposition.
     pub(super) fn abort_selected_startup(
         &self,
         request: &AdmittedRequest,
@@ -342,11 +359,9 @@ impl PlaneMoney {
                 .ok_or(NativeAttemptError::Binding)?;
             if parts.disposition != Disposition::Running
                 || !parts.attempts.is_empty()
-                || parts.session.is_some()
                 || parts.far_end_answered
                 || parts.caller_bytes_committed
                 || parts.final_target.is_some()
-                || open.last.iter().any(|count| count.amount != 0)
             {
                 return Err(NativeAttemptError::Binding);
             }
@@ -376,8 +391,10 @@ impl PlaneMoney {
                 terminal,
             )
         };
-        self.gov.release_request(&removed.money.charge);
-        removed.fee.refundable = true;
+        if removed.last.iter().all(|count| count.amount == 0) {
+            self.gov.release_request(&removed.money.charge);
+        }
+        removed.fee.refundable = removed.money.fee.refunds(500, &removed.last);
         drop(removed); // Resolves the actual fee account; observer cannot retain participation.
         slot.publish(Ok(terminal));
         Ok(())
