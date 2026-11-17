@@ -367,11 +367,9 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
         AdminDoor::Unavailable(_)
     ));
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
-    let verdict = admin_verdict_for(
-        admin_invocation(&handle, &app, busbar_kernel::store::now()),
-        &headers,
-    )
-    .await;
+    let invocation = admin_invocation(&handle, &app, busbar_kernel::store::now());
+    let original_context = invocation.cx;
+    let verdict = admin_verdict_for(invocation, &headers).await;
     assert!(busbar_kernel::auth::admin_door_admits(
         &verdict.door,
         "GET",
@@ -384,6 +382,10 @@ async fn native_admin_probe_is_non_authoritative_and_final_claim_is_one_shot() {
     );
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
     let execution = pending.complete_admin().await.unwrap();
+    let (origin, context) = execution.native_origin().unwrap();
+    assert!(Arc::ptr_eq(origin, &handle));
+    assert_eq!(context.request_id, original_context.request_id);
+    assert_eq!(context.deadline, original_context.deadline);
     assert!(Arc::ptr_eq(
         execution.native().unwrap().0.generation(),
         &app
