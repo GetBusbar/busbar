@@ -177,6 +177,17 @@ type SignalRow = (u64, Vec<u8>, Option<[u8; 32]>, u32, Vec<u8>);
 struct Signals(Mutex<Vec<SignalRow>>);
 
 impl SessionSignals for Signals {
+    fn signal_command(
+        &self,
+        instance: u64,
+        authority: &super::authority::ChannelAuthority,
+        key: &[u8],
+        flags: u32,
+        bytes: &[u8],
+    ) -> u32 {
+        assert!(authority.is_live());
+        self.signal(instance, key, None, flags, bytes)
+    }
     fn signal(
         &self,
         instance: u64,
@@ -210,6 +221,8 @@ impl Events for Told {
 }
 
 struct Fixture {
+    authority: super::authority::ChannelAuthority,
+    _admission: crate::plane_driver::request_admission::CommandAdmissionFixture,
     budget: super::budget::UnitBudget,
     driver: ChannelDriver,
     remotes: mpsc::UnboundedReceiver<Remote>,
@@ -219,7 +232,10 @@ struct Fixture {
     who: Namespace,
 }
 
-fn fixture() -> Fixture {
+async fn fixture(upstream: Arc<UpstreamDef>) -> Fixture {
+    let admission =
+        crate::plane_driver::request_admission::CommandAdmissionFixture::new(upstream).await;
+    let authority = super::authority::ChannelAuthority::new(admission.request.clone()).unwrap();
     let (tx, remotes) = mpsc::unbounded_channel();
     let wires = Arc::new(FakeWires {
         remotes: tx,
@@ -232,6 +248,7 @@ fn fixture() -> Fixture {
     let unit = budget.unit();
     let driver = ChannelDriver::new(
         INSTANCE,
+        admission.caller.clone(),
         budget,
         Arc::clone(&wires) as Arc<dyn Wires>,
         Arc::new(Script),
@@ -239,6 +256,8 @@ fn fixture() -> Fixture {
         Arc::clone(&told) as Arc<dyn Events>,
     );
     Fixture {
+        authority,
+        _admission: admission,
         budget: unit,
         driver,
         remotes,
@@ -278,12 +297,14 @@ fn upstream(idle_s: u64) -> UpstreamDef {
 
 fn req<'a>(
     budget: &'a super::budget::UnitBudget,
+    command: &'a super::authority::ChannelAuthority,
     exchange: u32,
     key: &'a str,
     flags: u32,
 ) -> ChannelReq<'a> {
     ChannelReq {
         budget,
+        command: Some(command),
         exchange,
         carrier: CARRIER_STDIO,
         flags,
@@ -303,6 +324,40 @@ async fn attach(
     f.driver.attach(&caller, up, r).await
 }
 
+#[tokio::test]
+async fn stdio_requires_the_same_live_admission_and_selected_definition_before_open() {
+    let up = Arc::new(upstream(300));
+    let f = fixture(up.clone()).await;
+    let mut missing = req(&f.budget, &f.authority, 1, "k", 0);
+    missing.command = None;
+    assert!(matches!(
+        attach(&f, &up, missing).await,
+        Err(RecordsDenied::Invalid)
+    ));
+    let substitute = Arc::new(up.as_ref().clone());
+    assert!(matches!(
+        attach(&f, &substitute, req(&f.budget, &f.authority, 1, "k", 0)).await,
+        Err(RecordsDenied::Invalid)
+    ));
+    let other =
+        crate::plane_driver::request_admission::CommandAdmissionFixture::new(up.clone()).await;
+    let foreign = super::authority::ChannelAuthority::new(other.request.clone()).unwrap();
+    assert_ne!(
+        f.authority, foreign,
+        "same scalar unit and definition do not share an Open"
+    );
+    assert!(matches!(
+        attach(&f, &up, req(&f.budget, &foreign, 1, "k", 0)).await,
+        Err(RecordsDenied::Invalid)
+    ));
+    f._admission.request.context().retire();
+    assert!(matches!(
+        attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0)).await,
+        Err(RecordsDenied::Invalid)
+    ));
+    assert_eq!(f.wires.opened.load(Ordering::SeqCst), 0);
+}
+
 async fn message(a: &mut Attachment) -> String {
     match timeout(WAIT, a.recv()).await.expect("a message") {
         Some(ChannelMsg::Message(bytes)) => String::from_utf8(bytes.into_vec()).unwrap(),
@@ -313,13 +368,17 @@ async fn message(a: &mut Attachment) -> String {
 
 #[tokio::test]
 async fn the_first_attach_of_a_generation_greets_and_the_next_waits_for_its_ready() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     assert!(a.greet, "the first attach runs the greeting");
     assert_eq!(a.generation, 1);
     let caller = f.who.caller();
-    let mut waiting = f.driver.attach(&caller, &up, req(&f.budget, 2, "k", 0));
+    let mut waiting = f
+        .driver
+        .attach(&caller, &up, req(&f.budget, &f.authority, 2, "k", 0));
     assert!(
         timeout(SHORT, &mut waiting).await.is_err(),
         "no other session is released before CH_READY"
@@ -341,11 +400,15 @@ async fn the_first_attach_of_a_generation_greets_and_the_next_waits_for_its_read
 
 #[tokio::test]
 async fn a_greeter_that_leaves_without_ready_hands_the_greeting_to_the_next() {
-    let f = fixture();
-    let up = upstream(300);
-    let a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let f = fixture(up.clone()).await;
+    let a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     let caller = f.who.caller();
-    let mut waiting = f.driver.attach(&caller, &up, req(&f.budget, 2, "k", 0));
+    let mut waiting = f
+        .driver
+        .attach(&caller, &up, req(&f.budget, &f.authority, 2, "k", 0));
     assert!(timeout(SHORT, &mut waiting).await.is_err());
     drop(a);
     let b = timeout(WAIT, waiting).await.unwrap().unwrap();
@@ -355,13 +418,13 @@ async fn a_greeter_that_leaves_without_ready_hands_the_greeting_to_the_next() {
 
 #[tokio::test]
 async fn messages_are_written_framed_and_a_final_reply_releases_the_next_serial_ask() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", CH_SERIAL))
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
     a.ready(b"");
-    let mut b = attach(&f, &up, req(&f.budget, 2, "k", CH_SERIAL))
+    let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", CH_SERIAL))
         .await
         .unwrap();
     let mut child = f.remotes.recv().await.unwrap();
@@ -382,13 +445,13 @@ async fn messages_are_written_framed_and_a_final_reply_releases_the_next_serial_
 
 #[tokio::test]
 async fn a_message_that_is_not_an_ask_is_written_at_once_even_behind_a_serial_ask() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", CH_SERIAL))
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
     a.ready(b"");
-    let mut b = attach(&f, &up, req(&f.budget, 2, "k", CH_SERIAL))
+    let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", CH_SERIAL))
         .await
         .unwrap();
     let mut child = f.remotes.recv().await.unwrap();
@@ -402,9 +465,9 @@ async fn a_message_that_is_not_an_ask_is_written_at_once_even_behind_a_serial_as
 
 #[tokio::test]
 async fn an_unbidden_message_goes_to_the_head_of_the_ask_line_and_leaves_its_ask_open() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", CH_SERIAL))
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", CH_SERIAL))
         .await
         .unwrap();
     a.ready(b"");
@@ -423,9 +486,11 @@ async fn an_unbidden_message_goes_to_the_head_of_the_ask_line_and_leaves_its_ask
 
 #[tokio::test]
 async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_counted() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
     child.says("o|{\"error\":\"no\"}").await;
@@ -450,11 +515,12 @@ async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_c
 }
 
 #[tokio::test]
-async fn a_broadcast_goes_to_the_signal_registry_with_the_key_and_the_channels_subject() {
-    let mut f = fixture();
-    let up = upstream(300);
+async fn an_http_broadcast_preserves_the_key_and_channels_subject() {
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
     let subject = [9u8; 32];
-    let mut r = req(&f.budget, 1, "k", CH_PER_CALLER);
+    let mut r = req(&f.budget, &f.authority, 1, "k", CH_PER_CALLER);
+    r.carrier = CARRIER_HTTP;
     r.subject = Some(subject);
     let mut a = attach(&f, &up, r).await.unwrap();
     a.ready(b"");
@@ -480,10 +546,51 @@ async fn a_broadcast_goes_to_the_signal_registry_with_the_key_and_the_channels_s
 }
 
 #[tokio::test]
+async fn command_signals_cannot_cross_an_admission_or_reach_legacy_wildcards() {
+    use super::signals::SignalRegistry;
+    let up = Arc::new(upstream(300));
+    let a = crate::plane_driver::request_admission::CommandAdmissionFixture::new(up.clone()).await;
+    let b = crate::plane_driver::request_admission::CommandAdmissionFixture::new(up).await;
+    let a_scope = super::authority::ChannelAuthority::new(a.request.clone()).unwrap();
+    let b_scope = super::authority::ChannelAuthority::new(b.request.clone()).unwrap();
+    let registry = SignalRegistry::new();
+    let (a_tx, mut a_rx) = mpsc::channel(1);
+    let (b_tx, mut b_rx) = mpsc::channel(1);
+    let (old_tx, mut old_rx) = mpsc::channel(1);
+    let a_member = registry
+        .register_command(INSTANCE, &a_scope, b"same", a_tx)
+        .unwrap();
+    let _b_member = registry
+        .register_command(INSTANCE, &b_scope, b"same", b_tx)
+        .unwrap();
+    let _old_member = registry.register(INSTANCE, b"same", None, old_tx);
+    assert_eq!(
+        registry.signal_command(INSTANCE, &a_scope, b"same", P_SIGNAL, b"one"),
+        1
+    );
+    assert_eq!(&*a_rx.try_recv().unwrap().bytes, b"one");
+    assert!(b_rx.try_recv().is_err());
+    assert!(old_rx.try_recv().is_err());
+    drop(a_member);
+    assert_eq!(
+        registry.signal_command(INSTANCE, &a_scope, b"same", P_SIGNAL, b"late"),
+        0
+    );
+    b.request.context().retire();
+    assert_eq!(
+        registry.signal_command(INSTANCE, &b_scope, b"same", P_SIGNAL, b"stale"),
+        0
+    );
+    assert!(b_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn a_resight_flag_asks_for_a_sighting_of_the_upstream() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
     child.says(&format!("s{}|changed", a.slot)).await;
@@ -493,9 +600,11 @@ async fn a_resight_flag_asks_for_a_sighting_of_the_upstream() {
 
 #[tokio::test]
 async fn a_message_with_no_demux_is_dropped_and_the_next_still_arrives() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
     child.says("noise").await;
@@ -505,9 +614,11 @@ async fn a_message_with_no_demux_is_dropped_and_the_next_still_arrives() {
 
 #[tokio::test]
 async fn native_demux_fault_ends_the_generation_instead_of_becoming_drop() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
     child.says("native-fault").await;
@@ -520,11 +631,15 @@ async fn native_demux_fault_ends_the_generation_instead_of_becoming_drop() {
 #[tokio::test]
 async fn a_child_that_exits_ends_the_generation_for_every_session_and_the_next_attach_respawns_after_100_ms(
 ) {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
-    let mut b = attach(&f, &up, req(&f.budget, 2, "k", 0)).await.unwrap();
+    let mut b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", 0))
+        .await
+        .unwrap();
     let child = f.remotes.recv().await.unwrap();
     let gone = Arc::clone(&child.gone);
     child.exits();
@@ -541,7 +656,9 @@ async fn a_child_that_exits_ends_the_generation_for_every_session_and_the_next_a
         "the ended generation's wire was dropped (the child is killed)"
     );
     let started = Instant::now();
-    let c = attach(&f, &up, req(&f.budget, 3, "k", 0)).await.unwrap();
+    let c = attach(&f, &up, req(&f.budget, &f.authority, 3, "k", 0))
+        .await
+        .unwrap();
     assert!(c.greet, "a new generation greets again");
     assert_eq!(c.generation, 2);
     assert!(
@@ -553,9 +670,11 @@ async fn a_child_that_exits_ends_the_generation_for_every_session_and_the_next_a
 
 #[tokio::test]
 async fn generation_end_joins_a_blocked_writer_before_notifying_attachments() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     a.ready(b"");
     let mut child = f.remotes.recv().await.unwrap();
     // Exceeds the wire's 64 KiB capacity while staying within general (non-protected) output.
@@ -577,10 +696,12 @@ async fn generation_end_joins_a_blocked_writer_before_notifying_attachments() {
 
 #[tokio::test]
 async fn the_fifth_end_inside_a_minute_trips_the_channel_and_audits_it_once() {
-    let mut f = fixture();
-    let up = upstream(300);
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
     for end in 1..=5 {
-        let mut a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+        let mut a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+            .await
+            .unwrap();
         a.ready(b"");
         let child = f.remotes.recv().await.unwrap();
         child.exits();
@@ -589,7 +710,7 @@ async fn the_fifth_end_inside_a_minute_trips_the_channel_and_audits_it_once() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     assert!(matches!(
-        attach(&f, &up, req(&f.budget, 1, "k", 0)).await,
+        attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0)).await,
         Err(RecordsDenied::Unavailable)
     ));
     assert_eq!(*f.told.tripped.lock().unwrap(), ["member"]);
@@ -599,18 +720,20 @@ async fn the_fifth_end_inside_a_minute_trips_the_channel_and_audits_it_once() {
         "a tripped channel spawns nothing"
     );
     f.driver.redeclared("member").await;
-    let again = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let again = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     assert!(again.greet, "declared anew, the channel spawns again");
 }
 
 #[tokio::test]
 async fn a_wire_that_cannot_open_is_unavailable_and_counts_as_an_end() {
-    let f = fixture();
-    let up = upstream(300);
+    let up = Arc::new(upstream(300));
+    let f = fixture(up.clone()).await;
     f.wires.fail.store(true, Ordering::SeqCst);
     for _ in 0..5 {
         assert!(matches!(
-            attach(&f, &up, req(&f.budget, 1, "k", 0)).await,
+            attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0)).await,
             Err(RecordsDenied::Unavailable)
         ));
     }
@@ -624,9 +747,11 @@ async fn a_wire_that_cannot_open_is_unavailable_and_counts_as_an_end() {
 #[tokio::test]
 async fn a_generation_nothing_is_attached_to_closes_after_the_idle_time_without_counting_as_an_end()
 {
-    let mut f = fixture();
-    let up = upstream(1);
-    let a = attach(&f, &up, req(&f.budget, 1, "k", 0)).await.unwrap();
+    let up = Arc::new(upstream(1));
+    let mut f = fixture(up.clone()).await;
+    let a = attach(&f, &up, req(&f.budget, &f.authority, 1, "k", 0))
+        .await
+        .unwrap();
     let child = f.remotes.recv().await.unwrap();
     drop(a);
     let started = Instant::now();
@@ -635,7 +760,9 @@ async fn a_generation_nothing_is_attached_to_closes_after_the_idle_time_without_
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let started = Instant::now();
-    let b = attach(&f, &up, req(&f.budget, 2, "k", 0)).await.unwrap();
+    let b = attach(&f, &up, req(&f.budget, &f.authority, 2, "k", 0))
+        .await
+        .unwrap();
     assert_eq!(b.generation, 2);
     assert!(
         started.elapsed() < Duration::from_millis(80),
@@ -645,10 +772,10 @@ async fn a_generation_nothing_is_attached_to_closes_after_the_idle_time_without_
 
 #[tokio::test]
 async fn a_per_caller_channel_is_one_generation_per_subject() {
-    let mut f = fixture();
-    let up = upstream(300);
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
     let with = |subject: u8| {
-        let mut r = req(&f.budget, 1, "k", CH_PER_CALLER);
+        let mut r = req(&f.budget, &f.authority, 1, "k", CH_PER_CALLER);
         r.subject = Some([subject; 32]);
         r
     };
@@ -666,17 +793,22 @@ async fn a_per_caller_channel_is_one_generation_per_subject() {
 
 #[tokio::test]
 async fn a_request_core_cannot_serve_is_invalid() {
-    let f = fixture();
-    let up = upstream(300);
-    let mut framing = req(&f.budget, 1, "k", 0);
+    let up = Arc::new(upstream(300));
+    let f = fixture(up.clone()).await;
+    let mut framing = req(&f.budget, &f.authority, 1, "k", 0);
     framing.framing = 9;
-    let mut carrier = req(&f.budget, 1, "k", 0);
+    let mut carrier = req(&f.budget, &f.authority, 1, "k", 0);
     carrier.carrier = 99;
-    let no_subject = req(&f.budget, 1, "k", CH_PER_CALLER);
+    let no_subject = req(&f.budget, &f.authority, 1, "k", CH_PER_CALLER);
     let long = "x".repeat(129);
     let mut other = f.who.clone();
     other.instance = INSTANCE + 1;
-    for bad in [framing, carrier, no_subject, req(&f.budget, 1, &long, 0)] {
+    for bad in [
+        framing,
+        carrier,
+        no_subject,
+        req(&f.budget, &f.authority, 1, &long, 0),
+    ] {
         assert!(matches!(
             attach(&f, &up, bad).await,
             Err(RecordsDenied::Invalid)
@@ -686,7 +818,7 @@ async fn a_request_core_cannot_serve_is_invalid() {
     assert!(
         matches!(
             f.driver
-                .attach(&caller, &up, req(&f.budget, 1, "k", 0))
+                .attach(&caller, &up, req(&f.budget, &f.authority, 1, "k", 0))
                 .await,
             Err(RecordsDenied::Invalid)
         ),
@@ -697,9 +829,9 @@ async fn a_request_core_cannot_serve_is_invalid() {
 
 #[tokio::test]
 async fn a_held_request_streams_in_and_takes_no_writes() {
-    let mut f = fixture();
-    let up = upstream(300);
-    let mut r = req(&f.budget, 1, "k", 0);
+    let up = Arc::new(upstream(300));
+    let mut f = fixture(up.clone()).await;
+    let mut r = req(&f.budget, &f.authority, 1, "k", 0);
     r.carrier = CARRIER_HTTP;
     r.framing = busbar_plugin_abi::plane::CH_FRAME_SSE;
     let mut a = attach(&f, &up, r).await.unwrap();

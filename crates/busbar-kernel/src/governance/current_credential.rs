@@ -9,6 +9,47 @@ use super::signing::VerifiedToken;
 use super::{GovState, VirtualKey};
 use std::sync::Arc;
 
+/// The actual branch that refused the retained credential. These are cached local decisions,
+/// not backend failures; no refresh or verifier invocation runs while checking current standing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurrentCredentialRefusal {
+    ForeignAuthority,
+    /// No signing material is configured. Existing token refusal calls this credential_invalid,
+    /// not a backend outage or a verifier that failed to produce a verdict.
+    SigningUnavailable,
+    Expired,
+    AudienceMismatch,
+    UntrustedSigner,
+    Revoked,
+    SubjectHeld,
+    MissingKey,
+    KeyExpired,
+    DisabledKey,
+    RotatedKey,
+    DeletedKey,
+}
+
+impl CurrentCredentialRefusal {
+    /// Use the existing native auth mapping. A foreign ownership join is an internal binding
+    /// error, not an authentication judgment about a credential from this authority domain.
+    pub fn auth_code(self) -> Option<u32> {
+        use busbar_plugin_abi::auth::{BAD_CREDENTIAL, EXPIRED};
+        match self {
+            Self::ForeignAuthority => None,
+            Self::Expired | Self::KeyExpired => Some(EXPIRED),
+            Self::SigningUnavailable
+            | Self::AudienceMismatch
+            | Self::UntrustedSigner
+            | Self::Revoked
+            | Self::SubjectHeld
+            | Self::MissingKey
+            | Self::DisabledKey
+            | Self::RotatedKey
+            | Self::DeletedKey => Some(BAD_CREDENTIAL),
+        }
+    }
+}
+
 /// The exact signature, original key and identity-cache domain established at authentication.
 /// There is no constructor from a key, subject, claims or caller-supplied verification result.
 pub struct VerifiedKeyAuthority {
@@ -39,17 +80,20 @@ impl VerifiedKeyAuthority {
         current: &GovState,
         now: u64,
         expected_aud: Option<&str>,
-    ) -> Option<Arc<VirtualKey>> {
+    ) -> Result<Arc<VirtualKey>, CurrentCredentialRefusal> {
         if !self.belongs_to(current) {
-            return None;
+            return Err(CurrentCredentialRefusal::ForeignAuthority);
         }
-        let material = current.signing_material()?;
-        if !self.token.valid_with(&material.verifier, now, expected_aud) {
-            return None;
+        let material = current
+            .signing_material()
+            .ok_or(CurrentCredentialRefusal::SigningUnavailable)?;
+        self.token
+            .check_current(&material.verifier, now, expected_aud)?;
+        let key = current.standing_key_cached(self.token.claims(), now)?;
+        if key.deleted_at.is_some() {
+            return Err(CurrentCredentialRefusal::DeletedKey);
         }
-        current
-            .standing_key_cached(self.token.claims(), now)
-            .filter(|key| key.deleted_at.is_none())
+        Ok(key)
     }
 }
 

@@ -100,6 +100,14 @@ pub(crate) struct ResponseIntentService {
 }
 
 impl ResponseIntentService {
+    pub(crate) fn journal(&self) -> &Arc<RuntimeJournal> {
+        &self.journal
+    }
+
+    pub(crate) fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     /// Construct once from the actual bound book and authenticated retained verification keys.
     pub(crate) fn new(
         journal: Arc<RuntimeJournal>,

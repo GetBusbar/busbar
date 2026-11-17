@@ -71,11 +71,12 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let prepared = reservation.cancel();
         let Some(policy) = &current.selected_policy else {
             return Err(SelectedCommitRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -85,7 +86,7 @@ impl SelectedRateAdmission {
         };
         let Some(governance) = &current.governance else {
             return Err(SelectedCommitRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -114,12 +115,13 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let policy = current
             .selected_policy
             .as_ref()
             .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::CurrentAuthority,
+                SelectedPolicyRefusal::InvalidBinding,
             ))?;
         let resolved = policy
             .resolve_headroom(&current, receipt, origin, candidate, definition, now)
@@ -128,7 +130,7 @@ impl SelectedRateAdmission {
             .governance
             .as_ref()
             .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::CurrentAuthority,
+                SelectedPolicyRefusal::InvalidBinding,
             ))?;
         governance
             .selected_rates()
@@ -151,10 +153,11 @@ impl SelectedRateAdmission {
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let now = crate::store::now();
         let current = self.handle.current.load_full();
         let Some(policy) = &current.selected_policy else {
             return Err(SelectedRateRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };
@@ -164,7 +167,7 @@ impl SelectedRateAdmission {
         };
         let Some(governance) = &current.governance else {
             return Err(SelectedRateRejected::Policy {
-                reason: SelectedPolicyRefusal::CurrentAuthority,
+                reason: SelectedPolicyRefusal::InvalidBinding,
                 prepared,
             });
         };

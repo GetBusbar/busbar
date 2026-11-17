@@ -54,7 +54,8 @@ use crate::upstreams::UpstreamDef;
 
 #[path = "port_selected_send.rs"]
 mod selected_send;
-pub use selected_send::{OwnedPreparation, SelectedHandoff, SelectedOpen};
+pub(crate) use selected_send::SelectedFailure;
+pub use selected_send::{OwnedPreparation, SelectedHandoff, SelectedOpen, SelectedSendError};
 
 /// The actual immutable definition retained by the route materializer.
 #[derive(Clone)]
@@ -210,6 +211,68 @@ impl SelectedWalkAttempt {
 /// A walk over any [`FarEnd`]: the [`Members`] and the [`UpSend`] of one session, sharing its far end.
 pub struct EgressWalk<'a, F: FarEnd> {
     shared: Shared<'a, F>,
+}
+
+/// Test orchestration over the real request, walk, admission and preparation producers.
+/// It does not construct any selection or money token, and returns the still-live Task.
+#[cfg(test)]
+pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F: FarEnd>(
+    calls: &'k K,
+    request: &busbar_ports::plane::PlaneIn<'_>,
+    body: &[u8],
+    effects: &dyn super::port_session::Effects,
+    pending: Arc<super::port_admission::Pending>,
+    walk: EgressWalk<'w, F>,
+    dialect: &str,
+    model: &str,
+) -> Result<
+    (
+        super::port_session::Task<'k, K>,
+        super::PreparedRateAttempt,
+        EgressWalk<'w, F>,
+    ),
+    super::port_session::SessionError,
+> {
+    use super::port_session::{Buffered, SessionError, Task};
+    let walk = walk
+        .pending(Arc::clone(&pending))
+        .map_err(|_| SessionError::NotDriven)?;
+    let held = Buffered::new(effects);
+    let (mut task, first) = Task::begin(calls, request, body, &held)?;
+    if !first.intents.is_empty() || !first.ex_msgs.is_empty() {
+        return Err(SessionError::NotDriven);
+    }
+    let forward = first.forward.ok_or(SessionError::NotDriven)?;
+    let wants = Wants::from_facts(&forward.wants);
+    let mut members = walk.members();
+    pending.admit(
+        Some(&mut members),
+        Some(&wants),
+        task.request_declaration()?,
+    )?;
+    task.bind_admission(&pending)?;
+    held.release();
+    let target = members.next(&wants).ok_or(SessionError::NotDriven)?;
+    let prepared = task
+        .prepare_selected(&target, 1, dialect, model, effects)?
+        .ok_or(SessionError::NotDriven)?;
+    let selection = walk
+        .sender()
+        .take_selected(&target, prepared.attempt())
+        .ok_or(SessionError::NotDriven)?;
+    let prepared = if let Some(data) = task.data() {
+        prepared.bind_resource(&selection, Arc::clone(data))?
+    } else {
+        prepared
+    };
+    let money = pending
+        .admitted()
+        .and_then(|admitted| admitted.selected.as_ref())
+        .ok_or(SessionError::NotDriven)?;
+    let prepared = money
+        .prepare(selection, prepared)
+        .map_err(|_| SessionError::NotDriven)?;
+    Ok((task, prepared, walk))
 }
 
 impl<'a, F: FarEnd> EgressWalk<'a, F> {
@@ -587,37 +650,44 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
     fn open_selected<'a>(
         &'a mut self,
         owned: OwnedPreparation,
-    ) -> Result<SelectedOpen<'a>, SendFailed> {
-        let pending = Arc::clone(self.0.pending.as_ref().ok_or(SendFailed)?);
+    ) -> Result<SelectedOpen<'a>, SelectedSendError> {
+        let pending = Arc::clone(
+            self.0
+                .pending
+                .as_ref()
+                .ok_or_else(SelectedSendError::internal)?,
+        );
         let selection = self
             .take_selected(owned.prepared.target(), owned.prepared.attempt())
-            .ok_or(SendFailed)?;
+            .ok_or_else(SelectedSendError::internal)?;
         let prepared = match owned.data {
             Some(data) => owned
                 .prepared
                 .bind_resource(&selection, data)
-                .map_err(|_| SendFailed)?,
+                .map_err(|_| SelectedSendError::internal())?,
             None => owned.prepared,
         };
         let money = pending
             .admitted()
             .and_then(|unit| unit.selected.as_ref())
-            .ok_or(SendFailed)?;
-        let prepared = money.prepare(selection, prepared).map_err(|_| SendFailed)?;
+            .ok_or_else(SelectedSendError::internal)?;
+        let prepared = money
+            .prepare(selection, prepared)
+            .map_err(|_| SelectedSendError::backend())?;
         let mut handoff = SelectedHandoff::new(pending, prepared)?;
         let s = self.0;
-        let far = s.far.get().ok_or(SendFailed)?;
+        let far = s.far.get().ok_or_else(SelectedSendError::internal)?;
         let request = request_of(
             &s.member.borrow(),
             &s.pool.borrow(),
             s.picks.get(),
-            handoff.exchange().ok_or(SendFailed)?,
+            handoff.exchange().ok_or_else(SelectedSendError::internal)?,
         )
-        .ok_or(SendFailed)?;
+        .ok_or_else(SelectedSendError::internal)?;
         let sent = s
             .handle
             .block_on(far.send_selected(s.token, request, &mut handoff));
-        let attempt = handoff.take_committed().ok_or(SendFailed)?;
+        let attempt = handoff.take_committed()?;
         Ok(SelectedOpen {
             opened: if sent {
                 read_open(far, s.token, s.handle)
