@@ -338,3 +338,126 @@ fn independent_processes_do_not_share_rate_cells_and_clock_overflow_fails_closed
         RateRefusalKind::ClockUnavailable
     );
 }
+
+#[test]
+fn no_matching_rows_are_a_noop_even_without_a_usable_rate_clock() {
+    let (rates, elapsed) = rates(1);
+    elapsed.store(u64::MAX, Ordering::Relaxed);
+    let mut hold = rates.reserve_terms(Vec::new(), &[]).unwrap();
+    hold.commit().unwrap();
+    hold.finish(TokenCoverage::Complete).unwrap();
+    assert!(rates.headroom_terms(Vec::new()).unwrap().is_empty());
+    assert_eq!(rates.leases.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn concurrent_reservations_cannot_both_take_the_last_rpm_slot() {
+    let (rates, _) = rates(16);
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let held = Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let rates = rates.clone();
+            let start = start.clone();
+            let held = held.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                let result = rates.reserve_terms(vec![rule(RateMetric::Requests, 1)], &[INPUT]);
+                held.wait();
+                result.is_ok()
+            })
+        })
+        .collect();
+    assert_eq!(
+        threads
+            .into_iter()
+            .map(|thread| usize::from(thread.join().unwrap()))
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(
+        inspect(&rates, rule(RateMetric::Requests, 1)).provisional_requests,
+        0
+    );
+}
+
+#[test]
+fn a_later_terminal_latch_survives_earlier_expiry_and_releases_its_lease_once() {
+    let (rates, elapsed) = rates(1);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let mut first = reserve(&rates, vec![tpm.clone()]);
+    let mut second = reserve(&rates, vec![tpm.clone()]);
+    first.commit().unwrap();
+    second.commit().unwrap();
+    elapsed.store(60_000, Ordering::Relaxed);
+    first.finish(TokenCoverage::Unknown).unwrap();
+    elapsed.store(120_000, Ordering::Relaxed);
+    second.finish(TokenCoverage::Partial).unwrap();
+    rates.sweep_all();
+    assert!(inspect(&rates, tpm.clone()).uncertain);
+    assert_eq!(rates.leases.load(Ordering::Relaxed), 1);
+    elapsed.store(180_000, Ordering::Relaxed);
+    rates.sweep_all();
+    rates.sweep_all();
+    assert!(!inspect(&rates, tpm).uncertain);
+    assert_eq!(rates.leases.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn invalid_or_duplicate_class_views_do_not_mutate_known_usage() {
+    let (rates, _) = rates(16);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let mut hold = rates
+        .reserve_terms(vec![tpm.clone()], &[INPUT, OUTPUT])
+        .unwrap();
+    hold.commit().unwrap();
+    let duplicate = EffectiveTokenView(vec![
+        token(INPUT, Some(3), true),
+        token(INPUT, Some(4), true),
+    ]);
+    assert_eq!(
+        hold.observe(&duplicate).unwrap_err(),
+        RateObservationError::InvalidView
+    );
+    let negative = EffectiveTokenView(vec![
+        token(INPUT, Some(-1), true),
+        token(OUTPUT, Some(3), true),
+    ]);
+    assert_eq!(
+        hold.observe(&negative).unwrap_err(),
+        RateObservationError::InvalidView
+    );
+    assert_eq!(inspect(&rates, tpm).known_tokens, Count::ZERO);
+}
+
+#[test]
+fn fractional_counts_reach_the_cap_without_rounding_or_clipping() {
+    let (rates, _) = rates(16);
+    let tpm = rule(RateMetric::Tokens, 1);
+    let mut hold = reserve(&rates, vec![tpm.clone()]);
+    hold.commit().unwrap();
+    hold.observe(&EffectiveTokenView(vec![EffectiveToken {
+        class: INPUT,
+        quantity: Some(Count::from_micros(999_999)),
+        authoritative: true,
+    }]))
+    .unwrap();
+    drop(reserve(&rates, vec![tpm.clone()]));
+    hold.observe(&view(1)).unwrap();
+    assert_eq!(
+        rates.reserve_terms(vec![tpm], &[INPUT]).err().unwrap().kind,
+        RateRefusalKind::Tpm
+    );
+}
+
+#[test]
+fn retained_scope_key_storage_is_bounded_and_preallocated() {
+    let mut term = rule(RateMetric::Tokens, 1);
+    term.group_id = "g".repeat(128).into();
+    term.rule_id = "r".repeat(128).into();
+    term.key_id = "k".repeat(128).into();
+    term.instance = "i".repeat(128).into();
+    term.resource = "x".repeat(128).into();
+    let key = term.scope_key();
+    assert_eq!(key.len(), 661);
+}
