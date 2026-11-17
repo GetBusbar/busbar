@@ -385,6 +385,20 @@ pub trait PlanePort: Send + Sync + 'static {
         t: &TargetIn<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+    /// Pure preparation after the caller establishes live selected-command admission and runs hooks.
+    /// A successful answer contains exactly one channel and non-effectful facts; it is not authority.
+    fn channel(
+        &self,
+        _s: &mut PlaneSession,
+        _target: &TargetIn<'_>,
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "selected channel preparation is unavailable".into(),
+            error: None,
+        })
+    }
     /// Round 18: the adapter accepts Forward/Want/Expect in a FROM_CORE answer only and FAULTs them beside an intent
     /// or in a FROM_CLIENT/FROM_UPSTREAM answer; K8's session task, which alone knows whether this session already
     /// forwarded or began its response, applies the once rule (a second or late Forward is handled exactly as an
@@ -415,6 +429,22 @@ pub trait PlanePort: Send + Sync + 'static {
         Err(PortError::Refused {
             code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
             text: "".into(),
+            error: None,
+        })
+    }
+
+    /// Decode a fixed piece answer with this instance's declaration. No plugin is invoked. The caller
+    /// retains the bytes returned by piece_fixed and admits the complete general answer before effects.
+    fn decode_fixed_piece(
+        &self,
+        _from: u32,
+        _exchange: u32,
+        _bytes: &[u8],
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "fixed piece decoding is unavailable".into(),
             error: None,
         })
     }
