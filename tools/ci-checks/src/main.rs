@@ -13,7 +13,8 @@
 //!   Apache-2.0` near the top and none names another licence (#277, `spdx.rs`).
 //! - `no-serde-json`: JSON is sonic-rs through `busbar_contract::json` (DEP-3, #162): no first-party
 //!   Rust file or manifest under `crates/`, `dist/`, `tools/` or `testing/` names serde_json, tests
-//!   included, outside the wave-3 paths `ci/serde-json-w3.allow` lists (`no_serde_json.rs`).
+//!   included, outside the ratchet `ci/serde-json-w3.allow`, whose lines each name the slice that
+//!   removes them and may only shrink (`no_serde_json.rs`).
 //! - `crypto-graph`: AWS-LC is the one crypto provider, reached only through the facade (229). In
 //!   the root workspace's feature-resolved graph (`cargo tree`: every feature, target and edge
 //!   kind), `ring`, `sha2`, `hmac`, `md-5`, `aes`, `cipher`, `ed25519-dalek` and `curve25519-dalek` are built only beneath
