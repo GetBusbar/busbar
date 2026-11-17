@@ -274,3 +274,116 @@ async fn current_read_never_schedules_stale_revocation_refresh() {
         "the same stale refresh is scheduled by the explicit outside-gate operation"
     );
 }
+
+#[tokio::test]
+async fn current_credential_refusal_retains_the_actual_checked_cause() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    let (gov, token) = fixture().await;
+    let proof = gov
+        .verify_token_authority(&token, START, None)
+        .expect("proof");
+    assert_eq!(proof.current_key(&gov, END, None), Err(Refusal::Expired));
+    assert_eq!(
+        proof.current_key(&gov, START, Some("different")),
+        Err(Refusal::AudienceMismatch)
+    );
+    gov.set_signing_key(Some(signer(8)));
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::UntrustedSigner)
+    );
+    gov.set_signing_key(None);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::SigningUnavailable)
+    );
+    let (foreign, _) = fixture().await;
+    assert_eq!(
+        proof.current_key(&foreign, START, None),
+        Err(Refusal::ForeignAuthority)
+    );
+}
+
+#[tokio::test]
+async fn hydrated_standing_refusals_preserve_each_source_branch() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    let (gov, token) = fixture().await;
+    let proof = gov
+        .verify_token_authority(&token, START, None)
+        .expect("proof");
+    let original = proof.original_key().as_ref().clone();
+    let mut key = original.clone();
+    key.enabled = false;
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::DisabledKey)
+    );
+    let mut key = original.clone();
+    key.deleted_at = Some(START);
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::DeletedKey)
+    );
+    let mut key = original.clone();
+    key.expires_at = Some(START);
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::KeyExpired)
+    );
+    let mut key = original.clone();
+    key.generation_hash = super::binding_marker(&key.id, "rotated");
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::RotatedKey)
+    );
+    let mut key = original.clone();
+    key.binding_mode = Some(super::SELF_KEY_BINDING_MODE.into());
+    key.idp_subject = Some("held-subject".into());
+    replace(&gov, key);
+    gov.install_transition_self_holds(std::collections::BTreeSet::from(["held-subject".into()]));
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::SubjectHeld)
+    );
+    gov.caches.write().unwrap().by_id.remove(&original.id);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::MissingKey)
+    );
+    replace(&gov, original);
+    gov.revoke_async(&proof.original_key().id, "refusal reason")
+        .await
+        .expect("revoke");
+    assert_eq!(proof.current_key(&gov, START, None), Err(Refusal::Revoked));
+}
+
+#[test]
+fn current_credential_codes_use_the_existing_auth_refusal_map() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    use crate::refusal::{CoreRefusals, RefusalMap};
+    use busbar_plugin_abi::fail::refused::{R_BAD_CREDENTIAL, R_EXPIRED};
+    let map = CoreRefusals::new();
+    for reason in [Refusal::Expired, Refusal::KeyExpired] {
+        let reply = map.for_auth(1, reason.auth_code().expect("auth code"));
+        assert_eq!((reply.status, reply.code), (401, R_EXPIRED));
+    }
+    for reason in [
+        Refusal::SigningUnavailable,
+        Refusal::AudienceMismatch,
+        Refusal::UntrustedSigner,
+        Refusal::Revoked,
+        Refusal::SubjectHeld,
+        Refusal::MissingKey,
+        Refusal::DisabledKey,
+        Refusal::RotatedKey,
+        Refusal::DeletedKey,
+    ] {
+        let reply = map.for_auth(1, reason.auth_code().expect("auth code"));
+        assert_eq!((reply.status, reply.code), (401, R_BAD_CREDENTIAL));
+    }
+    assert_eq!(Refusal::ForeignAuthority.auth_code(), None);
+}
