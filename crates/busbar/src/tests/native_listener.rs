@@ -20,12 +20,68 @@ pub(super) async fn assert_real_http() {
     .expect("the actual declared supplier serves the fixture");
 }
 
+/// One real admitted native listener, served on a fresh socket per `spawn`, all over the same
+/// App, Node and transport port.
+pub(crate) struct RealServer {
+    native: Arc<root::listener_native::NativeListener>,
+    node: Arc<root::plane_node::Node>,
+    alpn: Vec<Box<str>>,
+    resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
+}
+
+impl RealServer {
+    /// Serve the real listener on a new local socket until `shutdown` resolves.
+    pub(crate) fn spawn(
+        &self,
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
+        let addr = listener.local_addr();
+        let serving = tokio::spawn(serve_listener(
+            listener,
+            Arc::clone(&self.native),
+            Arc::clone(&self.node),
+            self.alpn.clone(),
+            None,
+            Arc::clone(&self.resolver),
+            "test".into(),
+            shutdown,
+            None,
+            true,
+        ));
+        (addr, serving)
+    }
+}
+
 pub(crate) async fn with_real_http<W, F, Fut>(wrap: W, exercise: F) -> std::io::Result<()>
 where
     W: FnOnce(
         Arc<dyn busbar_ports::transport::TransportPort>,
     ) -> Option<Arc<dyn busbar_ports::transport::TransportPort>>,
     F: FnOnce(std::net::SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    with_real_server(wrap, move |server| async move {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+        let (addr, serve_handle) = server.spawn(recv_shutdown(shutdown_rx));
+        exercise(addr).await;
+        shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
+            .await
+            .expect("serve_listener must actually stop once shutdown fires")
+            .unwrap();
+    })
+    .await
+}
+
+/// Build the real admitted native listener once and hand it to `exercise`, then join the actual
+/// transport workers.
+pub(crate) async fn with_real_server<W, F, Fut>(wrap: W, exercise: F) -> std::io::Result<()>
+where
+    W: FnOnce(
+        Arc<dyn busbar_ports::transport::TransportPort>,
+    ) -> Option<Arc<dyn busbar_ports::transport::TransportPort>>,
+    F: FnOnce(RealServer) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     use crate::test_common::plugins;
@@ -209,28 +265,15 @@ where
         root::boot::workers::PreparedWorkers::new(),
     )
     .start();
-    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
-    let addr = listener.local_addr();
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let serve_handle = tokio::spawn(serve_listener(
-        listener,
+    exercise(RealServer {
         native,
         node,
-        port.alpn(busbar_plugin_abi::transport::ROLE_SERVER)
+        alpn: port
+            .alpn(busbar_plugin_abi::transport::ROLE_SERVER)
             .to_vec(),
-        None,
         resolver,
-        "test".into(),
-        recv_shutdown(shutdown_rx),
-        None,
-        true,
-    ));
-    exercise(addr).await;
-    shutdown_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
-        .await
-        .expect("serve_listener must actually stop once shutdown fires")
-        .unwrap();
+    })
+    .await;
     workers
         .stop()
         .await

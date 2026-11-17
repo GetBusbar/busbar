@@ -417,6 +417,18 @@ impl LeaseTick {
                         }));
                     }
                 }
+                // r2's journal-progress trigger: a confirmed audit run can advance staged native
+                // entries before the next regular tick.
+                () = crate::root::durability::records_pulse().notified(),
+                    if driving.is_none() && this.node.native_pending() != 0 =>
+                {
+                    let node = Arc::clone(&this.node);
+                    let mut cursor = native_cursor;
+                    driving = Some(Box::pin(async move {
+                        let retired = node.drive_native(&mut cursor).await;
+                        (retired, cursor)
+                    }));
+                }
                 result = async {
                     match flushing.as_mut() {
                         Some(flushing) => flushing.await,
