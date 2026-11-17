@@ -339,6 +339,44 @@ pub(crate) fn trusted_config_with_key(
     config
 }
 
+/// A native MIN-3 image's stamped identity and its header's ordered `former_names`.
+pub struct NativeImage {
+    pub name: String,
+    pub version: String,
+    pub former: Vec<String>,
+}
+
+/// The identity of the native image at `path` (the application Store is a MIN-3 image: its stamp,
+/// not a door Statement, names it).
+pub fn native_image(path: &Path) -> NativeImage {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let (name, version, former) = busbar_plugin_loader::pack_native::identity(&bytes)
+        .expect("the image is a native MIN-3 image");
+    NativeImage {
+        name,
+        version,
+        former,
+    }
+}
+
+/// A `kind` manifest for the native image at `path`, completed from its stamp and header as
+/// `busbar pack` completes it: its alias is the header's first former name.
+pub fn native_manifest(kind: &str, path: &Path, publisher: &str) -> Manifest {
+    let bytes =
+        busbar_plugin_loader::pack_native::read_image(path).expect("the native image reads");
+    let image = native_image(path);
+    let mut m = manifest(kind, &image.name, publisher);
+    m.version = image.version;
+    m.alias = image
+        .former
+        .first()
+        .cloned()
+        .expect("a native image states its alias among its former_names");
+    busbar_plugin_loader::pack_native::complete(&bytes, m, None)
+        .expect("the native manifest completes from its stamp and header")
+}
+
 pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -562,6 +600,14 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
     })
 }
 
+/// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
+pub fn native_schema_bomb_path() -> Option<PathBuf> {
+    let file = plugin_library_filename("native_schema_bomb");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+}
+
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
     let file = plugin_library_filename("neutral_frame_door");
     libraries()
@@ -606,3 +652,36 @@ pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
 
 #[path = "../../../../plugin-loader/tests/fixtures/neutral_export_routes_plugin.rs"]
 pub(crate) mod neutral_export_routes;
+
+/// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
+/// admin posture (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1), so an
+/// admin test configures the operator credential and sends this token.
+pub const OPERATOR_TOKEN: &str = "admintok";
+
+/// Bind the linked first-party operator credential for this test process, through the production
+/// process-start binding, and return the provider key configuration names it by.
+pub fn bind_operator() -> &'static str {
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::config::operator_provider()
+}
+
+/// The operator's 1.6 settings digest, `identity-providers.<operator>.settings.sha256`: the
+/// SHA-256 of [`OPERATOR_TOKEN`] as 64 lower-case hex characters.
+pub fn operator_sha256() -> String {
+    sha256(OPERATOR_TOKEN.as_bytes())
+}
+
+/// An HTTP client that presents [`OPERATOR_TOKEN`] as `Authorization: Bearer` on every request
+/// (a request that sets its own `authorization` keeps it).
+pub fn operator_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        reqwest::header::HeaderValue::from_static("Bearer admintok"),
+    );
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("the operator client builds")
+}

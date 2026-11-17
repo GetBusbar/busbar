@@ -17,6 +17,7 @@ struct Served {
     handle: tokio::task::JoinHandle<()>,
     dir: std::path::PathBuf,
     client: reqwest::Client,
+    app: Arc<busbar_kernel::state::App>,
 }
 
 impl Served {
@@ -26,12 +27,12 @@ impl Served {
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
         self.client
             .get(self.url(path))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
     }
     fn send(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(method, self.url(path))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     }
     fn finish(self) {
@@ -114,8 +115,8 @@ async fn serve_with_effect(
     }
     let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let router = match effect {
-        Some(router) => busbar_core_admin::test_support::with_idempotency(router, app),
-        None => busbar_kernel::build_router(app),
+        Some(router) => busbar_core_admin::test_support::with_idempotency(router, app.clone()),
+        None => busbar_kernel::build_router(app.clone()),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -125,6 +126,7 @@ async fn serve_with_effect(
         handle,
         dir: directory,
         client: reqwest::Client::new(),
+        app,
     }
 }
 
@@ -360,6 +362,377 @@ async fn idempotent_replay_every_mutation() {
 }
 
 #[tokio::test]
+async fn original_precondition_replays_original_generation_after_other_publications() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("original-precondition-replay", false).await;
+    let original = s.get("/groups").send().await.unwrap().headers()["etag"].clone();
+    let body = json::json!({"name": "user:retry", "config": {"parent": "team"}}).to_string();
+    let first = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "original-precondition")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(first.status().is_success(), "{}", first.status());
+    let status = first.status();
+    let etag = first.headers()["etag"].clone();
+    assert_ne!(original, etag);
+    let content_type = first.headers()["content-type"].clone();
+    let answer = first.bytes().await.unwrap();
+    let other = s
+        .send(reqwest::Method::POST, "/groups")
+        .body(json::json!({"name": "user:later", "config": {"parent": "team"}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(other.status().is_success());
+    let current = s.get("/groups").send().await.unwrap().headers()["etag"].clone();
+    assert_ne!(current, etag);
+    let retry = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "original-precondition")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), status);
+    assert_eq!(retry.headers()["idempotent-replayed"], "true");
+    assert_eq!(retry.headers()["etag"], etag);
+    assert_eq!(retry.headers()["content-type"], content_type);
+    assert_eq!(retry.bytes().await.unwrap(), answer);
+    let stale = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original.clone())
+        .header("idempotency-key", "new-stale-operation")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status().as_u16(), 409);
+    let stale = json::parse_value(&stale.bytes().await.unwrap()).unwrap();
+    assert_eq!(stale["error"]["reason"], "stale_if_match");
+    let mismatch = s
+        .send(reqwest::Method::POST, "/groups")
+        .header("if-match", original)
+        .header("idempotency-key", "original-precondition")
+        .body(json::json!({"name": "user:changed", "config": {"parent": "team"}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status().as_u16(), 409);
+    let mismatch = json::parse_value(&mismatch.bytes().await.unwrap()).unwrap();
+    assert_eq!(mismatch["error"]["reason"], "idempotency_mismatch");
+    assert_eq!(
+        s.get("/groups").send().await.unwrap().headers()["etag"],
+        current,
+        "replay and both conflicts must publish nothing"
+    );
+    s.finish();
+    println!("{WITNESS}");
+}
+
+fn unknown_effect_request(body: &'static str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/unknown-effect")
+        .header("idempotency-key", "unknown-effect")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+struct GenerationMovesDuringCollection {
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    sent: bool,
+}
+
+impl http_body::Body for GenerationMovesDuringCollection {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if self.sent {
+            return std::task::Poll::Ready(None);
+        }
+        self.sent = true;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::task::Poll::Ready(Some(Ok(http_body::Frame::data(
+            axum::body::Bytes::from_static(b"original response"),
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn response_collection_cannot_change_the_generation_bound_to_its_etag() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use std::sync::atomic::Ordering;
+    use tower::ServiceExt as _;
+    let s = serve("response-generation-capture", false).await;
+    let generation = s.app.config_generation.clone();
+    let original_generation = generation.load(Ordering::SeqCst);
+    let handler_generation = generation.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/config/settings",
+        axum::routing::put(move || {
+            let generation = handler_generation.clone();
+            async move {
+                axum::body::Body::new(GenerationMovesDuringCollection {
+                    generation,
+                    sent: false,
+                })
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone());
+    let request = || {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/v1/admin/config/settings")
+            .header("idempotency-key", "collection-generation")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let first = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let etag = first.headers()["etag"].clone();
+    assert!(etag
+        .to_str()
+        .unwrap()
+        .ends_with(&format!(".{original_generation}\"")));
+    let bytes = axum::body::to_bytes(first.into_body(), 1024).await.unwrap();
+    assert_eq!(generation.load(Ordering::SeqCst), original_generation + 1);
+    let replay = router.clone().oneshot(request()).await.unwrap();
+    assert_eq!(replay.headers()["etag"], etag);
+    assert_eq!(
+        axum::body::to_bytes(replay.into_body(), 1024)
+            .await
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(generation.load(Ordering::SeqCst), original_generation + 1);
+    let operation = router
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/v1/admin/operations/collection-generation")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operation.status(), axum::http::StatusCode::OK);
+    let operation: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(operation.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(operation["config_generation"], original_generation);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+fn unknown_effect_query_request(
+    query: &str,
+    body: &'static str,
+) -> axum::http::Request<axum::body::Body> {
+    let mut request = unknown_effect_request(body);
+    *request.uri_mut() = format!("/api/v1/admin/unknown-effect?{query}")
+        .parse()
+        .unwrap();
+    request
+}
+
+#[tokio::test]
+async fn unreadable_retained_intent_refuses_without_an_effect() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let s = serve("unknown-effect-unreadable-intent", false).await;
+    let store = durable::scoped_store(
+        s.app
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let key = ("anonymous".into(), "op:unknown-effect".into());
+    let now = busbar_kernel::store::now();
+    let claim = durable::claim_held(&store, &key, now).await.unwrap();
+    durable::settle(&store, &claim, now, &Settled::Retained(vec![255]))
+        .await
+        .unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let response = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone())
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                // A successful handler reply that cannot fit the middleware's response buffer.
+                axum::body::Body::from(vec![b'x'; 16 * 1024 * 1024 + 1])
+            }
+        }),
+    );
+    let s = serve("unknown-effect-collection", false).await;
+    let first = busbar_core_admin::test_support::with_idempotency(effect.clone(), s.app.clone())
+        .oneshot(unknown_effect_query_request("marker=", "original"))
+        .await
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 500);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let rebuilt = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone());
+    let retry = rebuilt
+        .clone()
+        .oneshot(unknown_effect_query_request("marker=", "original"))
+        .await
+        .unwrap();
+    assert_eq!(retry.status().as_u16(), 409);
+    assert_eq!(retry.headers()["retry-after"], "1");
+    let refusal: serde_json::Value = json::from_slice(
+        &axum::body::to_bytes(retry.into_body(), 16 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_in_flight");
+    let collision = rebuilt
+        .clone()
+        .oneshot(unknown_effect_query_request("marker", "=original"))
+        .await
+        .unwrap();
+    assert_eq!(collision.status().as_u16(), 409);
+    let refusal: serde_json::Value = json::from_slice(
+        &axum::body::to_bytes(collision.into_body(), 16 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
+    let mismatch = rebuilt
+        .clone()
+        .oneshot(unknown_effect_query_request("marker=", "different"))
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status().as_u16(), 409);
+    let refusal: serde_json::Value = json::from_slice(
+        &axum::body::to_bytes(mismatch.into_body(), 16 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let operation = rebuilt
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/v1/admin/operations/unknown-effect")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operation.status().as_u16(), 200);
+    let operation: serde_json::Value = json::from_slice(
+        &axum::body::to_bytes(operation.into_body(), 16 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(operation["state"], "in_flight");
+    assert!(operation["response"].is_null());
+    assert_eq!(operation["request_sha256"].as_str().unwrap().len(), 64);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn cancellation_after_dispatch_keeps_the_original_action_excluded() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let effects = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let handler_effects = effects.clone();
+    let handler_started = started.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            let started = handler_started.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                started.notify_one();
+                std::future::pending::<()>().await;
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let s = serve("unknown-effect-cancellation", false).await;
+    let router = busbar_core_admin::test_support::with_idempotency(effect.clone(), s.app.clone());
+    let first = tokio::spawn(router.clone().oneshot(unknown_effect_request("original")));
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .expect("the first handler crossed the durable intent boundary");
+    let concurrent = router
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(concurrent.status().as_u16(), 409);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let rebuilt = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone());
+    let retry = rebuilt
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(retry.status().as_u16(), 409);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
 async fn idempotency_binding_keeps_query_and_body_boundaries() {
     isolated!(CHILD, WITNESS, witness = "generation");
     let s = serve("idempotent-request-framing", false).await;
@@ -398,6 +771,59 @@ async fn idempotency_binding_keeps_query_and_body_boundaries() {
     assert_eq!(replay.status(), first_status);
     assert_eq!(replay.headers()["idempotent-replayed"], "true");
     assert_eq!(replay.bytes().await.unwrap(), first_body);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn unsupported_answer_binding_layout_never_replays_or_dispatches() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let s = serve("unsupported-answer-layout", false).await;
+    let scoped = durable::scoped_store(
+        s.app
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("anonymous".into(), "op:unknown-effect".into());
+    let claim = durable::claim(&scoped, &key, now).await.unwrap();
+    // Layout1 did not distinguish framed from ambiguous concatenated fingerprints.
+    let mut old = vec![1];
+    old.extend_from_slice(&200u16.to_be_bytes());
+    old.extend_from_slice(&now.to_be_bytes());
+    old.extend_from_slice(&0u64.to_be_bytes());
+    old.extend_from_slice(&[0; 32]);
+    old.push(0);
+    old.extend_from_slice(b"old answer");
+    durable::settle(&scoped, &claim, now, &Settled::Answer(old))
+        .await
+        .unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let response = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone())
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     s.finish();
     println!("{WITNESS}");
 }

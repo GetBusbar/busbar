@@ -46,11 +46,7 @@ fn inputs() -> Inputs {
         NEXT.fetch_add(1, Ordering::SeqCst)
     ));
     std::fs::create_dir(&path).unwrap();
-    std::fs::write(
-        path.join("config.yaml"),
-        "providers: {}\nmodels: {}\nauth:\n  admin_auth: []\n",
-    )
-    .unwrap();
+    std::fs::write(path.join("config.yaml"), "providers: {}\nmodels: {}\n").unwrap();
     std::fs::write(path.join("providers.yaml"), "{}\n").unwrap();
     Inputs(path)
 }
@@ -136,7 +132,7 @@ fn metadata_from_another_read_cannot_be_attached_to_the_typed_document() {
         Default::default(),
         vec!["second".into()],
     );
-    let mut deploy = config::deploy_from_yaml_str("auth:\n  admin_auth: []\n", &first).unwrap();
+    let mut deploy = config::deploy_from_yaml_str("{}\n", &first).unwrap();
     let wrong =
         Arc::new(PreparedConfigRead::new(second).with_context(Arc::new(ImageOwner("wrong"))));
     assert!(wrong.attach(&mut deploy).is_err());
@@ -210,8 +206,7 @@ async fn a_native_read_without_its_production_preparer_refuses_before_resolver_f
     let read = Arc::new(
         PreparedConfigRead::new(Grammar::empty()).with_context(Arc::new(ImageOwner("admitted"))),
     );
-    let mut deploy =
-        config::deploy_from_yaml_str("auth:\n  admin_auth: []\n", read.grammar()).unwrap();
+    let mut deploy = config::deploy_from_yaml_str("{}\n", read.grammar()).unwrap();
     read.attach(&mut deploy).unwrap();
     let cfg = config::resolve(&deploy, &Default::default()).unwrap();
     assert!(

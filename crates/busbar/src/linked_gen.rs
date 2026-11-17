@@ -41,9 +41,7 @@ pub const AXES: &[(&str, &str, &str)] = &[
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("cli-help", "cli_help", "CLI_HELP"),
     ("stores", "stores", "STORE"),
-    ("hooks", "hook_doors", "door"),
 ];
 
 const TRANSPORT_AXIS: &str = "transport";
@@ -57,8 +55,6 @@ pub const PLANE_DOOR_AXIS: &str = "plane-door";
 pub const EXPORT_DOOR_AXIS: &str = "export-doors";
 
 const CLAIMS_AXIS: &str = "claims";
-
-const SECRET_AXIS: &str = "secret-doors";
 
 const AUTH_AXIS: &str = "auths";
 
@@ -135,7 +131,6 @@ pub const CFG_AXES: &[&str] = &[
     EXPORT_DOOR_AXIS,
     AUTH_AXIS,
     "stores",
-    "hooks",
     "protocols",
 ];
 
@@ -264,7 +259,6 @@ pub fn linked_source(
                     || axis == CONNECTOR_DOOR_AXIS
                     || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
-                    || axis == SECRET_AXIS
                     || axis == EXPORT_DOOR_AXIS
                     || axis == CLAIMS_AXIS
                     || axis == MIN3_AXIS
@@ -409,9 +403,6 @@ pub fn linked_source(
                 .unwrap_or_default();
             out.push_str(&row("auth", &format!("{name:?}"), door, &former));
         }
-        if axes.iter().any(|a| a == SECRET_AXIS) {
-            out.push_str(&row("secret", "\"\"", door, &former));
-        }
         if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
             out.push_str(&row("plane", "\"\"", door, &former));
         }
@@ -425,25 +416,6 @@ pub fn linked_source(
     out.push_str("    plane_doors: &[");
     for door in doors_on(PLANE_DOOR_AXIS) {
         out.push_str(&format!("{door}, "));
-    }
-    out.push_str("],\n");
-
-    out.push_str("    secrets: &[");
-    for door in doors_on(SECRET_AXIS) {
-        out.push_str(&format!("{door}, "));
-    }
-    out.push_str("],\n");
-
-    out.push_str("    secret_declares: &[");
-    for (((_, list), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
-        if !list.iter().any(|a| a == SECRET_AXIS) {
-            continue;
-        }
-        if let Some(path) =
-            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
-        {
-            out.push_str(&format!("({door}, {path}), "));
-        }
     }
     out.push_str("],\n");
 

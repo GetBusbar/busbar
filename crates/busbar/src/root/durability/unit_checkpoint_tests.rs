@@ -29,7 +29,7 @@ use std::sync::{
 struct ActualStore {
     path: std::path::PathBuf,
     core: OnceLock<Arc<CoreStore>>,
-    backend: OnceLock<Arc<crate::root::loader::store_v4::LoadedPersistence>>,
+    backend: OnceLock<Arc<dyn PersistenceBackend>>,
 }
 impl ActualStore {
     fn new() -> Self {
@@ -55,46 +55,49 @@ impl ActualStore {
         if let Some(core) = self.core.get() {
             return core.clone();
         }
-        use crate::root::loader::dispatch::{
-            kinds::store_v4::StoreV4, load_dropped, rendering_of_library, Bind, ConnTable,
-            DispatchConfig, Dispatcher, NoSink,
-        };
-        use crate::root::loader::store_v4::{Limits, LoadedPersistence};
-        let path = crate::root::test_plugins::application_store_library();
-        let stated = rendering_of_library(&path).unwrap().unwrap();
-        let dispatcher = Arc::new(Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        ));
-        let plugin = load_dropped::<StoreV4>(
-            &path,
-            &stated,
-            Bind {
-                instance: format!("checkpoint-{}", hex::encode(busbar_kernel::door::op_id().0))
-                    .into(),
-                max_inflight_cap: 1024,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns: ConnTable::NoNeeds,
-            },
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
+        // The actual application Store is a native MIN-3 image: stage it signed and open it through the
+        // root's native boot (Registry::open_store), named by its stamp.
+        let library = crate::root::test_plugins::application_store_library();
+        let module = crate::root::test_plugins::native_image(&library).name;
+        let release = crate::root::test_plugins::key(0x5a);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
+        );
+        std::fs::write(
+            self.path.join("store.tar.gz"),
+            crate::root::test_plugins::signed(
+                &release,
+                manifest,
+                &std::fs::read(&library).expect("the actual Store image reads"),
+            ),
         )
-        .unwrap();
-        let settings=json::to_vec(&json::json!({"db_path":self.path.join("application.sqlite"),"input_budget_bytes":16*1024*1024})).unwrap();
-        let backend = Arc::new(
-            LoadedPersistence::open(
-                plugin,
-                dispatcher,
-                &settings,
-                Limits {
-                    descriptor_bytes: 16 * 1024 * 1024,
-                    output_items: 1024,
-                    output_bytes: 16 * 1024 * 1024,
-                    decode_bytes: 16 * 1024 * 1024,
-                },
+        .expect("stage the actual Store");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": []},
+                "store": {"module": module, "settings": {
+                    "db_path": self.path.join("application.sqlite"),
+                    "input_budget_bytes": 16 * 1024 * 1024,
+                }},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the checkpoint deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the checkpoint deployment resolves");
+        let plugins = crate::root::test_plugins::trusted_config_with_key(&self.path, &release);
+        let crate::root::min3_boot::fixture::Fixture { backend, .. } =
+            crate::root::min3_boot::fixture::open(
+                &cfg,
+                &plugins,
+                Arc::new(crate::root::door_steps::Rules::default()),
             )
             .await
-            .unwrap(),
-        );
+            .expect("the actual Store opens natively");
         let mut startup = Startup::new(
             wrap(backend.clone()),
             CoreLimits {
@@ -192,6 +195,7 @@ fn unit() -> UnitCheckpoint {
         .key("work")
         .expect("test meter class registered");
     let audit = super::super::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "checkpoint-principal".into(),
         op_class: "checkpoint.actual".into(),
@@ -1249,298 +1253,6 @@ async fn actual_store_measurement_lost_applied_ack_replays_exact_raw_identity_on
         .is_empty());
 }
 
-/// A neutral SDK callback: the only reported fact is a quarter of a named unit
-/// across two separate invocations. It has no account/rate/operation ID input.
-mod measurement_secret_fixture {
-    use busbar_contract::abi::{
-        measurement::{BillableClass, UnitCount, UNITS_REPORTED_MICROS},
-        mechanism::{call::Outcome, door::Statement},
-        sdk::{
-            life::{Held, Life, Refreshed, Refusal},
-            Instance, Lent, Out, SafeSlot,
-        },
-    };
-    pub struct Witness;
-    impl Life for Witness {
-        type Kind = busbar_contract::plugin::markers::SecretKind;
-        const CANCEL: u32 = busbar_contract::abi::secret::cancel::ABORTED;
-        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-            Ok(Self)
-        }
-        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-            Ok(Refreshed::default())
-        }
-    }
-    pub struct Resolve;
-    impl SafeSlot for Resolve {
-        type Kind = busbar_contract::plugin::markers::SecretKind;
-        type State = Held<Witness>;
-        type In = busbar_contract::abi::secret::ResolveIn;
-        type Out = busbar_contract::abi::secret::ResolveOut;
-        fn call(
-            instance: Instance<'_, Self::State, Self::Kind>,
-            input: Lent<'_, Self::In>,
-            mut out: Out<'_, Self::Out>,
-        ) -> Outcome {
-            if instance.get().is_none() {
-                return Outcome::Refused;
-            }
-            out.measurements(
-                &input.head,
-                &[UnitCount {
-                    class: 0,
-                    source: UNITS_REPORTED_MICROS,
-                    amount: 125_000,
-                }],
-            )
-            .unwrap();
-            busbar_contract::abi::sdk::cred::resolved(
-                input,
-                &mut out,
-                busbar_contract::abi::sdk::cred::Held::new(b"fixture-value".to_vec()),
-            )
-        }
-    }
-    const CLASSES: &[BillableClass] = &[BillableClass {
-        class: busbar_contract::abi::sdk::door::abi_str("work"),
-        family: busbar_contract::abi::sdk::door::abi_str("units"),
-    }];
-    const fn statement() -> Statement {
-        let mut statement =
-            busbar_contract::abi::sdk::door::statement("measurement-native-witness", "1.6.0", 4);
-        statement.measurement_classes = CLASSES.as_ptr();
-        statement.measurement_classes_len = CLASSES.len();
-        statement
-    }
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::secret::Ops,
-        statement: statement(),
-        lifecycle: life(Witness),
-        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
-    }
-}
-
-#[tokio::test]
-async fn measurement_root_loader_callback_preserves_early_and_admitted_attribution_in_signed_store()
-{
-    use crate::root::loader::dispatch::{
-        self, kinds::secret::Secret as SecretKind, Bind, ConnTable, DispatchConfig, Dispatcher,
-        Frame, LinkedRow, NoSink,
-    };
-    use busbar_contract::abi::mechanism::{
-        call::Outcome,
-        lifecycle::{slot, OpenIn, OpenOut},
-    };
-    use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
-    struct Post(Vec<u8>);
-    impl EndPost for Post {
-        fn post(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
-        fn checkpoint_facts(&self, _: busbar_contract::UnitKey) -> Option<Vec<u8>> {
-            Some(self.0.clone())
-        }
-    }
-    let fixture = ActualStore::new();
-    let store = fixture.open().await;
-    let host = format!(
-        "measurement-root-callback-{}",
-        hex::encode(busbar_kernel::door::op_id().0)
-    );
-    let book = opened(store.clone(), &host).await;
-    let gov = Arc::new(governor(store.clone(), &book).await);
-    let dispatcher = Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    ));
-    let authority = crate::root::measurements::local_authority(gov.clone()).unwrap();
-    assert!(dispatcher.set_measurement_authority(authority).is_ok());
-    let plugin = dispatch::load_linked::<SecretKind>(
-        &LinkedRow::of(measurement_secret_fixture::door).unwrap(),
-        Bind {
-            instance: "measured-root-secret".into(),
-            max_inflight_cap: 4,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .unwrap();
-    let mut opening = Frame::new(
-        OpenIn {
-            head: dispatch::in_head(),
-            host: std::ptr::null(),
-            settings: dispatch::NO_BLOB,
-            secrets: std::ptr::null(),
-            secrets_len: 0,
-            generation: 1,
-            err_buf: std::ptr::null_mut(),
-            err_cap: 0,
-        },
-        OpenOut {
-            head: dispatch::out_head(),
-            instance: std::ptr::null_mut(),
-            err_len: 0,
-        },
-    );
-    assert_eq!(
-        plugin.call(slot::OPEN, &mut opening).outcome,
-        Outcome::Ready
-    );
-    let key = Arc::new(busbar_contract::records::VirtualKey {
-        id: "checkpoint-principal".into(),
-        enabled: true,
-        ..Default::default()
-    });
-    let money = Arc::new(PlaneMoney::new(
-        gov.clone(),
-        Arc::new(Post(unit().audit.unwrap())),
-    ));
-    let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
-        None,
-        0,
-        &Default::default(),
-    ));
-    let unit_key = busbar_contract::UnitKey::new(17);
-    let arrived = 1_700_000_000;
-    let lane = busbar_kernel_ledger::cost::measurement_lane("secret", "measured-root-secret");
-    let scope = crate::root::measurements::RequestScope::new(
-        &money,
-        unit_key,
-        &busbar_contract::caps::PrincipalId::new(key.id.clone()),
-        Some(&key),
-        crate::root::plane_node::Arrived::at(arrived * 1000, 91),
-    )
-    .unwrap();
-    let invoke = || {
-        let mut bytes = [0u8; 32];
-        let mut frame = Frame::new(
-            busbar_contract::abi::secret::ResolveIn {
-                head: dispatch::in_head(),
-                settings: dispatch::NO_BLOB,
-                secret_buf: bytes.as_mut_ptr(),
-                secret_cap: bytes.len(),
-            },
-            busbar_contract::abi::secret::ResolveOut {
-                head: dispatch::out_head(),
-                secret: dispatch::NO_BLOB,
-                error_kind: 0,
-                _reserved: 0,
-                needed: 0,
-            },
-        );
-        let called = plugin.call(busbar_contract::abi::secret::slot::RESOLVE, &mut frame);
-        assert_eq!(
-            called.outcome,
-            Outcome::Ready,
-            "actual SDK callback and root custody accepted"
-        );
-        assert_eq!(&bytes[..13], b"fixture-value");
-        if called.lease != 0 {
-            let mut release = Frame::new(
-                busbar_contract::abi::mechanism::lifecycle::ReleaseIn {
-                    head: dispatch::in_head(),
-                    lease: called.lease,
-                },
-                dispatch::out_head(),
-            );
-            assert_eq!(
-                plugin.call(slot::RELEASE, &mut release).outcome,
-                Outcome::Ready
-            );
-        }
-    };
-    crate::root::measurements::request(scope, async {
-        invoke();
-        gov.flush_unit_checkpoints().await.unwrap();
-        assert_eq!(
-            measurement_total_at(&gov, &key.id, &lane, arrived, "work").await,
-            Count::parse("0.125").unwrap()
-        );
-        assert!(
-            store
-                .ledger()
-                .get_usage(&key.id, 0)
-                .await
-                .unwrap()
-                .models
-                .is_empty(),
-            "pre-admission facts never invent budget targets"
-        );
-        let grant = Arc::new(gov.try_admit(&cost, &key, "", arrived).unwrap());
-        money.open_admitted(
-            unit_key,
-            UnitMoney {
-                key: key.clone(),
-                cost: cost.clone(),
-                pool: String::new(),
-                lane: String::new(),
-                classes: Vec::<String>::new().into(),
-                arrived,
-                mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
-                fee: FeeRefund::CallerStatus,
-                charge: Default::default(),
-            },
-            grant,
-        );
-        invoke();
-        gov.flush_unit_checkpoints().await.unwrap();
-        assert_eq!(
-            measurement_total_at(&gov, &key.id, &lane, arrived, "work").await,
-            Count::parse("0.25").unwrap()
-        );
-        let usage = store.ledger().get_usage(&key.id, 0).await.unwrap();
-        let target = usage
-            .models
-            .iter()
-            .find(|model| model.model == lane)
-            .unwrap();
-        assert_eq!(
-            Count::from_stored(target.usage_units["work"], target.scale).unwrap(),
-            Count::parse("0.125").unwrap(),
-            "only work reserved after actual admission charges its targets"
-        );
-        money.settle_end(unit_key, 200);
-        // This fixture stops before the normal end-post audit append. The actual
-        // admission must retain its signed checkpoint until restart seals it;
-        // successful generic usage cannot bypass that independent audit guard.
-        let audit_pending = gov.flush_unit_checkpoints().await.unwrap_err();
-        assert!(audit_pending.0.contains("sealed audit line"));
-        let pending = unit_checkpoint_sink(&book).replay().await.unwrap();
-        assert_eq!(pending.len(), 1);
-        assert!(pending[0].measurement.is_none());
-        assert!(pending[0].audit.is_some());
-        gov.flush_budgets_final().await;
-        gov.flush_metering_final().await;
-    })
-    .await;
-    drop(plugin);
-    drop(dispatcher);
-    drop(money);
-    drop(gov);
-    drop(book);
-    let reopened = opened(store.clone(), &host).await;
-    let resumed = governor(store.clone(), &reopened).await;
-    resumed.flush_unit_checkpoints().await.unwrap();
-    assert_eq!(
-        measurement_total_at(&resumed, &key.id, &lane, arrived, "work").await,
-        Count::parse("0.25").unwrap()
-    );
-    let usage = store.ledger().get_usage(&key.id, 0).await.unwrap();
-    let target = usage
-        .models
-        .iter()
-        .find(|model| model.model == lane)
-        .unwrap();
-    assert_eq!(
-        Count::from_stored(target.usage_units["work"], target.scale).unwrap(),
-        Count::parse("0.125").unwrap()
-    );
-    assert!(unit_checkpoint_sink(&reopened)
-        .replay()
-        .await
-        .unwrap()
-        .is_empty());
-}
-
 /// A request-path audit append on this node's own journal lands before every
 /// read of its original frames while enabled, as audits do throughout a
 /// checkpoint flush. Reads the append itself makes are answered plainly.
@@ -1665,4 +1377,59 @@ fn test_commit_key() -> busbar_contract::persistence::CommitKey {
         &busbar_contract::caps::SlotSeal::acquire_for_tests(),
     )
     .expect("slot 0, seq 1 is a valid key")
+}
+
+#[tokio::test]
+async fn selected_recovery_keeps_signed_partition_and_rejects_replayed_attribution_change() {
+    let fixture = ActualStore::new();
+    let core = fixture.open().await;
+    let host = format!(
+        "selected-audit-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(core, &host).await;
+    let mut report = crate::root::selected_report_tests::terminal();
+    let facts = super::super::RunningAudit {
+        selected_identity: Some(super::super::SelectedAuditIdentity {
+            node: book.lock().unwrap().record.node(),
+            boot_nonce: [7; 16],
+            user: Some("original-user".into()),
+            labels: vec![("purpose".into(), "original".into())],
+        }),
+        incarnation: 7,
+        principal: report.principal.clone(),
+        op_class: "checkpoint.selected".into(),
+        origin: "client".into(),
+        parent: None,
+        wall: report.arrived,
+        mono: 91,
+        destination: None,
+        rate_card: None,
+        policy_epoch: 3,
+        hooks: Vec::new(),
+    };
+    report.audit = Some(json::to_vec(&facts).unwrap());
+    let sink = unit_checkpoint_sink(&book);
+    sink.recover_audit(&report).await.unwrap();
+    let (_, audit) = book
+        .evidence
+        .find_audit(report.unit, 7)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = busbar_kernel::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(&report).unwrap();
+    let expected = crate::root::selected_report::selected_billing(&view).unwrap();
+    assert_eq!(audit.unit.billing.as_ref(), Some(&expected));
+    assert!(audit.usage.lines.is_empty());
+    assert_eq!(audit.unit.boot_nonce, [7; 16]);
+    assert_eq!(audit.unit.records.user.as_deref(), Some("original-user"));
+    sink.recover_audit(&report).await.unwrap();
+    report.partitions.as_mut().unwrap().attempts[0]
+        .usage
+        .provider = Some("another-provider".into());
+    assert!(
+        sink.recover_audit(&report).await.is_err(),
+        "same identity cannot adopt a different partition"
+    );
+    stop(&book);
 }

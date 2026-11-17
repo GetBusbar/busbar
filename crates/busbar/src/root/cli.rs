@@ -22,6 +22,10 @@ const OPTION_HELP_SHORT: &str = "-h";
 const OPTION_CONFIG: &str = "--config";
 const OPTION_CONFIG_SHORT: &str = "-c";
 const OPTION_PROVIDERS: &str = "--providers";
+const OPTION_STDIO: &str = "--stdio";
+/// `--store-kit` (DES-STOREKIT r2): the harness build's store-kit runner; absent from a shipped build.
+#[cfg(feature = "test-harness")]
+const OPTION_STORE_KIT: &str = "--store-kit";
 const PATH_VALUES: &str = "configuration path flags require explicit values";
 
 const HELP_HEAD: &str = "
@@ -30,6 +34,13 @@ USAGE:
     busbar [-c <path>] [--providers <path>]
                         run the gateway (configured via environment + YAML; the two optional flags
                         point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
+    busbar --stdio [-c <path>] [--providers <path>]
+                        serve the one configured plane line route on THIS PROCESS's stdin/stdout
+                        instead of binding any listener, for a host that runs busbar as a child
+                        process. stdout carries only that route's lines; every log goes to stderr.
+                        Refused (exit 1) unless exactly one admitted plane serves a line route.
+                        With a configured `auth.chain`, BUSBAR_<INSTANCE>_STDIO_CREDENTIAL must
+                        carry a credential the chain admits; the whole session runs as that key
     busbar --help       print this help
     busbar --version    print the version (and the build-provenance stamp)
     busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
@@ -91,82 +102,10 @@ const HELP_TAIL: &str = "    GET  /stats  /livez  /readyz  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar\n";
 
-pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) -> String {
-    let rows = || planes.iter().flat_map(|rows| rows.iter());
-    let mut out = format!("busbar {ver}");
-    if let Some((_, tagline)) = rows().find(|(slot, _)| *slot == "tagline") {
-        out.push_str(" — ");
-        out.push_str(tagline);
-    }
-    out.push_str(HELP_HEAD);
-    for (_, lines) in rows().filter(|(slot, _)| *slot == "flag") {
-        out.push_str(lines);
-        out.push('\n');
-    }
-    out.push_str(HELP_ENDPOINTS_HEAD);
-    for (_, lines) in rows().filter(|(slot, _)| *slot == "endpoint") {
-        out.push_str(lines);
-        out.push('\n');
-    }
-    out.push_str(HELP_TAIL);
-    out
-}
-
-pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
-    static DOOR_ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
-        std::sync::OnceLock::new();
-    let door_rows = DOOR_ROWS.get_or_init(|| {
-        crate::LINKED
-            .plane_doors
-            .iter()
-            .filter_map(|door| {
-                match crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door) {
-                    Ok(Some(text)) => {
-                        Some(busbar_contract::abi::plane::cli_help::rows(text).collect())
-                    }
-                    _ => None,
-                }
-            })
-            .collect()
-    });
-    let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
-    rows.extend(door_rows.iter().map(Vec::as_slice));
-    rows.extend(dropped_rows().iter().map(Vec::as_slice));
-    rows
-}
-
-fn dropped_rows() -> &'static [Vec<super::linked::CliHelpRow>] {
-    static TEXTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    static ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
-        std::sync::OnceLock::new();
-    let Some(candidates) = crate::root::boot::DOOR_CANDIDATES.get() else {
-        return &[];
-    };
-    let texts = TEXTS.get_or_init(|| dropped_help(candidates));
-    ROWS.get_or_init(|| {
-        texts
-            .iter()
-            .map(|text| busbar_contract::abi::plane::cli_help::rows(text).collect())
-            .collect()
-    })
-}
-
-pub(crate) fn dropped_help(candidates: &[crate::root::loader::boot::Candidate]) -> Vec<String> {
-    use crate::root::loader::boot::Origin;
-    use crate::root::loader::dispatch::kinds::plane::rendered_cli_help;
-    candidates
-        .iter()
-        .filter(|c| matches!(c.origin, Origin::Dropped { .. }))
-        .filter_map(|c| rendered_cli_help(&c.stated).ok().flatten())
-        .collect()
-}
-
-pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
-    planes
-        .iter()
-        .flat_map(|rows| rows.iter())
-        .filter(|(slot, _)| *slot == "flag")
-        .any(|(_, lines)| lines.split_whitespace().next() == Some(arg))
+/// The command-line help. Core owns the whole CLI (owner ruling 2026-11-17; WP1-GAP r3 §1.1): no
+/// plugin states a row, so the help reads no plugin, file or configuration.
+pub(crate) fn render_help(ver: &str) -> String {
+    format!("busbar {ver}{HELP_HEAD}{HELP_ENDPOINTS_HEAD}{HELP_TAIL}")
 }
 
 pub(crate) enum Parsed {
@@ -181,6 +120,8 @@ pub(crate) struct Argv {
     pub(crate) config: Option<String>,
     pub(crate) providers: Option<String>,
     pub(crate) ignore_overlay: bool,
+    /// `--stdio`: serve the one configured plane line route on stdin/stdout (WP1-GAP r3 §1.3).
+    pub(crate) stdio: bool,
     /// Every other argument, in order: the first one is the command.
     pub(crate) words: Vec<String>,
     /// The principal-transition values, in `principal_transition::FLAGS` order.
@@ -226,6 +167,16 @@ impl Argv {
                 (OPTION_PROVIDERS, _) => {
                     argv.providers = Some(argv.value(&mut parser, PATH_VALUES, false));
                 }
+                (OPTION_STDIO, _) => {
+                    // B-N9: `--stdio` takes no value and is stated once; either is a usage refusal.
+                    if parser.optional_value().is_some() {
+                        argv.refusal.get_or_insert("--stdio takes no value");
+                    } else if argv.stdio {
+                        argv.refusal
+                            .get_or_insert("--stdio is given more than once");
+                    }
+                    argv.stdio = true;
+                }
                 _ => match parser.optional_value() {
                     Some(value) => argv
                         .words
@@ -266,31 +217,27 @@ pub(crate) fn argv() -> &'static Argv {
 
 /// Explicit informational commands exit; ordinary startup owns data upgrades.
 pub(crate) fn handle_cli_flags() -> Parsed {
-    ordinary_cli_flags().map_or(Parsed::Serve, Parsed::Exit)
+    let argv = argv();
+    early_cli_flags_of(argv)
+        .or_else(|| ordinary_cli_flags_of(argv))
+        .map_or(Parsed::Serve, Parsed::Exit)
 }
 
-fn ordinary_cli_flags() -> Option<i32> {
-    let argv = argv();
-    // A maintenance mode owns the whole command line; boot runs it once the Store is open.
-    let maintenance = super::principal_transition::command(argv).map(|command| command.is_some());
-    match maintenance {
+/// The exiting arms that need no plugin state (WP1-GAP r3 §1.2, B-N1, B2): usage refusals,
+/// `--help`, `--version`, `--build-info` and `--generate-signing-key`. `main` runs them before any
+/// plugin image is scanned, any file or configuration is read and any diagnostic catalogue is
+/// registered, so an unreadable plugins dir or a missing config cannot change their answer.
+pub(crate) fn early_cli_flags() -> Option<i32> {
+    early_cli_flags_of(argv())
+}
+
+pub(crate) fn early_cli_flags_of(argv: &Argv) -> Option<i32> {
+    match usage(argv) {
+        Err(code) => return Some(code),
         Ok(true) => return None,
         Ok(false) => {}
-        Err(error) => {
-            eprintln!(
-                "[error] {}",
-                diagnostics::coded::cli_invalid_arguments(error)
-            );
-            return Some(EXIT_USAGE);
-        }
-    }
-    const REMOVED_SAFE_MODE: &str = "--safe-mode";
-    if argv.words.iter().any(|a| a == REMOVED_SAFE_MODE) {
-        eprintln!("busbar: unrecognized argument '{REMOVED_SAFE_MODE}'. Try 'busbar --help'.");
-        return Some(EXIT_USAGE);
     }
     match argv.words.first().map(String::as_str) {
-        None => None,
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
             println!("busbar {}", env!("CARGO_PKG_VERSION"));
             println!("build: {}", build_info_line());
@@ -300,6 +247,54 @@ fn ordinary_cli_flags() -> Option<i32> {
             println!("{}", build_info_line());
             Some(EXIT_SUCCESS)
         }
+        Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
+        Some(OPTION_HELP | OPTION_HELP_SHORT) => {
+            print!("{}", render_help(env!("CARGO_PKG_VERSION")));
+            Some(EXIT_SUCCESS)
+        }
+        _ => None,
+    }
+}
+
+/// The command line's shape. `Err` is the usage status, already reported; `Ok(true)` means a
+/// maintenance mode owns the whole command line and boot runs it once the Store is open.
+fn usage(argv: &Argv) -> Result<bool, i32> {
+    match super::principal_transition::command(argv) {
+        Ok(Some(_)) => return Ok(true),
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!(
+                "[error] {}",
+                diagnostics::coded::cli_invalid_arguments(error)
+            );
+            return Err(EXIT_USAGE);
+        }
+    }
+    // B-N9: `--stdio` serves; it never combines with a command that exits.
+    if let (true, Some(word)) = (argv.stdio, argv.words.first()) {
+        let reason = format!("--stdio serves and does not combine with '{word}'");
+        eprintln!(
+            "[error] {}",
+            diagnostics::coded::cli_invalid_arguments(reason.as_str())
+        );
+        return Err(EXIT_USAGE);
+    }
+    const REMOVED_SAFE_MODE: &str = "--safe-mode";
+    if argv.words.iter().any(|a| a == REMOVED_SAFE_MODE) {
+        eprintln!("busbar: unrecognized argument '{REMOVED_SAFE_MODE}'. Try 'busbar --help'.");
+        return Err(EXIT_USAGE);
+    }
+    Ok(false)
+}
+
+/// The exiting arms that read the start grammar, the plugins dir or the configuration; they run
+/// after the start scan. The unknown-argument refusal stays here (B2).
+fn ordinary_cli_flags_of(argv: &Argv) -> Option<i32> {
+    if usage(argv) != Ok(false) {
+        return None;
+    }
+    match argv.words.first().map(String::as_str) {
+        None => None,
         Some(OPTION_METADATA_BLOCKLIST) => {
             if let Some(refusal) = crate::root::boot::start_refusal() {
                 eprintln!(
@@ -355,15 +350,10 @@ fn ordinary_cli_flags() -> Option<i32> {
             }
             Some(EXIT_SUCCESS)
         }
-
-        Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some(OPTION_VALIDATE) => Some(validate_config_command()),
-        Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
         Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
-        Some(OPTION_HELP | OPTION_HELP_SHORT) => {
-            print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
-            Some(EXIT_SUCCESS)
-        }
+        #[cfg(feature = "test-harness")]
+        Some(OPTION_STORE_KIT) => Some(super::store_kit_run::command(&argv.words[1..])),
         Some(other) => {
             eprintln!(
                 "[error] {}",
@@ -480,9 +470,7 @@ pub(crate) fn validate_judged(
             .map(|_| ())
             .map_err(|errors| errors.join("\n  - "))
     };
-    // The dropped-in secret modules start judged, checked through a read-scoped view: none of them
-    // is admitted onto the live axis (SECRET-SHORTHAND-BOOT §3.6, B4).
-    let view = crate::root::boot::start_secret_view();
+    // The native secret images the start stage prepared (WP3 step 2): one source for every reader.
     let registry = config_validate::check(
         &cfg,
         config_validate::Check {
@@ -491,7 +479,7 @@ pub(crate) fn validate_judged(
             root: &destination_guard,
             fetch: None,
             resolve_builtins: true,
-            secret_axis: Some(&view),
+            secret_axis: Some(&crate::root::native_secrets::NATIVE),
         },
     )
     .map_err(ValidateRefusal::Check)?;

@@ -97,7 +97,6 @@ async fn a_saturated_key_is_refused_before_its_ticket_record_is_written() {
         "ticket-key-saturated",
         true,
         None,
-        Screen::Nothing,
         Some((Arc::clone(&node), Arc::clone(&book), fixture.core.clone())),
         None,
         false,

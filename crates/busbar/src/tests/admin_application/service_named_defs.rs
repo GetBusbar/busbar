@@ -65,18 +65,12 @@ impl PersistenceBackend for OverlayReads {
 async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -180,7 +174,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -200,18 +194,12 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
 async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -315,7 +303,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}/absent"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -335,18 +323,12 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -442,7 +424,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -457,7 +439,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     assert_eq!(names, ["broken"], "the unparseable overlay entry is listed");
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}/broken"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -474,18 +456,12 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
 async fn named_defs_propagate_store_overlay_read_failures() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-named-defs-{}",
@@ -575,7 +551,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     for suffix in ["", "/absent"] {
         let response = client
             .get(format!("http://{addr}/api/v1/admin{root}{suffix}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();

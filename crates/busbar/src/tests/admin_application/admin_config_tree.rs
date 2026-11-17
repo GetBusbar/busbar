@@ -48,7 +48,7 @@ impl Served {
         self.read(
             self.client
                 .get(self.url(path))
-                .header("x-admin-token", ADMIN_TOKEN),
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN)),
         )
         .await
     }
@@ -57,7 +57,7 @@ impl Served {
         self.read(
             self.client
                 .request(method, self.url(path))
-                .header("x-admin-token", ADMIN_TOKEN)
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN))
                 .header("content-type", "application/json")
                 .body(busbar_contract::json::to_vec(body).unwrap()),
         )
@@ -242,7 +242,7 @@ async fn config_tree_effective_has_every_section() {
         .read(
             s.client
                 .get(s.url("/config/tree"))
-                .header("x-admin-token", ADMIN_TOKEN)
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN))
                 .header("if-none-match", &etag),
         )
         .await;
@@ -462,11 +462,7 @@ async fn no_secret_in_any_admin_body() {
         .as_object()
         .expect("documented paths")
         .iter()
-        .filter(|(path, operations)| {
-            !path.contains('{')
-                && operations["get"].is_object()
-                && operations["get"]["x-busbar-plane"].is_null()
-        })
+        .filter(|(path, operations)| !path.contains('{') && operations["get"].is_object())
         .filter_map(|(path, _)| path.strip_prefix("/api/v1/admin").map(str::to_owned))
         .collect();
     for tree in [

@@ -206,6 +206,7 @@ fn v7_frames_whole_and_fractional_quantities() {
             let mut inputs = super::sign_tests::rich_inputs(index as u64 + 1);
             inputs.usage.lines[0].quantity = busbar_contract::Count::parse(count).unwrap();
             inputs.unit = UnitFacts {
+                billing: None,
                 wall_ms: 1_700_000_000_123 + index as u64,
                 attribution: busbar_kernel_audit::attribution("team-a", "default", "acme"),
                 boot_nonce: [0x5f; 16],
@@ -287,11 +288,10 @@ fn v7_frames_whole_and_fractional_quantities() {
         "a torn v7 tail"
     );
 
-    let body: json::Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 3).as_bytes(),
-    )
-    .unwrap();
-    assert_eq!(body["recipe"], "busbar.audit.digest.v7");
+    let body: json::Value =
+        json::parse_value(busbar_kernel_audit::expose::range_body(&records, 1, 3).as_bytes())
+            .unwrap();
+    assert_eq!(body["recipe"], busbar_kernel_audit::LINK_RECIPE);
     let first = &body["records"][0];
     assert_eq!(first["recipe"], "busbar.audit.digest.v7");
     assert_eq!(first["lines"][0]["quantity"], "120");
@@ -411,8 +411,7 @@ fn v7_records_tail_is_sealed_only_when_kept() {
     AuditChain::verify_chain(&[bare.clone(), kept.clone(), labels_only.clone()]).unwrap();
 
     let body: json::Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, &[bare, kept, labels_only], 1, 3)
-            .as_bytes(),
+        busbar_kernel_audit::expose::range_body(&[bare, kept, labels_only], 1, 3).as_bytes(),
     )
     .unwrap();
     let first = &body["records"][0];

@@ -57,6 +57,7 @@ pub(super) struct Pending {
     fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
     awaiting_terminal_reader: bool,
     terminal_signal: Option<Arc<super::TerminalSignal>>,
+    ordinary_signal: Option<Arc<super::ordinary_completion::OrdinarySignal>>,
 }
 
 /// One entry's custody facts at a non-retired exit (SHUTDOWN-HANG §5).
@@ -102,7 +103,22 @@ impl Pending {
             fee_completion: None,
             awaiting_terminal_reader: false,
             terminal_signal: None,
+            ordinary_signal: None,
         }
+    }
+
+    pub(super) fn with_ordinary_signal(
+        mut self,
+        signal: Arc<super::ordinary_completion::OrdinarySignal>,
+    ) -> Self {
+        self.ordinary_signal = Some(signal);
+        self
+    }
+
+    pub(super) fn ordinary_signal(
+        &self,
+    ) -> Option<&Arc<super::ordinary_completion::OrdinarySignal>> {
+        self.ordinary_signal.as_ref()
     }
 
     pub(super) fn selected(snapshot: UnitCheckpoint, durable: bool, pending_hot: bool) -> Self {
@@ -321,6 +337,15 @@ impl PendingGuard<'_> {
 
     pub(super) fn len(&self) -> usize {
         self.inner.entries.len()
+    }
+
+    /// The lowest audit line `node_seq` noted on any entry (SEALING-FIX §3.9 floor (b)).
+    pub(super) fn oldest_audit_seq(&self) -> Option<u64> {
+        self.inner
+            .entries
+            .values()
+            .filter_map(Pending::audit_seq)
+            .min()
     }
 
     pub(super) fn insert(&mut self, id: Id, entry: Pending) -> Option<Pending> {
@@ -575,6 +600,36 @@ impl PendingEdit<'_> {
     }
 
     /// Selects the terminal operations. Neither the unit nor the targets change.
+    pub(super) fn ordinary_signal(
+        &self,
+    ) -> Option<&Arc<super::ordinary_completion::OrdinarySignal>> {
+        self.entry.ordinary_signal.as_ref()
+    }
+
+    pub(super) fn confirm_ordinary(
+        &mut self,
+        flushed: &UnitCheckpoint,
+        original: Option<&Arc<super::ordinary_completion::OrdinarySignal>>,
+    ) -> super::RecordStoreResult<()> {
+        match (&self.entry.ordinary_signal, original) {
+            (None, None) => Ok(()),
+            (Some(current), Some(original))
+                if Arc::ptr_eq(current, original) && self.entry.snapshot == *flushed =>
+            {
+                current.confirm(&mut self.entry.snapshot)
+            }
+            _ => Err(super::error(
+                "ordinary checkpoint R acknowledged a different original source",
+            )),
+        }
+    }
+
+    /// Test-only: replace the exact pending snapshot between a flush capture and its R ACK.
+    #[cfg(test)]
+    pub(super) fn stale_for_test(&mut self) {
+        self.entry.snapshot.revision = self.entry.snapshot.revision.saturating_add(1);
+    }
+
     pub(super) fn set_terminal(&mut self, events: Vec<RecoveryEvent>, revision: u64) {
         self.entry.snapshot.terminal = Some(events);
         self.entry.snapshot.revision = revision;

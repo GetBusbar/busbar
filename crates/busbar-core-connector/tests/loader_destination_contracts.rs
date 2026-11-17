@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //! Destination matrices against the actual connector guard and host dispatcher.
+// Futures over the serving App's credential custody graph prove Send through more than the
+// default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
+#![recursion_limit = "256"]
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };

@@ -9,8 +9,14 @@ use std::sync::{Arc, RwLock};
 
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
+pub mod current_credential;
 pub mod drain;
+
+#[cfg(test)]
+#[path = "tests/current_credential_tests.rs"]
+mod current_credential_tests;
 pub(crate) mod exact_debt;
+pub mod fee_debt;
 pub mod persistence;
 pub mod principal_transition;
 pub mod recovery;
@@ -192,6 +198,15 @@ pub(crate) struct BudgetCell {
     /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
     /// legitimately clean and would be swept mid-use.
     pub(crate) last_touch: u64,
+    /// FEE-DEBT r1: this cell's identity within its GovState, assigned only when an observed
+    /// original charge first reaches it (0: none). Rollover keeps it; a recreated cell gets another.
+    pub(crate) fee_incarnation: u64,
+    /// Checked monotonic sequence of observed original fee mutations on this cell.
+    pub(crate) fee_sequence: u64,
+    /// The sequence frozen by this cell's latest flush capture.
+    pub(crate) fee_captured: u64,
+    /// Live native fee observer targets on this cell; eviction keeps the cell while nonzero.
+    pub(crate) fee_obligations: usize,
 }
 
 #[derive(Clone)]
@@ -230,9 +245,21 @@ impl BudgetCell {
             let owners = std::mem::take(&mut cell.group_owners);
             let flushing = cell.flushing;
             let flushing_windows = std::mem::take(&mut cell.flushing_windows);
+            let fee = (
+                cell.fee_incarnation,
+                cell.fee_sequence,
+                cell.fee_captured,
+                cell.fee_obligations,
+            );
             *cell = Self::fresh(window);
             cell.group_owners = owners;
             cell.flushing = flushing;
+            (
+                cell.fee_incarnation,
+                cell.fee_sequence,
+                cell.fee_captured,
+                cell.fee_obligations,
+            ) = fee;
             cell.flushing_windows = flushing_windows;
             cell.rolled = rolled;
             cell.rolled_eras = rolled_eras;
@@ -750,8 +777,6 @@ pub struct GovState {
 
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
 
-    admin_token_hash: RwLock<Option<String>>,
-
     budget: Sharded<BudgetCell>,
 
     selected_rates: Arc<selected_resource::SelectedRates>,
@@ -772,6 +797,9 @@ pub struct GovState {
         std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
 
     budget_flush_runner: BudgetFlushRunner,
+
+    /// FEE-DEBT r1 original producer identity, cell incarnations and the bound Node callback.
+    fee_debt: fee_debt::FeeDebtProducer,
 
     deleting_budget_buckets: std::sync::Mutex<std::collections::BTreeSet<String>>,
 

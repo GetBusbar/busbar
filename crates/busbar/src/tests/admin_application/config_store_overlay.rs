@@ -78,18 +78,12 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
     {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -101,11 +95,13 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             settings.is_object(),
             "the actual store settings are an object"
         );
+        let operator = crate::root::test_plugins::bind_operator();
         let mut document = serde_json::json!({
             "providers": {},
             "models": {},
             "groups": {"security_team": {}},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         });
@@ -175,7 +171,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-        let client = reqwest::Client::new();
+        let client = crate::root::test_plugins::operator_client();
         let before = handle.load();
         match failure {
             "read" => faults.fail_reads.store(true, Ordering::SeqCst),
@@ -250,18 +246,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -273,11 +263,13 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
         "groups": {"persisted_team": {}},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -349,7 +341,7 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let before = handle.load();
     faults.fail_reads.store(true, Ordering::SeqCst);
     let response = client
@@ -429,18 +421,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
     {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("admin-store-overlay");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -452,10 +438,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             settings.is_object(),
             "the actual store settings are an object"
         );
+        let operator = crate::root::test_plugins::bind_operator();
         let mut document = serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         });
@@ -516,7 +504,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-        let client = reqwest::Client::new();
+        let client = crate::root::test_plugins::operator_client();
         let before = handle.load();
         if unknown {
             faults.lose_reply.store(true, Ordering::SeqCst);
@@ -555,18 +543,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -578,10 +560,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -653,7 +637,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let _client = reqwest::Client::new();
+    let _client = crate::root::test_plugins::operator_client();
     let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = (0..32)
         .map(|index| (format!("persisted-team-{index:04}"), Default::default()))
         .collect();
@@ -666,9 +650,9 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     )
     .await
     .unwrap();
-    let response = reqwest::Client::new()
+    let response = crate::root::test_plugins::operator_client()
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"per_request_fee": 31}))
         .send()
         .await
@@ -715,18 +699,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -738,10 +716,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -814,7 +794,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let before = handle.load();
     faults.lose_reply.store(true, Ordering::SeqCst);
     let put = |fee| {
@@ -955,18 +935,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -978,10 +952,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
@@ -1100,18 +1076,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-store-overlay");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1123,10 +1093,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });

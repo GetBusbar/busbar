@@ -88,18 +88,12 @@ impl PersistenceBackend for ObservedBackend {
 async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-self-group-provision");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -130,7 +124,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
             "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team" } } }
         },
@@ -293,18 +287,12 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("auth-self-group-refuse-rehome");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -335,7 +323,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
                 "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
             },
             "auth": {
-                "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                "chain": ["corp"], "signing_key": { "file": signing },
                 "key_ttl": "1h",
                 "role_bindings": { "corp": { "eng": { "group": "team-b" } } }
             },
@@ -462,18 +450,12 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
 async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persistence() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-self-group-reuse");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -504,7 +486,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
             "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team-a" } } }
         },
@@ -619,18 +601,12 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("auth-self-mint-policy");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -661,7 +637,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
                 "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
             },
             "auth": {
-                "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                "chain": ["corp"], "signing_key": { "file": signing },
                 "key_ttl": "1h", "policy": { "self_mint": self_mint },
                 "role_bindings": { "corp": { "eng": { "group": "team" } } }
             },
@@ -860,18 +836,12 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             }
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let library = std::fs::read(library_path).expect("the actual store library reads");
             let directory = plugins::scratch("auth-self-mint-mode-policy");
             let archive =
@@ -903,7 +873,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
                 },
                 "auth": {
-                    "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                    "chain": ["corp"], "signing_key": { "file": signing },
                     "key_ttl": "1h", "policy": policy,
                     "role_bindings": { "corp": { "eng": { "group": "team" } } }
                 },

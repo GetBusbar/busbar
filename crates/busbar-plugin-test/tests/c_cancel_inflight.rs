@@ -227,6 +227,7 @@ pub(crate) fn rig(
 /// The spec of instance `name` of `identity` with `config`, no limits, no public URL, no caller upstreams.
 pub(crate) fn spec<'a>(identity: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity,
         name,

@@ -19,10 +19,72 @@ pub(super) fn resolve_admission(
         .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
 }
 
-fn refused(refusal: Refusal) -> AdminError {
+pub(crate) fn refused(refusal: Refusal) -> AdminError {
     match refusal {
         Refusal::Validation(m) => AdminError::Validation(m),
         Refusal::Conflict(m) => AdminError::Conflict(m),
+        Refusal::Unavailable {
+            text,
+            retry_after_s,
+        } => AdminError::RetryLater {
+            text,
+            retry_after_s,
+        },
+    }
+}
+
+/// Record one `plugin.inspect` audit row for an operator inspection (DES-443 r3 §5): the actor, the plugin, the
+/// image's sha256, the verdict, how it ended and why. An inspection that reports no load is `manifest` (shown from
+/// its manifest alone) or `refused`.
+fn audited_inspection(
+    inspection: busbar_kernel::admission::Inspection,
+    tarball: &[u8],
+    actor: &str,
+) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+    let (answer, load) = inspection;
+    let (outcome, sha256, opened, reason) = match (&answer, load) {
+        (_, Some(load)) => (load.outcome, load.sha256, load.opened, load.reason),
+        (Ok(_), None) => ("manifest", String::new(), false, None),
+        (Err(refusal), None) => ("refused", String::new(), false, Some(refusal_text(refusal))),
+    };
+    let (plugin, verdict) = match &answer {
+        Ok((stated, judged, _)) => (
+            stated.name.clone(),
+            match judged {
+                Judged::Trusted { .. } => "trusted",
+                Judged::Allowed => "allowed",
+                Judged::Rejected { .. } => "rejected",
+            },
+        ),
+        Err(_) => (String::new(), "unknown"),
+    };
+    let archive = busbar_contract::redacted::sha256_hex(tarball);
+    let mut message = format!("verdict={verdict} opened={opened} archive_sha256={archive}");
+    if !sha256.is_empty() {
+        message.push_str(" sha256=");
+        message.push_str(&sha256);
+    }
+    if let Some(reason) = reason {
+        message.push_str(" reason=");
+        message.push_str(&reason);
+    }
+    busbar_kernel::audit_ring::AUDIT.record_row(busbar_kernel::audit::auditlog::AuditRowInput {
+        action: "plugin.inspect".into(),
+        resource: format!("plugin:{plugin}"),
+        outcome: outcome.into(),
+        principal: actor.into(),
+        kind: Some("plugin".into()),
+        message,
+        ..Default::default()
+    });
+    answer
+}
+
+fn refusal_text(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Validation(text) | Refusal::Conflict(text) | Refusal::Unavailable { text, .. } => {
+            text.clone()
+        }
     }
 }
 
@@ -47,58 +109,28 @@ impl AdminService {
 
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
         let live = busbar_kernel::persistence::boot_identity::live();
-        let nodes = match live {
-            Some(live) => live
-                .nodes()
-                .await
-                .map_err(|_| AdminError::Internal)?
-                .into_iter()
-                .map(|n| NodeView {
-                    node_id: n.node_id,
-                    started_at: n.started_at,
-                    last_seen_at: n.last_seen_at,
-                    state: n.state.into(),
-                    role: n.role.into(),
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
-
-        let view = self.app.engine_tables_view();
-        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
-            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
-            .collect();
-
+        let started_at_ms = super::started_at_ms();
+        let mut warnings = Vec::new();
+        if busbar_kernel::appbuild::booted_with_ignore_overlay() {
+            warnings.push(InfoWarning {
+                code: "overlay_ignored",
+                message: "booted with --ignore-overlay: the persisted config overlay was not \
+                          merged; a later reload or apply re-merges it",
+                since_ms: started_at_ms.unwrap_or(0),
+            });
+        }
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
-            build: BuildInfo {
-                auth_modules,
-                hook_plugins,
-                weighted_floor: true,
-            },
-            uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
-            started_at: PROCESS_START_EPOCH.get().copied(),
-            process_boot_nonce: busbar_kernel::snapshot::process_generation()
+            deployment_id: live.map(|l| l.deployment_id().to_string()),
+            node_id: live.map(|l| l.node_id()),
+            incarnation: busbar_kernel::snapshot::process_generation()
                 .map(|(nonce, _)| nonce.to_string()),
-            topology: TopologyInfo {
-                pools: view.pools().len(),
-                models: view.model_indices().len(),
-                providers: providers.len(),
-            },
-            config_persistence: self.app.overlay_path.is_some(),
-            config_version: self.app.config_version,
-            kinds_revision: crate::v1::json::kinds::kinds_revision(&self.app),
+            started_at_ms,
             config_generation: self
                 .app
                 .config_generation
                 .load(std::sync::atomic::Ordering::Acquire),
-            overlay_ignored: busbar_kernel::appbuild::booted_with_ignore_overlay(),
-            deployment_id: live.map(|l| l.deployment_id().to_string()),
-            node_id: live.map(|l| l.node_id()),
-            nodes,
+            warnings,
         })
     }
 
@@ -374,8 +406,8 @@ impl AdminService {
         })
     }
 
-    /// Keep native filesystem and archive work off the reactor while retaining
-    /// both the shared scan gate and the caller's config-transaction fence.
+    /// The catalog read (DES-359 r3 L9): on this pinned generation, under the shared scan gate
+    /// (which install and remove also take), off the reactor, and never under the effect lock.
     pub(crate) async fn list_plugins_current_async(
         &self,
         ptype: &str,
@@ -420,10 +452,11 @@ impl AdminService {
         }
     }
 
-    /// Called inside the config transaction: inventory and archive hashes share the mutation fence.
+    /// Called under the shared scan gate: inventory and archive hashes are one directory state,
+    /// proven by the fingerprint read before and after the scan.
     pub(crate) fn list_plugins_current(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         plugin_query(ptype)?;
-        let catalog = self.store_plugin_catalog();
+        let catalog = self.store_plugin_catalog()?;
         self.list_plugins_from_catalog(ptype, catalog)
     }
 
@@ -483,16 +516,6 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
-                    plugins.push(PluginView::basic(
-                        name.to_string(),
-                        "hooks",
-                        "compiled-in",
-                        None,
-                        None,
-                    ));
-                }
-
                 let mut externals: Vec<PluginView> = self
                     .app
                     .hook_registry
@@ -514,8 +537,7 @@ impl AdminService {
             PluginQuery::Secret => {
                 plugins.extend(
                     self.app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .linked()
                         .into_iter()
                         .filter(|row| row.kind == "secret")
@@ -526,8 +548,7 @@ impl AdminService {
             PluginQuery::Catalog(kind) => {
                 plugins.extend(
                     self.app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .linked()
                         .into_iter()
                         .filter(|row| row.kind == kind)
@@ -555,26 +576,25 @@ impl AdminService {
             }
         }
         for view in &mut plugins {
-            if let Some(row) = self.app.hook_env.registry.resolve(&view.name) {
+            if let Some(row) = self.app.plugin_registry.resolve(&view.name) {
                 let verdict = match row.trust {
                     busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
                     busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
                 };
                 view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
-                    self.app.hook_env.registry.signature_present(&row.name),
+                    self.app.plugin_registry.signature_present(&row.name),
                     verdict,
                     &self
                         .app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .verification(&row.name)
                         .unwrap_or_default(),
                 ));
             }
             if view.configuration.is_none() {
-                let row = self.app.hook_env.registry.resolve(&view.name);
+                let row = self.app.plugin_registry.resolve(&view.name);
                 let declaration = admission(&self.app).ok().and_then(|admission| {
-                    admission.loaded_configuration(self.app.hook_env.registry.as_ref(), &view.name)
+                    admission.loaded_configuration(self.app.plugin_registry.as_ref(), &view.name)
                 });
                 view.configuration = Some(crate::v1::plugin_configuration::configuration(
                     row.as_ref().map_or(view.r#type, |row| row.kind.as_str()),
@@ -592,8 +612,7 @@ impl AdminService {
             }
             if let Some(row) = self
                 .app
-                .hook_env
-                .registry
+                .plugin_registry
                 .resolve(&view.name)
                 .filter(|row| row.linked)
             {
@@ -611,13 +630,13 @@ impl AdminService {
         Ok(Page::single(plugins))
     }
 
-    pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
+    pub(super) fn store_plugin_catalog(&self) -> Result<Vec<PluginView>, AdminError> {
         let mut out = linked_store_rows();
         let Ok(admission) = admission(&self.app) else {
-            return out;
+            return Ok(out);
         };
         if admission.policy_resolves(&self.app.plugins_cfg).is_err() {
-            return out;
+            return Ok(out);
         }
 
         let now = busbar_kernel::store::now();
@@ -666,22 +685,28 @@ impl AdminService {
             if let Some(entry) = catalog_cache().lock().unwrap().get(&self.app.plugins_dir) {
                 if entry.key == key {
                     out.extend(entry.rows.iter().cloned());
-                    return out;
+                    return Ok(out);
                 }
             }
 
-            let rows = Self::scan_store_plugin_rows(
-                &self.app.plugins_dir,
-                admission,
-                &self.app.plugins_cfg,
-            );
-
-            let after = plugins_dir_fingerprint(
-                &self.app.plugins_dir,
-                &|file| admission.is_tarball(file),
-                admission.max_tarball_bytes(),
-            );
-            if matches!(after, Ok(after) if after == before) {
+            let (rows, settled) = consistent_scan(
+                before,
+                || {
+                    plugins_dir_fingerprint(
+                        &self.app.plugins_dir,
+                        &|file| admission.is_tarball(file),
+                        admission.max_tarball_bytes(),
+                    )
+                },
+                || {
+                    Self::scan_store_plugin_rows(
+                        &self.app.plugins_dir,
+                        admission,
+                        &self.app.plugins_cfg,
+                    )
+                },
+            )?;
+            if settled == Some(before) {
                 let mut cache = catalog_cache().lock().unwrap();
                 let misses = cache
                     .get(&self.app.plugins_dir)
@@ -700,14 +725,14 @@ impl AdminService {
             }
 
             out.extend(rows);
-            out
+            Ok(out)
         } else {
             out.extend(Self::scan_store_plugin_rows(
                 &self.app.plugins_dir,
                 admission,
                 &self.app.plugins_cfg,
             ));
-            out
+            Ok(out)
         }
     }
 
@@ -887,14 +912,21 @@ impl AdminService {
     ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
-    pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
+    pub(crate) fn inspect_plugin(
+        &self,
+        tarball: &[u8],
+        actor: &str,
+    ) -> Result<serde_json::Value, AdminError> {
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let cap = admission.max_tarball_bytes();
         check_inspect_tarball_size(tarball.len(), cap)?;
 
-        let (manifest, judged, verification) = admission
-            .inspect_with_verification(tarball, &self.app.plugins_cfg)
-            .map_err(refused)?;
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(tarball, &self.app.plugins_cfg, false, actor),
+            tarball,
+            actor,
+        )
+        .map_err(refused)?;
         let trust = image_trust(&manifest, &judged, &verification);
         let mut view =
             inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
@@ -903,11 +935,13 @@ impl AdminService {
     }
 
     /// Static inspection of the exact installed artifact named by a catalog URL. Caller holds
-    /// the config transaction throughout read, digest comparison, and admission inspection.
+    /// the shared scan gate throughout; the digest compared is of the bytes actually read, so a
+    /// swap or removal under the read answers 409 when the URL names its archive.
     pub(crate) fn installed_plugin_schema(
         &self,
         file: &str,
         expected: Option<&str>,
+        actor: &str,
     ) -> Result<serde_json::Value, AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
@@ -919,9 +953,12 @@ impl AdminService {
         )?;
         check_archive_preimage(expected, &bytes)?;
         let digest = busbar_contract::redacted::sha256_hex(&bytes);
-        let (manifest, judged, verification) = admission
-            .inspect_installed_with_verification(&bytes, &self.app.plugins_cfg)
-            .map_err(refused)?;
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(&bytes, &self.app.plugins_cfg, true, actor),
+            &bytes,
+            actor,
+        )
+        .map_err(refused)?;
         let configuration = crate::v1::plugin_configuration::configuration(
             &manifest.kind,
             manifest.configuration.as_ref(),
@@ -981,7 +1018,7 @@ impl AdminService {
         &self,
     ) -> Result<crate::v1::contract::PluginReloadView, AdminError> {
         let plugins: Vec<PluginView> = self
-            .store_plugin_catalog()
+            .store_plugin_catalog()?
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
             .collect();
@@ -1332,9 +1369,9 @@ impl AdminService {
 
     pub(crate) async fn hook_health(&self, name: &str) -> Result<HookHealthView, AdminError> {
         let cfg = self.app.hook_registry.get(name);
-        let loadable = cfg.and_then(|cfg| self.app.hook_env.registry.resolve(&cfg.plugin));
+        let loadable = cfg.and_then(|cfg| self.app.plugin_registry.resolve(&cfg.plugin));
         let skipped = if loadable.is_none() {
-            cfg.and_then(|cfg| self.app.hook_env.registry.unresolved_reason(&cfg.plugin))
+            cfg.and_then(|cfg| self.app.plugin_registry.unresolved_reason(&cfg.plugin))
         } else {
             None
         };
@@ -1859,6 +1896,9 @@ fn price_metering_row(
     r: &busbar_kernel::governance::MeteringRow,
     lenient: bool,
 ) -> Result<PricedRow, AdminError> {
+    if let Some(pricing) = &r.pricing {
+        return price_selected_metering_row(view, window_start, r, pricing, lenient);
+    }
     let lane = row_lane(&r.model, &r.provider);
     let mut row = UsageRollup {
         usage: UsageBreakdown {
@@ -1942,6 +1982,247 @@ fn price_metering_row(
         card: resolved.map(|(seq, _)| seq),
         priced,
     })
+}
+
+fn price_selected_metering_row(
+    view: Option<&busbar_kernel::cost::HistoryView<'_>>,
+    window_start: u64,
+    r: &busbar_kernel::governance::MeteringRow,
+    pricing: &busbar_contract::records::MeteringPricingV1,
+    lenient: bool,
+) -> Result<PricedRow, AdminError> {
+    use busbar_contract::records::MeteringPricingV1 as Pricing;
+    use busbar_kernel::cost::{EntryId, MoneyError, Tally, STANDARD_TIER_BP};
+    let lane = row_lane(&r.model, &r.provider);
+    let classes: std::collections::BTreeMap<String, Count> = r
+        .usage_units
+        .iter()
+        .map(|(class, n)| (class.clone(), Count::from_micros(*n)))
+        .collect();
+    let has_units = !classes.is_empty()
+        || [
+            r.tokens_input,
+            r.tokens_output,
+            r.tokens_cache_read,
+            r.tokens_cache_write,
+        ]
+        .into_iter()
+        .any(|n| n != 0);
+    pricing
+        .validate_counts(r.requests, r.billable_requests, has_units)
+        .map_err(|_| AdminError::Internal)?;
+    if classes.values().any(|n| n.is_negative()) {
+        return Err(AdminError::Internal);
+    }
+    let mut rollup = UsageRollup::default();
+    rollup.usage.requests = r.requests;
+    project_reserved_counts(&lane, &classes, &mut rollup.usage)?;
+    for (class, count) in &classes {
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
+            rollup.usage.classes.insert(
+                class.clone(),
+                ClassUsage {
+                    count: *count,
+                    cost: 0,
+                },
+            );
+        }
+    }
+    // Request counters carry no fee; a resolved refund carries no monetary term.
+    if matches!(
+        pricing,
+        Pricing::SelectedRequest
+            | Pricing::SelectedFee {
+                charged: 0,
+                unknown: 0,
+                ..
+            }
+    ) {
+        return Ok(PricedRow {
+            rollup,
+            card: None,
+            priced: true,
+        });
+    }
+    let at = row_priced_at_ms(window_start, r.priced_from_ms);
+    let resolved = if matches!(pricing, Pricing::SelectedFee { unknown, .. } if *unknown != 0) {
+        None
+    } else {
+        // Selected rows require the original exact identity; no timestamp/current-card fallback.
+        EntryId::parse_metering_version(&r.pricing_version)
+            .flatten()
+            .and_then(|id| {
+                view.and_then(|v| busbar_kernel::cost::price_era(v, Some(id), r.priced_from_ms, at))
+            })
+    };
+    let Some((key, card)) = resolved else {
+        return if lenient {
+            Ok(PricedRow {
+                rollup,
+                card: None,
+                priced: false,
+            })
+        } else {
+            Err(usage_refusal(
+                "usage.price",
+                &MoneyError::NoCardInForce { at },
+            ))
+        };
+    };
+    let mut tally = Tally::at_card_seq(key, card);
+    let result = match pricing {
+        Pricing::SelectedUsage => tally.row(
+            &lane,
+            0,
+            STANDARD_TIER_BP,
+            classes.iter().map(|(class, n)| (class.as_str(), *n)),
+            Count::ZERO,
+        ),
+        Pricing::SelectedFee { lane, charged, .. } => match lane {
+            Some(lane) => tally.lane_fee(lane, 0, STANDARD_TIER_BP, Count::from(*charged)),
+            None => tally.fee(0, STANDARD_TIER_BP, Count::from(*charged)),
+        },
+        Pricing::SelectedRequest => Ok(()),
+    }
+    .and_then(|()| tally.exact());
+    match result {
+        Ok(exact) => rollup.exact = exact,
+        Err(MoneyError::ClassUnpriced { .. } | MoneyError::LaneUnpriced { .. }) if lenient => {
+            return Ok(PricedRow {
+                rollup,
+                card: Some(key),
+                priced: false,
+            });
+        }
+        Err(error) => return Err(usage_refusal("usage.price", &error)),
+    }
+    if matches!(pricing, Pricing::SelectedUsage) {
+        for (class, count) in &classes {
+            if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
+                let mut term = Tally::at_card_seq(key, card);
+                term.row(
+                    &lane,
+                    0,
+                    STANDARD_TIER_BP,
+                    [(class.as_str(), *count)],
+                    Count::ZERO,
+                )
+                .map_err(|e| usage_refusal("usage.price", &e))?;
+                rollup.class_exact.insert(
+                    class.clone(),
+                    term.exact().map_err(|e| usage_refusal("usage.price", &e))?,
+                );
+            }
+        }
+    }
+    Ok(PricedRow {
+        rollup,
+        card: Some(key),
+        priced: true,
+    })
+}
+
+#[cfg(test)]
+mod selected_meter_pricing_tests {
+    use super::*;
+    use busbar_contract::records::{MeteringPricingV1 as Pricing, MeteringRow};
+    use busbar_kernel::cost::{Author, CardEntryDraft, History, RateCard};
+
+    fn row(pricing: Pricing, version: String) -> MeteringRow {
+        MeteringRow {
+            pricing: Some(pricing),
+            scale: busbar_contract::count::SCALE_MICRO_UNITS,
+            key_id: "principal".into(),
+            model: "p\u{1f}display-only".into(),
+            provider: "provider".into(),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 0,
+            billable_requests: 0,
+            key_group_at_use: "group".into(),
+            pricing_version: version,
+            priced_from_ms: 0,
+            usage_units: Default::default(),
+        }
+    }
+
+    #[test]
+    fn selected_request_count_never_uses_current_card_as_fee() {
+        let mut r = row(Pricing::SelectedRequest, String::new());
+        r.requests = 9;
+        r.billable_requests = 9;
+        let priced =
+            price_selected_metering_row(None, 0, &r, r.pricing.as_ref().unwrap(), false).unwrap();
+        assert_eq!(priced.rollup.usage.requests, 9);
+        assert_eq!(priced.rollup.exact, 0);
+    }
+
+    #[test]
+    fn unknown_fee_withholds_total_after_checkpoint_retirement() {
+        let r = row(
+            Pricing::SelectedFee {
+                lane: None,
+                charged: 1,
+                refunded: 0,
+                unknown: 1,
+            },
+            String::new(),
+        );
+        let answer =
+            price_selected_metering_row(None, 0, &r, r.pricing.as_ref().unwrap(), true).unwrap();
+        assert!(!answer.priced);
+        assert!(
+            price_selected_metering_row(None, 0, &r, r.pricing.as_ref().unwrap(), false).is_err()
+        );
+    }
+
+    #[test]
+    fn selected_fee_prices_flat_origin_not_display_target() {
+        let mut history = History::new();
+        history.append(CardEntryDraft {
+            effective_from: 0,
+            effective_until: None,
+            card: RateCard::absent(7),
+            appended_at: 0,
+            author: Author::Config { policy_epoch: 0 },
+        });
+        let key = history.entries()[0].key();
+        let r = row(
+            Pricing::SelectedFee {
+                lane: None,
+                charged: 1,
+                refunded: 4,
+                unknown: 0,
+            },
+            key.id().metering_version(),
+        );
+        let answer = price_selected_metering_row(
+            Some(&history.current()),
+            0,
+            &r,
+            r.pricing.as_ref().unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(answer.priced);
+        assert!(
+            answer.rollup.exact > 0,
+            "flat fee must not resolve through the absent display plane"
+        );
+        assert_eq!(answer.rollup.usage.requests, 0);
+        let mut missing = r.clone();
+        missing.pricing_version.clear();
+        assert!(price_selected_metering_row(
+            Some(&history.current()),
+            0,
+            &missing,
+            missing.pricing.as_ref().unwrap(),
+            false
+        )
+        .is_err());
+    }
 }
 
 fn project_reserved_counts(

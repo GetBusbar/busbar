@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 //
-//! Route registered plane sections to their owning parser while reading the original document.
+//! Read the original document, recognizing plane sections by admitted instance name.
 //!
-//! Core configuration fields are parsed directly by their current schema. The document adapter
-//! extracts dynamic plane sections, separates their rate cards and fees, and enforces each
-//! registered plane's required sections. Unregistered sections remain unknown fields.
-//! Reading the original event stream preserves source locations and duplicate-field errors.
+//! Core configuration fields are parsed directly by their current schema. A key that no core field
+//! owns but an admitted plane instance is named by is that plane's section: its core-owned
+//! `rate_card` and `fees` are lifted into core pricing keyed by instance name, and the remainder is
+//! carried raw. Any other key is refused (WP1-GAP-plane-sections r3). Reading the original event
+//! stream preserves source locations and duplicate-field errors.
 
 use std::fmt;
 
@@ -17,71 +18,17 @@ use serde::Deserialize;
 use super::grammar::Grammar;
 use super::DeployCfg;
 
-use crate::config::plane_sections::{DeclaredSections, EndpointSection};
-use crate::plane_driver::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
-
-/// Where one lifted key's value lands: one [`Lifted`] carrier each.
-#[derive(Clone, Copy)]
-enum Dest {
-    Endpoint,
-    /// A declaring section its plane owns the grammar of: parsed by that plane into the map carrier.
-    Declared(PlaneMetadata),
-    /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
-    Raw(PlaneMetadata),
-}
-
-#[derive(Clone, Copy)]
-struct PlaneMetadata {
-    key: &'static str,
-    noun: &'static str,
-}
-
-impl Dest {
-    fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Dest {
-        let metadata = crate::plane_driver::registry::plane_decl_for_config_section(key)
-            .map(|d| PlaneMetadata {
-                key: d.key,
-                noun: d.subject_noun,
-            })
-            .unwrap_or(PlaneMetadata { key, noun: "entry" });
-        let carried = if key == decl.config_section {
-            DeclaredSections::holds(decl).then_some(Dest::Declared(metadata))
-        } else {
-            (decl.config_section == EndpointSection::OWNER).then_some(Dest::Endpoint)
-        };
-        carried.unwrap_or(Dest::Raw(metadata))
-    }
-}
-
-fn lift_table() -> Vec<(&'static str, Dest)> {
-    let mut table: Vec<(&'static str, Dest)> = Vec::new();
-    for decl in crate::plane_driver::registry::plane_decls() {
-        let decl: &PlaneDeclaration = &decl.declaration;
-        for &key in std::iter::once(&decl.config_section).chain(decl.owned_config_sections) {
-            if !CORE_OWNED_CONCRETE_SECTIONS.contains(&key) && !table.iter().any(|(k, _)| *k == key)
-            {
-                table.push((key, Dest::for_declared(decl, key)));
-            }
-        }
-    }
-    table
-}
+use super::recognizer::SectionNames;
 
 /// Everything the pre-pass pulled out of one document: the `#[serde(skip)]` carriers of
 /// [`DeployCfg`], each at its `Default` (an omitted section) until its key is read.
 #[derive(Default)]
 pub(crate) struct Lifted {
     listen_explicit: bool,
-    endpoint: EndpointSection,
-    declared: DeclaredSections,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
-    plane_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    declared_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    /// The top-level keys the key reader watches for: the nested key, then every section a
-    /// registered plane requires. A key is struck as the document is seen to carry it, so what is
-    /// left once the document is read is what it omitted.
-    watch: Vec<&'static str>,
+    /// Each recognized plane section, by instance name, minus the core words lifted off it.
+    instance_sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The plane sections the document wrote, in document order: what the read used (§3.8).
     sections: Vec<&'static str>,
 }
@@ -91,16 +38,12 @@ impl Lifted {
         deploy.listen_explicit = self.listen_explicit;
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
-        deploy.plane_raw = self.plane_raw;
-        deploy.declared_raw = self.declared_raw;
-        deploy.declared = self.declared;
-        deploy.endpoint = self.endpoint;
+        deploy.instance_sections = self.instance_sections;
     }
 }
 
 struct LiftedSeed<'a> {
     key: &'static str,
-    dest: Dest,
     lifted: &'a mut Lifted,
 }
 
@@ -109,26 +52,9 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         let (key, lifted) = (self.key, self.lifted);
-        match self.dest {
-            Dest::Endpoint => {
-                let section = busbar_contract::yaml::untyped(de)?;
-                if !section.is_null() {
-                    lifted.declared_raw.insert(key, section.clone());
-                }
-                lifted.endpoint = busbar_contract::yaml::from_value::<EndpointSection>(section)
-                    .map_err(D::Error::custom)?;
-            }
-            Dest::Declared(metadata) => {
-                let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
-                lifted.declared_raw.insert(key, section.clone());
-                let parsed = DeclaredSections::parse(key, section).map_err(D::Error::custom)?;
-                lifted.declared.0.extend(parsed.0);
-            }
-            Dest::Raw(metadata) => {
-                let section = plane_remainder_in(key, metadata.key, metadata.noun, de, lifted)?;
-                lifted.plane_raw.insert(key, section);
-            }
-        }
+        // The instance name labels the section; the legacy plane registry is not consulted.
+        let section = plane_remainder_in(key, key, "entry", de, lifted)?;
+        lifted.instance_sections.insert(key, section);
         Ok(())
     }
 }
@@ -176,11 +102,9 @@ enum KeyOutcome<V, S> {
 
 struct KeySeed<'a, S> {
     inner: S,
-    lift: &'a [(&'static str, Dest)],
-    watch: &'a mut Vec<&'static str>,
+    names: &'a SectionNames,
     listen_explicit: &'a mut bool,
-
-    lifted: &'a mut Option<(&'static str, Dest)>,
+    lifted: &'a mut Option<&'static str>,
 }
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, S> {
@@ -202,17 +126,25 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
         if v == "upstreams" {
             return Err(E::custom("unknown field `upstreams`: move each entry's dial settings into the registration that uses it, under that plane's declared registration path"));
         }
-        if let Some(entry) = self.lift.iter().find(|(k, _)| *k == v) {
-            *self.lifted = Some(*entry);
+        if let Some(key) = self.names.recognize(v) {
+            *self.lifted = Some(key);
             return Ok(KeyOutcome::Lift(self.inner));
         }
         if v == "listen" {
             *self.listen_explicit = true;
         }
-        self.watch.retain(|k| *k != v);
+        let names = self.names;
         self.inner
             .deserialize(v.into_deserializer())
             .map(KeyOutcome::Forward)
+            .map_err(|error: E| {
+                // Rule 3: only a key core's own parse refuses reaches here.
+                if super::recognizer::is_core_key(v) {
+                    error
+                } else {
+                    E::custom(format!("{error}. {}", names.refusal(v)))
+                }
+            })
     }
 
     fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
@@ -225,7 +157,7 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
 
 struct LiftingMap<'a, M> {
     inner: M,
-    lift: &'a [(&'static str, Dest)],
+    names: &'a SectionNames,
     lifted: &'a mut Lifted,
     seen_lifted: Vec<&'static str>,
 }
@@ -242,8 +174,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
             let mut lifted = None;
             let outcome = self.inner.next_key_seed(KeySeed {
                 inner: seed,
-                lift: self.lift,
-                watch: &mut self.lifted.watch,
+                names: self.names,
                 listen_explicit: &mut self.lifted.listen_explicit,
                 lifted: &mut lifted,
             })?;
@@ -251,7 +182,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 None => return Ok(None),
                 Some(KeyOutcome::Forward(v)) => return Ok(Some(v)),
                 Some(KeyOutcome::Lift(returned)) => {
-                    let (key, dest) = lifted.expect("a lifted key always names itself");
+                    let key = lifted.expect("a lifted key always names itself");
                     if self.seen_lifted.contains(&key) {
                         return Err(Self::Error::duplicate_field(key));
                     }
@@ -259,7 +190,6 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                     self.lifted.sections.push(key);
                     self.inner.next_value_seed(LiftedSeed {
                         key,
-                        dest,
                         lifted: &mut *self.lifted,
                     })?;
                     seed = returned;
@@ -318,12 +248,8 @@ impl<'de> Visitor<'de> for DocumentVisitor {
     }
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-        let watch = crate::plane_driver::registry::plane_decls()
-            .iter()
-            .flat_map(|d| d.required_config_sections.iter().copied())
-            .collect();
-        let table = lift_table();
-        let (Body(mut deploy), mut lifted) = read_document::<_, Body>(map, watch, &table)?;
+        let names = super::recognizer::current();
+        let (Body(mut deploy), mut lifted) = read_document::<_, Body>(map, &names)?;
         let sections = std::mem::take(&mut lifted.sections);
         lifted.install(&mut deploy);
         Ok(SplitDocument(deploy, sections))
@@ -332,23 +258,53 @@ impl<'de> Visitor<'de> for DocumentVisitor {
 
 fn read_document<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
     map: M,
-    watch: Vec<&'static str>,
-    table: &[(&'static str, Dest)],
+    names: &SectionNames,
 ) -> Result<(T, Lifted), M::Error> {
-    let mut lifted = Lifted {
-        watch,
-        ..Lifted::default()
-    };
+    let mut lifted = Lifted::default();
     let deploy = T::deserialize(MapAccessDeserializer::new(LiftingMap {
         inner: map,
-        lift: table,
+        names,
         lifted: &mut lifted,
         seen_lifted: Vec::new(),
     }))?;
-    if let Some(s) = lifted.watch.first() {
-        return Err(M::Error::missing_field(s));
-    }
     Ok((deploy, lifted))
+}
+
+/// A key busbar reserves or has retired: its path from the document root, and why it is refused.
+/// The table is read before the typed parse, so a refusal names the key and its reason with a
+/// coded error instead of the generic unknown-field text. It adds no schema field (DES-359 r3 L10).
+pub(crate) struct ReservedKey {
+    pub(crate) path: &'static [&'static str],
+    pub(crate) reason: &'static str,
+}
+
+pub(crate) const RESERVED_KEYS: &[ReservedKey] = &[ReservedKey {
+    path: &["plugins", "trust", "operator"],
+    reason: "reserved; 1.6.0 operator plugins must be first-party signed (Q13)",
+}];
+
+/// The coded refusal for the first reserved key `document` writes, if any.
+pub(crate) fn reserved_key_refusal(document: &busbar_contract::yaml::Value) -> Option<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    RESERVED_KEYS.iter().find_map(|reserved| {
+        reserved
+            .path
+            .iter()
+            .try_fold(document, |value, key| value.get(*key))?;
+        let detail = format!("{}: {}", reserved.path.join("."), reserved.reason);
+        Some(crate::diagnostics::coded::config_reserved_key(detail).into())
+    })
+}
+
+fn reserved_key_error(
+    document: &busbar_contract::yaml::Value,
+) -> Result<(), busbar_contract::yaml::Error> {
+    match reserved_key_refusal(document) {
+        Some(refusal) => Err(<busbar_contract::yaml::Error as serde::de::Error>::custom(
+            refusal,
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Read a deployment document under `grammar`: the grammar of this read (§3.4).
@@ -356,6 +312,10 @@ pub fn deploy_from_yaml_str(
     text: &str,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    // A document the plain reader cannot read is left to the typed reader's own error.
+    if let Ok(document) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(text) {
+        reserved_key_error(&document)?;
+    }
     let mut deploy =
         busbar_contract::yaml::with_deserializer(text, |d| deploy_from_deserializer(d, grammar))?;
     deploy.authored_routing = super::authored_routing::capture(text, &deploy.pools);
@@ -375,11 +335,13 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     let words = busbar_contract::secret_ref::context::UsedWords::default();
     let (SplitDocument(mut deploy, sections), grammar) = if !grammar.secret_binding_required() {
         (
-            busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
-                de,
-                &grammar.sugars,
-                &words,
-            )?,
+            super::recognizer::scoped(SectionNames::of(grammar), || {
+                busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
+                    de,
+                    &grammar.sugars,
+                    &words,
+                )
+            })?,
             grammar,
         )
     } else {
@@ -395,13 +357,14 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
         bound = grammar
             .bind_secret_instances(&secrets)
             .map_err(D::Error::custom)?;
-        let parsed =
+        let parsed = super::recognizer::scoped(SectionNames::of(&bound), || {
             busbar_contract::secret_ref::context::deserialize_recording::<SplitDocument, _>(
                 busbar_contract::yaml::deserializer(document),
                 &bound.sugars,
                 &words,
             )
-            .map_err(D::Error::custom)?;
+        })
+        .map_err(D::Error::custom)?;
         (parsed, &bound)
     };
     // What this read used of its grammar, recorded by the parse itself (§3.8): the grammar pin
@@ -422,8 +385,13 @@ pub fn deploy_from_yaml_value(
     value: busbar_contract::yaml::Value,
     grammar: &Grammar,
 ) -> Result<DeployCfg, busbar_contract::yaml::Error> {
+    reserved_key_error(&value)?;
     deploy_from_deserializer(busbar_contract::yaml::deserializer(value), grammar)
 }
+
+#[cfg(test)]
+#[path = "tests/recognizer_tests.rs"]
+mod recognizer_tests;
 
 #[cfg(test)]
 #[path = "tests/plane_remainder_tests.rs"]
@@ -436,3 +404,7 @@ mod document_metadata_tests;
 #[cfg(test)]
 #[path = "tests/prepass_tests.rs"]
 mod source_declarations_tests;
+
+#[cfg(test)]
+#[path = "tests/reserved_key_tests.rs"]
+mod reserved_key_tests;

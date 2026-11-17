@@ -14,7 +14,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::composed_services;
-use super::{compose_planes_over, door_mounts, DoorEgress, HookStage};
+use super::{compose_planes_over, door_mounts, DoorEgress};
 use crate::root::door_steps::{kernel_sections, provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow};
@@ -109,8 +109,6 @@ pub(crate) struct NodeRigOpts {
     pub card_as_written: bool,
     /// The door asks no caller credential (an open front door).
     pub open_door: bool,
-    /// A global gate seated before the member is chosen (`None`: no gate).
-    pub gate: Option<Arc<dyn busbar_contract::hooks::RoutingPolicy>>,
 }
 
 /// The composed door and what its cells read back.
@@ -225,10 +223,10 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     let store_settings: serde_json::Value =
         serde_json::from_str(&store_settings).expect("the actual Store settings are JSON");
     let auth = if opts.open_door {
-        "auth:\n  chain: []\n  admin_auth: []\n".to_string()
+        "auth:\n  chain: []\n".to_string()
     } else {
         format!(
-            "auth:\n  chain: [keys]\n  admin_auth: []\n  signing_key: {{ file: '{}' }}\n",
+            "auth:\n  chain: [keys]\n  signing_key: {{ file: '{}' }}\n",
             signing_file.display()
         )
     };
@@ -384,20 +382,6 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     app.amendments = Arc::clone(gov.amendments());
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
-    if let Some(policy) = opts.gate {
-        app.global_gates = vec![(
-            0u16,
-            busbar_kernel::hooks::ResolvedPolicy::Policy {
-                policy,
-                on_error: busbar_kernel::config::PolicyOnError::default(),
-                on_error_chain: Vec::new(),
-                timeout: std::time::Duration::from_millis(500),
-                send_prompt: false,
-                send_user: false,
-                on_empty: busbar_kernel::config::PolicyOnError::Reject,
-            },
-        )];
-    }
     let app = Arc::new(app);
 
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> = app.secret_resolver.clone();
@@ -425,14 +409,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         catalog: None,
         upgrades: Vec::new(),
     };
-    let stage = HookStage {
-        host: {
-            let app = Arc::clone(&app);
-            Arc::new(move || busbar_kernel::plane_driver::engine_host(&app))
-        },
-        gov: Arc::clone(&gov),
-        journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
-    };
+    let journal = Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>;
     let sections: BTreeMap<&'static str, busbar_contract::yaml::Value> = sections;
     let served = compose_planes_over(
         &crate::LINKED,
@@ -446,7 +423,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
-        Some(&stage),
+        Some(&journal),
         &clock,
         &busbar_contract::config_time::ConfigScope::config_time(),
         &app.serve_tables,

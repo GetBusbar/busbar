@@ -142,15 +142,15 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
 async fn serve_admission(
     dir: PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
-    hook_env: Option<busbar_kernel::hooks::HookEnv>,
+    registry: Option<Arc<dyn busbar_contract::plugin_rows::PluginRows>>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    serve_admission_with_inputs(dir, cfg, hook_env, None).await
+    serve_admission_with_inputs(dir, cfg, registry, None).await
 }
 
 async fn serve_admission_with_inputs(
     dir: PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
-    hook_env: Option<busbar_kernel::hooks::HookEnv>,
+    registry: Option<Arc<dyn busbar_contract::plugin_rows::PluginRows>>,
     disk_paths: Option<(PathBuf, PathBuf)>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
@@ -186,7 +186,7 @@ async fn serve_admission_with_inputs(
         .expect("configured authentication")
         .admin_auth[0]
         .token = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));
@@ -248,7 +248,6 @@ async fn serve_admission_with_inputs(
     let core = configured
         .core_store_handle()
         .expect("native admission Store");
-    configured.set_admin_token(Some("admintok"));
     configured.set_signing_key(Some(
         busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
             &[9u8; 32],
@@ -258,8 +257,8 @@ async fn serve_admission_with_inputs(
     app.plugins_dir = dir;
     app.plugins_cfg = cfg;
     app.plugin_admission = Some(&ADMISSION);
-    if let Some(env) = hook_env {
-        app.hook_env = env;
+    if let Some(registry) = registry {
+        app.plugin_registry = registry;
     }
     if let Some((config, providers)) = disk_paths {
         app.overlay_path = Some(
@@ -292,26 +291,20 @@ async fn serve_with_plugins_dir(
     serve_admission(dir, unsigned_ok_posture(), None).await
 }
 
-async fn serve_with_plugins_dir_and_hook_env(
+async fn serve_with_plugins_dir_and_registry(
     dir: PathBuf,
-    hook_env: busbar_kernel::hooks::HookEnv,
+    registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    serve_admission(dir, unsigned_ok_posture(), Some(hook_env)).await
+    serve_admission(dir, unsigned_ok_posture(), Some(registry)).await
 }
 
-fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
+fn scanned_registry(dir: &std::path::Path) -> Arc<dyn busbar_contract::plugin_rows::PluginRows> {
     let policy = crate::root::loader::sign::TrustPolicy {
         allow_untrusted: true,
         ..Default::default()
     };
     let registry = crate::root::loader::scan_and_validate(dir, &policy).unwrap();
-    let rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    let axis = crate::root::hooks::axis(&rows).expect("the registry's hook axis");
-    busbar_kernel::hooks::HookEnv::with_axis(
-        rows,
-        axis,
-        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
+    Arc::new(registry)
 }
 
 /// The upload body `POST /plugins` and `POST /plugins/inspect` take, by the admin contract's field
@@ -376,7 +369,7 @@ async fn install(
 ) -> (u16, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&Upload::of(file, tarball))
         .send()
         .await
@@ -388,7 +381,7 @@ async fn install(
 async fn inspect(addr: std::net::SocketAddr, tarball: &[u8]) -> (u16, serde_json::Value) {
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&Upload::of("candidate.tar.gz", tarball))
         .send()
         .await
@@ -400,7 +393,7 @@ async fn inspect(addr: std::net::SocketAddr, tarball: &[u8]) -> (u16, serde_json
 async fn store_catalog(addr: std::net::SocketAddr) -> Vec<serde_json::Value> {
     let list: serde_json::Value = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1082,7 +1075,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     let body = Upload::of(file, &tarball);
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&body)
         .send()
         .await
@@ -1107,7 +1100,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1126,7 +1119,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let reload: serde_json::Value = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1137,7 +1130,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let del = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1146,7 +1139,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let del2 = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1156,7 +1149,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let audit: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/audit"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1209,7 +1202,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 
     let secret_list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=secret"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1233,7 +1226,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 
     let store_list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1278,13 +1271,13 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     let tarball = unsigned_tarball(m, &lib);
 
     std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1311,7 +1304,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 
     let followed: serde_json::Value = client
         .get(format!("http://{addr}{schema_url}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1329,6 +1322,67 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .find(|p| p["name"] == linked_store_key())
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
+/// DES-443 r3 §5: every inspection, POST /plugins/inspect and GET /plugins/{file}/schema, writes one
+/// `plugin.inspect` audit row carrying the requesting actor and how it ended (`manifest`: shown from its manifest,
+/// never loaded).
+#[tokio::test]
+async fn each_inspection_is_audited_with_its_actor() {
+    if !isolated_card_case("each_inspection_is_audited_with_its_actor").await {
+        return;
+    }
+    crate::dist_root_install::install();
+    let dir = tmp_plugins_dir("inspect-audit");
+    let mut m = test_manifest("acme-store-audited", "audited", "acme", "1.0.0");
+    m.settings_schema = Some(serde_json::json!({"type": "object"}).to_string());
+    let tarball = unsigned_tarball(m, b"junk lib bytes for acme-store-audited");
+    std::fs::write(dir.join("acme-store-audited.tar.gz"), &tarball).unwrap();
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
+    let client = reqwest::Client::new();
+
+    let (status, body) = inspect(addr, &tarball).await;
+    assert_eq!(status, 200, "inspect answers: {body}");
+    let digest = crate::root::loader::sign::sha256_hex(&tarball);
+    let schema = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/plugins/acme-store-audited.tar.gz/schema?source=installed_archive&expected_archive_sha256={digest}"
+        ))
+        .header("authorization", "Bearer admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(schema.status().as_u16(), 200);
+
+    let audit: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/audit"))
+        .header("authorization", "Bearer admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows: Vec<&serde_json::Value> = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "plugin.inspect")
+        .collect();
+    assert_eq!(rows.len(), 2, "one row per inspection: {audit}");
+    for row in rows {
+        let principal = row["principal"].as_str().unwrap_or("");
+        assert!(
+            !principal.is_empty() && principal != "anonymous",
+            "the row carries the actor: {row}"
+        );
+        assert_eq!(row["resource"], "plugin:acme-store-audited", "{row}");
+        assert_eq!(row["outcome"], "manifest", "{row}");
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();
@@ -1379,13 +1433,13 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     )
     .unwrap();
 
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1415,7 +1469,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
             "http://{addr}/api/v1/admin/plugins/{}/schema",
             with_row["name"].as_str().unwrap()
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1425,7 +1479,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     assert_eq!(schema_resp["schema"], schema);
     let delete_status = client
         .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1476,7 +1530,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     let body = Upload::of("candidate.tar.gz", &tarball);
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&body)
         .send()
         .await
@@ -1496,7 +1550,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     );
     let list: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1515,7 +1569,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     let bad = Upload::raw("x.tar.gz", "not-base64!!");
     let bad_resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&bad)
         .send()
         .await
@@ -1526,7 +1580,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
 
     let malformed_resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body("not json")
         .send()
@@ -1568,15 +1622,15 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let dir = tmp_plugins_dir("schema");
 
     std::fs::write(dir.join(file), &tarball).unwrap();
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let got_resp = client
         .get(format!(
             "http://{addr}/api/v1/admin/plugins/acme-store-withschema/schema"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1594,13 +1648,13 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 
     let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
-    let hook_env2 = scanned_hook_env(&dir);
-    let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
+    let registry2 = scanned_registry(&dir);
+    let (addr2, handle2) = serve_with_plugins_dir_and_registry(dir.clone(), registry2).await;
     let got2: serde_json::Value = client
         .get(format!(
             "http://{addr2}/api/v1/admin/plugins/acme-store-junk/schema"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1613,7 +1667,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         .get(format!(
             "http://{addr2}/api/v1/admin/plugins/acme-store-withschema/schema"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1631,14 +1685,14 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_tarball = unsigned_tarball(bad_m, &bad_lib);
     let bad_dir = tmp_plugins_dir("badschema");
     std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
-    let bad_hook_env = scanned_hook_env(&bad_dir);
+    let bad_registry = scanned_registry(&bad_dir);
     let (bad_addr, bad_handle) =
-        serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
+        serve_with_plugins_dir_and_registry(bad_dir.clone(), bad_registry).await;
     let got_bad: serde_json::Value = client
         .get(format!(
             "http://{bad_addr}/api/v1/admin/plugins/acme-store-badschema/schema"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -1655,7 +1709,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         .get(format!(
             "http://{bad_addr}/api/v1/admin/plugins/nope/schema"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -1746,7 +1800,7 @@ async fn test_admin_v1_plugin_install_rejections() {
 
     let bad = client
         .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&Upload::raw("x.tar.gz", "!!!not base64!!!"))
         .send()
         .await
@@ -1856,7 +1910,7 @@ async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_befor
     write_base(&crate::root::loader::sign::sha256_hex(&changed));
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&serde_json::json!({"file":file}))
         .send()
         .await

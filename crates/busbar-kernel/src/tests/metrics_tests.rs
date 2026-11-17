@@ -604,8 +604,78 @@ fn local_source(
     impl Fn() -> Vec<busbar_contract::export_calls::Family>,
 ) {
     let width = Duration::from_secs(1);
-    let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
-    (source, move || source.snapshot())
+    let source: &'static Source =
+        Box::leak(Box::new(Source::isolated(width, SUMMARY_BUCKETS, idle)));
+    (source, move || source.snapshot().unwrap())
+}
+
+#[test]
+fn phase_cells_survive_actual_pending_and_failed_recorder_installation() {
+    const CHILD: &str = "BUSBAR_TEST_PHASE_INSTALLATION";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        let full = concat!(
+            module_path!(),
+            "::phase_cells_survive_actual_pending_and_failed_recorder_installation"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        for mode in ["success", "failure"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let failing = mode == "failure";
+    if failing {
+        metrics::set_global_recorder(metrics::NoopRecorder).unwrap();
+    }
+    let phase = crate::telemetry::histogram_slot(
+        crate::telemetry::REQUEST_PHASE_DURATION,
+        &[
+            ("plane", "synthetic"),
+            ("phase", "MountedResponseReady"),
+            ("pool", "installation"),
+            ("ingress_protocol", "test-wire"),
+            ("outcome", "ok"),
+        ],
+    );
+    assert!(phase.is_valid());
+    phase.record(0.5); // The effective policy is not enabled yet.
+    crate::snapshot::request_store::refused(5);
+    assert!(INSTALL_TEST_GATE
+        .set((std::sync::Barrier::new(2), std::sync::Barrier::new(2)))
+        .is_ok());
+    let (entered, release) = INSTALL_TEST_GATE.get().unwrap();
+    configure(Some(Duration::from_secs(3600)));
+    entered.wait();
+    phase.record(0.001);
+    assert!(request_snapshot(32).is_none());
+    release.wait();
+    init_with(Duration::from_secs(3600)); // Wait on the real initialization OnceLock, not a timer.
+    phase.record(0.005);
+    if failing {
+        assert!(!recorder_installed());
+        assert!(request_snapshot(32).is_none());
+        assert!(snapshot().is_none());
+    } else {
+        assert!(recorder_installed());
+        assert_eq!(request_snapshot(32).unwrap().identities[0].count, 2);
+        assert!(snapshot().is_some());
+    }
+    // Read the real process arena even when public readout is permanently unavailable.
+    let source = Source::new(Duration::from_secs(1), SUMMARY_BUCKETS, GAUGE_IDLE_TIMEOUT);
+    let captured = source.request_snapshot(32).unwrap();
+    assert_eq!(captured.identities[0].count, 2);
+    assert_eq!(captured.identities[0].sum_us, 6000);
+    assert_eq!(captured.dropped, [0; 6]);
 }
 
 #[test]
@@ -948,7 +1018,6 @@ macro_rules! gauge_plane {
                 named_def_list: None,
                 named_def_get: None,
                 registry_contains: None,
-                reresolve_gates: None,
                 openapi_schemas: None,
                 on_swap: None,
                 parse_section: None,
@@ -1345,4 +1414,74 @@ async fn the_admission_gate_counts_are_gauges() {
         "got:\n{out:?}"
     );
     drop(held);
+}
+
+/// ORACLE-F3 §5 (decision D-7, red f3-k): core's recorder install-failure line is its own
+/// name-free text. Core runs with no exporter plugin installed, so the line names no word of the
+/// dist plugin list (plugins.yaml aliases); 1.5.5's line named its exporter.
+#[test]
+fn the_recorder_install_failure_line_names_no_plugin() {
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[derive(serde::Deserialize)]
+    struct Registry {
+        plugins: Vec<Entry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        alias: String,
+    }
+
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    let source = SOURCE.get().expect("init_for_test sets the source");
+    let cap = Log::default();
+    let writer = cap.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    // The global recorder is already installed, so a second install takes the failure arm.
+    let installed =
+        tracing::subscriber::with_default(subscriber, || install(source, Duration::from_secs(1)));
+    assert!(installed.is_none(), "a second recorder install must fail");
+
+    let lines = String::from_utf8(cap.0.lock().unwrap().clone()).unwrap();
+    let line = lines
+        .lines()
+        .find(|line| line.contains(&METRICS_RECORDER_INSTALL_FAILED.banner().to_string()))
+        .unwrap_or_else(|| panic!("no recorder install-failure line; got: {lines:?}"));
+    assert!(
+        line.contains("the metrics recorder install failed; the metrics route will be empty: "),
+        "the install-failure line is core's name-free text; got: {line:?}"
+    );
+
+    let registry: Registry = busbar_contract::yaml::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins.yaml"
+    )))
+    .expect("plugins.yaml parses");
+    assert!(!registry.plugins.is_empty(), "the dist plugin list is read");
+    let words: Vec<String> = line
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .map(str::to_ascii_lowercase)
+        .collect();
+    for entry in &registry.plugins {
+        assert!(
+            !words.contains(&entry.alias.to_ascii_lowercase()),
+            "the install-failure line names plugin `{}`: {line:?}",
+            entry.alias
+        );
+    }
 }

@@ -11,14 +11,12 @@ use crate::root::test_plugins as plugins;
 async fn app() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "legacy-ledger-admin-{}",
@@ -32,11 +30,13 @@ async fn app() -> Arc<busbar_kernel::state::App> {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -70,7 +70,6 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
@@ -84,7 +83,7 @@ struct Answer {
 }
 
 async fn ask(addr: SocketAddr, path: &str) -> Answer {
-    let response = reqwest::Client::new()
+    let response = crate::root::test_plugins::operator_client()
         .get(format!("http://{addr}{path}"))
         .send()
         .await

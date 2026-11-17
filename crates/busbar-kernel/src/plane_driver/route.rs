@@ -163,6 +163,15 @@ pub struct RoutedScope {
 }
 
 pub trait FarEnd: Sync {
+    fn send_selected<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+        handoff: &'a mut super::port_egress::SelectedHandoff,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let _ = (token, request, handoff);
+        async { false }
+    }
     fn member<'a>(
         &'a self,
         token: &'a Pass<Route>,
@@ -1517,9 +1526,6 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             run.bufs.pool.clear();
             run.bufs.pool.extend_from_slice(pool.as_bytes());
             let far_bound = !member.is_empty();
-            if far_bound {
-                self.routing_tap(attempt_no, &member, self.far.remaining(run.token), failed);
-            }
 
             let attempt_span = if far_bound {
                 self.far.attempt_span(run.token)
@@ -2109,8 +2115,6 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             );
                         }
                         self.caller.head(out.reply_status, fields);
-
-                        self.response_tap(false, out.reply_status);
                     }
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;
                     if n != 0 || message_end {

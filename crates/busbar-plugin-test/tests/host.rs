@@ -9,10 +9,8 @@
 
 #[path = "fixtures/media_door.rs"]
 mod media_door;
-#[path = "fixtures/secret_door.rs"]
-mod secret_door;
-#[path = "fixtures/store_door.rs"]
-mod store_door;
+#[path = "fixtures/native_store.rs"]
+mod native_store;
 #[path = "fixtures/transport_door.rs"]
 mod transport_door;
 
@@ -22,8 +20,7 @@ use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
     slot, DatagramLane, EmitIn, FramerOut, LocateIn, LocateOut, WriteIn,
 };
-use busbar_contract::persistence::{DatasetId, PersistenceBackend};
-use busbar_plugin_loader::dispatch::kinds::{store_v4::StoreV4, transport::Transport};
+use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::LoadError;
 use busbar_plugin_test::{both, Buf, Called, Host, Image, Loans, Mutant, Opened, Pending, Refused};
 
@@ -31,26 +28,39 @@ fn host() -> Host {
     Host::new(busbar_contract::services::test_caller_binding())
 }
 
+/// The MIN-3 store fixture, linked and as its cdylib, opened through `Registry::open_store`: both images
+/// answer the same dataset and clock (the port of the old door store's both-images case).
+#[cfg(unix)]
 #[test]
-fn the_store_fixture_opens_through_both_images() {
-    both::<StoreV4>("store_fixture", store_door::door, |image, img| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("a runtime");
-        rt.block_on(async {
-            let store = host()
-                .store(img, "host-fixture-store", b"{}")
-                .await
-                .unwrap_or_else(|e| panic!("{image}: {e:?}"));
-            let info = store.info();
-            assert_eq!(info.dataset, DatasetId([1; 16]), "{image}");
-            let clock = store
-                .clock(info.dataset)
-                .await
-                .unwrap_or_else(|e| panic!("{image}: {e:?}"));
-            assert_eq!(clock.unix_seconds, 41, "{image}");
-        });
-    });
+fn the_native_store_fixture_opens_through_both_images() {
+    use busbar_contract::persistence::DatasetId;
+    use busbar_plugin_loader::test_host::{admit_bytes, cdylib_bytes, test_manifest, test_sign};
+    use busbar_plugin_test::fake_needs::FakeNeeds;
+    use busbar_plugin_test::store::{StoreCase, StoreHarness};
+
+    let linked = StoreHarness::admit(native_store::PLUGIN.plugin(), FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("linked: {r:?}"));
+    let bytes = cdylib_bytes("native_store_fixture");
+    // A native manifest names its alias among the header's former_names (as `busbar pack` completes it).
+    let mut manifest =
+        test_manifest(&bytes, &["native-store"]).unwrap_or_else(|r| panic!("cdylib stamp: {r:?}"));
+    manifest.alias = "native-store".into();
+    let manifest = test_sign(manifest, &bytes);
+    let admitted = admit_bytes(&bytes, &manifest, "native-store-fixture")
+        .unwrap_or_else(|r| panic!("cdylib admission: {r:?}"));
+    let dropped = StoreHarness::admit_admitted(admitted, FakeNeeds::new())
+        .unwrap_or_else(|r| panic!("cdylib: {r:?}"));
+    for (image, h) in [("linked", linked), ("cdylib", dropped)] {
+        let store = h
+            .open(&StoreCase::new("host-fixture-store", b"{}".to_vec()))
+            .unwrap_or_else(|e| panic!("{image}: {e:?}"));
+        let info = store.backend.info();
+        assert_eq!(info.dataset, DatasetId([1; 16]), "{image}");
+        let clock = h
+            .block_on(store.backend.clock(info.dataset))
+            .unwrap_or_else(|e| panic!("{image}: {e:?}"));
+        assert_eq!(clock.unix_seconds, 41, "{image}");
+    }
 }
 
 #[test]
@@ -515,172 +525,6 @@ fn a_dropping_media_row_refuses_every_zero() {
     let _ = Mutant::dropping_media(media_door::door, 0);
 }
 
-/// The fixture secret's RESOLVE answer: the first secret its OPEN was lent.
-fn resolved(t: &mut Opened<busbar_plugin_test::Secret>) -> Vec<u8> {
-    use busbar_contract::abi::secret::{slot as secret_slot, ResolveIn};
-    let mut i = Loans::<ResolveIn>::new();
-    let k = i.secret_buf(64);
-    match t.call::<{ secret_slot::RESOLVE }>(i) {
-        Called::Ready(a) => {
-            assert_eq!(a.outcome(), Outcome::Ready, "RESOLVE answers");
-            let len = a.get(|o| o.secret.len);
-            a.read(&k)
-                .get(..len)
-                .expect("inside the lent buffer")
-                .to_vec()
-        }
-        Called::Pending(p) => {
-            p.leak_loans();
-            panic!("the fixture's RESOLVE does not pend");
-        }
-    }
-}
-
-#[test]
-fn an_open_lends_the_plugin_the_secrets_the_test_states() {
-    let secrets: [&[u8]; 2] = [b"lent-secret-0", b"lent-secret-1"];
-    let mut t = host()
-        .open_lent(
-            Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
-            "host-fixture-secret",
-            b"{}",
-            &secrets,
-        )
-        .expect("the secret fixture opens");
-    assert_eq!(
-        resolved(&mut t),
-        b"lent-secret-0",
-        "OPEN lent the first secret the test stated"
-    );
-}
-
-/// STH-ROWS D-1a/D-1b: the secret fixture opened through `open_lent`, lent `secret`.
-fn open_secret(h: &Host, secret: &[u8]) -> Opened<busbar_plugin_test::Secret> {
-    h.open_lent(
-        Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
-        "host-fixture-secret",
-        b"{}",
-        &[secret],
-    )
-    .expect("the secret fixture opens")
-}
-
-/// CLOSE crossings the secret fixture answered so far.
-fn closes() -> u64 {
-    secret_door::CLOSES.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[test]
-fn validate_answers_before_open_and_a_refused_open_sends_no_close() {
-    let h = host();
-    let mut loaded = h
-        .load(
-            Image::<busbar_plugin_test::Secret>::linked(secret_door::door),
-            "host-fixture-secret",
-        )
-        .expect("the secret fixture loads");
-    let valid = loaded.validate(b"{}");
-    assert_eq!(
-        valid.outcome,
-        Outcome::Ready,
-        "VALIDATE answers before any OPEN: {:?}",
-        valid.error
-    );
-    let invalid = loaded.validate(b"[]");
-    assert_ne!(
-        invalid.outcome,
-        Outcome::Ready,
-        "a JSON list is not settings"
-    );
-    assert!(invalid.error.is_some(), "a refused VALIDATE states why");
-    let before = closes();
-    let (why, loaded) = match loaded.open(b"[]", &[]) {
-        Err(back) => back,
-        Ok(_) => panic!("the fixture's OPEN refuses a JSON list"),
-    };
-    assert!(matches!(why, Refused::Open(_)), "{why:?}");
-    drop(loaded);
-    assert_eq!(
-        closes(),
-        before,
-        "an OPEN that did not answer READY opened nothing, so nothing is CLOSEd"
-    );
-}
-
-#[test]
-fn an_opening_closes_once_when_dropped_and_readies_into_an_open_instance() {
-    let h = host();
-    let image = || Image::<busbar_plugin_test::Secret>::linked(secret_door::door);
-    let before = closes();
-    let opening = h
-        .load(image(), "host-fixture-secret")
-        .expect("the secret fixture loads")
-        .open(b"{}", &[b"lent-secret-0".as_slice()])
-        .map_err(|(why, _)| why)
-        .expect("the secret fixture opens");
-    drop(opening);
-    assert_eq!(
-        closes() - before,
-        1,
-        "an instance dropped between OPEN and READY CLOSEs once"
-    );
-    let mut t = h
-        .load(image(), "host-fixture-secret")
-        .expect("the secret fixture loads")
-        .open(b"{}", &[b"lent-secret-0".as_slice()])
-        .map_err(|(why, _)| why)
-        .expect("the secret fixture opens")
-        .ready()
-        .map_err(|(why, _)| why)
-        .expect("the secret fixture readies");
-    assert_eq!(
-        resolved(&mut t),
-        b"lent-secret-0",
-        "the readied instance serves"
-    );
-}
-
-#[test]
-fn the_lifecycle_slots_cross_an_open_instance_and_close_answers_once() {
-    let h = host();
-    let mut t = open_secret(&h, b"lent-secret-0");
-    let id = t.instance_id();
-    let valid = t.validate(b"{}");
-    assert_eq!(valid.outcome, Outcome::Ready, "{:?}", valid.error);
-    let refreshed = t.refresh(b"{}", &[b"refreshed-secret".as_slice()], 2);
-    assert_eq!(refreshed.outcome, Outcome::Ready, "{:?}", refreshed.error);
-    assert_eq!(
-        resolved(&mut t),
-        b"refreshed-secret",
-        "REFRESH lent the plugin its new secret"
-    );
-    let refused = t.refresh(b"[]", &[], 3);
-    assert_ne!(
-        refused.outcome,
-        Outcome::Ready,
-        "the fixture refuses a list"
-    );
-    assert!(refused.error.is_some(), "a refused REFRESH states why");
-    assert_eq!(t.instance_id(), id, "REFRESH keeps the instance");
-    let ticked = t.tick(100);
-    assert_eq!(ticked.outcome, Outcome::Ready, "{:?}", ticked.error);
-    assert_eq!(
-        ticked.next_tick_ns,
-        Some(105),
-        "TICK answers the plugin's next tick"
-    );
-    let retired = t.retire(1);
-    assert_eq!(retired.outcome, Outcome::Ready, "{:?}", retired.error);
-    let before = closes();
-    let closed = t.close();
-    assert_eq!(closed.outcome, Outcome::Ready, "{:?}", closed.error);
-    assert_eq!(
-        closes() - before,
-        1,
-        "close() CLOSEs once, and the drop after it sends no second CLOSE"
-    );
-}
-
 #[test]
 fn the_host_builders_keep_each_other_s_settings() {
     use busbar_contract::services::HostServices;
@@ -705,160 +549,6 @@ fn the_host_builders_keep_each_other_s_settings() {
     assert!(
         services_first.dispatcher().host_services().is_some(),
         "config() keeps the stated services"
-    );
-}
-
-/// STH-ROWS D-6: how long a submission's answer is waited for.
-const WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// A RESOLVE `in` lending a `cap`-byte secret buffer, and its key.
-fn resolve_in(cap: usize) -> (Loans<busbar_contract::abi::secret::ResolveIn>, Buf<u8>) {
-    let mut i = Loans::<busbar_contract::abi::secret::ResolveIn>::new();
-    let k = i.secret_buf(cap);
-    (i, k)
-}
-
-#[test]
-fn a_short_answer_regrows_its_buffer_before_the_one_re_call() {
-    use busbar_contract::abi::secret::slot as secret_slot;
-    let h = host();
-    let mut t = open_secret(&h, b"lent-secret-0");
-    let (i, _small) = resolve_in(4);
-    let pending = match t.call::<{ secret_slot::RESOLVE }>(i) {
-        Called::Pending(p) => p,
-        Called::Ready(a) => panic!(
-            "a 4-byte buffer is SHORT for a 13-byte secret: {:?}",
-            a.outcome()
-        ),
-    };
-    let mut grown = None;
-    let pending = pending.regrow(|i| grown = Some(i.secret_buf(64)));
-    let key = grown.expect("regrow ran its closure");
-    let called = pending.resume(&mut t);
-    match called {
-        Called::Ready(a) => {
-            assert_eq!(a.outcome(), Outcome::Ready, "{:?}", a.error());
-            let len = a.get(|o| o.secret.len);
-            assert_eq!(
-                a.read(&key).get(..len),
-                Some(b"lent-secret-0".as_slice()),
-                "the re-call was lent the grown buffer"
-            );
-        }
-        Called::Pending(p) => {
-            p.leak_loans();
-            panic!("the one re-call, lent 64 bytes, answers");
-        }
-    }
-}
-
-#[test]
-fn submitted_ops_answer_through_wait_each_with_its_own_moved_loans() {
-    use busbar_contract::abi::secret::slot as secret_slot;
-    let h = host();
-    let t = open_secret(&h, b"lent-secret-0");
-    let mut flying = Vec::new();
-    let mut keys = Vec::new();
-    for _ in 0..2 {
-        let (i, k) = resolve_in(64);
-        keys.push(k);
-        flying.push(t.submit::<{ secret_slot::RESOLVE }>(i));
-    }
-    for (submitted, key) in flying.into_iter().zip(keys) {
-        let done = submitted.wait(WITHIN).unwrap_or_else(|late| {
-            late.leak_loans();
-            panic!("RESOLVE answers within the wait")
-        });
-        assert_eq!(done.outcome(), Outcome::Ready, "{:?}", done.error());
-        let len = done.get(|o| o.secret.len);
-        assert_eq!(
-            done.read(&key).get(..len),
-            Some(b"lent-secret-0".as_slice()),
-            "each moved submission reads back its own buffer"
-        );
-    }
-}
-
-#[test]
-fn a_short_submission_is_resubmitted_once_on_its_ticket_with_grown_loans() {
-    use busbar_contract::abi::secret::slot as secret_slot;
-    let h = host();
-    let t = open_secret(&h, b"lent-secret-0");
-    let (i, _small) = resolve_in(4);
-    let short = t
-        .submit::<{ secret_slot::RESOLVE }>(i)
-        .wait(WITHIN)
-        .unwrap_or_else(|late| {
-            late.leak_loans();
-            panic!("RESOLVE answers within the wait")
-        });
-    assert!(
-        short.short(),
-        "a 4-byte buffer is SHORT for a 13-byte secret: {:?}",
-        short.outcome()
-    );
-    let mut grown = None;
-    let done = short
-        .resubmit(|i| grown = Some(i.secret_buf(64)))
-        .wait(WITHIN)
-        .unwrap_or_else(|late| {
-            late.leak_loans();
-            panic!("the resubmission answers within the wait")
-        });
-    assert_eq!(done.outcome(), Outcome::Ready, "{:?}", done.error());
-    let key = grown.expect("resubmit ran its closure");
-    let len = done.get(|o| o.secret.len);
-    assert_eq!(
-        done.read(&key).get(..len),
-        Some(b"lent-secret-0".as_slice()),
-        "the resubmission was lent the grown buffer"
-    );
-}
-
-#[test]
-fn a_cancelled_pending_submission_answers_the_kind_s_disposition() {
-    use busbar_contract::abi::secret::{cancel, slot as secret_slot};
-    let h = host();
-    let t = open_secret(&h, secret_door::PENDS);
-    let (i, _k) = resolve_in(64);
-    let pending = match t
-        .submit::<{ secret_slot::RESOLVE }>(i)
-        .wait(std::time::Duration::from_millis(200))
-    {
-        Err(pending) => pending,
-        Ok(done) => panic!("RESOLVE pends until cancelled: {:?}", done.outcome()),
-    };
-    let done = pending.cancel(WITHIN).unwrap_or_else(|late| {
-        late.leak_loans();
-        panic!("a cancelled op answers within the wait")
-    });
-    assert_eq!(
-        done.disposition(),
-        Some(cancel::ABORTED),
-        "the fixture's CANCEL disposition: {:?} {:?}",
-        done.outcome(),
-        done.error()
-    );
-    assert_ne!(
-        done.outcome(),
-        Outcome::Ready,
-        "a cancelled op did not answer"
-    );
-}
-
-#[test]
-fn an_instance_with_a_forgotten_submission_is_poisoned_not_closed() {
-    use busbar_contract::abi::secret::slot as secret_slot;
-    let h = host();
-    let t = open_secret(&h, secret_door::PENDS);
-    let (i, _k) = resolve_in(64);
-    std::mem::forget(t.submit::<{ secret_slot::RESOLVE }>(i));
-    let before = closes();
-    drop(t);
-    assert_eq!(
-        closes(),
-        before,
-        "a poisoned instance skips CLOSE: the plugin may still hold the leaked loans"
     );
 }
 
@@ -897,26 +587,6 @@ fn a_tail_row_never_grows_a_tail() {
 fn the_media_row_refuses_a_transport_s_door() {
     let _ = Mutant::of(transport_door::door).no_streaming_types();
 }
-
-#[test]
-fn an_images_declared_diagnostic_reaches_the_hosts_sink_once() {
-    let env = busbar_plugin_test::Envelopes::new();
-    let h = host().sink(env.clone());
-    let mut t = open_secret(&h, secret_door::NOTES);
-    assert_eq!(resolved(&mut t), secret_door::NOTES, "RESOLVE answers");
-    assert_eq!(
-        env.diags(),
-        vec![busbar_plugin_test::DiagRecord {
-            id: 0,
-            name: b"fixture-note".to_vec(),
-            severity: 1,
-            text: b"the fixture was asked to note".to_vec(),
-        }],
-        "the declared diagnostic is recorded once, as production's sink sees it"
-    );
-    assert!(env.metrics().is_empty() && env.dropped().is_empty());
-}
-
 #[test]
 fn a_linked_door_is_refused_when_it_states_another_plugins_statement() {
     // Another plugin of the SAME kind: a statement of another kind is refused earlier, as a manifest kind

@@ -373,6 +373,7 @@ where
     ids: PooledIds,
     certs: CertDigests,
     reported: Reported,
+    admitted: policy::Admitted,
 }
 
 /// Idle conns kept per key.
@@ -409,6 +410,7 @@ where
             ids: PooledIds::default(),
             certs: CertDigests::default(),
             reported: Reported::default(),
+            admitted: policy::Admitted::default(),
         }
     }
 
@@ -419,6 +421,7 @@ where
         self.ids.forget(instance);
         self.certs.forget(instance);
         self.reported.forget(instance);
+        self.admitted.forget(instance);
     }
 
     fn network(
@@ -577,6 +580,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let dest = normalise(&checked.endpoint.dest)?;
         let deadline = Instant::now()
             + self.budget(
@@ -748,6 +753,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let (trust, trust_digest) = self.trust(cx, held.key.class, p.trust)?;
         let (cert, cert_digest) = self.cert(cx, p.cert, true).await?;
         let sni = effective_sni(p.sni, &held.key.dest);
@@ -880,6 +887,8 @@ where
                 return Err(e);
             }
         };
+        self.admitted
+            .count(cx.kind.word(), cx.instance, cx.name, admit);
         let tls = if busbar_contract::net::scheme_is(n.url, "https") {
             if n.cert.is_some_and(|c| c != 0) {
                 TLS_MUTUAL

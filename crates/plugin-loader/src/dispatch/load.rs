@@ -226,13 +226,14 @@ pub fn admit_linked(door: DoorFn) -> Result<LoadedDoor, LoadError> {
 
 pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     use super::kinds::{
-        auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
-        store_v4::StoreV4 as Store, transport::Transport,
+        auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4 as Store,
+        transport::Transport,
     };
     let (_, kind) = read_door(p, None)?;
     match kind {
         KindCode::Store => validate_door::<Store>(p),
-        KindCode::Secret => validate_door::<Secret>(p),
+        // WP3 step 2: the door secret kind is retired; secret plugins are native (MIN-3) images.
+        KindCode::Secret => Err(LoadError::UnknownKind(KindCode::Secret as u32)),
         KindCode::Auth => validate_door::<Auth>(p),
         KindCode::Hook => validate_door::<Hook>(p),
         KindCode::Export => validate_door::<Export>(p),
@@ -287,7 +288,7 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
-#[cfg(any(test, feature = "test-support", feature = "pack"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn rendering_of_library(path: &std::path::Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
@@ -557,7 +558,7 @@ pub enum LoadError {
     Entropy(String),
 }
 
-pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
+pub use busbar_artifact_verifier::REBUILD;
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -838,21 +839,6 @@ pub(crate) struct AdmittedImage<K: Kind> {
 impl<K: Kind> AdmittedImage<K> {
     pub(crate) fn bind(self, bind: Bind) -> Result<Plugin<K>, LoadError> {
         Plugin::bind(self.validated, self.lib, bind)
-    }
-}
-
-impl AdmittedImage<super::kinds::hook::Hook> {
-    pub(crate) fn routes(
-        &self,
-    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
-        Ok(self
-            .validated
-            .context
-            .as_deref()
-            .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
-            .map_or_else(Vec::new, |context| {
-                crate::cold::dispatch::load::routes(&context.routes)
-            }))
     }
 }
 

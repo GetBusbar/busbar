@@ -62,18 +62,12 @@ const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-m
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("provision-mint-fault");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -87,11 +81,13 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     );
     let signing_key = directory.join("signing.key");
     std::fs::write(&signing_key, [7u8; 32]).expect("write the configured signing key");
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [], "signing_key": { "file": signing_key } },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
             "groups": { "team": {} },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
@@ -151,7 +147,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         .expect("a port");
     let address = listener.local_addr().expect("an address");
     let serving = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let versions_before = handle
         .load()
         .versions()
@@ -250,18 +246,12 @@ async fn auto_provision_stops_at_the_group_ceiling() {
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("admin-group-ceiling");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);

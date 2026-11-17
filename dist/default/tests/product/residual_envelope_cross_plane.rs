@@ -38,14 +38,12 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             let yaml = "providers: {}\nmodels: {}\n";
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-            manifest.statement = Some(hex::encode(statement));
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
+                "store",
+                &library_path,
+                plugins::FIXTURE_PUBLISHER,
+            );
             let library = std::fs::read(library_path).expect("the actual store library reads");
             let directory = plugins::scratch(&format!(
                 "residual_envelope_cross_plane-{}",
@@ -63,7 +61,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             let mut document: serde_json::Value = busbar_contract::yaml::from_str(yaml)
                 .expect("the concrete product deployment is valid YAML");
             document["store"] = serde_json::json!({"module": module, "settings": settings});
-            document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+            document["auth"] = serde_json::json!({"chain": []});
             document["advanced"] = serde_json::json!({});
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 document,

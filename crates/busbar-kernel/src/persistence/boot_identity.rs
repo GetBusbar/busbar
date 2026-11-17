@@ -170,7 +170,7 @@ impl WriterRetirements {
         core: &CoreStore,
         epoch: u64,
         writer: [u8; 16],
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         self.retire_after(core, epoch, writer, 0, None).await
     }
 
@@ -185,7 +185,7 @@ impl WriterRetirements {
         writer: [u8; 16],
         grace_ms: u64,
         seen: Option<UndrainedWriter>,
-    ) -> Result<WriterRetirement, String> {
+    ) -> Result<WriterRetirement, RetireError> {
         use super::{commit::SubmitResult, facade::PendingId};
         use busbar_contract::persistence::{self as native, control};
         let _gate = self.gate.lock().await;
@@ -199,7 +199,7 @@ impl WriterRetirements {
             let submission = core
                 .retry(PendingId(candidate.candidate().id.operation))
                 .await
-                .map_err(error)?;
+                .map_err(RetireError::from)?;
             match submission.result {
                 SubmitResult::Decided(decision) => {
                     self.take_decided(target, matches!(*decision, native::Decision::Applied(_)));
@@ -240,7 +240,7 @@ impl WriterRetirements {
                 time: None,
             }))
             .await
-            .map_err(error)?;
+            .map_err(RetireError::from)?;
         let native::ReadResult::Values {
             observed_at,
             mut values,
@@ -374,7 +374,7 @@ impl WriterRetirements {
             Err(cause) => {
                 // Nothing crossed: drop the target with no record.
                 self.take_decided(target, false);
-                return Err(error(cause));
+                return Err(cause.into());
             }
         };
         #[cfg(test)]
@@ -561,7 +561,7 @@ impl BootRecords {
         mutations: Vec<Mutation>,
     ) -> Result<bool, String> {
         let request = Arc::new(Request {
-            op_id: crate::door::op_id().0,
+            op: self.records.record_op().await.map_err(error)?,
             predicates,
             mutations,
         });
@@ -1134,7 +1134,7 @@ impl BootIdentity {
     }
 }
 
-/// One node of `/info.nodes`.
+/// One node lease row: a row of the `core/process` view `nodes`. Times are epoch seconds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeRow {
     pub node_id: String,
@@ -1343,6 +1343,7 @@ pub struct PredecessorFence {
     identity: Arc<BootIdentity>,
     host: String,
     retirements: WriterRetirements,
+    /// Its own seal-row owner: a seal write never takes the node lease's gate or retained slot.
     seals: BootRecords,
 }
 
@@ -1354,6 +1355,8 @@ pub struct ExpiredPass {
     pub invalid: usize,
     pub remaining: usize,
     pub records: super::undrained::PassCounts,
+    /// Receipt generations of closed writers swept by the owner-row step (DES-264 §3.5).
+    pub swept: usize,
 }
 
 impl PredecessorFence {
@@ -1456,6 +1459,17 @@ impl PredecessorFence {
                 }
             }
         }
+        // DES-264 §3.5: the crash sweep, driven by owner rows, at most EXPIRED_PASS_MAX of them.
+        // A separate candidate per generation, only for writers whose close is decided.
+        if !stopped() {
+            match self.core.sweep_owner_rows(EXPIRED_PASS_MAX).await {
+                Ok((swept, _)) => pass.swept = swept,
+                Err(error) => tracing::warn!(
+                    ?error,
+                    "the receipt crash sweep did not finish; the next pass continues"
+                ),
+            }
+        }
         if pass.remaining > 0 {
             crate::diag_warn!(
                 crate::diagnostics::EXPIRED_WRITERS_REMAINING,
@@ -1485,6 +1499,7 @@ impl PredecessorFence {
             skipped_live = pass.skipped_live,
             invalid = pass.invalid,
             remaining = pass.remaining,
+            swept = pass.swept,
             refused = %refused.join("; "),
             "expired_writers"
         );
@@ -1519,8 +1534,8 @@ mod predecessor_seal;
 #[path = "retire_error.rs"]
 mod retire_error;
 pub use predecessor_seal::{
-    FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome, SealRow,
-    SealState, TailView,
+    read_seal_row, FenceMark, HostNode, HostNodes, PredecessorRetire, RefusedNode, SealOutcome,
+    SealRow, SealState, TailView,
 };
 pub use retire_error::RetireError;
 
@@ -1530,6 +1545,8 @@ mod predecessor_seal_tests;
 
 pub struct TakenNode {
     pub id: u64,
+    /// The store clock (ms) `take_node` read: a predecessor renewed no later than this (SEALING-FIX
+    /// §3.6.2 "Dead at start").
     pub taken_at_ms: u64,
     pub lease: Option<NodeLease>,
 }
@@ -1670,3 +1687,7 @@ mod expired_writers_tests;
 #[cfg(test)]
 #[path = "tests/fence_settle_tests.rs"]
 mod fence_settle_tests;
+
+#[cfg(test)]
+#[path = "tests/record_ops_tests.rs"]
+mod record_ops_tests;

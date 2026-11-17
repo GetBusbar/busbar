@@ -4,13 +4,87 @@
 use super::*;
 use busbar_contract::json::{self, JsonValueTrait};
 
+#[test]
+fn cloned_admin_carrier_keeps_original_empty_request_and_exact_query_presence() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let fields = [
+        ("x-original", b"\xff".as_slice()),
+        ("x-original", b"second"),
+    ];
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "GET",
+            path: "/api/v1/admin/audit",
+            query: "",
+            query_present: true,
+            authority: "node.example",
+            headers: fields.iter().copied(),
+            peer: "192.0.2.1:42",
+            tls_peer_cert: b"certificate",
+            body: &[],
+            now_s: 42,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot.clone(), 7);
+    let retained = request.clone();
+    assert!(Arc::ptr_eq(request.snapshot(), retained.snapshot()));
+    assert!(retained.snapshot().request().same_request(&lease));
+    assert_eq!(retained.path(), "/api/v1/admin/audit?");
+    assert_eq!(retained.headers().collect::<Vec<_>>(), fields);
+    assert_eq!(retained.snapshot().peer(), "192.0.2.1:42");
+    assert_eq!(retained.snapshot().tls_peer_cert(), b"certificate");
+    drop((request, snapshot, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    drop(retained);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn admin_http_body_projection_retains_same_snapshot_without_copying() {
+    use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+
+    let process = ProcessAdmission::new(2);
+    let lease = process.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "POST",
+            path: "/api/v1/admin/config/apply",
+            query: "",
+            query_present: false,
+            authority: "node",
+            headers: std::iter::empty(),
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"original body",
+            now_s: 1,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = AdminRequest::from_snapshot(snapshot, 8);
+    let projected = request.snapshot().body_bytes();
+    assert_eq!(projected.as_ptr(), request.body().as_ptr());
+    drop((request, lease));
+    assert!(process.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(projected.as_ref(), b"original body");
+    drop(projected);
+    assert!(process.try_enter(AdmissionClass::Data).is_ok());
+}
+
 fn a_fresh_unit() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn a_request() -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "GET".to_string(),
         path: "/api/v1/admin/audit?limit=4".to_string(),
         credential: Some("admin-token".to_string()),
@@ -18,13 +92,13 @@ fn a_request() -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 #[test]
 fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
     const SECRET: &str = "a-distinctive-admin-secret-7f31c9";
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/config/apply".to_string(),
         credential: Some(SECRET.to_string()),
@@ -36,7 +110,7 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
         body: b"{}".to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
 
     let rendered = format!("{request:?}");
     assert!(
@@ -44,38 +118,19 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
         "Debug must never carry the presented credential — not in the field, not in the header it \
          arrived in. Got: {rendered}"
     );
-    assert!(
-        rendered.matches("<redacted>").count() >= 3,
-        "the field and BOTH carriers must be redacted, got: {rendered}"
-    );
-
-    assert!(rendered.contains("AdminRequest"), "got: {rendered}");
-    assert!(
-        rendered.contains("/api/v1/admin/config/apply"),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("content-type") && rendered.contains("application/json"),
-        "a header that carries no credential still prints as itself, got: {rendered}"
-    );
-    assert!(rendered.contains("\"POST\""), "got: {rendered}");
-
-    let mut nothing_presented = request;
-    nothing_presented.credential = None;
-    nothing_presented.headers = vec![(
-        "authorization".to_string(),
-        "Bearer not-what-was-presented".to_string(),
-    )];
-    let rendered = format!("{nothing_presented:?}");
-    assert!(rendered.contains("credential: None"), "got: {rendered}");
-    assert!(
-        !rendered.contains("<redacted>"),
-        "nothing was presented, so nothing is redacted, got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Bearer not-what-was-presented"),
-        "got: {rendered}"
-    );
+    assert!(rendered.contains("AdminRequest"));
+    for value in [
+        "/api/v1/admin/config/apply",
+        "authorization",
+        "Bearer",
+        "application/json",
+        "{}",
+    ] {
+        assert!(
+            !rendered.contains(value),
+            "snapshot content leaked in Debug: {rendered}"
+        );
+    }
 }
 
 #[test]
@@ -149,9 +204,11 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
@@ -169,7 +226,7 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
         .expect("the request builds");
     let response = wrapped
         .clone()
-        .oneshot(request)
+        .oneshot(charged_http_for_test(request).await)
         .await
         .expect("the router answers");
     assert_eq!(response.status(), 400);
@@ -180,7 +237,10 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
         .header(axum::http::header::CONTENT_LENGTH, "10")
         .body(axum::body::Body::from(b"0123456789".to_vec()))
         .expect("the request builds");
-    let response = wrapped.oneshot(request).await.expect("the router answers");
+    let response = wrapped
+        .oneshot(charged_http_for_test(request).await)
+        .await
+        .expect("the router answers");
     assert_eq!(
         response.status(),
         200,
@@ -278,9 +338,11 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
         ),
     ] {
         let mut request = a_request();
-        request.method = "PUT".to_string();
-        request.path = "/api/v1/admin/config/settings".to_string();
-        request.credential = Some("sk-live-the-presented-secret".to_string());
+        request.edit_for_test(|draft| draft.method = "PUT".to_string());
+        request.edit_for_test(|draft| draft.path = "/api/v1/admin/config/settings".to_string());
+        request.edit_for_test(|draft| {
+            draft.credential = Some("sk-live-the-presented-secret".to_string())
+        });
         let mut walk = AdminWalk::new(request);
         let _ = decode(&mut walk);
         let _ = verify(&mut walk, &PrincipalId::new("key_operator_7"));
@@ -298,12 +360,12 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = async |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
-        let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+        let binding = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
 
-        request.body = b"{\"backup_ref\":\"backup-1\"}".to_vec();
+        request.edit_for_test(|draft| draft.body = b"{\"backup_ref\":\"backup-1\"}".to_vec());
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).expect("the plane's table declares this operation");
         walk.granted = Some(granted);
@@ -356,8 +418,8 @@ fn approved_under(
 ) -> Result<(), ReasonCode> {
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), a_door_answering(door));
     let mut request = a_request();
-    request.method = method.to_string();
-    request.path = path.to_string();
+    request.edit_for_test(|draft| draft.method = method.to_string());
+    request.edit_for_test(|draft| draft.path = path.to_string());
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
@@ -536,7 +598,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/commit-upgrade".to_string(),
         credential: None,
@@ -544,7 +606,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         body: br#"{"version":"once"}"#.to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
     let minted = std::sync::atomic::AtomicUsize::new(0);
 
     let mint = || async {
@@ -579,8 +641,9 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
                 actor: "operator",
             },
             &request,
-            &request.body,
+            request.body(),
             None,
+            bound::ReplayContext::None,
             mint,
         )
         .await
@@ -598,7 +661,12 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         ("another node", &sibling),
     ] {
         assert_eq!(replayed.status, first.status, "{who}: the first status");
-        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        let mut marked = first.headers.clone();
+        marked.push(("idempotent-replayed".to_string(), "true".to_string()));
+        assert_eq!(
+            replayed.headers, marked,
+            "{who}: the first headers, marked as replayed (r3 §4.6)"
+        );
         assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
     }
     assert_eq!(
@@ -665,23 +733,6 @@ async fn a_revoked_credential_is_refused_before_the_operation_runs() {
     );
 }
 
-#[tokio::test]
-async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                Denylist(true),
-            )));
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
-        .answer(a_request())
-        .await;
-    assert_eq!(
-        answer.status, 200,
-        "the open door admits, and the denylist is not a probe"
-    );
-}
-
 async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
         .await
@@ -689,7 +740,7 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
             Denylist(false),
         )));
     let mut request = a_request();
-    request.credential = credential.map(str::to_string);
+    request.edit_for_test(|draft| draft.credential = credential.map(str::to_string));
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await
@@ -725,7 +776,7 @@ async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
             Denylist(true),
         )));
     let mut request = a_request();
-    request.credential = Some("credential".into());
+    request.edit_for_test(|draft| draft.credential = Some("credential".into()));
     let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await;
@@ -761,7 +812,7 @@ async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
         absent,
         door_answer(),
         "a caller who presented NO credential must be the door's answer — this is the arm a step \
-         that never reads `request.credential` cannot produce"
+         that never reads `request.credential()` cannot produce"
     );
     assert_eq!(absent.status, 401, "and that answer's status is the door's");
 }
@@ -772,7 +823,7 @@ async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() 
     assert_eq!(absent.status, 401);
     assert_eq!(
         String::from_utf8(absent.body).expect("the envelope is text"),
-        r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#
+        r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer)"}}"#
     );
     assert_eq!(
         absent.headers,
@@ -817,7 +868,7 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
 
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(real_admin_dispatch().await),
-        open_door(),
+        operator_door(),
     )
     .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
@@ -983,18 +1034,12 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
 
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -1014,7 +1059,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1081,8 +1126,8 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
     };
     let mutating = |path: &str| {
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
         request
     };
 
@@ -1223,11 +1268,11 @@ async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let binding = AdminBinding::new(Arc::new(NeverDispatched), operator_door());
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
-        request.body = body.as_bytes().to_vec();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
+        request.edit_for_test(|draft| draft.body = body.as_bytes().to_vec());
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         walk.granted = Some(VerbScope::Full);
@@ -1323,13 +1368,13 @@ async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), open_door());
+        let mut binding = AdminBinding::new(Arc::new(NeverDispatched), operator_door());
         let admission: EffectAdmission = Arc::new(revoked);
         binding.effect_admission = Some(admission);
         let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
-        request.body = body.as_bytes().to_vec();
+        request.edit_for_test(|draft| draft.method = "POST".to_string());
+        request.edit_for_test(|draft| draft.path = path.to_string());
+        request.edit_for_test(|draft| draft.body = body.as_bytes().to_vec());
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         walk.granted = Some(VerbScope::Full);
@@ -1337,7 +1382,12 @@ async fn a_recovery_verb_is_refused_when_current_authority_no_longer_admits_the_
             "POST",
             path,
             Default::default(),
-            &busbar_kernel::auth::AdminDoor::Open,
+            &busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+            ),
         ));
 
         let outcome = route(
@@ -1402,56 +1452,6 @@ fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
     }
 
     assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
-}
-
-#[test]
-fn either_carrier_reaches_the_loop_as_the_credential_itself() {
-    let presented = |name: &str, value: &str| -> Option<String> {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
-            axum::http::HeaderValue::from_str(value).expect("a header value"),
-        );
-        presented_credential(&headers)
-    };
-    let secret = "shadow-oracle-admin";
-
-    for value in [
-        format!("Bearer {secret}"),
-        format!("bearer {secret}"),
-        format!("BEARER {secret}"),
-        format!("Bearer  {secret}"),
-        format!("  Bearer {secret}"),
-    ] {
-        assert_eq!(
-            presented("authorization", &value).as_deref(),
-            Some(secret),
-            "{value:?} did not arrive as the secret"
-        );
-    }
-    assert_eq!(
-        presented(ADMIN_TOKEN_HEADER, secret).as_deref(),
-        Some(secret),
-        "the second carrier is a carrier"
-    );
-
-    assert_eq!(
-        presented("authorization", "Bearer Bearer token").as_deref(),
-        Some("Bearer token")
-    );
-
-    assert_eq!(
-        presented("authorization", "Basic abc123").as_deref(),
-        Some("Basic abc123")
-    );
-
-    assert_eq!(presented("authorization", "Bearer ").as_deref(), None);
-    assert_eq!(presented(ADMIN_TOKEN_HEADER, "").as_deref(), None);
-    assert_eq!(
-        presented_credential(&axum::http::HeaderMap::new()),
-        None,
-        "a request with no carrier at all presents nothing"
-    );
 }
 
 #[test]
@@ -1572,11 +1572,10 @@ const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/checkpoints",
     "/api/v1/admin/ledger/reconciliation",
     "/api/v1/admin/ledger/migration",
-    "/api/v1/admin/ledger/openapi.json",
 ];
 
 fn a_ledger_request(path: &str) -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "GET".to_string(),
         path: path.to_string(),
         credential: Some("admin-token".to_string()),
@@ -1584,14 +1583,16 @@ fn a_ledger_request(path: &str) -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_ledger_view(Arc::new(SeededLedger));
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
@@ -1633,18 +1634,12 @@ async fn answer_over_counts(
 ) -> json::Value {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -1677,7 +1672,7 @@ async fn answer_over_counts(
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
         "models": {"m": {"provider": "wire"}},
         "rate_card": one_lane_rates(),
-        "auth": {"chain": [], "admin_auth": []},
+        "auth": {"chain": []},
         "store": {"module": module, "settings": settings},
         "advanced": {},
     }), &crate::root::boot::axis_test_grammar())
@@ -1727,10 +1722,12 @@ async fn answer_over_counts(
     built.cost = std::sync::Arc::new(one_lane_card());
     let app = std::sync::Arc::new(built);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door()).with_ledger_view(
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door()).with_ledger_view(
         Arc::new(crate::root::units_admin::CountsLedger::new(handle)),
     );
     let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
@@ -1886,9 +1883,6 @@ async fn each_view_serves_the_figures_the_ledger_holds() {
         body("/api/v1/admin/ledger/migration").await,
         json::json!({"migrated": false, "marker": null})
     );
-
-    let document = body("/api/v1/admin/ledger/openapi.json").await;
-    assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 async fn real_admin_dispatch() -> RouterDispatch {
@@ -1904,19 +1898,19 @@ async fn real_admin_dispatch() -> RouterDispatch {
         .expect("governance"),
     );
     crate::dist_root_install::install();
+    // The linked operator credential is bound and opened by the app build from its settings: the
+    // SHA-256 digest of the fixture admin token (governance holds no operator digest, MR-D).
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let operator = busbar_kernel::config::operator_provider();
+    let digest = busbar_contract::redacted::sha256_hex(b"admin-token");
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual Store library reads");
     let directory = crate::root::test_plugins::scratch(&format!(
         "admin-unit-{}",
@@ -1936,7 +1930,10 @@ async fn real_admin_dispatch() -> RouterDispatch {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "identity-providers": {
+                (operator): {"module": operator, "settings": {"sha256": digest}},
+            },
+            "auth": {"chain": [], "admin_auth": [operator]},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1984,18 +1981,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let digest = gov.admin_token_hash();
     built.governance = Some(gov);
-    built.admin_chain = vec![busbar_kernel::config::operator_provider().to_string()];
-    let operator = busbar_kernel::auth::open_operator(
-        &built.hook_env.registry,
-        digest,
-        &built.identity_providers,
-    )
-    .expect("the actual operator auth plugin opens with the configured digest");
-    std::sync::Arc::get_mut(&mut built.admin_modules)
-        .expect("the newly built admin chain has one owner")
-        .operator = operator;
     let app = std::sync::Arc::new(built);
     RouterDispatch::new(
         busbar_kernel::build_router(app),
@@ -2006,9 +1992,11 @@ async fn real_admin_dispatch() -> RouterDispatch {
 
 fn authenticated_admin_request() -> AdminRequest {
     let mut request = a_request();
-    request
-        .headers
-        .push(("x-admin-token".into(), "admin-token".into()));
+    request.edit_for_test(|draft| {
+        draft
+            .headers
+            .push(("authorization".into(), "Bearer admin-token".into()))
+    });
     request
 }
 
@@ -2034,7 +2022,7 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
         next: real_admin_dispatch().await,
     });
     let units =
-        crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), open_door()).await;
+        crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), operator_door()).await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let node = Arc::new(node);
     let first = Arc::clone(&node);
@@ -2055,9 +2043,11 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
 
 #[tokio::test]
 async fn an_unopened_ledger_answers_empty_rather_than_absent() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = async |path: &str| -> json::Value {
         let answer = node.answer(a_ledger_request(path)).await;
@@ -2153,12 +2143,12 @@ async fn verify_names_a_refused_row_and_every_other_finding() {
 async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
     let under = async |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
         let mut request = a_ledger_request(path);
-        request.credential = credential.map(ToString::to_string);
+        request.edit_for_test(|draft| draft.credential = credential.map(ToString::to_string));
 
         let door = if revoked {
             a_door_that_identifies_the_operator()
         } else {
-            open_door()
+            operator_door()
         };
         let units =
             crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
@@ -2199,7 +2189,7 @@ async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_u
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
         let mut request = a_ledger_request(path);
-        request.method = method.to_string();
+        request.edit_for_test(|draft| draft.method = method.to_string());
         let mut walk = AdminWalk::new(request);
         walk.granted = Some(granted);
         approve(&walk).is_ok()
@@ -2425,10 +2415,12 @@ fn a_sealed_chain() -> SealedChain {
 }
 
 async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_audit_view(Arc::new(a_sealed_chain()) as Arc<dyn AuditView>);
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
@@ -2451,10 +2443,12 @@ async fn audit_verifying_keys_use_the_shared_cursor_page() {
         .map(|key| key.key_id().to_owned())
         .collect();
     expected.sort();
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door())
         .with_audit_view(Arc::new(audit) as Arc<dyn AuditView>);
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let mut path = "/api/v1/admin/audit/keys?limit=1".to_string();
@@ -2544,11 +2538,13 @@ async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
 
 #[tokio::test]
 async fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
 
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     for path in AUDIT_PATHS {
         let answer = node.answer(a_ledger_request(path)).await;
@@ -2641,21 +2637,14 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[tokio::test]
-async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer =
-        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
-    assert_eq!(answer.status, 200);
-    let served = String::from_utf8(answer.body).expect("the document is text");
-    assert_eq!(
-        served,
-        busbar_core_admin::v1::json::openapi_document(),
-        "the ledger's document path must serve the one generated document, byte for byte"
-    );
+async fn the_one_document_describes_the_ledger_views() {
+    // The ledger no longer has a document path of its own (#304): the one document is `GET /openapi.json`.
+    let served = busbar_core_admin::v1::json::openapi_document();
     let document: json::Value = json::parse_value(served.as_bytes()).expect("it is JSON");
     let paths = document["paths"].as_object().expect("it declares paths");
     assert!(
         paths.contains_key(&"/api/v1/admin/usage"),
-        "the ledger path serves a document that is not the administrative one"
+        "the one document is the administrative one"
     );
 
     for path in LEDGER_PATHS {
@@ -3890,17 +3879,19 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
                 .body,
         )
         .expect("valid JSON");
-        served["keys"]
+        served["items"]
             .as_array()
-            .expect("keys")
+            .expect("items")
             .iter()
             .map(|k| k["public_key"].as_str().expect("public_key").to_string())
             .collect()
     };
 
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         durability.record.seal(inputs(), &audit_token)
@@ -3911,9 +3902,11 @@ async fn a_signed_record_verifies_against_the_served_audit_keys() {
     );
     assert!(record.signature.is_none());
 
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
-            .await;
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        operator_door(),
+    )
+    .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");
@@ -4174,10 +4167,14 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     let store = crate::root::real_store::admin_scoped().await;
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let mut request = a_request();
-    request.method = "POST".into();
-    request.path = "/api/v1/admin/commit-upgrade".into();
-    request.headers = vec![("idempotency-key".into(), "late-commit-ack".into())];
-    request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.edit_for_test(|draft| draft.method = "POST".into());
+    request.edit_for_test(|draft| draft.path = "/api/v1/admin/commit-upgrade".into());
+    request.edit_for_test(|draft| {
+        draft.headers = vec![("idempotency-key".into(), "late-commit-ack".into())]
+    });
+    request.edit_for_test(|draft| {
+        draft.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap()
+    });
     let cache = Arc::new(bound::ReplayCache::new());
     let admin = crate::root::kernel::new_kernel().admin_token();
     let ask = async |cache: Arc<bound::ReplayCache>,
@@ -4201,7 +4198,7 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
             &governance,
             KernelVerb::CommitUpgrade,
             &admin,
-            &request.body,
+            request.body(),
         )
         .await
         .expect("the production caller answers")
@@ -4233,7 +4230,9 @@ async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first
     );
-    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    request.edit_for_test(|draft| {
+        draft.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1
+    });
     assert_eq!(
         ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first,
@@ -4281,8 +4280,10 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let cache = bound::ReplayCache::new();
     let mut request = a_request();
-    request.headers = vec![("idempotency-key".into(), "corrected-commit".into())];
-    request.body = br#"{"version":"not-this-binary"}"#.to_vec();
+    request.edit_for_test(|draft| {
+        draft.headers = vec![("idempotency-key".into(), "corrected-commit".into())]
+    });
+    request.edit_for_test(|draft| draft.body = br#"{"version":"not-this-binary"}"#.to_vec());
     let ask = async |request: &AdminRequest| {
         bound::replayable(
             &cache,
@@ -4292,10 +4293,11 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
                 actor: "admin",
             },
             request,
-            &request.body,
+            request.body(),
             Some(&journal),
+            bound::ReplayContext::None,
             || async {
-                bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
+                bound::commit_upgrade_effect(request.body(), request.at(), "admin", Some(&journal))
                     .await
             },
         )
@@ -4309,20 +4311,26 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
         before,
         "a definite refusal sealed nothing"
     );
-    request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    request.edit_for_test(|draft| {
+        draft.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap()
+    });
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request).await, accepted);
+    let mut replayed = accepted.clone();
+    replayed
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(ask(&request).await, replayed);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
 #[tokio::test]
 async fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
+    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), operator_door());
     let mut request = a_request();
-    request.method = "POST".to_string();
-    request.path = "/api/v1/admin/chain-break".to_string();
+    request.edit_for_test(|draft| draft.method = "POST".to_string());
+    request.edit_for_test(|draft| draft.path = "/api/v1/admin/chain-break".to_string());
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
 
@@ -4339,7 +4347,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
     let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
-    let request = AdminRequest {
+    let request = AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: "POST".to_string(),
         path: "/api/v1/admin/plane-records".to_string(),
         credential: None,
@@ -4347,7 +4355,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         body: br#"{"record":1}"#.to_vec(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    };
+    });
     let ran = std::sync::atomic::AtomicUsize::new(0);
     let effect = || async {
         let n = ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -4365,8 +4373,9 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
             actor: "operator",
         },
         &request,
-        &request.body,
+        request.body(),
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
@@ -4380,13 +4389,21 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
             actor: "operator",
         },
         &request,
-        &request.body,
+        request.body(),
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
     .expect("the retry answers");
-    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    let mut marked = first.clone();
+    marked
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(
+        retried, marked,
+        "the retry answers the first answer's bytes, marked as replayed"
+    );
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -4402,9 +4419,11 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     let book: Arc<std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>> =
         Arc::new(std::sync::OnceLock::new());
     let kept = Arc::clone(&book);
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
@@ -4435,7 +4454,7 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     for uncomposed in ["/v1/chat/completions", "/api/v1/admin/not-a-real-operation"] {
         let response = wrapped
             .clone()
-            .oneshot(get(uncomposed))
+            .oneshot(charged_http_for_test(get(uncomposed)).await)
             .await
             .expect("the router answers");
         let records = sealed();
@@ -4455,7 +4474,7 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     }
 
     let response = wrapped
-        .oneshot(get("/api/v1/admin/audit?limit=4"))
+        .oneshot(charged_http_for_test(get("/api/v1/admin/audit?limit=4")).await)
         .await
         .expect("the router answers");
     assert_eq!(response.status(), 200);
@@ -4469,9 +4488,11 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
-            .await;
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(RefusingDispatch),
+        operator_door(),
+    )
+    .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
@@ -4487,7 +4508,10 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
         .header(axum::http::header::CONTENT_LENGTH, "3")
         .body(axum::body::Body::from(b"0123456789".to_vec()))
         .expect("the request builds");
-    let response = wrapped.oneshot(request).await.expect("the router answers");
+    let response = wrapped
+        .oneshot(charged_http_for_test(request).await)
+        .await
+        .expect("the router answers");
     assert_eq!(
         response.status(),
         400,

@@ -57,8 +57,18 @@ async fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
 }
 
 async fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
-    busbar_kernel::plane_driver::engine_host(app)
-        .hook_read(hook, Some("pseudonym-1"), "chat", false)
+    app.amendments
+        .record_reads(
+            &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+            &[busbar_kernel::audit::amend::ReadFact {
+                reader: Reader::Hook,
+                name: hook,
+                principal: Some("pseudonym-1"),
+                op_class: "chat",
+                fields: vec!["content".to_string()],
+                wall: busbar_kernel::store::now(),
+            }],
+        )
         .await
         .expect("content access is durably recorded");
 }
@@ -77,18 +87,12 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
 async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-        .expect("the product store statement reads")
-        .expect("the product store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the product store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(path).expect("the product store library reads");
     let directory = crate::root::durability::Scratch::new("amend-app-plugins");
     let archive = crate::root::test_plugins::signed(
@@ -103,7 +107,7 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
         &json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

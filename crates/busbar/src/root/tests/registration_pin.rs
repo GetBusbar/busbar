@@ -284,7 +284,7 @@ fn registration(
     let file = |p: &Path| -> Value {
         busbar_contract::yaml::to_value(
             &crate::root::test_plugins::source_reference(
-                crate::root::linked::secret_rows(),
+                crate::root::native_secrets::linked_for_tests(),
                 busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
                 p.display().to_string(),
             )

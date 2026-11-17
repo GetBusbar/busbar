@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::persistence::axis::StoreDoor;
 use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Trust};
 
 use crate::{LinkedPlugin, PluginRegistry};
@@ -37,17 +36,9 @@ fn a_linked_store_row_reads_back_through_the_view() {
 }
 
 #[test]
-fn the_store_door_and_the_refusals_are_the_registrys() {
+fn the_refusals_are_the_registrys() {
     let reg = registry();
     let rows: &dyn PluginRows = &reg;
-    assert!(matches!(
-        rows.store_door("the-store"),
-        Ok(StoreDoor::Linked(_))
-    ));
-    assert_eq!(
-        rows.store_door("nope").map(|_| ()).unwrap_err(),
-        reg.store_door("nope").map(|_| ()).unwrap_err()
-    );
     assert!(rows.resolve("nope").is_none() && rows.unresolved_reason("nope").is_none());
     assert_eq!(rows.secret_refusal("nope"), reg.secret_refusal("nope"));
 }
@@ -153,9 +144,6 @@ fn the_root_gets_its_registry_back() {
         }
         fn skipped(&self) -> Vec<busbar_contract::plugin_rows::Skipped> {
             Vec::new()
-        }
-        fn store_door(&self, _: &str) -> Result<StoreDoor, String> {
-            Err(String::new())
         }
         fn secret_refusal(&self, _: &str) -> String {
             String::new()

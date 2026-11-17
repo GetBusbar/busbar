@@ -15,6 +15,10 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
+// The serving App graph (App -> PortSeat -> SeatPool -> auth bindings -> credential flights,
+// and the KernelServices it reaches) is deeper than the default 128 auto-trait steps when an
+// async fn proves its future Send. The graph is acyclic; the limit only admits its depth.
+#![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;
 
@@ -631,6 +635,23 @@ pub fn base_data_core_lines(
     .iter()
     .map(|r| (r.path.clone(), r.method, r.auth))
     .collect()
+}
+
+/// The core routes the ADMIN listener declares, with their bars: the admin listener's counterpart
+/// of [`base_data_core_lines`].
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn admin_core_lines() -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    off_path::router::admin_routes(&crate::plugin_routes::PluginRouteTable::default())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.method, r.auth))
+        .collect()
 }
 
 #[cfg(any(test, feature = "test-support"))]

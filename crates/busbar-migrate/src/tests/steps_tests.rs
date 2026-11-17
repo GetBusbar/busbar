@@ -92,13 +92,67 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
         );
     }
     // A config that names its store keeps it, whatever the word.
-    let (written, report) = upgrade("store:\n  module: postgres\n", &facts());
-    assert_eq!(written, "config_version: 1\nstore:\n  module: postgres\n");
+    let (written, report) = upgrade(
+        "auth: {chain: [keys]}\nstore:\n  module: postgres\n",
+        &facts(),
+    );
+    assert_eq!(
+        written,
+        "config_version: 1\nauth: {chain: [keys]}\nstore:\n  module: postgres\n"
+    );
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
         report.iter().all(|line| line.starts_with("overlay: ")),
         "{report:?}"
     );
+}
+
+/// #358 (PRD-5; owner ruling L1, "Refuse, give remedy… no auto-write"): 1.5.5 ran a config with no
+/// `auth:` block, or a null one, as an open relay, and 1.6.0 refuses to boot it (BUSBAR-8014). The
+/// upgrade never writes an open relay for the operator: it leaves the block unwritten and reports
+/// one BUSBAR-8014 action item carrying the boot refusal's remedy. A config that writes its own
+/// `auth:` block, open or not, gets no item.
+#[test]
+fn a_1_5_5_config_with_no_auth_block_is_reported_and_left_unwritten() {
+    let code = busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH
+        .banner()
+        .to_string();
+    for source in [
+        "listen: x\nstore: {module: sqlite}\n",
+        "listen: x\nauth:\nstore: {module: sqlite}\n",
+    ] {
+        let (written, report) = upgrade(source, &facts());
+        assert_eq!(
+            written,
+            format!("config_version: 1\n{source}"),
+            "no open relay is written: {source:?}"
+        );
+        let items: Vec<&String> = report.iter().filter(|line| line.contains(&code)).collect();
+        assert_eq!(items.len(), 1, "{report:?}");
+        assert!(
+            items[0].contains("no `auth:` block")
+                && items[0].contains("add `auth: { chain: [] }` explicitly to run an open relay")
+                && items[0].contains("or configure a chain")
+                && items[0].contains("chain: [keys]"),
+            "the item gives the boot refusal's remedy: {}",
+            items[0]
+        );
+    }
+    for source in [
+        "listen: x\nauth:\n  chain: [keys]\nstore: {module: sqlite}\n",
+        "listen: x\nauth: {chain: []}\nstore: {module: sqlite}\n",
+    ] {
+        let (written, report) = upgrade(source, &facts());
+        assert_eq!(
+            written,
+            format!("config_version: 1\n{source}"),
+            "{source:?}"
+        );
+        assert!(
+            !report.iter().any(|line| line.contains(&code)),
+            "{report:?}"
+        );
+    }
 }
 
 /// (j) and (l): `module:` values are the plugins' (step 2): the migrator resolves no name. A 1.5.5
@@ -113,7 +167,7 @@ fn module_words_are_left_as_written() {
         "redis",
     ] {
         let source = format!(
-            "store: {{module: {module}}}\nsecrets:\n  busbar-hashicorp-vault: {{address: x}}\n"
+            "store: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
         );
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {

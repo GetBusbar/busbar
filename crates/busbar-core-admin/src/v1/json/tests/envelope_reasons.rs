@@ -71,7 +71,6 @@ const COND_REASONS: &[&str] = &[
     "invalid_filename",
     "not_loadable",
     "overlong",
-    "nothing_to_rotate",
     "no_supervisor",
     "not_restartable",
     "unknown_section",
@@ -119,6 +118,15 @@ const CODE_REASONS: &[&str] = &[
     "idempotency_mismatch",
     "mutation_applied",
     "action_in_flight",
+];
+
+#[cfg(feature = "openapi-schema")]
+/// TRUST-ADMIN-PRODUCER-DESIGN r3 §4.1 and §4.6: the stable trust decision reasons.
+const TRUST_REASONS: &[&str] = &[
+    "reviewed_digest_required",
+    "reviewed_digest_stale",
+    "decision_in_progress",
+    "outcome_not_applied",
 ];
 
 #[cfg(feature = "openapi-schema")]
@@ -203,6 +211,34 @@ async fn algorithmic_errors_carry_the_envelope() {
     assert!(body["error"]["reason"].is_string());
 }
 
+/// DES-443 r3: a plugin inspection that is busy, past its deadline or at its cap is a 503 `unavailable`, retryable,
+/// with a numeric `Retry-After`; 409 stays for state conflicts. The kernel admission's `Refusal::Unavailable`
+/// carries the delay.
+#[tokio::test]
+async fn a_retry_later_refusal_is_a_503_with_retry_after() {
+    let refused = busbar_kernel::admission::Refusal::Unavailable {
+        text: "another plugin inspection is loading an image; retry when it finishes".into(),
+        retry_after_s: 10,
+    };
+    let error = crate::v1::service::admission_refused(refused);
+    let (status, headers, body) = parts(err_json(&error)).await;
+    assert_envelope(status, &headers, &body, "unavailable");
+    assert_eq!(status.as_u16(), 503);
+    assert_eq!(body["error"]["retryable"], true);
+    let retry_after = headers
+        .get(axum::http::header::RETRY_AFTER)
+        .expect("Retry-After is present")
+        .to_str()
+        .expect("Retry-After is text");
+    assert_eq!(
+        retry_after.parse::<u32>().expect("Retry-After is numeric"),
+        10
+    );
+    assert!(body["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("another plugin inspection")));
+}
+
 #[cfg(feature = "openapi-schema")]
 fn admin_error_of(kind: crate::v1::contract::taxonomy::ErrKind) -> AdminError {
     use crate::v1::contract::taxonomy::ErrKind;
@@ -279,6 +315,7 @@ fn reason_table_is_closed() {
         .iter()
         .chain(ADDED_REASONS)
         .chain(CODE_REASONS)
+        .chain(TRUST_REASONS)
         .map(|s| s.to_string())
         .collect();
     let have: std::collections::BTreeSet<String> = table.keys().cloned().collect();
@@ -465,4 +502,22 @@ fn unit_reasons_cover_failures() {
         ReasonCode::ALL.len() + 1,
         "only timed_out beside them"
     );
+}
+
+/// #307: every production error the admin surface raises is the one envelope. The provisioning
+/// guard's errors were `{"error":{"message":...}}` alone.
+#[tokio::test]
+async fn provisioning_guard_errors_carry_the_envelope() {
+    use crate::provision::GuardAdminError;
+    use axum::response::IntoResponse;
+    for (error, status, code) in [
+        (GuardAdminError::UnknownInstance, 404, "not_found"),
+        (GuardAdminError::Invalid, 400, "invalid_request"),
+        (GuardAdminError::Unavailable, 503, "unavailable"),
+    ] {
+        let (got, headers, body) = parts(error.into_response()).await;
+        assert_eq!(got.as_u16(), status, "{code}");
+        assert_envelope(got, &headers, &body, code);
+        assert_eq!(body["error"]["code"], code);
+    }
 }

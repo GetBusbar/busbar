@@ -4,7 +4,7 @@ fn source_path(value: impl AsRef<str>) -> busbar_contract::secret_ref::SecretRef
     use busbar_contract::secret::SecretAxis as _;
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
-    crate::root::linked::secret_rows()
+    crate::root::native_secrets::linked_for_tests()
         .sugars()
         .reference_for_role(
             busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
@@ -130,18 +130,12 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -158,7 +152,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -260,18 +254,12 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = crate::root::test_plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
@@ -289,7 +277,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 serde_json::json!({
-                    "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                    "providers": {}, "models": {}, "auth": {"chain": []},
                     "store": {"module": module, "settings": settings},
                 }),
                 &crate::root::boot::axis_test_grammar(),
@@ -380,18 +368,12 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -408,7 +390,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -961,18 +943,12 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -989,7 +965,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -1138,18 +1114,12 @@ async fn money_book(
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -1179,7 +1149,7 @@ async fn money_book(
                     "second": {"members": ["small"]},
                     "third": {"members": ["tiny"]}
                 },
-                "auth": {"chain": [], "admin_auth": []},
+                "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -1236,7 +1206,7 @@ async fn money_book(
                 )],
                 ..busbar_kernel::config::AuthCfg::default_none()
             },
-            &app.hook_env.registry,
+            &app.plugin_registry,
             &app.secret_resolver,
         )
         .expect("the actual root constructs the keys middleware"),
@@ -4730,18 +4700,12 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = crate::root::test_plugins::manifest(
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+            let manifest = crate::root::test_plugins::native_manifest(
                 "store",
-                &module,
+                &library_path,
                 crate::root::test_plugins::FIXTURE_PUBLISHER,
             );
-            manifest.statement = Some(hex::encode(statement));
             let release = crate::root::test_plugins::key(0x5a);
             let directory = crate::root::test_plugins::scratch(&format!(
                 "door-steps-{}",
@@ -4759,7 +4723,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             let settings = crate::root::test_plugins::application_store_settings(&directory);
             let deploy = busbar_kernel::config::deploy_from_deserializer(
                 serde_json::json!({
-                    "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                    "providers": {}, "models": {}, "auth": {"chain": []},
                     "store": {"module": module, "settings": settings},
                 }),
                 &crate::root::boot::axis_test_grammar(),
@@ -4962,18 +4926,12 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -4990,7 +4948,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -5368,18 +5326,12 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -5396,7 +5348,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),
@@ -5444,7 +5396,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
                 )],
                 ..busbar_kernel::config::AuthCfg::default_none()
             },
-            &app.hook_env.registry,
+            &app.plugin_registry,
             &app.secret_resolver,
         )
         .expect("the actual root constructs the keys middleware"),
@@ -5516,18 +5468,12 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         #[cfg(distribution_root)]
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let release = crate::root::test_plugins::key(0x5a);
         let directory = crate::root::test_plugins::scratch(&format!(
             "door-steps-{}",
@@ -5544,7 +5490,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         let settings = crate::root::test_plugins::application_store_settings(&directory);
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
             }),
             &crate::root::boot::axis_test_grammar(),

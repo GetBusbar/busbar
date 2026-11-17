@@ -16,14 +16,9 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&store_library).name;
+    let manifest =
+        crate::root::test_plugins::native_manifest("store", &store_library, "third-party");
     let directory = plugins::scratch(
         "a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel-actual-store",
     );
@@ -135,7 +130,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "rotated"}))
         .send()
         .await
@@ -170,7 +165,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 
     let mint = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "stuck-mint")
         .body(json::json!({"name": "k"}).to_string())
@@ -184,7 +179,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     );
     let rotate = client
         .post(format!("{keys_url}/{id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "stuck-rotate")
         .send()
         .await

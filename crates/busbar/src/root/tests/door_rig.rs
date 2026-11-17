@@ -10,10 +10,10 @@ use busbar_contract::secret::SecretResolve;
 use busbar_contract::transport::TransportSettings;
 use busbar_kernel::governance::GovState;
 use busbar_kernel::host_services::DestJudge;
-use busbar_kernel::plane_driver::{GenerationHost, PlaneMoney};
+use busbar_kernel::plane_driver::PlaneMoney;
 use busbar_kernel_egress::ports::Journal;
 
-use super::{DoorEgress, HookStage, Served, Services, StreamFramers};
+use super::{DoorEgress, Served, Services, StreamFramers};
 use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{DoorReach, OutboundAuths, ProviderRoute};
 use crate::root::durability::NodeBook;
@@ -207,49 +207,6 @@ pub(crate) fn unpriced_card(now_ms: u64) -> RootHistory {
     holder
 }
 
-pub(crate) struct DoorStore {
-    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
-    _axis: crate::root::loader::store_v4::DoorPersistenceAxis,
-}
-
-impl DoorStore {
-    pub(crate) fn core(&self) -> Arc<busbar_kernel::persistence::facade::CoreStore> {
-        self.core.clone()
-    }
-}
-
-pub(crate) async fn open_ephemeral_store(instance: &str) -> Result<DoorStore, String> {
-    let axis = crate::root::loader::store_v4::DoorPersistenceAxis {
-        dispatcher: Arc::new(Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        )),
-        logs: crate::root::boot::plugin_logs().clone(),
-        conns: ConnTable::NoNeeds,
-        limits: crate::root::loader::store_v4::Limits {
-            descriptor_bytes: 32 * 1024 * 1024,
-            output_items: 4096,
-            output_bytes: 32 * 1024 * 1024,
-            decode_bytes: 32 * 1024 * 1024,
-        },
-    };
-    let door = crate::LINKED
-        .stores
-        .iter()
-        .find(|s| s.1)
-        .ok_or_else(|| "the build links no ephemeral store".to_string())?
-        .2;
-    let backend = busbar_contract::persistence::axis::PersistenceAxis::open(
-        &axis,
-        busbar_contract::persistence::axis::StoreDoor::Linked(door),
-        instance,
-        b"{}",
-    )
-    .await?;
-    let core = crate::root::real_store::core_over(backend).await;
-    Ok(DoorStore { core, _axis: axis })
-}
-
 pub(crate) struct EgressRig {
     providers: BTreeMap<String, ProviderRoute>,
     secrets: Arc<dyn SecretResolve>,
@@ -308,7 +265,6 @@ pub(crate) struct DoorCompose<'a> {
     money: &'a dyn Fn() -> Arc<PlaneMoney>,
     public_url: Option<&'a str>,
     egress: Option<&'a EgressRig>,
-    hooks: Option<HookStage>,
     post: Option<Arc<NodeEndPost>>,
     framers: Option<Arc<Connector>>,
     tables: Option<&'a busbar_kernel::plane_driver::serve::ServeTables>,
@@ -330,7 +286,6 @@ impl<'a> DoorCompose<'a> {
             money,
             public_url: None,
             egress: None,
-            hooks: None,
             post: None,
             framers: None,
             tables: None,
@@ -355,16 +310,6 @@ impl<'a> DoorCompose<'a> {
     #[must_use]
     pub(crate) fn egress(mut self, egress: &'a EgressRig) -> Self {
         self.egress = Some(egress);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn hooks(mut self, host: GenerationHost, gov: Arc<GovState>) -> Self {
-        self.hooks = Some(HookStage {
-            host,
-            gov,
-            journal: None,
-        });
         self
     }
 
@@ -406,7 +351,7 @@ impl<'a> DoorCompose<'a> {
             self.public_url,
             self.money,
             egress,
-            self.hooks.as_ref(),
+            None,
             self.tables.unwrap_or(&own),
         ))
     }
@@ -483,7 +428,7 @@ pub(crate) fn mount_node_admin(
         core,
         book,
         None,
-        late,
+        late.kernel(),
         crate::root::adapters::BreakerPolicy::new(),
     )
     .expect("the native node admin scope opens")

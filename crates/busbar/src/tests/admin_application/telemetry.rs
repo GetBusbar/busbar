@@ -177,7 +177,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
         .unwrap();
     assert_eq!(info.status(), 200);
     let info = json::parse_value(&info.bytes().await.unwrap()).unwrap();
-    let nonce = info["process_boot_nonce"]
+    let nonce = info["incarnation"]
         .as_str()
         .expect("native OS randomness is available")
         .to_string();
@@ -205,11 +205,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(reloaded["process_boot_nonce"], nonce);
-    assert_eq!(
-        reloaded["config_version"].as_u64().unwrap(),
-        info["config_version"].as_u64().unwrap() + 1
-    );
+    assert_eq!(reloaded["incarnation"], nonce);
     assert!(!busbar_kernel::snapshot::recorder_installed());
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     let again = json::parse_value(
@@ -224,7 +220,7 @@ async fn info_process_generation_is_available_without_metrics_and_changes_on_res
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(again["process_boot_nonce"], nonce);
+    assert_eq!(again["incarnation"], nonce);
     server.abort();
     let _ = server.await;
     println!("{MARKER}{nonce}");

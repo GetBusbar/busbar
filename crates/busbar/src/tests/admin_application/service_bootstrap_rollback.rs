@@ -24,20 +24,15 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
             .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-bootstrap-{}",
@@ -182,7 +177,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         .map(|doc| doc.plugin_versions);
     let response = client
         .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"target.tar.gz"}))
         .send()
         .await
@@ -244,20 +239,15 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
         );
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid");
+        let store = crate::root::test_plugins::native_image(&library_path);
         let module = store.name;
         let module_version = store.version;
-        let mut manifest = plugins::manifest(
+        let mut manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
         manifest.version = module_version.clone();
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "admin-service-bootstrap-{}",
@@ -434,7 +424,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             .unwrap();
         let response = client
             .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"file":"target.tar.gz"}))
             .send()
             .await
@@ -462,20 +452,15 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
             .expect("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN names the actual built store"),
     );
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let store = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid");
+    let store = crate::root::test_plugins::native_image(&library_path);
     let module = store.name;
     let module_version = store.version;
-    let mut manifest = plugins::manifest(
+    let mut manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
     manifest.version = module_version.clone();
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-bootstrap-{}",
@@ -619,7 +604,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap();
-    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&json::json!({"file":"target.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&target)})).send().await.unwrap();
+    let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("authorization", "Bearer admintok").json(&json::json!({"file":"target.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&target)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 409);
     let error = json::parse_value(&response.bytes().await.unwrap()).unwrap();
     let message = error["error"]["message"].as_str().unwrap();

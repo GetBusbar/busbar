@@ -345,6 +345,25 @@ fn print_metadata_blocklist_prints_builtin_plus_blocked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// WP3 hook step: a pool's ranking strategy is a declared word (D_WORD) of an admitted native hook image; config
+/// validation reads it from the native images, never from a hook door.
+#[cfg(linked_section_pools)]
+#[test]
+fn validate_accepts_a_pool_ranked_by_a_native_hook_images_declared_word() {
+    let dir = fixture_dir("pools-native-ranking");
+    write_configs(
+        &dir,
+        "pools:\n  ranked:\n    policy: cheapest\n    members: [{model: test-model}]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_accepts_root_pools_named_after_a_reserved_sub_key_as_1_5_5_did() {
@@ -831,7 +850,7 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
     let dir = fixture_dir("sk-ok");
     write_configs(
         &dir,
-        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  admin_auth: []\n",
+        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\nidentity-providers:\n  admin-tokens: { module: admin-tokens, settings: { sha256: \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\" } }\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -867,7 +886,7 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
     write_configs(
         &dir,
         &format!(
-            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\n  admin_auth: []\n",
+            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\nidentity-providers:\n  admin-tokens: {{ module: admin-tokens, settings: {{ sha256: \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\" }} }}\n",
             keyfile.display()
         ),
     );
@@ -1396,8 +1415,13 @@ fn boot_refuses_a_set_retired_worker_threads_variable_before_config_migration() 
         }),
         "the retired setting must explain the refusal: {stderr}"
     );
-    assert!(std::fs::read_to_string(dir.join("config.yaml")).unwrap().contains("goovernance"));
-    assert!(!dir.join("config.yaml.1.5.5").exists(), "no migration backup before refusal");
+    assert!(std::fs::read_to_string(dir.join("config.yaml"))
+        .unwrap()
+        .contains("goovernance"));
+    assert!(
+        !dir.join("config.yaml.1.5.5").exists(),
+        "no migration backup before refusal"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1458,10 +1482,9 @@ fn validate_refuses_each_retired_launch_variable_with_replacement_guidance() {
         );
     }
     assert!(
-        notices.iter().any(|line| line_has_in_order(
-            line,
-            &["BUSBAR_PROVIDERS", "providers.yaml"]
-        )),
+        notices
+            .iter()
+            .any(|line| line_has_in_order(line, &["BUSBAR_PROVIDERS", "providers.yaml"])),
         "the busbar-release FIX cell's match must hold: {stderr}"
     );
 

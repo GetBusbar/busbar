@@ -9,18 +9,12 @@ use std::sync::Arc;
 async fn admin_plugin_full_binding_allows_mutation() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-full");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -137,18 +131,12 @@ async fn admin_plugin_full_binding_allows_mutation() {
 async fn admin_max_admin_scope_caps_binding() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-capped");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -260,18 +248,12 @@ async fn admin_max_admin_scope_caps_binding() {
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-readonly");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -419,18 +401,12 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 async fn roleless_external_admin_principal_denied() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-roleless");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -535,18 +511,12 @@ async fn roleless_external_admin_principal_denied() {
 async fn forbidden_admin_requests_audit_once_per_window() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-audit-window");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -674,18 +644,12 @@ async fn forbidden_admin_requests_audit_once_per_window() {
 async fn the_admin_gate_admits_only_the_listed_verbs() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-named");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -872,18 +836,8 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
         tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
             crate::dist_root_install::install();
             let library_path = crate::root::test_plugins::application_store_library();
-            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .expect("the actual store statement is valid")
-                .name;
-            let mut manifest = plugins::manifest(
-                "store",
-                &module,
-                crate::root::test_plugins::FIXTURE_PUBLISHER,
-            );
-            manifest.statement = Some(hex::encode(statement));
+            let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest("store", &library_path, crate::root::test_plugins::FIXTURE_PUBLISHER);
             let library = std::fs::read(library_path).expect("the actual store library reads");
             let directory = plugins::scratch("auth-admin-logs");
             let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -953,7 +907,7 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
                     .uri("/api/v1/admin/keys")
                     .header("authorization", format!("Bearer {bearer}"));
                 if let Some(header) = header {
-                    request = request.header("x-admin-token", header);
+                    request = request.header("authorization", format!("Bearer {}", header));
                 }
                 let response = tokio::time::timeout(std::time::Duration::from_secs(10),
                     tower::ServiceExt::oneshot(router.clone(), request.body(axum::body::Body::empty()).unwrap()))
@@ -987,18 +941,12 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     use std::time::{Duration, Instant};
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-pending");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1317,18 +1265,12 @@ fn a_slow_admin_door_does_not_stall_healthz() {
 async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-candidates");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -1499,18 +1441,12 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     }
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("auth-admin-no-kernel-cache");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);

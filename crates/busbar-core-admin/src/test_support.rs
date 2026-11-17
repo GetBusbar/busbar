@@ -47,6 +47,7 @@ pub fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
         AdminError::Internal => None,
 
         AdminError::Unavailable(_) => None,
+        AdminError::RetryLater { .. } => None,
         AdminError::UnpricedClass { .. } => Some(ErrKind::UnpricedClass),
         AdminError::PluginText { .. } => Some(ErrKind::Validation),
     }
@@ -58,6 +59,19 @@ pub async fn apply_config(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    use axum::extract::FromRequestParts;
+    use axum::response::IntoResponse;
+    let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+    parts.headers = headers;
+    let headers = match busbar_kernel::inbound::http_projection::AdminHeaders::from_request_parts(
+        &mut parts,
+        &(),
+    )
+    .await
+    {
+        Ok(headers) => headers,
+        Err(error) => return error.into_response(),
+    };
     crate::v1::json::apply_config(state, principal, headers, body).await
 }
 
@@ -70,16 +84,28 @@ pub fn with_idempotency(
     router: axum::Router,
     app: std::sync::Arc<busbar_kernel::state::App>,
 ) -> axum::Router {
+    let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
     router
+        .route(
+            "/api/v1/admin/operations/{key}",
+            axum::routing::get(crate::v1::json::generation::get_operation)
+                .with_state(handle.clone()),
+        )
         .layer(axum::middleware::from_fn(
             crate::v1::json::generation::preconditions,
         ))
-        .layer(axum::Extension(std::sync::Arc::new(
-            busbar_kernel::state::AppHandle::new(app),
-        )))
+        .layer(axum::Extension(handle))
 }
 
 #[cfg(feature = "openapi-schema")]
 pub fn openapi_doc() -> serde_json::Value {
     crate::v1::json::openapi_doc()
+}
+
+/// Hold the shared plugin scan gate (DES-359 r3 L9 tests): while the guard lives, every catalog
+/// read, schema read, install and remove waits on it within its bound.
+pub async fn hold_scan_gate() -> tokio::sync::MutexGuard<'static, ()> {
+    crate::v1::service::scan_gate("test.hold")
+        .await
+        .expect("the scan gate is free when a test takes it")
 }

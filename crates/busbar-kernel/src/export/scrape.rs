@@ -68,11 +68,9 @@ pub(crate) fn read(scope: u32) -> impl std::future::Future<Output = Snapshot> + 
         };
         match scope {
             SNAPSHOT_SCOPE_WHOLE => whole(app.as_deref()).await,
-            SNAPSHOT_SCOPE_HOOKS => Snapshot::Families(
-                app.as_deref()
-                    .map(crate::snapshot::hooks::families)
-                    .unwrap_or_default(),
-            ),
+            SNAPSHOT_SCOPE_HOOKS => {
+                Snapshot::Families(app.as_deref().map(hook_families).unwrap_or_default())
+            }
             _ => Snapshot::Refused(UNKNOWN_SCOPE),
         }
     }
@@ -92,6 +90,11 @@ pub enum ScrapeRefusal {
 async fn collect(
     app: Option<&App>,
 ) -> Result<Vec<busbar_contract::export_calls::Family>, ScrapeRefusal> {
+    prepare(app).await?;
+    crate::snapshot::snapshot().ok_or(ScrapeRefusal::NotReady)
+}
+
+async fn prepare(app: Option<&App>) -> Result<(), ScrapeRefusal> {
     if crate::snapshot::explicitly_off() {
         return Err(ScrapeRefusal::TelemetryDisabled);
     }
@@ -106,7 +109,40 @@ async fn collect(
         metrics::gauge!(crate::snapshot::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION"))
             .set(1.0);
     }
-    crate::snapshot::snapshot().ok_or(ScrapeRefusal::NotReady)
+    Ok(())
+}
+
+/// Source availability and output-capacity failure keep their distinct refusal meanings.
+#[derive(Debug)]
+pub enum BudgetedScrapeRefusal {
+    Source(ScrapeRefusal),
+    Output(crate::limits::output::OutputError),
+}
+
+pub async fn app_families_budgeted(
+    app: &App,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    crate::limits::output::Captured<Vec<busbar_contract::export_calls::Family>>,
+    BudgetedScrapeRefusal,
+> {
+    // Refresh/drain maintenance is explicitly excluded; owned output projection is not.
+    prepare(Some(app))
+        .await
+        .map_err(BudgetedScrapeRefusal::Source)?;
+    crate::snapshot::snapshot_budgeted(request)
+        .map_err(BudgetedScrapeRefusal::Output)?
+        .ok_or(BudgetedScrapeRefusal::Source(ScrapeRefusal::NotReady))
+}
+
+pub fn hook_families_budgeted(
+    _app: &App,
+    request: &crate::limits::process_admission::RequestLease,
+) -> Result<
+    crate::limits::output::Captured<Vec<busbar_contract::export_calls::Family>>,
+    crate::limits::output::OutputError,
+> {
+    Ok(crate::limits::output::CaptureScope::new(request)?.finish(Vec::new()))
 }
 
 /// The whole-registry families for the admin `/metrics` (the same read the snapshot service gives
@@ -117,10 +153,12 @@ pub async fn app_families(
     collect(Some(app)).await
 }
 
-/// The hook-reported families for the admin `/metrics/hooks`.
+/// The hook-reported families for the admin `/metrics/hooks`. The kernel opens no hook (the native
+/// bindings are the only hook path) and no native hook reports status families, so a generation
+/// holds none.
 #[must_use]
-pub fn hook_families(app: &App) -> Vec<busbar_contract::export_calls::Family> {
-    crate::snapshot::hooks::families(app)
+pub fn hook_families(_app: &App) -> Vec<busbar_contract::export_calls::Family> {
+    Vec::new()
 }
 
 async fn whole(app: Option<&App>) -> Snapshot {

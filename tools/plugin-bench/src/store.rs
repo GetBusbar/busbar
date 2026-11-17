@@ -125,7 +125,14 @@ async fn bootstrap(store: &LoadedPersistence, info: owned::BackendInfo) -> Resul
         result: Secret::new(Vec::new()),
     };
     let prepared = PreparedCandidate::new(candidate).map_err(|e| format!("bootstrap: {e:?}"))?;
-    match store.commit(prepared).await {
+    // The writer's first admission (an Absent-predicated control Writer record) is single-shot by its own
+    // shape, so it commits self-fenced, as the kernel's first start does; no queue slot is leased.
+    let fenced = owned::SelfFenced::check(&prepared)
+        .map_err(|_| "bootstrap candidate is not provably single-shot")?;
+    match store
+        .commit(prepared, owned::CommitKey::self_fenced(&fenced))
+        .await
+    {
         Ok(Decision::Applied(_)) => Ok(()),
         other => Err(format!("store bootstrap commit: {other:?}")),
     }
@@ -193,7 +200,6 @@ struct Commit {
     head_next: Box<[u8; HEAD_BYTES]>,
     record: Box<[u8]>,
     result: Box<[u8; RESULT_BYTES]>,
-    out: Box<[u8; 256]>,
     predicates: Box<[wire::Predicate; 1]>,
     mutations: Box<[wire::Mutation; 2]>,
 }
@@ -211,7 +217,6 @@ impl Commit {
             head_next: Box::new([0; HEAD_BYTES]),
             record: vec![0x5a; record].into_boxed_slice(),
             result: Box::new([0xa5; RESULT_BYTES]),
-            out: Box::new([0; 256]),
             predicates: Box::new([zero_predicate()]),
             mutations: Box::new([zero_mutation(), zero_mutation()]),
         };
@@ -281,7 +286,10 @@ impl Commit {
                 execution_epoch: 1,
             },
             codec: CANDIDATE_VERSION,
-            _reserved: 0,
+            // The bench stands in for the kernel's persistence facade: each thread leases its own queue slot,
+            // and every commit on it carries a strictly larger sequence (the first head is 1).
+            slot: self.thread as u32,
+            seq: self.n + 1,
             time: wire::TimeGuard {
                 flags: 0,
                 _reserved: 0,
@@ -293,10 +301,6 @@ impl Commit {
             mutations: self.mutations.as_ptr(),
             mutations_len: 2,
             result: crate::frames::octets(&self.result[..]),
-        };
-        i.result = HostBuf {
-            ptr: self.out.as_mut_ptr(),
-            cap: self.out.len(),
         };
         Frame::new(i, output())
     }

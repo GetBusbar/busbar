@@ -14,7 +14,7 @@ use crate::preflight::resolve_signing_key;
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
-use crate::{admin, config, config_validate, governance, hooks, ratelimit, state, telemetry};
+use crate::{admin, config, config_validate, governance, ratelimit, state, telemetry};
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
@@ -23,15 +23,12 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
 
-pub fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'static str> {
-    if !chain_empty {
-        return None;
-    }
-    Some(if auth_present {
-        "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production"
-    } else {
-        "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [keys]` (and mint virtual keys via the admin API) before exposing it; do not run this in production"
-    })
+/// The explicit open posture (`auth: { chain: [] }`) boots bannered. A configuration with no `auth:`
+/// block never reaches here: validation refuses it (#358).
+pub fn open_relay_banner(chain_empty: bool) -> Option<&'static str> {
+    chain_empty.then_some(
+        "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production",
+    )
 }
 
 pub fn inert_durable_keys_banner(
@@ -1179,24 +1176,6 @@ impl RootRules for AcceptAll {
     }
 }
 
-/// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
-/// Historical transformation is supplied by the composition root, not this projection.
-pub async fn prepare_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    resolver: &config::secret::SecretResolver,
-) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
-    let axis = crate::preflight::root_rows()
-        .store_axis
-        .ok_or("no Store axis is installed")?;
-    axis()
-        .prepare(door, &label, settings.as_bytes())
-        .await
-        .map_err(|_| format!("Store '{label}' native preparation refused"))
-}
-
 pub async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
@@ -1521,44 +1500,6 @@ pub fn instance_limits(
     limits
 }
 
-fn config_store_inputs(
-    store: Option<&config::StoreCfg>,
-    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<
-    (
-        busbar_contract::persistence::axis::StoreDoor,
-        String,
-        busbar_contract::secure::SecureString,
-    ),
-    String,
-> {
-    let store = store.ok_or_else(config::store_required)?;
-    let row = registry.resolve(&store.module);
-    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
-        Default::default()
-    } else {
-        config::secret::resolve_settings(
-            &store.settings,
-            &registry.secret_slots(&store.module),
-            &registry.reference_slots(&store.module),
-            &store.module,
-            resolver,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
-    };
-    let bytes = resolved.encode().map_err(|error| error.to_string())?;
-    let settings = busbar_contract::secure::SecureString::from(
-        String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
-            .map_err(|_| "settings encoding was not UTF-8")?,
-    );
-    drop(resolved);
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let door = registry.store_door(&store.module).map_err(failed)?;
-    Ok((door, store.module.clone(), settings))
-}
-
 /// The 1.5.5 `plugins.fetch` refusal: a header line, then one `  - ` bullet per failed target.
 fn plugins_fetch_refusal<S: AsRef<str>>(errors: &[S]) -> String {
     let mut out = String::from("plugins.fetch failed:");
@@ -1860,10 +1801,31 @@ async fn build_app_native(
 
     admitted_pin(&cfg, plugin_registry.as_ref())?;
 
+    // The protected resources are the audiences of the recognized plane instances whose admitted
+    // images serve HTTP routes (r3 section 2.3); the grammar carries that judgement. Taken here,
+    // while `cfg` is whole.
+    let protected_resources: Vec<String> =
+        config::recognizer::plane_audiences(&cfg.instance_sections(), |instance| {
+            cfg.grammar()
+                .is_ok_and(|grammar| grammar.serves_http(instance))
+        });
+
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let preparation = rules.prepare_candidate(&cfg, &plugins_cfg).await?;
+    let publication_generation = config::generation::reserve(prior).await?;
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
+    };
     let prepared_resolver = preparation
         .as_ref()
         .map(|preparation| preparation.secret_resolver());
@@ -1907,6 +1869,14 @@ async fn build_app_native(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    // #359 SEC-L1: a root listener served in the clear under its acceptance is bannered and audited
+    // (before `cfg.models` moves out below).
+    crate::config::listener_acceptance::announce(&cfg);
+    let plaintext_listeners: Vec<&'static str> = crate::config::listener_acceptance::accepted(&cfg)
+        .into_iter()
+        .map(|(listener, _)| listener.setting)
+        .collect();
+
     let llm_configured = !cfg.providers.is_empty() || !cfg.models.is_empty();
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2066,7 +2036,7 @@ async fn build_app_native(
         );
     }
 
-    if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty(), cfg.auth.is_some()) {
+    if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty()) {
         eprintln!("[error] {banner}");
         diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }
@@ -2279,118 +2249,13 @@ async fn build_app_native(
     );
     let auth_instances = auth_instances.sealed();
 
-    let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
-
-    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
-    let hook_route_decls = hook_env.route_decls(&cfg.hooks)?;
-
-    hook_env.preopen_gate_hooks(&cfg.hooks)?;
-
     if prior.is_none() {
         accepted_operator(&auth_cfg, &admin_modules.operator);
     }
     let admin_modules = Arc::new(admin_modules);
 
-    let rewrite_hooks =
-        hooks::resolve_rewrite_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
-
-    let tap_hooks = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Request,
-    );
-    let tap_hooks_candidate = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Candidate,
-    );
-    let tap_hooks_routing = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Routing,
-    );
-    let tap_hooks_response = hooks::resolve_tap_hooks(
-        &cfg.hooks,
-        &cfg.global_hooks,
-        &hook_env,
-        app_config_version,
-        config::HookStage::Response,
-    );
-
-    let global_gates =
-        hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
-
-    let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
-    let mut pool_orderings = std::collections::HashMap::new();
-    let mut pool_decision_gates = std::collections::HashMap::new();
-    let mut pool_rewrite_chains = std::collections::HashMap::new();
-    for (pool_name, pool_cfg) in &cfg.pools {
-        if let Some(policy) = hooks::try_resolve_pool_ordering(
-            pool_cfg,
-            &cfg.hooks,
-            &hook_env,
-            default_hook.as_deref(),
-            app_config_version,
-        )
-        .map_err(|e| format!("pool '{pool_name}': {e}"))?
-        {
-            pool_orderings.insert(pool_name.clone(), policy);
-        }
-        let gates = hooks::resolve_pool_gates(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
-        if !gates.is_empty() {
-            pool_decision_gates.insert(pool_name.clone(), gates);
-        }
-        let rewrites =
-            hooks::resolve_pool_rewrites(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
-        if !rewrites.is_empty() {
-            pool_rewrite_chains.insert(pool_name.clone(), rewrites);
-        }
-    }
-
-    let mut plane_gates = std::collections::BTreeMap::new();
-    let mut plane_rewrites = std::collections::BTreeMap::new();
-    for (section, defs) in &cfg.plane_defs {
-        let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(section)
-        else {
-            continue;
-        };
-        let g = defs.container_gates();
-        let containers = || {
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice()))
-        };
-        plane_gates.insert(
-            decl.key,
-            hooks::resolve_container_gates(
-                containers(),
-                &g.section_hooks,
-                &cfg.hooks,
-                &hook_env,
-                app_config_version,
-            ),
-        );
-        plane_rewrites.insert(
-            decl.key,
-            hooks::resolve_container_rewrites(
-                containers(),
-                &g.section_hooks,
-                &cfg.hooks,
-                &hook_env,
-                app_config_version,
-            ),
-        );
-    }
-
-    let (mut route_decls, withheld_public_exports) =
+    let (route_decls, withheld_public_exports) =
         crate::export::route_projection(&cfg_export, prior.map(|app| app.exports.as_ref()));
-    route_decls.extend(hook_route_decls);
     let plugin_routes = std::sync::Arc::new(
         crate::plugin_routes::build_route_table(route_decls)?
             .with_withheld_public_exports(withheld_public_exports),
@@ -2490,19 +2355,6 @@ async fn build_app_native(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let protected_resources: Vec<String> = cfg
-                .endpoint_resources
-                .get(crate::config::plane_sections::EndpointSection::OWNER)
-                .and_then(|slot| {
-                    crate::plane_driver::registry::plane_decl_for_config_section(
-                        crate::config::plane_sections::EndpointSection::OWNER,
-                    )
-                    .and_then(|d| (d.admission)(slot.as_ref()))
-                })
-                .map(|adm| adm.audience)
-                .into_iter()
-                .collect();
-
             let store = governance
                 .as_ref()
                 .ok_or_else(config::store_required)?
@@ -2515,6 +2367,7 @@ async fn build_app_native(
                     protected_resources,
                     prior.and_then(state::App::oauth_as_any).cloned(),
                     store,
+                    checked.admin_origin.clone(),
                 )
                 .await?,
             )
@@ -2560,10 +2413,8 @@ async fn build_app_native(
         .collect();
     let auth = auth_mw.clone();
 
-    let hook_env = hook_env.clone();
+    let plugin_registry = plugin_registry.clone();
     let hook_registry = cfg.hooks.clone();
-    let requested_signals = hooks::requested_signals(&cfg.hooks);
-    let any_content_hook = hooks::any_content_hook(&cfg.hooks);
     let export_projections = cfg.export.projection_union();
     let global_hooks = cfg.global_hooks.clone();
     let groups_registry = cfg.groups.clone();
@@ -2686,21 +2537,8 @@ async fn build_app_native(
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             global_hooks,
             groups_registry,
             base_group_names,
@@ -2747,9 +2585,12 @@ async fn build_app_native(
     if let Some(prior) = prior {
         app.config_generation = Arc::clone(&prior.config_generation);
     }
+    app.publication_generation = publication_generation;
+    app.selected_predecessor = prior.and_then(|prior| prior.selected_policy.clone());
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;
+    app.plaintext_listeners = plaintext_listeners;
     if let Some(preparation) = preparation {
         preparation.finish(&mut app).await?;
     }
@@ -2772,6 +2613,10 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    // Export membership is restart-only: recompute its markers against the retained boot
+    // instances, so a reverted or withdrawn candidate cannot leave a stale requirement.
+    app.config_pending_restart
+        .retain(|path| !path.starts_with("export."));
     app.boot_restart_root = prior.and_then(|app| app.boot_restart_root.clone());
     app.boot_restart_source = prior.and_then(|app| app.boot_restart_source.clone());
     if let Some(boot) = &app.boot_restart_root {
@@ -2790,7 +2635,7 @@ async fn build_app_native(
         let exports: std::collections::BTreeSet<_> = app
             .export_defs
             .keys()
-            .chain(prior.export_defs.keys())
+            .chain(app.exports.sinks.iter().map(|sink| &sink.name))
             .cloned()
             .collect();
         for name in exports {

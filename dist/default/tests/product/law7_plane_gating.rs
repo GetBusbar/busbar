@@ -93,7 +93,6 @@ static PROBE: PlaneDecl = PlaneDecl {
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
-    reresolve_gates: None,
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -117,14 +116,12 @@ async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
         STARTED.load(Ordering::SeqCst),
     );
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "law7_plane_gating-{}",
@@ -141,7 +138,7 @@ async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {}
         }),
@@ -289,14 +286,12 @@ async fn only_a_configured_plane_builds_its_slot() {
     let mut booted = false;
     let mut build = async |sections: &[&'static str]| {
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            plugins::FIXTURE_PUBLISHER,
+        );
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "law7_plane_gating-{}",
@@ -313,7 +308,7 @@ async fn only_a_configured_plane_builds_its_slot() {
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
                 "providers": {}, "models": {},
-                "auth": {"chain": [], "admin_auth": []},
+                "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {}
             }),

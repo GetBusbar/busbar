@@ -20,18 +20,12 @@ const UNVERIFIABLE: &str = "This deployment does not verify DPoP proofs, so a DP
 async fn no_authorization_server(tag: &str) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "auth-dpop-no-as-{tag}-{}",
@@ -65,7 +59,7 @@ async fn no_authorization_server(tag: &str) -> Arc<busbar_kernel::state::App> {
             "corp": { "module": oidc_module, "settings": common::credentials::settings(AUDIENCE) }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team" } } }
         },

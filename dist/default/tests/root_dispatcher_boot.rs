@@ -198,7 +198,12 @@ fn refused(env: &[(&str, &str)]) -> String {
     std::fs::write(&config, &original).unwrap();
     let mut command = Command::new(common::boot::exe());
     command.env("BUSBAR_CONFIG", &config).env("MOCK_KEY", "x");
-    for name in ["BUSBAR_PROVIDERS", "BUSBAR_WORKER_THREADS", "BUSBAR_UPSTREAM_HTTP1_ONLY", "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE"] {
+    for name in [
+        "BUSBAR_PROVIDERS",
+        "BUSBAR_WORKER_THREADS",
+        "BUSBAR_UPSTREAM_HTTP1_ONLY",
+        "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+    ] {
         command.env_remove(name);
     }
     for (name, value) in env {
@@ -208,7 +213,11 @@ fn refused(env: &[(&str, &str)]) -> String {
     let out = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(1), "{out}");
     assert!(!out.contains("busbar listening"), "{out}");
-    assert_eq!(std::fs::read(&config).unwrap(), original, "refusal must precede config migration");
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        original,
+        "refusal must precede config migration"
+    );
     assert!(!dir.join("config.yaml.1.5.5").exists());
     std::fs::remove_dir_all(dir).unwrap();
     out
@@ -220,20 +229,31 @@ fn every_retired_launch_variable_refuses_boot_and_never_echoes_values() {
         ("BUSBAR_PROVIDERS", "providers_file"),
         ("BUSBAR_WORKER_THREADS", "advanced.worker_threads"),
         ("BUSBAR_UPSTREAM_HTTP1_ONLY", "advanced.upstream_http1_only"),
-        ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "advanced.upstream_h2_prior_knowledge"),
+        (
+            "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+            "advanced.upstream_h2_prior_knowledge",
+        ),
     ];
     let canary = "retired-launch-env-value-canary";
     let env: Vec<_> = retired.iter().map(|(name, _)| (*name, canary)).collect();
     let out = refused(&env);
-    let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner().to_string();
+    let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED
+        .banner()
+        .to_string();
     let mut last = None;
     for (name, key) in retired {
         let notice = format!("{banner}: startup refused because {name} is set");
-        let lines: Vec<_> = out.lines().filter(|line| line.contains(&notice) && line.contains(key)).collect();
+        let lines: Vec<_> = out
+            .lines()
+            .filter(|line| line.contains(&notice) && line.contains(key))
+            .collect();
         assert_eq!(lines.len(), 1, "one explained refusal per variable: {out}");
         let at = out.find(lines[0]).unwrap();
         assert!(last.is_none_or(|before| before < at), "table order: {out}");
         last = Some(at);
     }
-    assert!(!out.contains(canary), "environment values must never be echoed: {out}");
+    assert!(
+        !out.contains(canary),
+        "environment values must never be echoed: {out}"
+    );
 }

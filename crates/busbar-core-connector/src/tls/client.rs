@@ -45,10 +45,12 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tls::TlsError> {
     let verifier = unverified_verifier();
     crypto_tls::client_config(|builder| {
-        Ok(builder
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth())
+        crate::off_path::tls::select_client_output(
+            builder
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth(),
+        )
     })
 }
 
@@ -467,15 +469,43 @@ impl TlsDial {
 }
 
 impl ConnectionSecurity for TlsDial {
-    fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a> {
+    fn wrap<'a>(&'a self, io: busbar_contract::transport::ConnectionIo) -> SecuredIoFut<'a> {
         Box::pin(async move {
-            let tokio_io = FuturesAsyncReadCompatExt::compat(io);
+            let plan = crypto_tls::write_progress::client_plan(&self.config)
+                .map_err(std::io::Error::other)?;
+            let credit = io
+                .storage
+                .try_reserve(plan.requested_bytes())
+                .map_err(std::io::Error::other)?;
+            let storage = io.storage;
+            let tokio_io = FuturesAsyncReadCompatExt::compat(io.io);
             let connector = tokio_rustls::TlsConnector::from(self.config.clone());
-            let tls_stream = connector
-                .connect(self.server_name.clone(), tokio_io)
-                .await?;
+            let funded = super::write_progress::handshake(credit, || {
+                connector.connect(self.server_name.clone(), tokio_io)
+            })
+            .await?;
+            // Outbound metadata records the configured SNI actually enabled for this dial.
+            let server_name = match (&self.server_name, self.config.enable_sni) {
+                (rustls::pki_types::ServerName::DnsName(name), true) => Some(name.as_ref()),
+                _ => None,
+            };
+            let tls_handshake = Some(
+                busbar_contract::transport::wire::HandshakeInfo::capture(
+                    &storage,
+                    funded.stream().get_ref().1.alpn_protocol(),
+                    server_name,
+                )
+                .map_err(std::io::Error::other)?,
+            );
+            let (tls_stream, progress) = super::write_progress::TrackedTls::new(funded, plan)?;
             let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(tls_stream));
-            Ok(SecuredIo::anonymous(raw))
+            let mut secured = SecuredIo::anonymous(busbar_contract::transport::ConnectionIo {
+                io: raw,
+                progress,
+                storage,
+            });
+            secured.tls_handshake = tls_handshake;
+            Ok(secured)
         })
     }
 }

@@ -7,6 +7,11 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(test)]
+mod response_intent_tests;
+
+pub mod response_intent;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -101,6 +106,9 @@ pub mod journal;
     )
 )]
 pub mod link;
+// The notary key certificate line (certificate v2): linked by the Bootstrap signer, decoded for
+// the range read and checked by verify.
+pub mod notary_key;
 // The page stamps and break notices (SEALING-FIX §3.1): built and signed by the notary and the
 // Bootstrap signer threads, never per request.
 pub mod restart;
@@ -109,6 +117,8 @@ pub use restart::{span_ms, walk_tail, BackwardWalk, BreakAt, TailItem, WalkConte
 // The audit signing capabilities (SEALING-FIX §5.3): consumed once at boot, used on the signer
 // threads only.
 pub mod grant;
+/// Common chain decoding and integrity checks, including certificate rows.
+pub mod linked_record;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -171,10 +181,14 @@ pub use grant::{
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
 pub use link::{line_fingerprint, line_hasher, Fingerprint, LineAt, Linked, Prepared};
+pub use notary_key::{
+    notary_key_from_journal_body, NotaryKeyCertificate, NotaryKeyRecord, NOTARY_KEY_DOMAIN,
+    NOTARY_KEY_JOURNAL_TAG, NOTARY_KEY_RECORD_DOMAIN,
+};
 pub use recipe::{
     digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
     DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6, DIGEST_RECIPE_V7,
-    LINK_RECIPE,
+    LINK_RECIPE, LINK_RECIPE_V2,
 };
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,

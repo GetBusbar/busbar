@@ -264,6 +264,17 @@ pub mod ecdsa_p256 {
             .map_err(|_| Error::Mismatch)
     }
 
+/// Validate the exact uncompressed SEC1 P-256 point through the selected provider.
+pub fn validate_public_key(pk: &[u8; 65]) -> Result<(), Error> {
+    if pk[0] != 4 {
+        return Err(Error::Invalid("P-256 uncompressed public key"));
+    }
+    UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)
+        .parse()
+        .map(|_| ())
+        .map_err(|_| Error::Invalid("P-256 public key"))
+}
+
     /// Verify an ASN.1 DER signature under the SEC 1 public key `pk`.
     pub fn verify_asn1(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
         UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, pk)

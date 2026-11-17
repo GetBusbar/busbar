@@ -517,7 +517,7 @@ pub(crate) struct PostServe<'a> {
     /// Data runtimes and transport-plugin listener threads: requests like any other.
     pub(crate) threads: Vec<std::thread::JoinHandle<()>>,
     pub(crate) work_recovery: JoinHandle<()>,
-    pub(crate) generation_workers: super::boot::workers::RunningWorkers,
+    pub(crate) generation_workers: Arc<super::min3_candidate::Workers>,
     pub(crate) exports: super::exports::ports::Exports,
     pub(crate) export_captures: Arc<busbar_kernel::export::plugin::Exports>,
     pub(crate) export_observers: Arc<super::export_observer::ExportObservers>,
@@ -760,6 +760,29 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     ) {
         failures.push(error);
     }
+    // Native DATA audit r2: Node drives its own installed native entries before the journal
+    // and notary close. An entry still unresolved at the cut stays installed and is reported.
+    match drain
+        .bounded(
+            Phase::Audit,
+            DrainHandle::spawn(drain_native_custody()),
+            Cut::Seal,
+        )
+        .await
+    {
+        Joined::Done(Ok(())) => {}
+        Joined::Done(Err(error)) => {
+            failures.push(format!("native DATA custody driver failed: {error}"))
+        }
+        Joined::Detached(_) => {
+            let node = super::plane_node::node();
+            failures.push(format!(
+                "native DATA custody unresolved at the cut: {} native of {} retained terminal entries",
+                node.native_pending(),
+                node.terminal_pending(),
+            ));
+        }
+    }
 
     // [2] money_stop, then the money driver's join, until C3. A panicked driver is replaced by
     // the fallback; nothing is aborted.
@@ -811,6 +834,8 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
         .and_then(|book| book.audit.as_ref())
         .and_then(|audit| audit.take_notary())
     {
+        let progress = std::sync::Arc::clone(task.progress());
+        let cut_retained = &progress.journal_cut_retained;
         match drain
             .bounded(Phase::Seal, DrainHandle::adopt(task.stop()), Cut::Seal)
             .await
@@ -826,10 +851,23 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 if let Some(why) = end.halted {
                     eprintln!("busbar: shutdown audit_notary=halted:{why}");
                 }
+                // SEALING-FIX §3.9: a retained cut keeps its store attempt, so [6] refuses
+                // retirement with `PendingWork` (exit 75); an Ephemeral store loses nothing.
+                if let Some(cut) = end.journal_cut.label() {
+                    eprintln!("busbar: shutdown journal_cut={cut}");
+                }
+                if end.final_staged == Some(false) {
+                    eprintln!("busbar: shutdown audit_final=signer_failed");
+                }
             }
             // Lines are durable and linked; the next process on the host seals the tail.
             Joined::Done(Err(_)) => eprintln!("busbar: shutdown audit_notary=panicked"),
-            Joined::Detached(_) => eprintln!("busbar: shutdown audit_notary=detached"),
+            Joined::Detached(_) => {
+                eprintln!("busbar: shutdown audit_notary=detached");
+                if cut_retained.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("busbar: shutdown journal_cut=retained");
+                }
+            }
         }
     }
     if let Some((task, fence)) = predecessor {
@@ -1332,6 +1370,19 @@ async fn settle_export_observations(
             return Ok(());
         }
         tokio::time::sleep(busbar_kernel::governance::DRAIN_PASS_IDLE).await;
+    }
+}
+
+/// Drive the process Node's installed native DATA entries until none remains. A pass that
+/// retires nothing waits one idle interval; the caller's cut bounds the whole drain.
+async fn drain_native_custody() {
+    let node = super::plane_node::node();
+    let mut cursor = None;
+    while node.native_pending() != 0 {
+        let retired = node.drive_native(&mut cursor).await;
+        if retired == 0 && cursor.is_none() {
+            tokio::time::sleep(DRAIN_PASS_IDLE).await;
+        }
     }
 }
 

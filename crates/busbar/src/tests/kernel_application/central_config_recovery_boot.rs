@@ -10,18 +10,12 @@ use std::sync::Arc;
 async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("config-recovery");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -37,7 +31,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -112,18 +106,12 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
 async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_commit() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("config-recovery");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -139,7 +127,7 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -247,18 +235,12 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
 async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_recover() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch("config-recovery");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -274,7 +256,7 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -334,18 +316,12 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
     for recover_first in [false, true] {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch("config-recovery");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -361,7 +337,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             serde_json::json!({
                 "providers": {},
                 "models": {},
-                "auth": { "chain": [], "admin_auth": [] },
+                "auth": { "chain": [] },
                 "store": { "module": module, "settings": settings },
                 "advanced": {  },
             }),

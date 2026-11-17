@@ -65,6 +65,26 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// #358: the one-line remedy for a configuration with no `auth:` block, given by the boot refusal
+/// and by the 1.5.5 upgrade's action item alike. `auth: { chain: [] }` is the one explicit
+/// open-relay acknowledgement; nothing writes it for the operator (owner ruling L1: refuse, give
+/// remedy, no auto-write).
+pub const OPEN_RELAY_REMEDY: &str = "add `auth: { chain: [] }` explicitly to run an open relay \
+     (bannered at every boot and audited as `open_relay` in `node.boot`), or configure a chain \
+     (`auth: { chain: [keys] }` with virtual keys minted through the admin API)";
+
+/// #358 (PRD-5: refuse rather than default open): a configuration with no `auth:` block would serve
+/// every caller unauthenticated and spend the configured provider credentials. It is refused with
+/// [`OPEN_RELAY_REMEDY`]; the open posture boots only when the operator writes it.
+#[must_use]
+fn open_relay_by_omission(listen: &str) -> String {
+    let code = crate::diagnostics::OPEN_RELAY_NO_AUTH.banner();
+    format!(
+        "no `auth:` block ({code}): busbar refuses to boot as an open relay that anyone who can \
+         reach {listen} may use to spend the configured provider credentials; {OPEN_RELAY_REMEDY}"
+    )
+}
+
 /// BUSBAR-3136: a retired 1.5.5 cloud-metadata carve-out key (`security.allow_metadata_hosts`,
 /// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) is refused: cloud
 /// metadata is refused for every outbound connection and no configuration admits it.
@@ -191,6 +211,12 @@ fn judge_with_plugins(
 
     if let Err(security_errors) = validate_bootstrap_security(cfg) {
         errors.extend(security_errors);
+    }
+    // #359 SEC-L1 (owner ruling L1 "Refuse, give remedy"): a root listener with neither TLS nor its explicit
+    // acceptance refuses, loopback included, with the one-line remedy. Nothing writes the acceptance.
+    errors.extend(crate::config::listener_acceptance::refusals(cfg));
+    if cfg.auth.is_none() {
+        errors.push(open_relay_by_omission(&cfg.listen));
     }
 
     {
@@ -941,26 +967,6 @@ fn judge_with_plugins(
         }
     }
 
-    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    if cfg.endpoint_resource(endpoint_section).is_some()
-        && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
-    {
-        let decl = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section);
-        let key = decl.map(|d| d.key).unwrap_or("endpoint");
-        let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
-        errors.push(
-            coded::config_plane_open_to_anonymous(format!(
-            "`{key}:` is configured but auth.chain is empty, which serves the {noun} endpoint to \
-             ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it \
-             runs with WILDCARD grants over every registered subject on that plane. It also leaves \
-             `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. \
-             Close the data-plane chain (`auth: {{ chain: [keys] }}`, or an IdP auth plugin), or \
-             remove the `{key}:` block if this deployment is not a {noun}."
-        ))
-            .into(),
-        );
-    }
-
     if let Some(auth) = &cfg.auth {
         for entry in &auth.chain {
             let name = entry.module.as_str();
@@ -1000,8 +1006,10 @@ fn judge_with_plugins(
             advisories.raise(|| {
                 diag_warn!(
                     CONFIG_OPEN_ADMIN_MINT,
-                    "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
-                     ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
+                    "auth.chain names `keys` and auth.admin_auth is explicitly empty: refused, since \
+                     1.6.0 has no open admin posture and a key is minted only with an admin \
+                     credential. Delete the auth.admin_auth line to use the default chain, or \
+                     list the admin providers you use."
                 )
             });
         }
@@ -1895,6 +1903,17 @@ fn judge_operator(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advi
         && cfg.admin_auth[0] == crate::config::KEYS_MODULE;
     if keys_default_only || cfg.admin_auth.iter().any(|name| name.trim().is_empty()) {
         refuse(errors, operator::no_default_admin_chain());
+    }
+
+    // ADMIN-API-1.6-ONE-MODEL §8.1.1: an explicit `auth.admin_auth: []` (an absent key takes the
+    // closed default chain) is the 1.5.5 open admin posture, which 1.6.0 removes. Refused on every
+    // read, boot and `--validate` alike, with the remedy; never migrated.
+    if cfg
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.admin_auth.is_empty())
+    {
+        refuse(errors, operator::open_admin_posture_removed());
     }
 
     // THE FILE POLICY (ruling 2, §3.5/§3.6.1): an operator-backed definition the overlay holds is

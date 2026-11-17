@@ -42,11 +42,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         .as_object()
         .expect("actual documented paths")
         .iter()
-        .filter(|(path, operations)| {
-            !path.contains('{')
-                && operations["get"].is_object()
-                && operations["get"]["x-busbar-plane"].is_null()
-        })
+        .filter(|(path, operations)| !path.contains('{') && operations["get"].is_object())
         .map(|(path, _)| path)
         .collect();
     assert!(
@@ -72,7 +68,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 
         let wrong = client
             .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "not-the-token")
+            .header("authorization", "Bearer not-the-token")
             .send()
             .await
             .unwrap();

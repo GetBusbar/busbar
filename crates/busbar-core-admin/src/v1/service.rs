@@ -14,11 +14,11 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::state::App;
 
 use crate::v1::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
-    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
-    KeyUsageView, ModelUsageView, ModelView, NamedDefView, NodeView, Page, PluginView,
-    PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, TopologyInfo,
-    UsageBreakdown, UsageView, UsageWindow,
+    AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
+    GroupView, HookHealthView, HookTransportView, HookView, InfoView, InfoWarning, KeyUsageView,
+    ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
+    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
+    UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
@@ -342,18 +342,21 @@ pub mod read_path_money {
     pub use crate::v1::contract::UsageBreakdown;
 }
 
-static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
-static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// Epoch milliseconds the process started, stamped once by [`mark_start`].
+static PROCESS_START_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 pub fn mark_start() {
-    let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(busbar_kernel::store::now());
+    let _ = PROCESS_START_MS.set(busbar_kernel::store::now_ms());
 }
 
 /// Epoch seconds the process started, once [`mark_start`] ran.
 pub(crate) fn started_at() -> Option<u64> {
-    PROCESS_START_EPOCH.get().copied()
+    started_at_ms().map(|ms| ms / 1000)
+}
+
+/// Epoch milliseconds the process started, once [`mark_start`] ran (`/info.started_at_ms`).
+pub(crate) fn started_at_ms() -> Option<u64> {
+    PROCESS_START_MS.get().copied()
 }
 
 struct CatalogCacheEntry {
@@ -581,6 +584,30 @@ fn archive_stat_key(_: &std::fs::Metadata) -> Option<String> {
     None
 }
 
+/// One consistent catalog scan (DES-359 r3 L9): the directory fingerprint read before (`before`)
+/// and after `scan` must agree, so the rows describe one directory state. A change between the two
+/// reads retries the scan once; a second change answers 409. A fingerprint that cannot be read
+/// after the scan leaves the rows unproven: they are returned with no settled fingerprint, so the
+/// caller does not cache them.
+fn consistent_scan<T>(
+    before: u64,
+    mut fingerprint: impl FnMut() -> std::io::Result<u64>,
+    mut scan: impl FnMut() -> T,
+) -> Result<(T, Option<u64>), AdminError> {
+    let mut before = before;
+    for _ in 0..2 {
+        let rows = scan();
+        match fingerprint() {
+            Ok(after) if after == before => return Ok((rows, Some(after))),
+            Ok(after) => before = after,
+            Err(_) => return Ok((rows, None)),
+        }
+    }
+    Err(AdminError::Conflict(
+        "the plugins directory changed during the catalog read; retry the read".into(),
+    ))
+}
+
 // Fingerprint only archives the admission scans. Unrelated files (including a Store's journal)
 // must not invalidate inventory; archive bytes must, even with preserved size and mtime. A settled
 // archive is keyed by its stat (no read); one changed within the racy window, or on a platform
@@ -643,10 +670,6 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
         busbar_kernel::preflight::linked_auth_rows(),
     ));
     modules
-}
-
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
 }
 
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
@@ -835,31 +858,10 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     } else {
         next.global_hooks.retain(|n| n != name);
     }
-    stage_hook_routes(&mut next)?;
-
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
-        return Err(AdminError::Validation(e));
-    }
-
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
-}
-
-fn stage_hook_routes(next: &mut App) -> Result<(), AdminError> {
-    let mut env = next.hook_env.clone();
-    let declarations = env
-        .route_decls(&next.hook_registry)
-        .map_err(AdminError::Validation)?;
-    let routes = next
-        .plugin_routes
-        .with_hook_routes(declarations)
-        .map_err(AdminError::Validation)?;
-    next.hook_env = env;
-    next.plugin_routes = std::sync::Arc::new(routes);
-    Ok(())
 }
 
 pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> {
@@ -870,8 +872,6 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry.remove(name);
     next.global_hooks.retain(|n| n != name);
-    stage_hook_routes(&mut next)?;
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
@@ -979,12 +979,6 @@ pub(crate) fn build_with_registry(
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
     next.global_hooks = global_hooks;
-    stage_hook_routes(&mut next)?;
-
-    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
-        return Err(AdminError::Validation(e));
-    }
-    rebuild_hook_derived(&mut next);
     Arc::clone(&next.root_rules)
         .check_built(&mut next)
         .map_err(AdminError::Validation)?;
@@ -1230,6 +1224,8 @@ pub(crate) struct AdminService {
 
 #[path = "service_operations.rs"]
 mod operations;
+#[cfg(test)]
+pub(crate) use operations::refused as admission_refused;
 pub(crate) use operations::{parse_utc_day, SeriesSpec, UsageDim};
 
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {
@@ -1279,62 +1275,6 @@ pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[Strin
             default: cfg.default,
             groups: cfg.groups.clone(),
             attachments: Vec::new(),
-        }
-    }
-}
-
-fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
-    next.any_content_hook = busbar_kernel::hooks::any_content_hook(&next.hook_registry);
-
-    next.requested_signals = busbar_kernel::hooks::requested_signals(&next.hook_registry);
-
-    next.rewrite_hooks = busbar_kernel::hooks::resolve_rewrite_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    next.tap_hooks = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Request,
-    );
-    next.tap_hooks_candidate = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Candidate,
-    );
-    next.tap_hooks_routing = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Routing,
-    );
-    next.tap_hooks_response = busbar_kernel::hooks::resolve_tap_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-        busbar_kernel::config::HookStage::Response,
-    );
-    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
-        &next.hook_registry,
-        &next.global_hooks,
-        &next.hook_env,
-        next.config_version,
-    );
-    reresolve_plane_gates(next);
-}
-
-fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if let Some(reresolve) = decl.reresolve_gates {
-            reresolve(decl, next);
         }
     }
 }

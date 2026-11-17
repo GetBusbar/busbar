@@ -22,7 +22,7 @@ fn a_fresh_unit() -> u64 {
 }
 
 fn request(method: &str, path: &str) -> AdminRequest {
-    AdminRequest {
+    AdminRequest::test_fixture(crate::root::units_admin::TestAdminRequest {
         method: method.to_string(),
         path: path.to_string(),
         credential: None,
@@ -30,7 +30,7 @@ fn request(method: &str, path: &str) -> AdminRequest {
         body: Vec::new(),
         at: 1_700_000_000,
         unit: a_fresh_unit(),
-    }
+    })
 }
 
 async fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<AuditRecord>) {
@@ -50,7 +50,7 @@ async fn walk(door: AdminDoorFn, request: AdminRequest) -> (AdminAnswer, Vec<Aud
 async fn an_admitted_admin_unit_seals_one_record() {
     let walked = request("POST", "/api/v1/admin/keys");
     let unit = UnitKey::new(walked.unit);
-    let (answer, records) = walk(open_door(), walked).await;
+    let (answer, records) = walk(operator_door(), walked).await;
     assert_eq!(answer.status, 200, "the open door admits the mint");
     assert_eq!(
         records.len(),

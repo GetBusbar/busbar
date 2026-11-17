@@ -29,7 +29,14 @@ fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
-        auth: None,
+        // #359 SEC-L1: both root listeners serve plaintext here, so the fixtures write the explicit acceptance.
+        listener_acceptances: busbar_kernel::config::listener_acceptance::ListenerAcceptances {
+            listen: Some(fixture_plaintext()),
+            admin_listen: Some(fixture_plaintext()),
+            inert: Vec::new(),
+        },
+        // #358: the open posture is written explicitly; omission is refused.
+        auth: Some(config::AuthCfg::default_none()),
 
         providers: providers
             .into_iter()
@@ -47,14 +54,7 @@ fn make_root_cfg(
         store: Some(config::StoreCfg {
             module: {
                 let path = crate::root::test_plugins::application_store_library();
-                let statement = busbar_plugin_loader::dispatch::rendering_of_library(
-                    std::path::Path::new(&path),
-                )
-                .expect("the actual store statement reads")
-                .expect("the actual store exports its statement");
-                busbar_contract::abi::mechanism::rendering::read(&statement)
-                    .expect("the actual store statement is valid")
-                    .name
+                crate::root::test_plugins::native_image(&path).name
             },
             settings: Default::default(),
             insecure_transport: None,
@@ -652,4 +652,13 @@ fn test_validate_model_without_provider_error() {
     assert_eq!(errs.len(), 1);
     assert!(errs[0].contains("orphan_model"));
     assert!(errs[0].contains("references unknown provider"));
+}
+
+/// The explicit plaintext acceptance the root-listener fixtures write (#359 SEC-L1).
+fn fixture_plaintext() -> busbar_kernel::config::min3::InsecureTransport {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    }
 }

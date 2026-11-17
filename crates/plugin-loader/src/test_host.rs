@@ -66,8 +66,7 @@ use busbar_contract::conn::InstanceId;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store_v4::StoreV4,
-    transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, store_v4::StoreV4, transport::Transport,
 };
 use crate::dispatch::plugin::str_bytes;
 use crate::dispatch::Done as Settled;
@@ -205,6 +204,17 @@ impl<K: Kind> Image<K> {
             ),
         }
     }
+}
+
+/// The bytes of the cdylib example `lib_name` (a MIN-3 image for [`admit_bytes`]), found where
+/// [`Image::cdylib`] looks.
+///
+/// # Panics
+/// When no such library exists (the panic names where it looked) or it cannot be read.
+#[must_use]
+pub fn cdylib_bytes(lib_name: &str) -> Vec<u8> {
+    let path = locate(lib_name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn locate(lib_name: &str) -> PathBuf {
@@ -385,56 +395,6 @@ impl Host {
         })
     }
 
-    /// A store image opened as the loader's typed [`LoadedPersistence`](crate::store_v4::LoadedPersistence).
-    pub async fn store(
-        &self,
-        img: Image<StoreV4>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::store_v4::LoadedPersistence, Refused> {
-        let limits = crate::store_v4::Limits {
-            descriptor_bytes: 1 << 20,
-            output_items: 1024,
-            output_bytes: 1 << 20,
-            decode_bytes: 1 << 20,
-        };
-        let plugin = self.bind(&img, name)?;
-        crate::store_v4::LoadedPersistence::open(
-            plugin,
-            Arc::clone(&self.dispatcher),
-            settings,
-            limits,
-        )
-        .await
-        .map_err(Refused::Open)
-    }
-
-    /// A secret image opened as the loader's typed [`LoadedSecret`](crate::secret_calls::LoadedSecret).
-    pub fn secret(
-        &self,
-        img: Image<Secret>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::secret_calls::LoadedSecret, Refused> {
-        let plugin = self.bind(&img, name)?;
-        crate::secret_calls::LoadedSecret::open(plugin, Arc::clone(&self.dispatcher), settings, &[])
-            .map_err(Refused::Open)
-    }
-
-    /// A hook image opened as the loader's typed [`HookInstance`](crate::hook_door::HookInstance).
-    pub fn hook(
-        &self,
-        img: Image<Hook>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::hook_door::HookInstance, Refused> {
-        let plugin = self.bind(&img, name)?;
-        crate::hook_door::HookInstance::open(plugin, Arc::clone(&self.dispatcher), settings, || {
-            Err(String::from("the test host does not rebind"))
-        })
-        .map_err(Refused::Open)
-    }
-
     /// An export image opened as the loader's typed [`ExportInstance`](crate::export_door::ExportInstance).
     pub fn export(
         &self,
@@ -590,7 +550,7 @@ pub trait Openable: Kind + Sized + sealed::Sealed {
 macro_rules! openable {
     ($($k:ty),+) => {$( impl sealed::Sealed for $k {} impl Openable for $k {} )+};
 }
-openable!(Transport, StoreV4, Secret, Auth, Hook, Export);
+openable!(Transport, StoreV4, Auth, Hook, Export);
 impl sealed::Sealed for Plane {}
 impl Openable for Plane {
     fn open(plugin: &Plugin<Self>, settings: &[u8], secrets: &[&[u8]]) -> Result<(), String> {
@@ -1455,5 +1415,72 @@ impl EnvelopeSink for Tee {
     fn dropped(&self, why: Dropped) {
         self.0.dropped(why);
         self.1.dropped(why);
+    }
+}
+
+/// Native stores for tests outside a booted root (the dist fixtures): one registry over one admitted store image,
+/// opening each instance with no Needs and no reference sources. Enough for a store whose `open` makes no NEED and
+/// binds no reference (a local file store such as store-sqlite: it calls only host services). The registry
+/// outlives every handle it opened.
+pub struct NativeStores {
+    registry: crate::instance::Registry,
+}
+
+/// The test binary's one set of process plugin resources (a process installs its plugin sinks once).
+///
+/// # Errors
+/// The resources could not start.
+pub fn shared_process() -> Result<&'static crate::process::ProcessResources, &'static String> {
+    static PROCESS: std::sync::OnceLock<Result<crate::process::ProcessResources, String>> =
+        std::sync::OnceLock::new();
+    PROCESS
+        .get_or_init(crate::process::ProcessResources::new)
+        .as_ref()
+}
+
+impl NativeStores {
+    /// One registry over `admitted`, binding through `binder` (the kernel's `plugin_config::Binder`).
+    ///
+    /// # Errors
+    /// The process resources or the image's admission refusal.
+    pub fn new(
+        admitted: crate::admit::Admitted,
+        binder: Arc<dyn busbar_ports::binder::ConfigBinder>,
+    ) -> Result<Self, crate::refusal::Refusal> {
+        let process = shared_process().map_err(|error| {
+            crate::refusal::Refusal::new(
+                crate::refusal::RefusalCode::Integrity,
+                "process",
+                error.clone(),
+                "process resources",
+            )
+        })?;
+        let mut images = crate::instance::ImagesBuilder::new(
+            &busbar_plugin_abi::host_side::host_vt::HOST,
+            Arc::clone(process.slots()),
+            crate::instance::Ceilings::DEFAULT,
+        );
+        images.admit(admitted)?;
+        Ok(Self {
+            registry: crate::instance::Registry::new(
+                images.finish(),
+                binder,
+                Arc::clone(process.ids()),
+            ),
+        })
+    }
+
+    /// `Registry::open_store` for `spec` under `seal`, with every NEED denied and no reference source.
+    ///
+    /// # Errors
+    /// The open's refusal.
+    pub async fn open(
+        &self,
+        spec: &crate::instance::InstanceSpec<'_>,
+        seal: crate::instance::StoreSeal,
+    ) -> Result<busbar_ports::store::StoreHandle, crate::instance::OpenError> {
+        let needs = Arc::new(crate::chains::DeniedNeeds);
+        let refs: Arc<dyn busbar_ports::binder::RefSource> = Arc::new(crate::chains::DeniedRefs);
+        self.registry.open_store(spec, &needs, &refs, seal).await
     }
 }

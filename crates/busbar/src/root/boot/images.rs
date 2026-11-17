@@ -32,8 +32,16 @@ pub(crate) fn prepare(
             .first_party_floors
             .insert(name.clone(), version.clone());
     }
-    let admitted = crate::root::min3_boot::admit_images(&plugins).map_err(GrammarRefusal)?;
-    let proofs = admitted
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(super::linked_row)
+        .collect();
+    linked.extend(super::linked_exports(crate::LINKED.export_doors).map_err(GrammarRefusal)?);
+    // The read owns one capture: executable admission and grammar consume its exact bytes.
+    let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
+    let admitted =
+        crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
+    let proofs: BTreeMap<String, ImageProof> = admitted
         .iter()
         .map(|(image, _)| {
             (
@@ -45,7 +53,7 @@ pub(crate) fn prepare(
             )
         })
         .collect();
-    let aliases = admitted
+    let aliases: Vec<(String, String)> = admitted
         .iter()
         .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
         .collect();
@@ -56,12 +64,6 @@ pub(crate) fn prepare(
             .map_err(|error| GrammarRefusal(error.to_string()))?;
     }
     let images = builder.finish();
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(super::linked_row)
-        .collect();
-    linked.extend(super::linked_exports(crate::LINKED.export_doors).map_err(GrammarRefusal)?);
-    let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
     let grammar = crate::root::secret_grammar::of_images(
         &images,
         super::owners_of(&metadata),
@@ -69,6 +71,8 @@ pub(crate) fn prepare(
         super::skip_lines(metadata.skipped()),
     )
     .map_err(GrammarRefusal)?;
+    let grammar =
+        with_http_instances(grammar, &aliases, &proofs, &images).map_err(GrammarRefusal)?;
     Ok(FileImages {
         images,
         aliases,
@@ -90,6 +94,73 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    /// Publish these images' secret grammar as the process's native secret axis (WP3 step 2): the one source of the
+    /// secret words `--validate`, `--list-plugins`, the start grammar and every later read use. Called by the boot
+    /// for the images it serves, never by a per-read phase one (which mutates nothing).
+    pub(crate) fn publish_secrets(&self) {
+        crate::root::native_secrets::NATIVE.publish_images(
+            &self.grammar,
+            self.proofs
+                .iter()
+                .filter(|(_, proof)| proof.digest.is_none())
+                .map(|(identity, _)| identity.as_str()),
+        );
+    }
+
+    /// Publish these images' hook facts (WP3 hook step): the one source config validation reads hook names,
+    /// linkage and ranking words from. Called by the stage that prepares the images it serves or validates, never
+    /// by a per-read phase one (which mutates nothing).
+    pub(crate) fn publish_hooks(&self) {
+        crate::root::hooks::NATIVE.publish_images(
+            &self.images,
+            &self.aliases,
+            self.proofs
+                .iter()
+                .filter(|(_, proof)| proof.digest.is_none())
+                .map(|(identity, _)| identity.as_str()),
+        );
+    }
+
+    pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {
+        self.proofs
+            .iter()
+            .filter(|(_, proof)| proof.kind == busbar_plugin_abi::types::KindCode::Transport)
+            .map(|(name, proof)| (name.clone(), proof.digest))
+            .collect()
+    }
+
+    /// Preserve the admitted executable owners alongside the metadata from this same read.
+    pub(crate) fn prepared_read(
+        &self,
+        input: &PhaseOneIn<'_>,
+    ) -> Result<busbar_kernel::config::grammar::PreparedConfigRead, GrammarRefusal> {
+        let planes = crate::root::min3_provider_plan::descriptors(self).map_err(GrammarRefusal)?;
+        Ok(
+            busbar_kernel::config::grammar::PreparedConfigRead::new(self.grammar.clone())
+                .with_provider_planes(planes)
+                .with_context(Arc::new(self.clone()))
+                .for_input(input),
+        )
+    }
+
+    /// Metadata comes from the same admitted image whose lease this read retains.
+    pub(crate) fn plane_identity(
+        &self,
+        canonical: &str,
+    ) -> Result<Arc<busbar_kernel::plane_driver::image_identity::PlaneImageIdentity>, String> {
+        let proof = self
+            .proofs
+            .get(canonical)
+            .filter(|proof| proof.kind == busbar_plugin_abi::types::KindCode::Plane)
+            .ok_or_else(|| format!("plane `{canonical}` has no retained admitted image proof"))?;
+        busbar_kernel::plane_driver::image_identity::PlaneImageIdentity::new(
+            canonical.into(),
+            proof.digest,
+        )
+        .map(Arc::new)
+        .map_err(str::to_owned)
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,
@@ -184,6 +255,10 @@ mod pin_tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/read_inventory.rs"]
+mod read_inventory_tests;
+
 /// Admit a fixture's own archive scan, without borrowing another fixture's process-global registry.
 #[cfg(test)]
 pub(crate) fn fixture(
@@ -211,7 +286,7 @@ pub(crate) fn fixture(
             admitted.push((image, row.manifest.alias.clone()));
         }
     }
-    let proofs = admitted
+    let proofs: BTreeMap<String, ImageProof> = admitted
         .iter()
         .map(|(image, _)| {
             (
@@ -223,7 +298,7 @@ pub(crate) fn fixture(
             )
         })
         .collect();
-    let aliases = admitted
+    let aliases: Vec<(String, String)> = admitted
         .iter()
         .map(|(image, alias)| (image.identity().to_owned(), alias.clone()))
         .collect();
@@ -238,10 +313,121 @@ pub(crate) fn fixture(
         super::classify(&metadata, Some(plugins)),
         super::skip_lines(metadata.skipped()),
     )?;
+    let grammar = with_http_instances(grammar, &aliases, &proofs, &images)?;
     Ok(FileImages {
         images,
         aliases,
         grammar,
         proofs,
     })
+}
+
+/// The process's one set of plugin resources (a process installs its plugin sinks once): made by the start stage,
+/// before the start grammar, and reused by the boot.
+pub(crate) fn process() -> Result<Arc<ProcessResources>, String> {
+    static PROCESS: std::sync::OnceLock<Result<Arc<ProcessResources>, String>> =
+        std::sync::OnceLock::new();
+    PROCESS
+        .get_or_init(|| ProcessResources::new().map(Arc::new))
+        .clone()
+}
+
+/// The start stage's native image prepare (WP3 step 2): the configured `plugins:` block's images verified,
+/// read and described (no instance opens), and their secret grammar published as the native secret axis, before
+/// the start scan and the start grammar. So `--validate`, `--list-plugins` and the start grammar read the native
+/// secret words, from the one source every later read uses. With no readable `plugins:` block the linked images
+/// alone are prepared.
+pub(crate) fn publish_start() -> Result<(), String> {
+    let process = process()?;
+    let plugins = super::configured_block().unwrap_or_else(|| busbar_kernel::config::PluginsCfg {
+        enabled: false,
+        ..Default::default()
+    });
+    let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
+    prepared.publish_secrets();
+    prepared.publish_hooks();
+    Ok(())
+}
+
+/// The recognizer's plane instance names, and which of them serve HTTP routes on the data
+/// listener: oauth_as protects exactly those planes' audiences (WP1-GAP r3, section 2.3).
+fn with_http_instances(
+    grammar: Grammar,
+    aliases: &[(String, String)],
+    proofs: &BTreeMap<String, ImageProof>,
+    images: &Images,
+) -> Result<Grammar, String> {
+    let sections = busbar_plugin_loader::instance::plane_sections::plane_sections(
+        aliases
+            .iter()
+            .filter(|(identity, _)| {
+                proofs
+                    .get(identity)
+                    .is_some_and(|proof| proof.kind == busbar_plugin_abi::types::KindCode::Plane)
+            })
+            .map(|(identity, alias)| (identity.as_str(), alias.as_str())),
+        busbar_kernel::config::recognizer::is_core_key,
+    )
+    .map_err(|refusal| refusal.to_string())?;
+    let serving = sections
+        .names()
+        .filter(|name| {
+            sections
+                .identity_of_section(name)
+                .is_some_and(|identity| images.serves_http(identity))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let by_identity: BTreeMap<String, String> = sections
+        .names()
+        .filter_map(|name| {
+            sections
+                .identity_of_section(name)
+                .map(|identity| (identity.to_owned(), name.to_owned()))
+        })
+        .collect();
+    let grammar = name_sections(grammar, &by_identity, |identity| {
+        proofs.get(identity).and_then(|proof| proof.digest)
+    });
+    Ok(grammar.with_http_instances(serving))
+}
+
+/// The recognizer's strict-parse Section items are the planes' instance names. A plane the
+/// running registry recorded keeps the instance name it was bound under, even when its archive is
+/// gone; an admitted plane is renamed to the loader's instance name, and listed when the start
+/// judgement did not list it (a read before start registered its planes).
+pub(crate) fn name_sections(
+    mut grammar: Grammar,
+    by_identity: &BTreeMap<String, String>,
+    digest_of: impl Fn(&str) -> Option<[u8; 32]>,
+) -> Grammar {
+    use busbar_kernel::config::grammar::{Item, ItemKind, Standing};
+    for item in &mut grammar.items {
+        if item.kind == ItemKind::Section {
+            if let Some(name) = by_identity.get(&item.module) {
+                item.name.clone_from(name);
+            }
+        }
+    }
+    for (identity, name) in by_identity {
+        if grammar
+            .items
+            .iter()
+            .any(|item| item.kind == ItemKind::Section && &item.name == name)
+        {
+            continue;
+        }
+        let image = digest_of(identity).map_or_else(
+            || "linked".to_owned(),
+            |digest| digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+        );
+        grammar.items.push(Item {
+            kind: ItemKind::Section,
+            name: name.clone(),
+            module: identity.clone(),
+            image,
+            standing: Standing::Counts,
+        });
+    }
+    grammar
 }

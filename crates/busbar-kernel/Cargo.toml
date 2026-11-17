@@ -68,12 +68,15 @@ rustls-pki-types = { workspace = true }
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 # Never on in a normal build; dependents enable it from [dev-dependencies].
-test-support = ["busbar-kernel-identity/test-support"]
+test-support = ["busbar-kernel-identity/test-support", "busbar-contract/test-seal"]
 # Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
 # Never on in a normal build: custody's miss-path probe for C-SCRUB-HIT's publish-order arm (IF §14 round 19). Enabled
 # only from a [dev-dependencies] table; the shipped binary's feature tree must not show it.
 conformance = []
+# The store kit (persistence::store_kit) outside tests: only the harness build's `--store-kit`
+# runner enables it (DES-STOREKIT r2). Never in a shipped build.
+store-kit = []
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }

@@ -11,10 +11,6 @@ license = "Apache-2.0"
 name = "busbar_ffi"
 path = "src/lib.rs"
 
-[[test]]
-name = "loom_slots"
-path = "tests/loom_slots.rs"
-
 [features]
 default = []
 # The loader's side: instances, sessions, chains, the out lease, the crypto arena and dlopen with its
@@ -28,7 +24,7 @@ libloading = { workspace = true, optional = true }
 # H4: a read-only parse of the bytes the loader already holds (segments and the `busbar_plugin` symbol).
 object = { version = "0.37", optional = true, default-features = false, features = ["read", "std"] }
 
-# The slot model check (tests/loom_slots.rs) swaps the slot atomics only under `--cfg loom`.
+# The slot model check (slots::loom_tests) swaps the slot atomics only under `--cfg loom`.
 [target.'cfg(loom)'.dependencies]
 loom = { workspace = true }
 

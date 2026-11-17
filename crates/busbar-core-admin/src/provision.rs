@@ -208,13 +208,12 @@ impl IntoResponse for GuardAdminError {
             Self::Invalid => "for_s must be between 60 and 86400 seconds",
             Self::Unavailable => "the provisioning store did not answer; retry",
         };
-        (
-            self.status(),
-            busbar_contract::json::Body(
-                busbar_contract::json::json!({ "error": { "message": message } }),
-            ),
-        )
-            .into_response()
+        let code = match &self {
+            Self::UnknownInstance => "not_found",
+            Self::Invalid => "invalid_request",
+            Self::Unavailable => "unavailable",
+        };
+        busbar_kernel::admin::gate::admin_error_envelope(self.status().as_u16(), code, message)
     }
 }
 

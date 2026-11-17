@@ -103,18 +103,12 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -209,7 +203,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -263,18 +257,12 @@ async fn get_group_usage_unknown_group_not_found() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -356,7 +344,7 @@ async fn get_group_usage_unknown_group_not_found() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/ghost/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -382,18 +370,12 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "admin-service-group-usage-{}",
@@ -476,7 +458,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

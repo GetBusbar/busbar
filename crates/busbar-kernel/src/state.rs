@@ -11,16 +11,11 @@ pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 
 pub mod activation;
-
-pub type ContainerGateMap = HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>;
-
-pub type PlaneGateMap = std::collections::BTreeMap<&'static str, ContainerGateMap>;
-
-#[allow(clippy::type_complexity)]
-pub type ContainerRewriteMap =
-    HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>>;
-
-pub type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
+mod selected_rates;
+pub use selected_rates::SelectedRateAdmission;
+pub(crate) use selected_rates::{
+    SelectedCommitRejected, SelectedHeadroomRejected, SelectedRateRejected,
+};
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance — the things that must SURVIVE a config change) and deep-copies the
@@ -58,6 +53,7 @@ pub struct App {
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    pub(crate) publication_generation: Option<Arc<crate::config::generation::Reservation>>,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -75,6 +71,9 @@ pub struct App {
     pub grammar: crate::config::GrammarField,
     /// Configured changes whose physical activation needs a restart. Cleared only at boot.
     pub config_pending_restart: Vec<String>,
+    /// The root listener settings this generation serves in the clear under their explicit acceptance
+    /// (#359 SEC-L1), named in the `node.boot` posture as `plaintext_listener`.
+    pub plaintext_listeners: Vec<&'static str>,
     pub(crate) boot_restart_root: Option<Arc<crate::config::restart::Root>>,
     pub(crate) boot_restart_source: Option<Arc<crate::config::restart::Source>>,
     /// Generation-local observations of synchronous ordinary plane refresh callbacks.
@@ -110,111 +109,20 @@ pub struct App {
         std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     >,
     pub auth: Arc<crate::auth::AuthMiddleware>,
-    /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
-    /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
-    /// dispatch to mutate the request body (compression/redaction). Empty (the default) = no rewrite
-    /// pass, zero cost. Only `rw` gates land here — the grant is enforced at RESOLUTION, so a
-    /// `ro`/`no` hook can never rewrite (the bidirectional grant holds by construction). Each entry is
-    /// `(per-hook transform deadline, transport)`.
-    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-    /// Global request-stage taps from `global_hooks` are resolved to transports and spawned off the request path before dispatch. A tap cannot delay or fail the request. The default empty list has zero cost. Entries are `(per-hook deadline, send_prompt, transport)`; `send_prompt` carries the tap's `prompt: ro` grant, so granted taps receive prompt content and `prompt: no` taps receive only shape. This list serves the request stage.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    pub tap_hooks: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
-    /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
-    /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
-    /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
-    /// see gate denials too) and response status.
-    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
-    /// GLOBAL DECISION gates — the non-rewrite `kind: gate` hooks in `global_hooks`, resolved to
-    /// their full `ResolvedPolicy` (transport + on_error/on_empty/grants), each with its `priority`.
-    /// Fired CONCURRENTLY on every request in the phase-2 decision reconcile, merged with the pool's
-    /// own gates into one priority-sorted chain (reject wins / restricts intersect / order
-    /// last-wins). Empty (the default) = no global gates, zero cost. Pre-sorted ascending by
-    /// priority so the merge's stable sort keeps globals-first on ties.
-    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
-    /// THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS, resolved ONCE at config apply
-    /// The resolved values are core-owned `ResolvedPolicy` / `Arc<dyn RoutingPolicy>`
-    /// objects over admitted plugins. A plane's `build_runtime` cannot
-    /// resolve them because it has no `hook_env` or
-    /// usable current `&App`. They are resolved and read
-    /// core-side, keyed by pool, and exposed through [`App::pool_policy`],
-    /// [`App::pool_gates`], and [`App::pool_rewrites`]. The facade returns the same
-    /// objects produced by `hooks::resolve_pool_*`, without storing them across
-    /// the plane seam. An absent pool uses the
-    /// zero-cost default: no policy and an empty chain.
-    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
-    pub pool_decision_gates:
-        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
-    #[allow(clippy::type_complexity)]
-    pub pool_rewrite_chains: std::collections::HashMap<
-        String,
-        Vec<(
-            std::time::Duration,
-            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-        )>,
-    >,
-    /// THE PER-PLANE PER-CONTAINER SUBMISSION GATES, keyed by the plane's stable decl key (the opaque
-    /// registry key) — one generic registry-keyed map in place of the former per-plane
-    /// gate fields, so core carries no plane vocabulary in its own
-    /// field names. Each plane's entry maps container → resolved `(hook_id, ResolvedPolicy)` gate list
-    /// (`<section>.hooks:` ∪ `<section>.<container>.hooks:`), same combine rule and zero-cost absence
-    /// as before. Composed at config apply by `appbuild` (and re-resolved on swap through
-    /// [`busbar_kernel::plane_driver::slots::ContainerGateSink`]); read on the dispatch path by
-    /// [`App::plane_gates`]. Empty for a plane that attaches nothing — the lookup costs one probe.
-    pub plane_gates: PlaneGateMap,
-    /// THE PER-PLANE PER-CONTAINER REWRITE (`prompt: rw`) CHAINS, keyed by the plane's stable decl key —
-    /// the TAP/observe-transform twin of [`Self::plane_gates`]. Each plane's entry maps container →
-    /// resolved `(deadline, transport)` rewrite list (`<section>.hooks:` ∪ `<section>.<container>.hooks:`,
-    /// the `prompt: rw` members only). Composed at config apply by `appbuild` and re-resolved on swap
-    /// through the same [`busbar_kernel::plane_driver::slots::ContainerGateSink`] callback the gates use. Empty
-    /// for a plane that attaches no rewrite hook — the tap firing site's lookup costs one probe and the
-    /// path stays byte-identical.
-    pub plane_rewrites: PlaneRewriteMap,
-    /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
-    /// axis over it. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
-    /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
-    /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
-    /// out-of-process transport needed.
-    pub hook_env: crate::hooks::HookEnv,
+    /// The validated plugin registry: every admitted plugin row, read by the admin plugin surfaces
+    /// and the config validation of plugin references. Cheap to clone (Arc-backed).
+    pub plugin_registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
-    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
-    /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
+    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set; the native hook bindings
+    /// resolve their own attachments from the configuration they serve. Empty
     /// when no hooks are configured. Read-only after construction; the config-plane mutation surface
     /// swaps a new `App` snapshot rather than mutating this in place.
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
-    /// The "decision observability" signal catalog's config-generation
-    /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
-    /// alongside `hook_registry` above and recomputed by `admin::v1::service::rebuild_hook_derived`
-    /// on every snapshot that rewrites that registry (so a hook registered through the admin API
-    /// declaring `signals:` is honoured on the very next request, not only after a restart) — never
-    /// per request. All-zero (the default) when no hook
-    /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
-    /// check downstream short-circuits on.
-    pub requested_signals: crate::hooks::RequestedSignals,
-    /// Does this config generation grant ANY hook access to prompt CONTENT (`prompt: ro` / `rw`)?
-    /// Built ONCE alongside `requested_signals` above by `hooks::any_content_hook`, and recomputed
-    /// on every snapshot that rewrites `hook_registry` — never per request.
-    ///
-    /// This is the gate on building the request IR for the hook seam: `false` (the default, and
-    /// every deployment that runs no content hook) means the IR is never built and the request path
-    /// pays nothing at all. See `hooks::any_content_hook` for why the gate keys on the deployment's
-    /// grants rather than on the request's protocols.
-    pub any_content_hook: bool,
     /// The config generation's UNION OF EXPORT PROJECTIONS — the union across every configured
     /// `export:` instance of the streams (and fields) it subscribes to. Built ONCE per config apply
     /// from the resolved `export:` block, never per request.
     ///
-    /// THE COMPUTE GATE, and deliberately the SAME mechanism as `requested_signals` directly above:
+    /// THE COMPUTE GATE:
     /// the read runs ONLY when something declared it, never call-then-discard. Nothing subscribed ⇒
     /// core never assembles that stream's records at all. It supersedes the one-off
     /// `export::request_log_configured()` boolean this replaced — one mechanism for "did anybody ask
@@ -262,7 +170,7 @@ pub struct App {
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
     /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
-    /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
+    /// the auth middleware for `/admin` paths. Empty identifies no one: there is no open posture.
     pub admin_chain: Vec<String>,
     /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
     /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string
@@ -387,6 +295,14 @@ pub struct App {
     /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
     /// makes a rate-card correction reprice every past and future derived figure on the next read.
     pub cost: std::sync::Arc<crate::cost::CostModel>,
+    /// Current immutable selected-resource rules. Native candidate publication installs this
+    /// alongside its CostModel; absence never authorizes a selected attempt.
+    pub selected_policy: Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
+    pub(crate) selected_predecessor:
+        Option<Arc<crate::governance::selected_policy::SelectedPolicy>>,
+    pending_selected_policy: Option<
+        Arc<std::sync::Mutex<Option<crate::governance::selected_policy::PendingSelectedPolicy>>>,
+    >,
     /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
     /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
     /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
@@ -486,36 +402,9 @@ pub struct AppParts {
 
     pub auth: Arc<crate::auth::AuthMiddleware>,
 
-    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
-
-    pub tap_hooks: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
-
-    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
-
-    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
-
-    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
-
-    pub pool_decision_gates:
-        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
-
-    pub pool_rewrite_chains: ContainerRewriteMap,
-
-    pub plane_gates: PlaneGateMap,
-
-    pub plane_rewrites: PlaneRewriteMap,
-
-    pub hook_env: crate::hooks::HookEnv,
+    pub plugin_registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
-
-    pub requested_signals: crate::hooks::RequestedSignals,
-
-    pub any_content_hook: bool,
 
     pub global_hooks: Vec<String>,
 
@@ -641,6 +530,74 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// Actual predecessor captured by appbuild; never an earlier App or policy history.
+    pub fn selected_predecessor(
+        &self,
+    ) -> Option<&crate::governance::selected_policy::SelectedPolicy> {
+        self.selected_predecessor.as_deref()
+    }
+
+    pub fn prepare_selected_policy(
+        &mut self,
+        pending: crate::governance::selected_policy::PendingSelectedPolicy,
+    ) -> Result<(), String> {
+        if self.prepared_generation().is_none()
+            || self.pending_selected_policy.is_some()
+            || !pending.matches_candidate(&self.cost, self.selected_predecessor())
+        {
+            return Err("selected policy does not belong to this reserved candidate".into());
+        }
+        self.selected_policy = None;
+        self.pending_selected_policy = Some(Arc::new(std::sync::Mutex::new(Some(pending))));
+        Ok(())
+    }
+
+    fn check_selected_preparation(&self, prior: &App) -> Result<(), String> {
+        match &self.pending_selected_policy {
+            Some(pending) => {
+                let pending = pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.as_ref().is_none_or(|pending| {
+                    !pending.matches_candidate(&self.cost, prior.selected_policy.as_deref())
+                }) {
+                    return Err("selected policy candidate has a stale predecessor or cost".into());
+                }
+                let same_governance = match (&self.governance, &prior.governance) {
+                    (Some(next), Some(current)) => Arc::ptr_eq(next, current),
+                    _ => false,
+                };
+                if !same_governance {
+                    return Err(
+                        "selected policy candidate requires the original shared governor".into(),
+                    );
+                }
+            }
+            None if self.selected_predecessor.is_some() => {
+                return Err("selected policy candidate has no prepared replacement".into());
+            }
+            None => {
+                if self
+                    .selected_policy
+                    .as_ref()
+                    .is_some_and(|policy| !policy.matches_cost(&self.cost))
+                {
+                    return Err("selected policy no longer matches the candidate cost model".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The durable epoch reserved for this unpublished candidate by its retained transaction.
+    /// A boot has no transaction reservation and uses its separately confirmed initial identity.
+    pub fn prepared_generation(&self) -> Option<u64> {
+        self.publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+            .map(|held| held.epoch())
+    }
+
     pub(crate) fn assemble(
         parts: AppParts,
         tslots: Arc<crate::telemetry::AppSlots>,
@@ -663,21 +620,8 @@ impl App {
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             global_hooks,
             base_hook_names,
             groups_registry,
@@ -740,6 +684,7 @@ impl App {
             port_seats,
             exports,
             root_rules,
+            publication_generation: None,
             config_projection,
             configured_view: None,
             document_source_fingerprints: None,
@@ -747,6 +692,7 @@ impl App {
             grammar: crate::config::GrammarField::default(),
             providers_override: providers_path.clone(),
             config_pending_restart: Vec::new(),
+            plaintext_listeners: Vec::new(),
             boot_restart_root: None,
             boot_restart_source: None,
             plane_refresh: activation::PlaneRefreshReport::default(),
@@ -757,21 +703,8 @@ impl App {
             incremental_scan,
             plane_pools,
             auth,
-            rewrite_hooks,
-            tap_hooks,
-            tap_hooks_candidate,
-            tap_hooks_routing,
-            tap_hooks_response,
-            global_gates,
-            pool_orderings,
-            pool_decision_gates,
-            pool_rewrite_chains,
-            plane_gates,
-            plane_rewrites,
-            hook_env,
+            plugin_registry,
             hook_registry,
-            requested_signals,
-            any_content_hook,
             export_projections,
             global_hooks,
             base_hook_names,
@@ -807,6 +740,9 @@ impl App {
             governance,
             secret_resolver,
             cost,
+            selected_policy: None,
+            selected_predecessor: None,
+            pending_selected_policy: None,
             plugins_dir,
             plugins_cfg,
             plugin_admission,
@@ -914,39 +850,6 @@ impl App {
         self.fallback_runtime_key
     }
 
-    pub fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
-        self.plane_gates.get(plane_key)
-    }
-
-    pub fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
-        self.plane_rewrites.get(plane_key)
-    }
-
-    pub fn pool_policy(&self, pool: &str) -> Option<&crate::hooks::ResolvedPolicy> {
-        self.pool_orderings.get(pool)
-    }
-
-    pub fn pool_gates(&self, pool: &str) -> &[(u16, crate::hooks::ResolvedPolicy)] {
-        self.pool_decision_gates
-            .get(pool)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn pool_rewrites(
-        &self,
-        pool: &str,
-    ) -> &[(
-        std::time::Duration,
-        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
-    )] {
-        self.pool_rewrite_chains
-            .get(pool)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
     pub(crate) fn publish_limits(&self) {
         if let Some(limits) = &self.limits {
             busbar_kernel::config::limits::publish(limits);
@@ -959,35 +862,6 @@ impl App {
     ) -> Option<&std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>> {
         self.plane_pools.get(plane_key)
     }
-
-    pub fn resolve_container_gates<'a>(
-        &self,
-        containers: impl Iterator<Item = (&'a str, &'a [String])>,
-        section_hooks: &[String],
-    ) -> HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>> {
-        crate::hooks::resolve_container_gates(
-            containers,
-            section_hooks,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn resolve_container_rewrites<'a>(
-        &self,
-        containers: impl Iterator<Item = (&'a str, &'a [String])>,
-        section_hooks: &[String],
-    ) -> HashMap<String, Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>> {
-        crate::hooks::resolve_container_rewrites(
-            containers,
-            section_hooks,
-            &self.hook_registry,
-            &self.hook_env,
-            self.config_version,
-        )
-    }
 }
 
 impl busbar_kernel::plane_driver::slots::PlaneSlots for App {
@@ -996,26 +870,6 @@ impl busbar_kernel::plane_driver::slots::PlaneSlots for App {
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-}
-
-impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
-    fn reresolve_container_gates(
-        &mut self,
-        plane_key: &str,
-        containers: &[(&str, &[String])],
-        section_hooks: &[String],
-    ) {
-        let gates = self.resolve_container_gates(containers.iter().copied(), section_hooks);
-
-        let rewrites = self.resolve_container_rewrites(containers.iter().copied(), section_hooks);
-
-        if let Some(static_key) =
-            crate::plane_driver::registry::plane_decl_for(plane_key).map(|d| d.key)
-        {
-            self.plane_gates.insert(static_key, gates);
-            self.plane_rewrites.insert(static_key, rewrites);
-        }
     }
 }
 
@@ -1065,6 +919,8 @@ impl AdmissionLease {
 }
 
 pub struct AppHandle {
+    // 0: open, 1: shutdown refuses new admission, 2: admitted publication drained.
+    config_publication: std::sync::atomic::AtomicU8,
     current: arc_swap::ArcSwap<App>,
     publication: std::sync::Mutex<()>,
     admission: std::sync::Mutex<()>,
@@ -1081,6 +937,9 @@ pub struct AppHandle {
     appliers: std::sync::Mutex<Vec<SharedApplier>>,
 
     door_refuser: std::sync::OnceLock<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    /// The read-only trust handle over the serving kernel (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.1):
+    /// what the `core/trust` reads borrow. Set once, by value, before the handle is shared.
+    trust: Option<busbar_kernel::trust::TrustReadout>,
 }
 
 pub type ApplyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
@@ -1091,6 +950,7 @@ type SharedApplier = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
         Self {
+            config_publication: std::sync::atomic::AtomicU8::new(0),
             current: arc_swap::ArcSwap::new(app),
             publication: std::sync::Mutex::new(()),
             admission: std::sync::Mutex::new(()),
@@ -1102,7 +962,54 @@ impl AppHandle {
             attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
             door_refuser: std::sync::OnceLock::new(),
+            trust: None,
         }
+    }
+
+    /// This handle with the serving kernel's read-only trust handle (r3 §2.2).
+    #[must_use]
+    pub fn with_trust(mut self, trust: Option<busbar_kernel::trust::TrustReadout>) -> Self {
+        self.trust = trust;
+        self
+    }
+
+    /// The serving kernel's read-only trust handle; `None` = no native trust custody.
+    #[must_use]
+    pub fn trust(&self) -> Option<&busbar_kernel::trust::TrustReadout> {
+        self.trust.as_ref()
+    }
+
+    /// Stop new configuration effects, then drain the actual retained transaction guard
+    /// and publication callbacks before a root may stop generation workers. A cancelled
+    /// wait keeps admission closed; it does not certify that publication has drained.
+    pub async fn close_config_publication(&self) {
+        let _ = self.config_publication.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        let _effects = crate::config::transaction::effect_lock().await;
+        let _application = self.application.lock().await;
+        self.config_publication
+            .store(2, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn config_admission_open(&self) -> bool {
+        self.config_publication
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+    }
+
+    fn check_config_publication(&self) -> Result<(), String> {
+        if self
+            .config_publication
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 2
+        {
+            return Err(crate::config::transaction::PUBLICATION_CLOSED.into());
+        }
+        Ok(())
     }
 
     pub fn bind_door_refuser(&self, refuser: busbar_kernel::plane_routes::PlaneRefuseByPathFn) {
@@ -1188,7 +1095,7 @@ impl AppHandle {
     /// Reserve the durable generation without invalidating the still-published generation.
     /// Only successful publication updates the shared fence; failed activation may leave a gap
     /// in durable numbering, but cannot revoke the currently serving auth policy.
-    async fn reserve_generation(&self) -> Result<u64, String> {
+    pub(crate) async fn reserve_generation(&self) -> Result<u64, String> {
         let cell = self.load().config_generation.clone();
         let prior = cell.load(std::sync::atomic::Ordering::Acquire);
         match crate::persistence::boot_identity::live() {
@@ -1206,7 +1113,8 @@ impl AppHandle {
 
     pub async fn swap(&self, next: Arc<App>) {
         let _application = self.application.lock().await;
-        self.swap_with_commit(next.clone(), None, None, || Ok(None), &mut false)
+        let next = self
+            .swap_with_commit(next, None, None, || Ok(None), &mut false)
             .expect("a swap with no price preparation cannot refuse publication");
         self.finish_apply(&next).await;
     }
@@ -1218,7 +1126,8 @@ impl AppHandle {
         generation: Option<u64>,
         confirm: impl FnOnce() -> Result<Option<crate::appbuild::ConfirmedLimits>, String>,
         published: &mut bool,
-    ) -> Result<(), String> {
+    ) -> Result<Arc<App>, String> {
+        self.check_config_publication()?;
         let _publication = self
             .publication
             .lock()
@@ -1248,6 +1157,17 @@ impl AppHandle {
         };
 
         let prior = self.load();
+        next.check_selected_preparation(&prior)?;
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(self, &prior)?;
+            if generation != Some(held.epoch()) {
+                return Err("candidate publication epoch differs from its prepared owners".into());
+            }
+        }
         for decl in crate::plane_driver::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
@@ -1258,12 +1178,47 @@ impl AppHandle {
         }
 
         let confirmed = confirm()?;
+        // Copy App fields before the admission gate. Root dispatchers own no App, so the
+        // final Arc below retains the identical complete native owners without a history.
+        let selected_candidate = next
+            .pending_selected_policy
+            .as_ref()
+            .map(|_| (*next).clone());
         // Candidate work and callbacks above finish before the short admission boundary.
         // Final policy either observes the prior App and retains it, or observes this swap.
         let admission = self
             .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let next = if let Some(mut candidate) = selected_candidate {
+            let governance = prior
+                .governance
+                .as_ref()
+                .ok_or("selected policy publication has no shared governor")?;
+            let minute = governance
+                .selected_rates()
+                .activation_minute()
+                .map_err(|_| "selected policy activation clock is unavailable")?;
+            let previous = prior.selected_policy.as_deref();
+            let revision = previous
+                .map_or(Some(1), |policy| policy.revision().checked_add(1))
+                .ok_or("selected policy revision exhausted")?;
+            candidate.check_selected_preparation(&prior)?;
+            let pending = candidate
+                .pending_selected_policy
+                .take()
+                .ok_or("selected policy preparation is absent")?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .ok_or("selected policy preparation was already consumed")?;
+            candidate.selected_policy =
+                Some(Arc::new(pending.activate(previous, revision, minute)?));
+            candidate.selected_predecessor = None;
+            Arc::new(candidate)
+        } else {
+            next
+        };
         let committed = match confirmed {
             Some(confirmed) => Some(confirmed.keep()),
             None => {
@@ -1278,6 +1233,13 @@ impl AppHandle {
                 .store(generation, std::sync::atomic::Ordering::Release);
             next.config_generation
                 .store(generation, std::sync::atomic::Ordering::Release);
+        }
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.publish();
         }
         self.current.store(next.clone());
         *published = true;
@@ -1301,7 +1263,34 @@ impl AppHandle {
         for applier in appliers {
             applier(&next);
         }
+        Ok(next)
+    }
+
+    pub(crate) fn check_candidate_generation(&self, next: &App) -> Result<(), String> {
+        self.check_config_publication()?;
+        next.check_selected_preparation(&self.load())?;
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(self, &self.load())?;
+        }
         Ok(())
+    }
+
+    async fn candidate_generation(&self, next: &App) -> Result<u64, String> {
+        match next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            Some(held) => {
+                held.check(self, &self.load())?;
+                Ok(held.epoch())
+            }
+            None => self.reserve_generation().await,
+        }
     }
 
     pub async fn commit_and_swap(
@@ -1310,11 +1299,12 @@ impl AppHandle {
         persist: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        let generation = self.reserve_generation().await?;
-        self.swap_with_commit(
-            next.clone(),
+        let generation = self.candidate_generation(&next).await?;
+        let next = self.swap_with_commit(
+            next,
             None,
             Some(generation),
             || Ok(None),
@@ -1356,6 +1346,7 @@ impl AppHandle {
     ) -> Result<(), String> {
         let _application = self.application.lock().await;
         let expected = self.load();
+        self.check_candidate_generation(&next)?;
         persist()?;
         let mut publication = UnpublishedOverlay::new(expected.overlay_path.clone());
         let prepared = match preparation {
@@ -1367,10 +1358,10 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
-        let generation = self.reserve_generation().await?;
+        let generation = self.candidate_generation(&next).await?;
         let confirmed = prepared.confirm_activation().await?;
-        self.swap_with_commit(
-            next.clone(),
+        let next = self.swap_with_commit(
+            next,
             Some(&expected),
             Some(generation),
             || Ok(Some(confirmed)),

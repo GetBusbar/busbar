@@ -19,7 +19,7 @@
 use std::sync::{Barrier, Mutex, PoisonError};
 use std::time::Instant;
 
-use busbar_plugin_abi::slots::Slots;
+use busbar_plugin_abi::slots::{OwnedSlot, Slots};
 
 const THREADS: usize = 16;
 const ROUND: usize = 1_024;
@@ -34,7 +34,7 @@ fn main() {
         .unwrap_or(1_000_000_usize);
     let rounds = pairs.div_ceil(ROUND).max(1);
     let table: Slots<Session> = Slots::new();
-    let handoff: Vec<Mutex<Vec<(u32, u32)>>> =
+    let handoff: Vec<Mutex<Vec<OwnedSlot<'_, Session>>>> =
         (0..THREADS).map(|_| Mutex::new(Vec::new())).collect();
     let barrier = Barrier::new(THREADS);
     let worst = std::thread::scope(|scope| {
@@ -72,11 +72,11 @@ fn main() {
 
 /// One thread: per round, open `ROUND` sessions, hand the second half to its partner, end its first half and the
 /// partner's second half. Returns [open median, open p99, end median, end p99].
-fn worker(
+fn worker<'table>(
     thread: usize,
     rounds: usize,
-    table: &Slots<Session>,
-    handoff: &[Mutex<Vec<(u32, u32)>>],
+    table: &'table Slots<Session>,
+    handoff: &[Mutex<Vec<OwnedSlot<'table, Session>>>],
     barrier: &Barrier,
 ) -> [u64; 4] {
     let mut opens = Vec::with_capacity(rounds * ROUND);
@@ -101,9 +101,9 @@ fn worker(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
-        for (index, generation) in mine.drain(..).chain(taken) {
+        for owned in mine.drain(..).chain(taken) {
             let start = Instant::now();
-            let ended = table.remove(index, generation);
+            let ended = owned.take();
             ends.push(nanos(start));
             assert!(ended.is_some(), "a session ends once");
         }

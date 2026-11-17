@@ -28,11 +28,13 @@ pub(crate) fn run(
     facts: &Facts,
     report: &mut Vec<String>,
 ) -> Result<(), Refusal> {
+    // The carve-out check is first, after the overlay fold (`steps::v0`): its warning leads the
+    // 1d lines and sees the document as the operator wrote it.
+    retire_metadata_carve_outs(root, report);
     migrate_plugin_trust(root, resolved, report)?;
     drop_overlay_selector(root, report);
     unfold_zero_cache_write(root, resolved, report);
     drop_hostless_metadata_entries(root, resolved, report);
-    retire_metadata_carve_outs(root, resolved, report);
     price_open_units(root, facts, report)?;
     bind_ungoverned_principals(root, report);
     Ok(())
@@ -191,39 +193,18 @@ fn drop_hostless_metadata_entries(root: &mut Pairs, resolved: &Value, report: &m
 
 /// The 1.5.5 cloud-metadata carve-outs, retired in 1.6.0 (BUSBAR-3136): `security.allow_metadata_hosts`,
 /// `security.allow_all_metadata` and each provider's `allow_metadata_hosts` are removed, whatever
-/// they hold, and each entry that admitted something is named in a BUSBAR-3411 line: cloud
-/// metadata is refused for every outbound connection, so a destination it reached is now refused.
-fn retire_metadata_carve_outs(root: &mut Pairs, resolved: &Value, report: &mut Vec<String>) {
-    fn retire(path: &str, value: &Value, read: &Value, report: &mut Vec<String>) {
-        const CODE: busbar_contract::diagnostic::Banner =
-            busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
-        let entries: Vec<String> = match value {
-            Value::Array(list) => list
-                .iter()
-                .map(|e| e.as_str().map_or_else(|| format!("{e:?}"), str::to_owned))
-                .collect(),
-            _ if read.as_bool() == Some(true) => vec!["true".to_owned()],
-            _ => Vec::new(),
-        };
-        if entries.is_empty() {
-            report.push(format!(
-                "{CODE}: {path}: removed (it admitted nothing; 1.6.0 refuses the key: cloud \
-                 metadata is refused for every outbound connection)"
-            ));
-        }
-        for entry in entries {
-            report.push(format!(
-                "{CODE}: {path}: removed entry '{entry}'; 1.6.0 refuses cloud metadata for every \
-                 outbound connection and no configuration admits it, so a destination it reached \
-                 is now refused (use workload-identity federation for instance credentials)"
-            ));
-        }
-    }
+/// they hold (owner-signed: removal plus a warning, not a refusal). ONE BUSBAR-3411 line names every
+/// removed path, built from the template tree with control characters escaped, and never an entry's
+/// value: cloud metadata is refused for every outbound connection, so a destination one reached is
+/// now refused.
+fn retire_metadata_carve_outs(root: &mut Pairs, report: &mut Vec<String>) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+    let mut paths: Vec<String> = Vec::new();
     if let Some(security) = mapping_mut(root, "security") {
         for key in ["allow_metadata_hosts", "allow_all_metadata"] {
-            if let Some(value) = remove_kept(security, key) {
-                let read = resolved.at("security").at(key);
-                retire(&format!("security.{key}"), &value, read, report);
+            if remove_kept(security, key).is_some() {
+                paths.push(format!("security.{key}"));
             }
         }
     }
@@ -232,17 +213,53 @@ fn retire_metadata_carve_outs(root: &mut Pairs, resolved: &Value, report: &mut V
             let (Some(name), Value::Map(provider)) = (name.as_str(), provider) else {
                 continue;
             };
-            if let Some(value) = remove_kept(provider, "allow_metadata_hosts") {
-                let read = resolved.at("providers").at(name).at("allow_metadata_hosts");
-                retire(
-                    &format!("providers.{name}.allow_metadata_hosts"),
-                    &value,
-                    read,
-                    report,
-                );
+            if remove_kept(provider, "allow_metadata_hosts").is_some() {
+                paths.push(format!(
+                    "providers.{}.allow_metadata_hosts",
+                    escape_control(name)
+                ));
             }
         }
     }
+    if paths.is_empty() {
+        return;
+    }
+    report.push(format!(
+        "{CODE}: removed the retired cloud-metadata carve-out key(s) {}; 1.6.0 refuses cloud \
+         metadata for every outbound connection and no configuration admits it, so a destination \
+         they reached is now refused (use workload-identity federation for instance credentials)",
+        paths.join(", ")
+    ));
+}
+
+/// #358 (owner ruling L1: refuse, give remedy, no auto-write): 1.5.5 ran a config with no `auth:`
+/// block, or a null one, as an open relay, and 1.6.0 refuses to boot it (BUSBAR-8014). The upgrade
+/// writes nothing for it, never an open relay: it reports one action item carrying the boot
+/// refusal's remedy. Decided on the resolved document, as 1.5.5 decided it.
+pub(crate) fn report_absent_auth(resolved: &Value, report: &mut Vec<String>) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH.banner();
+    if resolved.get("auth").is_some_and(|auth| !auth.is_null()) {
+        return;
+    }
+    report.push(format!(
+        "{CODE}: no `auth:` block: 1.5.5 ran this config as an open relay; 1.6.0 refuses to boot \
+         it and the upgrade writes nothing for you; {}",
+        busbar_kernel::config_validate::OPEN_RELAY_REMEDY
+    ));
+}
+
+/// Operator text for a log line: control characters shown as escapes.
+pub(crate) fn escape_control(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// A write tier's rate key and, when exact, the rate value and its rendering.

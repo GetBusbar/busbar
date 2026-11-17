@@ -22,7 +22,7 @@ use zerocopy::IntoBytes;
 
 use crate::records::{
     Full, Nested, Pod, RawWrite, Writer, put_fact_in, put_fact_text_in, put_metric_in,
-    put_nested_in, put_pair_in, put_parts,
+    put_nested_in, put_pair_in, put_parts, put_prefixed_nested_in,
 };
 
 /// The four class sizes (§10.1): 4 KiB, 64 KiB, 1 MiB, 16 MiB.
@@ -273,6 +273,17 @@ impl RawWrite for PooledOut {
 /// record opened, filled and back-patched in this buffer (`put_nested_in`, `put_metric_in`), with no scratch
 /// allocation on the §8.8 encoder path. A nested write that runs out of room is truncated, which zeroes it.
 impl Writer for PooledOut {
+    fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+        put_parts(self, tag, parts)
+    }
+    fn put_pod_nested<T: Pod>(
+        &mut self,
+        tag: u16,
+        prefix: &T,
+        fill: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+    ) -> Result<(), Full> {
+        put_prefixed_nested_in(self, tag, prefix.as_bytes(), fill)
+    }
     fn put(&mut self, tag: u16, body: &[u8]) -> Result<(), Full> {
         put_parts(self, tag, &[body])
     }

@@ -3,6 +3,52 @@
 
 use super::*;
 
+#[test]
+fn fixed_writer_never_grows_and_rolls_back_failed_nested_records() {
+    let mut bytes = [0u8; 48];
+    let mut fixed = Fixed::new(&mut bytes);
+    fixed.put_text(tag::TEXT, "kept").unwrap();
+    assert_eq!(fixed.len(), record_size(4).unwrap());
+    let before = fixed.len();
+    assert!(
+        fixed
+            .put_nested(tag::TEXT, |nested| {
+                nested.put_text(tag::TEXT, "inside")?;
+                nested.put_text(tag::TEXT, "cannot fit")
+            })
+            .is_err()
+    );
+    assert_eq!(fixed.len(), before);
+    assert_eq!(
+        Records::new(fixed.as_bytes())
+            .next()
+            .unwrap()
+            .unwrap()
+            .text()
+            .unwrap(),
+        "kept"
+    );
+    assert!(fixed.bytes[before..].iter().all(|byte| *byte == 0));
+    assert!(fixed.put_text(tag::TEXT, &"x".repeat(48)).is_err());
+    assert_eq!(fixed.capacity(), 48);
+    assert_eq!(fixed.len(), before);
+}
+
+#[test]
+fn fixed_record_quote_checks_overflow_and_exact_padding() {
+    assert_eq!(record_size(0), Some(8));
+    assert_eq!(record_size(4), Some(16));
+    assert_eq!(record_size(8), Some(16));
+    assert_eq!(record_size(usize::MAX), None);
+    let mut bytes = [0; 16];
+    let mut fixed = Fixed::new(&mut bytes);
+    fixed
+        .put_pod(tag::H_STATUS, &U32Rec { value: 200, _r: 0 })
+        .unwrap();
+    assert_eq!(fixed.len(), 16);
+    assert!(fixed.put_text(tag::TEXT, "").is_err());
+}
+
 struct Sink {
     bytes: [u8; 64],
     len: usize,
@@ -163,4 +209,34 @@ fn scratch_grows_and_returns_the_exact_bytes_before_finish() {
     let reply = scratch.finish();
     assert_eq!(reply.len(), 0);
     assert!(reply.buf.capacity() >= 300);
+}
+
+#[test]
+fn prefixed_nested_failure_wipes_header_prefix_records_and_final_padding() {
+    // One-byte prefix makes final outer padding observable, unlike IssuedShapeRec's eight bytes.
+    for cap in [8, 16, 17, 33, 48, 49] {
+        let mut sink = Sink::new(cap);
+        let mut invoked = false;
+        let result = put_prefixed_nested_in(&mut sink, 0x101, b"x", |nested| {
+            invoked = true;
+            nested.put_text(tag::TEXT, "first")?;
+            nested.put_text(tag::TEXT, "second")
+        });
+        assert!(result.is_err(), "cap {cap}");
+        assert_eq!(invoked, cap >= 17);
+        sink.rolled_back();
+    }
+    let mut sink = Sink::new(64);
+    put_prefixed_nested_in(&mut sink, 0x101, b"x", |nested| {
+        nested.put_text(tag::TEXT, "first")?;
+        nested.put_text(tag::TEXT, "second")
+    })
+    .unwrap();
+    assert_eq!(sink.len, 56);
+    let record = Records::new(&sink.bytes[8..sink.len])
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.body[0], b'x');
+    assert_eq!(Records::new(&record.body[1..]).count(), 2);
 }

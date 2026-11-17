@@ -99,7 +99,7 @@ fn the_store_adapters_port_error_log_line_and_audit_row_hold() {
         for failed in [true, false] {
             let fail = planned(failed, text);
             let name = format!("cut-info-{n}-{failed}");
-            let config = format!(r#"{{"secret":"cut","info":{fail}}}"#);
+            let config = format!(r#"{{"secret":{{"env":"CUT"}},"info":{fail}}}"#);
             let shown = match h.open_store(&name, config.as_bytes()) {
                 Err(OpenError::Failed { code: 7, text, .. }) if failed => text,
                 Err(OpenError::Config { code: 5, text, .. }) if !failed => text,
@@ -114,7 +114,7 @@ fn the_store_adapters_port_error_log_line_and_audit_row_hold() {
             assert!(!leaks(&shown, form.as_bytes()), "{name}: {form}");
 
             let name = format!("cut-read-{n}-{failed}");
-            let config = format!(r#"{{"secret":"cut","read":{fail}}}"#);
+            let config = format!(r#"{{"secret":{{"env":"CUT"}},"read":{fail}}}"#);
             let store = h
                 .open_store(&name, config.as_bytes())
                 .unwrap_or_else(|e| panic!("{name}: open failed: {e:?}"));
@@ -286,7 +286,7 @@ fn the_export_adapters_port_error_log_line_and_audit_row_hold() {
                 ("refused", 5)
             };
             let config = format!(
-                r#"{{"secret":"cut","status":"{status}","code":{code},"text":{}}}"#,
+                r#"{{"secret":{{"env":"CUT"}},"status":"{status}","code":{code},"text":{}}}"#,
                 json_str(text)
             );
             let port = h

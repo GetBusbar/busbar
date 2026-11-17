@@ -91,6 +91,20 @@ pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    admit_format_with(
+        backend,
+        initialize_empty,
+        busbar_migrate::records::RECORD_STEPS,
+    )
+    .await
+}
+
+/// [`admit_format`] converting older record formats with `steps` (#319 r4 §5).
+pub(crate) async fn admit_format_with(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+    initialize_empty: bool,
+    steps: &'static [busbar_migrate::records::RecordStep],
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
     use busbar_kernel::persistence::{
         facade::Limits,
         startup::{Progress, Startup},
@@ -109,7 +123,10 @@ pub(crate) async fn admit_format(
         // dataset. An existing legacy or incomplete dataset is never relabelled.
         initialize_empty,
     )
-    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    .map_err(|error| format!("Store format admission refused: {error:?}"))?
+    // An older record format this release converts is opened and converted here, before any
+    // ordinary admission, overlay read, hydration or listener (#319 r4 §5).
+    .with_format_chain(Arc::new(super::migrate_records::Chain(steps)));
     let mut waits = 0u32;
     loop {
         let advanced = match startup.advance().await {
@@ -141,6 +158,24 @@ pub(crate) async fn admit_format(
             Progress::Draining | Progress::Retired => {
                 return Err("Store admission entered an invalid boot state".into());
             }
+            Progress::Migrate => {
+                let owner = startup
+                    .migration()
+                    .ok_or("Store admission lost its record-format migration owner")?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "converting this store's records from format {} (the whole fleet must be stopped)",
+                    owner.format()
+                );
+                let rows = super::migrate_records::evolve(owner, steps).await?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "the store's records were converted ({rows} rows); admitting"
+                );
+                startup
+                    .migration_finished()
+                    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+            }
         }
     }
 }
@@ -152,7 +187,8 @@ const _: () = assert!(
             + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
 );
 
-/// The first-start wait line (FIRST-START-TAKEOVER §2.2): on the first wait and every 10 s after.
+/// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
+/// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
     let owner = busbar_kernel::persistence::startup::writer_hex(&waiting.owner);
     let since = waiting.since_change.as_secs();
@@ -160,6 +196,18 @@ fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
         .window
         .saturating_sub(waiting.since_change)
         .as_secs();
+    if waiting.migrating {
+        tracing::warn!(
+            diag = %busbar_kernel::diagnostics::FORMAT_MIGRATION_WAITING.banner(),
+            owner = %owner,
+            since_change_s = since,
+            claim_in_s = left,
+            "waiting on the record-format conversion of this dataset by writer {owner}: last change \
+             {since} s ago, claimed in {left} s if it stays unchanged. A record-format upgrade \
+             needs the whole fleet stopped (docs/migration-1.6.md)."
+        );
+        return;
+    }
     tracing::warn!(
         diag = %busbar_kernel::diagnostics::FIRST_START_WAITING.banner(),
         owner = %owner,
@@ -183,8 +231,21 @@ static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::Once
 pub(crate) async fn bind_plugin_floor(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
-    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
-    let host = super::durability::host_identity();
+    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core.clone())?;
+    // The floor is scoped to the deployment, not the host: a rollout's fresh pod name must find
+    // the floor its predecessors raised, and rows must not pile up per pod name (UPG-7).
+    let host = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)?
+        .keep_deployment_id()
+        .await?;
+    // Migrate-on-boot (PRD-4/ARC-5): floors an earlier 1.6 build kept under host names move into
+    // the deployment slot, folding several hosts into the highest floor.
+    let carried = owner.adopt_host_floors(&host).await?;
+    if carried > 0 {
+        tracing::info!(
+            carried,
+            "carried host-keyed plugin floors into the deployment floor"
+        );
+    }
     let release_keys = owner.release_keys_floor(&host).await?;
     PLUGIN_FLOOR
         .set(PluginFloorAuthority {
@@ -284,25 +345,7 @@ fn registry_with_floor(
         remember_native_images(&registry, plugins);
     }
 
-    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
-}
-
-pub(crate) fn admit_secrets<'a>(
-    rows: &'a Arc<dyn PluginRows>,
-    plugins: &'a PluginsCfg,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-    Box::pin(async move {
-        hold_plugin_floor(rows.as_ref(), plugins).await?;
-        match super::loader::rows::registry_arc(Arc::clone(rows)) {
-            Some(registry) => admit_dropped_secrets(&registry),
-            None => Ok(()),
-        }
-    })
-}
-
-pub(crate) fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
-    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 pub(crate) fn registry_rows(
@@ -522,7 +565,7 @@ fn listener_candidates_from(
             .transpose()?
             .unwrap_or_default(),
     );
-    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+    for door in linked.plane_doors {
         let candidate = Candidate::linked(*door)?;
         if !candidates
             .iter()
@@ -602,25 +645,6 @@ pub(crate) fn configured_root_binds(
         }
     }
     Ok(binds)
-}
-
-pub(crate) fn candidate_listener_needs(
-    app: &busbar_kernel::state::App,
-    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    root: Vec<InboundBind>,
-) -> Option<Result<ListenerNeeds, String>> {
-    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
-    Some(
-        listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
-            listener_projection(
-                candidates,
-                &app.hook_registry,
-                &app.export_defs,
-                sections,
-                root,
-            )
-        }),
-    )
 }
 
 fn listener_projection(
@@ -1096,7 +1120,6 @@ pub(crate) struct StartScan {
 /// One scan of `plugins.dir` and the secret modules it admits, judged with the linked rows.
 pub(crate) struct Judged {
     registry: PluginRegistry,
-    secrets: Vec<Candidate>,
     sugars: busbar_contract::secret_ref::Sugars,
 }
 
@@ -1129,20 +1152,16 @@ pub(crate) fn install_start(
         let _ = START_REFUSAL.set(refusal);
         None
     });
-    let (registry, secrets, sugars) = match judged {
-        Some(Judged {
-            registry,
-            secrets,
-            sugars,
-        }) => {
+    let (registry, sugars) = match judged {
+        Some(Judged { registry, sugars }) => {
             let _ = START_SKIPS.set(skip_lines(registry.skipped()));
             if let Some(plugins) = plugins {
                 remember_native_images(&registry, &plugins);
                 let _ = BASE_BOOTSTRAP_PLUGINS.set(plugins);
             }
-            (Some(registry), secrets, Some(sugars))
+            (Some(registry), Some(sugars))
         }
-        None => (None, Vec::new(), None),
+        None => (None, None),
     };
     let grammar = match (START_REFUSAL.get(), sugars) {
         (Some(refusal), _) => Err(busbar_kernel::config::GrammarRefusal(refusal.clone())),
@@ -1153,7 +1172,7 @@ pub(crate) fn install_start(
         )),
         (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
     };
-    let _ = START_JUDGED.set(StartJudged { secrets, grammar });
+    let _ = START_JUDGED.set(StartJudged { grammar });
     if registry.is_none() && rows.is_empty() {
         return None;
     }
@@ -1191,7 +1210,6 @@ pub(crate) fn bind_start_grammar() {
 /// What start judged: the secret modules its scan found (for `--validate`'s read-scoped view) and
 /// the grammar stage 3 publishes.
 struct StartJudged {
-    secrets: Vec<Candidate>,
     grammar: Result<busbar_kernel::config::Grammar, busbar_kernel::config::GrammarRefusal>,
 }
 
@@ -1211,18 +1229,6 @@ pub(crate) fn start_grammar() -> Result<&'static busbar_kernel::config::Grammar,
     }
 }
 
-/// `--validate`'s read-scoped secret axis: the linked rows plus the secret modules start judged,
-/// none of them admitted. Each module's checker runs as it did when start admitted them; the live
-/// axis is untouched, and the view's checkers are dropped with it.
-pub(crate) fn start_secret_view() -> crate::root::loader::secret_calls::SecretView<'static> {
-    super::linked::secret_rows().view(
-        START_JUDGED
-            .get()
-            .map(|judged| judged.secrets.clone())
-            .unwrap_or_default(),
-    )
-}
-
 /// Phase 1 for one read ([`busbar_kernel::config::grammar::grammar_for`], installed as
 /// `RootInstall.grammar`): the registry build's own scan and judgement of the read's directory
 /// under the read's policy (its `plugins:` block with the read's pins), with the same linked rows
@@ -1238,13 +1244,9 @@ pub(crate) fn phase_one(
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
 fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
     let registry = scanned_registry(linked, plugins)?;
-    let secrets = discovered(&registry, |kind| kind == "secret")?;
-    let sugars = super::linked::secret_rows().grammar_of(secrets.clone())?;
-    Ok(Judged {
-        registry,
-        secrets,
-        sugars,
-    })
+    // WP3 step 2: the secret words are the native images' (published by the start-stage images prepare).
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
+    Ok(Judged { registry, sugars })
 }
 
 /// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
@@ -1283,7 +1285,7 @@ pub(crate) fn axis_test_grammar() -> busbar_kernel::config::Grammar {
 
 /// The grammar of a read that loads no plugin: the linked secret rows' words alone.
 fn linked_grammar() -> Result<busbar_kernel::config::Grammar, String> {
-    let sugars = super::linked::secret_rows().grammar_of(std::iter::empty())?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(busbar_kernel::config::Grammar::new(
         sugars,
         std::collections::BTreeMap::new(),
@@ -1351,7 +1353,7 @@ fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
 /// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
 /// outbound styles, and the start registry the dropped-in images and auth rows are read from.
 pub(crate) struct Registered<'a> {
-    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) planes: Vec<(String, Option<String>)>,
     pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
@@ -1367,7 +1369,7 @@ fn registered() -> Option<Registered<'static>> {
                 Origin::Linked(_) => None,
                 Origin::Dropped { file, .. } => Some(file.clone()),
             };
-            (c.name.clone(), c.verbs.clone(), file)
+            (c.name.clone(), file)
         })
         .collect();
     let linked_styles = crate::LINKED
@@ -1437,13 +1439,36 @@ pub(crate) fn classify_against(
             }
         };
     let mut known = std::collections::BTreeSet::new();
-    for (name, sections, file) in &registered.planes {
+    for (name, file) in &registered.planes {
         known.insert(name.clone());
         let (image, standing) = match file {
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+        // The instance name this plane was bound under at its admission: the running registry's
+        // recorded manifest alias, else its identity (r34 section 12.23 rule 1). It is never
+        // guessed: a plane the running registry does not record is judged NotAdmitted, naming the
+        // missing field.
+        let recorded = registered.start.and_then(|start| {
+            start
+                .loadable()
+                .iter()
+                .find(|row| row.manifest.kind == "plane" && row.is_module(name))
+                .map(|row| match row.manifest.alias.as_str() {
+                    "" => name.clone(),
+                    alias => alias.to_owned(),
+                })
+        });
+        let (instance, standing) = match recorded {
+            Some(instance) => (instance, standing),
+            None => (
+                name.clone(),
+                Standing::NotAdmitted(format!(
+                    "the running registry records no instance name (manifest `alias`) for plane `{name}`"
+                )),
+            ),
+        };
+        push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1485,11 +1510,14 @@ pub(crate) fn classify_against(
                 &image,
                 &Standing::Unregistered,
             );
-        } else if let Ok(Some(candidate)) = row.candidate() {
-            let sections = candidate.verbs;
+        } else if let Ok(Some(_)) = row.candidate() {
+            let instance = match row.manifest.alias.as_str() {
+                "" => row.manifest.name.clone(),
+                alias => alias.to_owned(),
+            };
             push(
                 ItemKind::Section,
-                sections,
+                vec![instance],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,
@@ -1509,10 +1537,7 @@ pub(crate) fn admitted_grammar(
     let Some(registry) = super::loader::rows::registry_of(rows) else {
         return Ok(None);
     };
-    let secrets = discovered(registry, |kind| kind == "secret").map_err(refused)?;
-    let sugars = super::linked::secret_rows()
-        .grammar_of(secrets)
-        .map_err(refused)?;
+    let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(Some(
         busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
             .with_items(classify(registry, None)),
@@ -1835,17 +1860,11 @@ pub(crate) fn open_dropped_transports(
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         #[cfg(test)]
                         let key = facts.claims.first().copied().unwrap_or_default();
-                        let claims = facts.claims;
-                        let composes_over = facts.composes_over;
-                        let offered = facts.offered;
                         let upgrades = facts.upgrades;
                         let door = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             #[cfg(test)]
                             key,
-                            claims,
-                            composes_over,
-                            offered,
                             upgrades,
                             door,
                         })
@@ -2083,8 +2102,17 @@ impl BookPreparation {
             node,
             deployment_id,
         );
-        // ADMIN-API-1.6 17: the node announces itself in the audit feed.
-        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(&[]));
+        // ADMIN-API-1.6 17: the node announces itself in the audit feed, naming the explicit open
+        // posture (`auth: { chain: [] }`) it booted in (#358).
+        let mut posture: Vec<&str> = Vec::new();
+        if app.auth.is_open() {
+            posture.push("open_relay");
+        }
+        // #359 SEC-L1: each root listener served in the clear under its acceptance, once per setting.
+        posture.extend(app.plaintext_listeners.iter().map(|_| "plaintext_listener"));
+        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(
+            &posture,
+        ));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
         if let Some(live) = busbar_kernel::persistence::boot_identity::live() {
@@ -2140,13 +2168,26 @@ impl BookPreparation {
             now,
         )
         .await?;
-        // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
-        // keeps only the public half. The notary starts from the resumed head, read before any
-        // recovery line is appended, once serving begins (`main`).
+        // Preserve the genuinely verified Bootstrap public half before transferring signing
+        // authority. The exact live Notary key selects it; no active-key/cardinality fallback.
+        let notary = busbar_kernel_audit::Notary::new(bound.notary);
+        let trusted_bootstrap_key = bound
+            .verification_keys
+            .get(notary.key_id())
+            .cloned()
+            .ok_or("the live Notary has no verified Bootstrap public key")?;
+        // Signer threads may serve boot recovery; the live notary baseline is bound only
+        // after all recovery appends below and before NodeBook can be published.
+        let audit_verification_keys = Arc::new(bound.verification_keys);
+        super::durability::response_intent::verify_history(
+            self.durability.as_ref().unwrap(),
+            audit_verification_keys.as_ref(),
+        )
+        .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
-                busbar_kernel_audit::Notary::new(bound.notary),
+                notary,
                 busbar_kernel_audit::BootstrapSigner::new(bound.bootstrap),
                 durability.record.node(),
                 durability.journal.clone(),
@@ -2156,6 +2197,8 @@ impl BookPreparation {
             .map_err(|error| format!("the audit signer threads did not start: {error}"))?;
             (Arc::new(services), checkpoint)
         };
+        // SEALING-FIX §3.6.1: seal this node's own crash leftover (a same-holder re-take) from the
+        // records read at reopen, on the Bootstrap thread, before the notary or recovery runs.
         self.phase = BookPhase::SealAfterRestart;
         {
             let durability = self.durability.as_mut().unwrap();
@@ -2164,30 +2207,18 @@ impl BookPreparation {
             let key = key_hex
                 .as_deref()
                 .and_then(|hex| busbar_kernel_audit::AuditVerifyingKey::from_hex(hex).ok());
-            if let (Some(handle), Some(key)) = (audit.take_boot_handle(), key) {
-                let sealed = super::durability::restart_seal::seal_own_node(
-                    durability, &records, &handle, &key, &host,
-                )
-                .await;
-                match sealed {
-                    super::durability::restart_seal::OwnSeal::Nothing => {
-                        tracing::debug!(node, "own-node audit tail already sealed");
-                    }
-                    super::durability::restart_seal::OwnSeal::Sealed { from, to } => {
-                        tracing::debug!(node, from, to, "own-node audit restart page committed");
-                    }
-                    super::durability::restart_seal::OwnSeal::Broken(at) => {
-                        tracing::debug!(
-                            node,
-                            last_good = at.last_good,
-                            reason = at.reason.as_str(),
-                            "own-node audit break recorded"
-                        );
-                    }
-                    super::durability::restart_seal::OwnSeal::Refused(cause) => {
-                        tracing::debug!(node, %cause, "own-node audit tail left unsealed");
-                    }
-                }
+            if let Some(handle) = audit.take_boot_handle() {
+                let pending = if let Some(key) = key {
+                    let (sealed, pending) = super::durability::restart_seal::prepare_own_node(
+                        durability, &records, &handle, &key, &host,
+                    )
+                    .await;
+                    tracing::debug!(node, ?sealed, "own-node restart seal");
+                    pending
+                } else {
+                    None
+                };
+                audit.defer_boot(handle, pending);
             }
             drop(records);
             if let Some(key_hex) = key_hex {
@@ -2240,16 +2271,44 @@ impl BookPreparation {
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
         super::measurements::install(app)?;
+        {
+            let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+            audit
+                .bind_original_bootstrap(&recovered, trusted_bootstrap_key)
+                .map_err(|error| format!("original audit binding: {error}"))?;
+        }
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
-        self.phase = BookPhase::Ready;
-        Ok(super::durability::NodeBook {
+        let mut book = super::durability::NodeBook {
+            audit_verification_keys,
+            response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
-            audit: Some(audit),
-        })
+            audit: Some(Arc::clone(&audit)),
+        };
+        if !book.runtime_journal.is_bound_to(&self.core) {
+            return Err("response intent journal belongs to another Store attachment".into());
+        }
+        let incarnation = book
+            .durability
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .incarnation;
+        book.response_intents = Some(
+            super::durability::response_intent::ResponseIntentService::new(
+                Arc::clone(&book.runtime_journal),
+                incarnation,
+                book.audit_verification_keys.as_ref().clone(),
+                audit
+                    .take_response_intent_handle()
+                    .ok_or("response intent signer was already transferred")?,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+        self.phase = BookPhase::Ready;
+        Ok(book)
     }
 }
 async fn bind_boot_keyset(

@@ -104,18 +104,12 @@ fn planes() -> &'static PlaneKeys {
 async fn app(cost: CostModel) -> busbar_kernel::state::App {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual Store statement reads")
-        .expect("the actual Store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual Store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let directory = plugins::scratch(&format!(
         "admin-plane-usage-{}",
         busbar_kernel::door::op_id().counter()
@@ -129,10 +123,12 @@ async fn app(cost: CostModel) -> busbar_kernel::state::App {
     let settings: serde_json::Value =
         crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": {"chain": [], "admin_auth": [operator]},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -230,7 +226,9 @@ async fn read(app: busbar_kernel::state::App, bucket: Option<u64>) -> UsageRead 
     let query = bucket
         .map(|bucket| format!("?window={bucket}"))
         .unwrap_or_default();
-    let response = reqwest::get(format!("http://{addr}/api/v1/admin/usage{query}"))
+    let response = crate::root::test_plugins::operator_client()
+        .get(format!("http://{addr}/api/v1/admin/usage{query}"))
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);

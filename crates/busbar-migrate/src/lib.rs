@@ -30,6 +30,8 @@ mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod legacy_credentials;
+pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
 mod listen;
 mod lock;
@@ -300,9 +302,18 @@ pub struct Plan {
     ignore_overlay: bool,
     /// The styles `resolve_styles` resolved the deferred bindings with, re-applied by the write's re-run.
     styles: Vec<(String, Vec<String>)>,
+    /// The 1.5.5 credential slots core marks at the migrating bind (LEGACY-KEYFILE-MARKER r2 §3).
+    marks: Vec<Mark>,
 }
 
 impl Plan {
+    /// The 1.5.5 credential slots core marks at the migrating bind: `(instance path, pointer)`,
+    /// never a value (LEGACY-KEYFILE-MARKER r2 §3). The written text never carries the marker.
+    #[must_use]
+    pub fn legacy_marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
     /// `config::resolve_styles` (IF §12.10 item 3, §12.18): after every image is admitted and before
     /// `boot_plan`, the gateway hands the styles the admitted auth images declared
     /// (`Registry::outbound_styles`); each deferred `{"$style": w}` binding of the plan becomes the
@@ -346,7 +357,8 @@ impl Plan {
         then(&view)
     }
 
-    /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin).
+    /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin, each root
+    /// listener left without TLS and its remedy, #359 SEC-L1).
     #[must_use]
     pub fn warnings(&self) -> &[String] {
         &self.warnings
@@ -470,6 +482,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         &mut report,
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
+    warnings.extend(plaintext_listener_lines(&chained.text));
     if let Some(catalog) = &chained.catalog {
         catalog::check_destination(catalog)?;
     }
@@ -485,6 +498,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         overlay: selected,
         ignore_overlay: inputs.ignore_overlay,
         styles: Vec::new(),
+        marks: chained.marks,
     })
 }
 
@@ -570,27 +584,27 @@ pub trait Attempted {
     fn before_rename(&self) -> Result<(), Refusal>;
 }
 
-/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
-/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
-///
-/// # Errors
-/// As [`write_settled`], and the attempt's refusal.
-#[cold]
-#[inline(never)]
-pub fn write_attempted(
-    plan: &Plan,
-    settled: &[Settled],
-    check: Check<'_>,
-    attempted: Option<&dyn Attempted>,
-) -> Result<Written, Refusal> {
-    entered!(write);
-    let _held = lock::Held::take(&plan.path)?;
-    if let Some(selected) = &plan.overlay {
-        overlay::sweep(selected);
-    }
+/// What step 5 re-runs from disk, under the directory lock, before it writes anything.
+enum Rerun {
+    /// A peer already stamped config.yaml: there is nothing to write or check.
+    StampedByPeer,
+    Ready(Box<Ready>),
+}
+
+struct Ready {
+    now: String,
+    read: Option<overlay::Read>,
+    again: Chained,
+    applied: Applied,
+}
+
+/// 5R: re-run 1b from disk, re-plan the same document, file the settled answers into it, and judge
+/// the result with `check`. Read-only: it is the whole of step 5's refusals, so the converting boot
+/// can run it before the store is touched (#328).
+fn rerun(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<Rerun, Refusal> {
     let now = files::read_bounded(&plan.path)?;
     if read_version(&now)? >= CONFIG_FORMAT {
-        return Ok(Written::StampedByPeer);
+        return Ok(Rerun::StampedByPeer);
     }
     // 5R re-runs 1b from disk too: an interrupted 5c reads back to the same bytes.
     let read = match &plan.overlay {
@@ -617,7 +631,7 @@ pub fn write_attempted(
         let (resolved, _) = plan.with_styles(|styles| styles::resolve(&again.text, styles))?;
         again.text = resolved;
     }
-    if again.text != plan.planned || again.catalog != plan.catalog {
+    if again.text != plan.planned || again.catalog != plan.catalog || again.marks != plan.marks {
         return Err(Refusal::Config(format!(
             "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
              nothing was written",
@@ -633,6 +647,54 @@ pub fn write_attempted(
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
     again.text = applied.text().to_owned();
     judge(&again, &plan.facts, check)?;
+    Ok(Rerun::Ready(Box::new(Ready {
+        now,
+        read,
+        again,
+        applied,
+    })))
+}
+
+/// Step 5's refusals without its writes: the settled document is re-planned and judged exactly as
+/// [`write_attempted`] will judge it, under the same lock, and nothing is written. The converting
+/// boot calls this before it converts the store, so a refusal changes nothing (#328).
+///
+/// # Errors
+/// As [`write_settled`], for everything before its first write.
+#[cold]
+#[inline(never)]
+pub fn check_settled(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<(), Refusal> {
+    let _held = lock::Held::take(&plan.path)?;
+    rerun(plan, settled, check).map(drop)
+}
+
+/// [`write_settled`] with the store side of step 5: `attempted` begins (5S) after the re-run and the
+/// read-only preconditions and before 5a, and marks (5d) before the rename. `None` writes no attempt.
+///
+/// # Errors
+/// As [`write_settled`], and the attempt's refusal.
+#[cold]
+#[inline(never)]
+pub fn write_attempted(
+    plan: &Plan,
+    settled: &[Settled],
+    check: Check<'_>,
+    attempted: Option<&dyn Attempted>,
+) -> Result<Written, Refusal> {
+    entered!(write);
+    let _held = lock::Held::take(&plan.path)?;
+    if let Some(selected) = &plan.overlay {
+        overlay::sweep(selected);
+    }
+    let Ready {
+        now,
+        read,
+        again,
+        applied,
+    } = match rerun(plan, settled, check)? {
+        Rerun::StampedByPeer => return Ok(Written::StampedByPeer),
+        Rerun::Ready(ready) => *ready,
+    };
     let backup = files::sibling(&plan.path, BACKUP_SUFFIX);
     files::backup_absent_or_equal(&backup, now.as_bytes())?;
     if let Some(read) = &read {
@@ -723,6 +785,7 @@ pub fn write_back(
 struct Chained {
     text: String,
     catalog: Option<catalog::Planned>,
+    marks: Vec<Mark>,
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.
@@ -741,6 +804,7 @@ fn chain(
         overlay,
         report,
         catalog: None,
+        marks: Vec::new(),
     };
     let mut text = source.to_owned();
     for step in steps::STEPS.iter().skip(first) {
@@ -749,6 +813,7 @@ fn chain(
     Ok(Chained {
         text: patch::stamp(&text, CONFIG_FORMAT)?,
         catalog: work.catalog,
+        marks: work.marks,
     })
 }
 
@@ -774,6 +839,30 @@ fn where_plans_differ(
         first.len(),
         second.len()
     )
+}
+
+/// #359 SEC-L1 (owner ruling L1): the upgrade writes no plaintext acceptance. For each root listener the
+/// planned document leaves with neither TLS nor its acceptance, the plan warns with the one-line remedy (a
+/// change the chain did not make); the stamped boot then refuses it with BUSBAR-3172. The planned text
+/// is the post-fold document, so a 1.5.5 overlay `tls` the upgrade folded counts.
+fn plaintext_listener_lines(planned: &str) -> Vec<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(planned) else {
+        return Vec::new();
+    };
+    let written = |key: &str| doc.get(key).is_some_and(|value| !value.is_null());
+    busbar_kernel::config::listener_acceptance::ROOT_LISTENERS
+        .iter()
+        .filter(|listener| !written(listener.tls) && !written(listener.acceptance))
+        .map(|listener| {
+            format!(
+                "`{setting}` has no TLS and the upgrade writes no plaintext acceptance, so the boot refuses it \
+                 (BUSBAR-3172): {remedy}",
+                setting = listener.setting,
+                remedy = listener.remedy(),
+            )
+        })
+        .collect()
 }
 
 /// Proof three (§A7 "Authored text"): the planned document and catalog, interpolated as every later

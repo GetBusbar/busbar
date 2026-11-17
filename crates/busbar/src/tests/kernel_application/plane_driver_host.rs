@@ -23,18 +23,12 @@ async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings()
     let key = kernel::governance::synthesize_bound_key("idp", &principal, &rb).expect("bound");
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane-host-role-{}",
@@ -53,7 +47,7 @@ async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings()
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -134,18 +128,12 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
     )>| {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest(
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
             "store",
-            &module,
+            &library_path,
             crate::root::test_plugins::FIXTURE_PUBLISHER,
         );
-        manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "plane-host-audit-{}",
@@ -164,7 +152,7 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             serde_json::json!({
                 "providers": {},
                 "models": {},
-                "auth": { "chain": [], "admin_auth": [] },
+                "auth": { "chain": [] },
                 "store": { "module": module, "settings": settings },
                 "advanced": {  },
             }),
@@ -263,8 +251,18 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
     };
     let (app, core, store_cfg, rules) = build(None).await;
     let (other, _, _, _) = build(Some((core, store_cfg, rules))).await;
-    let host = kernel::plane_driver::engine_host(&app);
-    host.hook_read("port-hook", Some("key-1"), OP, true)
+    app.amendments
+        .record_reads(
+            &kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+            &[kernel::audit::amend::ReadFact {
+                reader: kernel::audit::amend::Reader::Hook,
+                name: "port-hook",
+                principal: Some("key-1"),
+                op_class: OP,
+                fields: vec!["content".to_string(), "identity".to_string()],
+                wall: kernel::store::now(),
+            }],
+        )
         .await
         .expect("the native journal confirms the hook access amendment");
     assert!(

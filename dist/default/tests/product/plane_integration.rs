@@ -98,7 +98,7 @@ fn resolved(sections: &str) -> RootCfg {
     std::fs::write(&operator_token, "admintok")
         .expect("write the actual file-backed operator input");
     auth.signing_key = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         signing_key.to_string_lossy().into_owned(),
     ));
@@ -108,7 +108,7 @@ fn resolved(sections: &str) -> RootCfg {
         .find(|entry| busbar_kernel::config::names_operator(&entry.module))
         .expect("the actual operator module");
     operator.token = Some(crate::root::test_plugins::source_reference(
-        crate::root::linked::secret_rows(),
+        crate::root::native_secrets::linked_for_tests(),
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         operator_token.to_string_lossy().into_owned(),
     ));
@@ -222,14 +222,12 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -328,14 +326,12 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -454,14 +450,12 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     let mut cfg = cfg;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -604,14 +598,12 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let mut cfg = cfg;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",
@@ -760,14 +752,12 @@ mod metrics_scrape {
         cfg.public_url = Some("https://busbar.example".into());
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
+        let module = crate::root::test_plugins::native_image(&library_path).name;
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library_path,
+            plugins::FIXTURE_PUBLISHER,
+        );
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let directory = plugins::scratch(&format!(
             "plane_integration-{}",
@@ -1066,14 +1056,12 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let mut cfg = resolved(&sections);
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        plugins::FIXTURE_PUBLISHER,
+    );
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = plugins::scratch(&format!(
         "plane_integration-{}",

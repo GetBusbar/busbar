@@ -238,39 +238,13 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 }
 
 #[cfg(unix)]
+#[path = "native_listener.rs"]
+pub(crate) mod native_listener;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
-    let addr = listener.local_addr();
-    let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver = Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-
-    let serve_handle = tokio::spawn(serve_listener(
-        listener,
-        router,
-        None,
-        secret_resolver,
-        "test",
-        recv_shutdown(shutdown_rx),
-        None,
-        true,
-        None,
-    ));
-
-    let resp = reqwest::Client::new()
-        .get(format!("http://{addr}/probe"))
-        .send()
-        .await
-        .expect("serve_listener must actually accept and answer a real HTTP request");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
-
-    shutdown_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
-        .await
-        .expect("serve_listener must actually stop once shutdown fires")
-        .unwrap();
+    native_listener::assert_real_http().await;
 }
 
 #[test]
@@ -511,7 +485,7 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -740,7 +714,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     let records =
         ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
     let corrupt = Request {
-        op_id: busbar_kernel::door::op_id().0,
+        op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {
             schema: KEYSET_SCHEMA.into(),
             key: b"deployment".to_vec(),
@@ -811,7 +785,7 @@ async fn one_seal_after_two_reloads() {
             "providers": {},
             "models": {},
             "store": { "module": store_module },
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -922,23 +896,6 @@ async fn one_seal_after_two_reloads() {
     );
 }
 
-#[test]
-fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
-    let planted: &[crate::root::linked::CliHelpRow] = &[(
-        "flag",
-        "    --planted-serve      serve the planted plane on stdin/stdout",
-    )];
-    assert!(line_serve_requested(
-        &[planted],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(
-        &[],
-        &Argv::parse(["busbar", "--planted-serve"])
-    ));
-    assert!(!line_serve_requested(&[planted], &Argv::parse(["busbar"])));
-}
-
 /// The crate root denies `dead_code`, `unused_imports` and `unused_macros` outside tests. An
 /// item-level `allow` or `expect` naming one of them would silence that, so every such escape in
 /// this crate's source, build script and generators is listed here by file, and each listed one is
@@ -988,7 +945,7 @@ fn no_dead_code_escape_outside_the_listed_test_only_sites() {
 }
 
 /// BOOT-130: the `store.module` plugin-preflight refusal, built once in
-/// `busbar-kernel` preflight, as `prepare_config_store` returns it.
+/// `busbar-kernel` preflight, as `bootstrap_store_inputs` returns it.
 const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
      but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
      'sqlite' store plugin tarball in the plugins directory ('plugins'). The published binary links no store of its own: store.module selects a plugin of kind store by name.";
@@ -1077,3 +1034,16 @@ fn store_boot_refusal_prints_the_context_alone_under_a_principal_transition() {
         "a principal transition summary carries no inner detail"
     );
 }
+
+/// #428: on dev no plane states a CLI row, so the stdio trigger was unreachable. Core's own
+/// `--stdio` selects line serving through `main`'s CLI path on every build, and nothing else does
+/// (WP1-GAP r3 §1.3).
+#[test]
+fn stdio_selects_line_serving_through_mains_cli_path() {
+    assert!(line_serve_requested(&Argv::parse(["--stdio"])));
+    assert!(!line_serve_requested(&Argv::parse(Vec::<String>::new())));
+    assert!(!line_serve_requested(&Argv::parse(["--mcp-stdio"])));
+}
+
+#[path = "openapi_evolution.rs"]
+mod openapi_evolution;

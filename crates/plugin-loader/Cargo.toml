@@ -10,7 +10,7 @@ license = "Apache-2.0"
 [features]
 # Dev-only conformance retirement barrier and the standalone test harness (path loaders,
 # probes, door helpers); never enabled by shipped defaults.
-test-support = []
+test-support = ["busbar-artifact-verifier/test-support"]
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
@@ -45,39 +45,8 @@ path = "tests/fixtures/neutral_plane_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "neutral_secret_door"
-path = "tests/fixtures/neutral_secret_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_rotating_secret_door"
-path = "tests/fixtures/neutral_rotating_secret_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "secret_broken_door"
-path = "tests/fixtures/secret_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "hook_broken_door"
-path = "tests/fixtures/hook_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "hook_checkpoint_door"
-path = "tests/fixtures/hook_checkpoint_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
-crate-type = ["cdylib"]
-
-# Hook route metadata witness using the neutral SDK fixture.
-[[example]]
-name = "hook_metadata_boundary"
-path = "tests/fixtures/hook_metadata_boundary.rs"
 crate-type = ["cdylib"]
 
 [[example]]
@@ -91,11 +60,27 @@ name = "native_pack_fixture"
 path = "tests/fixtures/native_pack_fixture.rs"
 crate-type = ["cdylib"]
 
+# A MIN-3 store whose describe answers a recursion-bomb D_SCHEMA (core's D_SCHEMA validator; admin inspect).
+[[example]]
+name = "native_schema_bomb"
+path = "tests/fixtures/native_schema_bomb.rs"
+crate-type = ["cdylib"]
+
+# A MIN-3 store whose describe touches a thread_local with a destructor, so glibc keeps it mapped after dlclose
+# (DES-443 r3: an inspected image that pins itself).
+[[example]]
+name = "native_tls_pin"
+path = "tests/fixtures/native_tls_pin.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
+busbar-artifact-verifier = { path = "../busbar-artifact-verifier" }
+busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }
 busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
+busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 hex = { workspace = true }
 # The MIN-3 plugin interface, core side (ABI-MIN3-INTERFACE §10, §11).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
@@ -119,6 +104,7 @@ flate2 = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
+busbar-artifact-verifier = { path = "../busbar-artifact-verifier", features = ["test-support"] }
 base64 = { workspace = true }
 tracing-core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
@@ -150,18 +136,6 @@ crate-type = ["cdylib"]
 [[example]]
 name = "neutral_auth_door"
 path = "tests/fixtures/neutral_auth_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "hook_door"
-path = "tests/fixtures/hook_door.rs"
-crate-type = ["cdylib"]
-
-# An HTTP-calling hook on the SDK hook door: core's kind-level hook double for tests that drive a
-# hook over a real HTTP target.
-[[example]]
-name = "http_hook_door"
-path = "tests/fixtures/http_hook_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]

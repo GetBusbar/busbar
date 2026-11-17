@@ -232,12 +232,12 @@ shell. Push the new cert/key/CA through the admin API, then restart in-product:
 
 ```bash
 curl -X PUT http://localhost:8081/api/v1/admin/config/settings \
-  -H "x-admin-token: $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
   --data '{"tls": {"cert": {"file": "..."}, "key": {"file": "..."}, "client_ca": {"file": "..."}}}'
 # -> {"reload_to_apply": ["tls"], "note": "... takes effect on the next restart ..."}
 
 curl -X POST http://localhost:8081/api/v1/admin/restart \
-  -H "x-admin-token: $ADMIN_TOKEN"
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 The `PUT` stores the new material durably (overlay-persisted) and reports `tls` under
@@ -397,6 +397,7 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
+| `busbar_insecure_transport_admitted_total` | counter | `kind`, `instance`, `accept` | Needs (OPEN, STARTTLS, FETCH) admitted under the instance's `insecure_transport.accept` (`plaintext` or `unverified_tls`). It counts admitted Needs, pooled reuse included, not TCP dials. The acceptance itself is audited once at boot (`config.insecure_transport_accepted`). |
 | `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only. End-to-end latency. |
 | `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend (all-time attribution bucket), calculated from exact ledger quantities and dated rate history. The legacy metric name does not select a currency; cost units are operator-defined. |
@@ -831,6 +832,39 @@ An upstream outage can make `/readyz` or `/healthz` return 503 while the process
 
 ## Configuration recovery boundaries
 
-Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery. A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
+Admin mutations persist through the configured Store. A read-only config directory does not prevent Store writes. Keep the base configuration, Store backup, signing material and required plugin packages together when planning recovery (see [backup set and order](#backup-set-and-order)). A failed persistence operation must not be treated as a successful configuration update; retain ETag/concurrency checks and inspect the effective configuration after recovery. Memory Store state is lost on restart. `config.locked: true` selects configuration managed outside runtime mutation; retired file-overlay settings are migration inputs only.
 
 Durable MCP task records can be queried through a shared persistent Store. Legacy MCP transport sessions remain process-local: preserve session affinity and expect clients to reconnect after a node restart. Shared task storage does not make every live session portable.
+
+### Backup set and order
+
+A deployment is recoverable only from a complete, consistent set. Back up these items, in this
+order:
+
+1. **Configuration.** `config.yaml`, the stamped `config.yaml.1.5.5` if migration left one,
+   and the providers catalog.
+2. **The Store dataset.** Use the backend's own consistent point-in-time backup, for example a
+   PostgreSQL base backup with its WAL archive, a MySQL consistent snapshot, the SQLite online
+   backup API, or a Valkey RDB snapshot. A copy of live database files taken while a node
+   writes is not a backup. The Memory Store holds nothing across a restart and cannot be
+   backed up.
+3. **Signing material and at-rest keys.** Back these up by reference: each secret source
+   keeps its keys under its own backup, so record which secret source and key versions the
+   configuration names.
+4. **The exported audit stream.** Keep the audit export's own retention covering the Store
+   backup point. It is the only record of what changed in the Store after the backup.
+5. **Plugin packages and the release keys document** that the deployment runs.
+
+Take items 2 and 4 from the same point in time. To restore, stop **every** node that can
+reach the Store, restore in the reverse order (packages and keys document, signing material,
+Store dataset, configuration), then start the nodes again.
+`POST /api/v1/admin/store-restore` does not perform a restore; it always refuses. Restore
+off-node with the backend's own tooling.
+
+A restore returns every Store-held fact to the backup point. Key revocations, trust
+demotions, principal transitions, plugin and keys-document floors, consumed replay claims and
+redeemed single-use tickets recorded after the backup are lost, so a credential consumed after
+the backup point can be presented again until it expires. Before admitting traffic
+again, use the exported audit stream to re-apply every revocation, demotion and principal
+transition made after the backup point, and load packages and a keys document no older than
+the ones the deployment ran before the restore.

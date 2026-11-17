@@ -317,7 +317,7 @@ async fn the_units_assemble_from_values_configuration_decided() {
         durability,
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
-            crate::root::units_admin::open_door(),
+            crate::root::units_admin::operator_door(),
         ),
         None,
     );
@@ -381,7 +381,7 @@ async fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_v
     book.verb_store = Some(Arc::clone(&configured) as _);
     let units = ProductionUnits::admin_over_book(
         Arc::new(crate::root::units_admin::RefusingDispatch),
-        crate::root::units_admin::open_door(),
+        crate::root::units_admin::operator_door(),
         &book,
     );
     let store = units
@@ -587,18 +587,12 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     }
     let release = crate::root::test_plugins::key(0x5a);
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual store statement is valid")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
+    let module = crate::root::test_plugins::native_image(&library_path).name;
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
     let directory = crate::root::test_plugins::scratch("confirmed-card-generation");
     std::fs::write(
@@ -615,7 +609,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
         &json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

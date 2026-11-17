@@ -164,23 +164,6 @@ pub mod highwater;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod hook_door;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 #[deny(unsafe_code)]
 mod host;
 pub mod migration_secrets;
@@ -209,25 +192,6 @@ pub mod registry;
 #[deny(unsafe_code)]
 pub mod release_trust;
 
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-#[deny(unsafe_code)]
-pub mod secret_calls;
-
 #[cfg(test)]
 #[path = "tests/needs_restated.rs"]
 mod needs_restated;
@@ -240,16 +204,22 @@ mod ordinary_load_negatives;
 #[path = "tests/sdk_registration_tests.rs"]
 mod sdk_registration_tests;
 
+#[cfg(test)]
+#[path = "tests/artifact_verifier_parity.rs"]
+mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
-#[cfg(feature = "pack")]
+// Ungated (no `pack` dependency: it reads the stamp and header only): the root's admission and inspect
+// judge whether an upload is a native image with `is_native`. `jsonschema` stays behind `pack`.
 #[deny(unsafe_code)]
 pub mod pack_native;
 #[deny(unsafe_code)]
 pub mod settings_schema;
 pub mod sign;
 mod stage;
+/// Authority-bound canonical release verification.
+pub mod verification;
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -280,6 +250,9 @@ pub mod admit;
 #[deny(unsafe_code)]
 pub mod answer;
 mod chains;
+#[cfg(target_os = "linux")]
+#[deny(unsafe_code)]
+pub mod inspect;
 #[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod instance;
@@ -484,10 +457,6 @@ mod dispatch_kind_auth_tests;
 mod door_both_ways;
 
 #[cfg(test)]
-#[path = "tests/secret_door_conformance_tests.rs"]
-mod secret_door_conformance_tests;
-
-#[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;
 
@@ -496,8 +465,8 @@ mod transport_door_conformance_tests;
 mod transport_door_tests;
 
 #[cfg(test)]
-#[path = "tests/hook_door_conformance_tests.rs"]
-mod hook_door_conformance_tests;
+#[path = "../tests/fixtures/hook_door_plugin.rs"]
+pub(crate) mod hook_door_plugin;
 
 #[cfg(test)]
 #[path = "tests/conformance_auth_form_tests.rs"]
@@ -514,10 +483,6 @@ mod conformance_export_unjudged_tests;
 #[cfg(test)]
 #[path = "tests/conformance_ready_after_no_ticket_tests.rs"]
 mod conformance_ready_after_no_ticket_tests;
-
-#[cfg(test)]
-#[path = "tests/conformance_ready_result_tests.rs"]
-mod conformance_ready_result_tests;
 
 #[cfg(test)]
 #[path = "tests/neutral_plane.rs"]
@@ -550,14 +515,6 @@ mod ordinary_suite_hook_ticket_tests;
 #[cfg(test)]
 #[path = "tests/neutral_store.rs"]
 mod neutral_store;
-
-#[cfg(test)]
-#[path = "tests/neutral_secret.rs"]
-mod neutral_secret;
-
-#[cfg(test)]
-#[path = "tests/neutral_rotating_secret.rs"]
-mod neutral_rotating_secret;
 
 #[cfg(test)]
 #[path = "tests/neutral_export.rs"]

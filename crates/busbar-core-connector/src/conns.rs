@@ -33,6 +33,7 @@ pub(crate) mod program;
 pub mod proxy;
 pub mod proxy_route;
 pub mod publication;
+pub mod raw_progress;
 pub mod registry;
 pub(crate) mod seal;
 pub mod secure_vec;
@@ -5175,10 +5176,6 @@ mod unix_target_tests;
 #[allow(unsafe_code)]
 #[path = "tests/support_lib.rs"]
 pub(crate) mod support;
-
-#[cfg(test)]
-#[path = "tests/refresh_binding_tests.rs"]
-mod refresh_binding_tests;
 
 #[cfg(test)]
 #[path = "tests/lease_release_tests.rs"]

@@ -36,6 +36,7 @@ fn store(index: u32, settings: Option<&str>, core_cfg: Vec<CoreCfg>) -> Settled 
         core_cfg,
         placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
     }
 }
 
@@ -138,6 +139,7 @@ fn retired_named_filings_leave_equal_different_and_operator_values_unchanged() {
     let same = |index| Settled {
         placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: None,
@@ -201,6 +203,7 @@ fn a_lifted_literal_becomes_a_secret_file_reference_and_never_a_report_line() {
     let settled = Settled {
         placement: crate::settle::BagPlacement::Settings,
         allowed_lifts: ["/bind_service_password".to_owned()].into_iter().collect(),
+        known_secrets: Vec::new(),
         index: 2,
         path: vec!["auth".to_owned(), "ldap".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
@@ -395,4 +398,102 @@ fn settled_limits_trust_and_route_media_are_not_written_to_the_config() {
         assert!(!written.contains(key), "`{key}` was filed:\n{written}");
     }
     assert_eq!(written, text, "nothing else moved");
+}
+
+fn ldap(settings: &str, lifts: &[&str], known: &[&str]) -> Settled {
+    Settled {
+        placement: crate::settle::BagPlacement::Settings,
+        allowed_lifts: lifts.iter().map(|p| (*p).to_owned()).collect(),
+        known_secrets: known
+            .iter()
+            .map(|s| busbar_contract::secure::SecureString::from(*s))
+            .collect(),
+        index: 2,
+        path: vec!["auth".to_owned(), "ldap".to_owned()],
+        settings: Some(busbar_contract::secure::SecureString::from(settings)),
+        core_cfg: Vec::new(),
+    }
+}
+
+/// #441 path 1: a literal the plugin left at a declared secret position and did not ask to LIFT is
+/// lifted by core, so it is never written back as plaintext.
+#[test]
+fn an_unlifted_literal_at_a_declared_slot_is_lifted_by_core() {
+    let settled = ldap(
+        r#"{"bind_service_password": "hunter2", "url": "ldaps://dc", "empty": ""}"#,
+        &["/bind_service_password", "/empty"],
+        &[],
+    );
+    let scratch = Scratch::new();
+    let path = scratch.config(STAMPED);
+    let applied = apply_settled(STAMPED, &path, &[settled], false, no_env).unwrap();
+    assert!(!applied.text().contains("hunter2"), "{}", applied.text());
+    assert!(applied
+        .report()
+        .iter()
+        .all(|line| !line.contains("hunter2")));
+    let tree = tree(&applied);
+    let settings = tree.at("auth").at("ldap").at("settings");
+    assert!(settings
+        .at("bind_service_password")
+        .at("file")
+        .as_str()
+        .is_some());
+    assert_eq!(
+        settings.at("empty").as_str(),
+        Some(""),
+        "an empty value is not a secret"
+    );
+    let [secret] = applied.secrets() else {
+        panic!("one planned secret file")
+    };
+    assert_eq!(secret.bytes(), b"hunter2");
+}
+
+/// #441 path 2: a known 1.5.5 secret value that the plugin moved to a position it does not declare
+/// secret refuses the migration instead of persisting plaintext.
+#[test]
+fn a_known_secret_moved_to_an_undeclared_slot_refuses_the_migration() {
+    let settled = ldap(
+        r#"{"bind_service_password": {"file": "/x"}, "note": "hunter2-secret"}"#,
+        &["/bind_service_password"],
+        &["hunter2-secret"],
+    );
+    let refused = apply(STAMPED, &[settled], false)
+        .err()
+        .expect("the moved secret refuses");
+    let text = refused.to_string();
+    assert!(
+        text.contains("/note") && text.contains("plaintext"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("hunter2"),
+        "the value is never printed: {text}"
+    );
+}
+
+/// The refusal is only for a known secret: other settings, and a reference at a declared slot, pass.
+#[test]
+fn settings_that_are_not_known_secrets_pass() {
+    let settled = ldap(
+        r#"{"bind_service_password": {"file": "/x"}, "note": "plain"}"#,
+        &["/bind_service_password"],
+        &["hunter2"],
+    );
+    assert!(apply(STAMPED, &[settled], false).is_ok());
+}
+
+/// A short or generic known value (a bare boolean or number, or under 8 bytes) is never matched, so
+/// it cannot refuse a correct migration.
+#[test]
+fn short_and_generic_known_values_pass() {
+    for known in ["admin", "true", "12345678", "1.5e10", "short"] {
+        let settled = ldap(
+            &format!(r#"{{"bind_service_password": {{"file": "/x"}}, "note": "{known}"}}"#),
+            &["/bind_service_password"],
+            &[known],
+        );
+        assert!(apply(STAMPED, &[settled], false).is_ok(), "{known}");
+    }
 }

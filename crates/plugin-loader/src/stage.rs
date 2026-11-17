@@ -323,6 +323,19 @@ pub(crate) enum Staged {
     },
 }
 
+#[cfg(target_os = "linux")]
+impl Staged {
+    /// Whether the dynamic loader still maps the image staged here, probed by its staged name with RTLD_NOLOAD on a
+    /// permanent worker (DES-443 r3 §4): asked after `close_on_worker`, true means the image pinned itself.
+    pub(crate) fn still_loaded(&self) -> bool {
+        match self {
+            Staged::Memfd { fd: Some(fd) } => name_still_loaded(&memfd_name(fd)),
+            Staged::Memfd { fd: None } => false,
+            Staged::TempFile { path, .. } => path.to_str().is_none_or(name_still_loaded),
+        }
+    }
+}
+
 impl Drop for Staged {
     fn drop(&mut self) {
         match self {

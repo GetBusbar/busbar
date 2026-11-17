@@ -89,7 +89,7 @@ All notable changes to Busbar are documented here. The format is based on
 ### Breaking changes
 
 - A provider whose `api_key` reference does not resolve refuses boot (`BUSBAR-8020`) and refuses an admin apply or reload. A keyless local upstream must declare `api_key: none` (not with `jwt-bearer` or `oauth-client-credentials`); migration does not insert it.
-- Provider and identity-provider addresses that resolve to a private network are refused unless allowlisted (`advanced.block_private_addresses` defaults to `true`). The destination guard also covers A2A peers, streaming upstreams and WebSocket dials; allow them in `advanced.allow_destinations` (an A2A registration may set `allow_private: true`).
+- Provider and identity-provider addresses that resolve to a private network are refused unless allowlisted (`advanced.block_private_addresses` defaults to `true`). The destination guard also covers A2A peers, streaming upstreams and WebSocket dials; a registration that must reach a private target sets `allow_private: true` on its own declared registration (`advanced.allow_destinations` is removed).
 - An identified principal that earns no governance key (no roles, or unbound roles) is refused with `401`; 1.5.5 admitted it ungoverned and booked its spend to `anonymous`. Bind its roles in `role_bindings`.
 - A request whose key row has a passed `expires_at` is refused with `401`, and the refusal is audited.
 - When an auth plugin's `max_inflight` is full, or an inbound auth plugin's `verify` gives no verdict (for example an OIDC key set that is unavailable), a request is answered `503` with `Retry-After: 1` instead of `401`. A rejected credential is still `401`.
@@ -101,6 +101,8 @@ All notable changes to Busbar are documented here. The format is based on
 - `POST /api/v1/admin/ledger/amend-rate-history` needs only a `full` admin grant. `auth.operator_pub` is gone; drop it, and stop signing corrections.
 - `POST /api/v1/admin/keys/{id}/rotate` answers `400 invalid_request` for an id over 64 characters, not `404`.
 - `POST /api/v1/admin/adjust` requires `pool` (a configured pool, else `400`).
+- The admin API reads its credential only from `Authorization: Bearer`; the `x-admin-token` header is no longer read, and the OpenAPI document's `adminToken` security scheme is gone.
+- `admin_auth: []` is refused at boot; delete it and configure the operator token. 1.6.0 has no anonymous admin posture.
 - A fallback, least-bad or queue hop refused upstream with 401/403 is answered in Busbar's ingress-native auth-failure envelope (not the upstream's body) and trips the lane's breaker, as the primary hop already did.
 - A same-dialect Anthropic stream cut mid-flight ends on an `error` event with `error.type: api_error`; a Bedrock ConverseStream ends on `internalServerException`.
 - A request translated between dialects no longer has an unrepresentable value substituted (an unsupported Bedrock image format relabelled `png`, Gemini `thinkingBudget: -1` sent as `medium`): the field is dropped with a warning and audit row, and a wrong-typed one is refused with the caller's own 400.
@@ -140,12 +142,12 @@ configuration's answers are unchanged.
 ### Behaviour identical to 1.5.5
 
 Measured by the upgrade tests — boot refusals and warnings, `--validate`,
-`--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
+the boot migration on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
 config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
-named next. `busbar --migrate-config` takes a working 1.5.5 configuration to one 1.6.0 boots and
+named next. The first 1.6.0 boot takes a working 1.5.5 configuration to one 1.6.0 boots and
 serves the same way, and reports every change it makes; each plugin migrates its own settings
-through its own `migrate`. It cannot rebuild a third-party plugin built for 1.5.5, invent a provider
+when it opens. It cannot rebuild a third-party plugin built for 1.5.5, invent a provider
 key whose reference does not resolve (it names each one in a TODO), make a `file:` secret that is not
 a regular file into one, or repoint an identity provider whose discovery redirects to a private
 address (see [Owner-signed changes from 1.5.5](#owner-signed-changes-from-155)); the published store
@@ -194,7 +196,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   `role_bindings` to admit it.
 - **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
   you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
-  **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
+  **Migration:** the first 1.6.0 boot inserts exactly `store: {module: memory}`
   (spec line 557, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
   4365-4378). See [the migration guide](docs/migration-1.6.md#what-the-migration-changes-for-you).
 - **Config migration explains how to configure a required missing signing key.** When the migrated
@@ -226,7 +228,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   1.5.5 stored the field but enforced only the signed token's own `exp`, so a key row expired out of
   band (a restored backup, a hand-edited or migrated store) kept admitting (owner-signed 2026-10-30).
 - **Every operator-facing error carries a permanent code and a docs link.**
-  1.6.0 Changed: config and boot refusals (`--validate` and startup), `--migrate-config` errors and warnings, and CLI errors read `BUSBAR-NNNN: <what is wrong>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-NNNN`, and admin API error responses add a top-level `code` (`BUSBAR-81xx`) beside the unchanged `error` object.
+  1.6.0 Changed: config and boot refusals (`--validate` and startup), the first-boot migration errors and warnings, and CLI errors read `BUSBAR-NNNN: <what is wrong>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-NNNN`, and admin API error responses add a top-level `code` (`BUSBAR-81xx`) beside the unchanged `error` object.
   The codes are the diagnostics catalog's (one registry: `crates/busbar-kernel/src/diagnostics/catalog.toml`), never reused, and every code has a generated page under `/docs/1.6/errors/`. A reserved-name refusal now reads ``a pool may not be named `hooks` (reserved in `pools:`)``; data-plane error bodies are unchanged (owner decision 2026-11-12).
 - **A reserved-name refusal is one generic sentence.**
   Reserved-name refusal: a configuration that names a registration with a reserved word is refused with one generic sentence that names the word and links https://getbusbar.com/docs/configuration#reserved-names, the full list of reserved names.
@@ -646,7 +648,7 @@ differ accepts a `status` class on no other kind, and what it waives is a miscon
 provider that answered 401 now authenticating.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
-identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
+identically (once it carries the `store:` block that the first-boot migration inserts), and every 1.5.5 key and
 minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
@@ -737,7 +739,7 @@ minted secret carries over.
      move from 0 to the input rate (set the vendor's write premium explicitly). An explicit 1.6
      value, including an admin-API `0`, is unchanged.
   5. **1.5.5 zeros and serialization.** A root-YAML `cache_write_utok: 0` and a version-1 overlay
-     `0` are removed and reported per model (change line, `--migrate-overlay` report `changes`, or
+     `0` are removed and reported per model (change line, the first-boot overlay fold report `changes`, or
      a boot WARN). A config reload that adds a root `cache_write_utok: 0`, and a boot whose root
      `cache_write_utok` interpolates to 0, are refused, audited and explained. Migrated
      `units.cache_write_30m`/`_12h` take the entry's write rate, else input, not 0. An admin-API or
@@ -748,8 +750,8 @@ minted secret carries over.
      `prompt_tokens_details.cache_write_tokens` gets the same split and the same over-total refusal.
 
   **Migration:** in a root `rate_card:`, `cache_write_utok: 0` means "no separate write tariff" in
-  YAML. It is removed at boot (with a WARN), by `--migrate-config` (every run) and by
-  `--migrate-overlay`, and cache writes price at `input_utok`. A drop-in 1.5.5 overlay imported at
+  YAML. It is removed at boot (with a WARN), by the first-boot migration (every run) and by
+  the first-boot overlay fold, and cache writes price at `input_utok`. A drop-in 1.5.5 overlay imported at
   boot is converted the same way. A config reload that adds it is refused with the reason. Migrated
   `units.cache_write_30m`/`_12h` take the entry's write rate, else input, not 0. To make cache
   writes free, set `cache_write_utok: 0` through the admin API. Where the provider charges a write
@@ -815,7 +817,7 @@ minted secret carries over.
   `api_key: none` — a plain scalar accepted only on a provider `api_key`, and not with
   `auth: jwt-bearer` or `auth: oauth-client-credentials`, which mint their token from the
   credential. That lane starts, sends no auth header, and is skipped by the prober, exactly as the
-  empty-credential lane was. Omitting `api_key` remains an error, and `--migrate-config` does not
+  empty-credential lane was. Omitting `api_key` remains an error, and the first-boot migration does not
   insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
   not something a migration can read off the config file.
 
@@ -827,7 +829,7 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
-- A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config`
+- A config with no `store:` block is refused at boot and by `--validate`; the first-boot migration
   inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.
 - A request translated between LLM dialects no longer has a value substituted for one the target
   dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
@@ -848,14 +850,13 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
   `Retry-After` needs no change. A client that treated a `401` from a failing IdP as "discard the
   token" now keeps a valid token through the outage.
 - 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
-  **Migration:** name an internal peer or upstream in `advanced.allow_destinations`, as a provider
-  on an internal DNS name already needs.
-- 1.6.0 Breaking: `tools.<server>.allow_private` and `agents.<agent>.allow_private` are retired and refused (BUSBAR-3135); `advanced.allow_destinations` is the one private-address policy for every outbound connection.
-  `busbar --migrate-config` removes the key and lists exactly the hosts that registration dials
+  **Migration:** set `allow_private: true` on the internal peer's or upstream's own declared registration; there is no global allowlist.
+- 1.6.0 Breaking: `tools.<server>.allow_private` and `agents.<agent>.allow_private` are retired and refused (BUSBAR-3135); private reach is declared on each registration (`allow_private`), judged for that registration alone.
+  The first-boot migration removes the key and lists exactly the hosts that registration dials
   (BUSBAR-3410). The MCP and A2A planes admit plaintext `http://` to a loopback host only; a host a
   tool argument names is never admitted to a private address.
 - 1.6.0 Breaking: `security.allow_metadata_hosts`, `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` are retired and refused at startup (BUSBAR-3136); cloud metadata is refused for every outbound connection and no configuration admits it.
-  `busbar --migrate-config` removes the keys and names each removed entry (BUSBAR-3411). An
+  The first-boot migration removes the keys and names each removed entry (BUSBAR-3411). An
   `advanced.allow_destinations` entry that names a cloud-metadata host, address, or /32 or /128 equal
   to one refuses startup (BUSBAR-3134). `security.blocked_metadata_hosts` still extends the
   denylist. BUSBAR-5045 is retired. Signed by the owner on 2026-11-13.
@@ -880,19 +881,15 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
 ### Retired operational environment overrides
 
 **Breaking:** serving no longer applies `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`,
-`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Run `--migrate-config`
-with the old deployment's environment and working directory before starting 1.6. It captures the
-old effective values into `providers_file:` and the corresponding `advanced` keys, preserving
-old precedence, false/empty upstream settings and worker-count fallback/capping. Launch-relative
-provider overrides become absolute paths. The `--providers` flag remains supported. Remove the
-retired variables from the launcher after conversion. **Breaking:** the old `config.overlay`
-file/boolean selector is refused by `--validate` (the current reader); serving normalizes it at
-startup, and serving never reads a file overlay or `BUSBAR_CONFIG_OVERLAY`. Serving refuses to
-start while a 1.5.5 file overlay holding settings has not been imported (BUSBAR-3027); legacy
-overlay selectors and `BUSBAR_CONFIG_OVERLAY` that hold nothing are warned about (BUSBAR-3028).
-One-time migration removes the field while preserving `config.locked`, and `--migrate-overlay`
-imports old file-overlay state into an empty Store overlay; runtime configuration is persisted
-through Store.
+`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Boot and `--validate` refuse
+them with `BUSBAR-3029` (an empty `BUSBAR_PROVIDERS` counts as unset), naming each replacement
+(`providers_file:`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
+`advanced.upstream_h2_prior_knowledge`); write the value into configuration and remove the variable
+from the launcher. **Breaking:** the old
+`config.overlay` selector is retired. The first 1.6.0 boot folds the old file overlay into
+`config.yaml` (selected as 1.5.5 selected it, including `BUSBAR_CONFIG_OVERLAY`); a stamped boot
+never reads a file overlay or that variable. `config.locked` is preserved, and runtime
+configuration is persisted through the Store. See [the migration guide](docs/migration-1.6.md).
 The obsolete `configuration.values.sections.config.legacy_overlay_configured` readback leaf
 is removed; `config.locked` remains the management policy. See [the migration guide](docs/migration-1.6.md).
 `BUSBAR_CONFIG`, explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
@@ -916,10 +913,10 @@ as its manifest name (`busbar-store-valkey`, not `busbar-store-valkey-plugin`) a
 `busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a plugin by
 its alias (`store.module: valkey`, `module: webrequest`) needs nothing; one that names a
 plugin by its old manifest name keeps working: the 1.6.0 release answers to its former names. A
-`plugins.fetch` pin to a 1.5.5-era release is rewritten by `busbar --migrate-config` to the release
+`plugins.fetch` pin to a 1.5.5-era release is rewritten by the first-boot migration to the release
 built for 1.6.0, and a GitHub pin downloads the release's per-target asset. Tarballs
 already published keep the names they were published with; a 1.5.5-era build left in `plugins.dir`
-beside its 1.6.0 build is skipped with one warning naming the build that replaces it. `busbar --migrate-config`
+beside its 1.6.0 build is skipped with one warning naming the build that replaces it. The first-boot migration
 now names the Valkey store's manifest as `busbar-store-valkey`.
 
 **A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.
@@ -1053,7 +1050,7 @@ each dialect translates, field by field, is listed in the generated
   `cache_read_input_tokens`; a Cohere client through the translated writer sees `tokens` 940/90,
   no `cached_tokens`, and `billed_units` as reported. Same-dialect Cohere answers are passed
   through byte for byte, `cached_tokens` included.
-- **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
+- **The first-boot migration leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
 - **The store plugin ABI is exactly version 3.** A published 1.5.5 store plugin (`abi_version: 2`,

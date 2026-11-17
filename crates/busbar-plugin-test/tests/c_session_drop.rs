@@ -137,7 +137,7 @@ static HOST: Host = Host::new(
     },
 );
 
-fn lease() -> OutLease {
+fn lease() -> OutLease<'static> {
     OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot")
 }
 
@@ -203,7 +203,8 @@ fn cancel_and_close_drop_every_session() {
     let parked: Box<Inst<Fx, Counted, (), ()>> = Box::new(Inst::new(Fx));
     for _ in 0..3 {
         BEGUN.with(|n| n.set(n.get() + 1));
-        parked.sessions().insert(Counted).expect("a free slot");
+        // Deliberately leave this occupant for instance field teardown, not handle Drop.
+        core::mem::forget(parked.sessions().insert(Counted).expect("a free slot"));
     }
     drop(parked);
     assert_eq!(

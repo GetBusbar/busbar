@@ -21,6 +21,9 @@ use crate::registry::Generation;
 const NOW: u64 = 1_700_000_000;
 const INPUT: u32 = 0;
 
+#[path = "../money/selected_view_tests.rs"]
+mod selected_views;
+
 fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
@@ -815,7 +818,7 @@ async fn unit_spend_ceiling_cuts_independently_and_preserves_incurred_usage() {
     );
     assert_eq!(r.money.checkpoint(&ctx(1), &reported(51)), Checkpoint::Cut);
     assert_eq!(
-        r.money.last_counts(UnitKey::new(1))[0].amount,
+        r.money.last_counts(UnitKey::new(1)).unwrap()[0].1,
         51,
         "ceiling never rewrites the actual provider obligation"
     );

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
-use busbar_contract::caps::{OpClassId, ReasonCode};
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
@@ -38,7 +38,7 @@ use busbar_kernel::observability::arrival::EntrySpans;
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
-use busbar_kernel::plane_routes::{PlaneRefusalSpec, PlaneReqCtx};
+use busbar_kernel::plane_routes::PlaneReqCtx;
 
 // The test modules below name these through `use super::*`.
 #[cfg(test)]
@@ -766,6 +766,20 @@ impl Services {
     }
 }
 
+/// THE ONE TRUST BINDING (TRUST-ADMIN-PRODUCER-DESIGN r3 §2.2): the serving kernel twice, as the
+/// admin governance's decide-capable handle and as the read-only handle the `AppHandle` carries.
+/// Bootstrap services have neither.
+pub(crate) fn admin_trust(
+    services: &Services,
+) -> (
+    Option<Arc<KernelServices>>,
+    Option<busbar_kernel::trust::TrustReadout>,
+) {
+    let kernel = services.kernel();
+    let readout = kernel.clone().map(busbar_kernel::trust::TrustReadout::over);
+    (kernel, readout)
+}
+
 pub(crate) struct BootstrapServices;
 
 fn not_installed() -> Stored {
@@ -1263,119 +1277,6 @@ impl std::fmt::Debug for StreamFramers {
     }
 }
 
-pub(crate) struct HookStage {
-    pub(crate) host: busbar_kernel::plane_driver::GenerationHost,
-
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-
-    pub(crate) journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
-}
-
-pub(crate) struct GovCaller {
-    pub(crate) host: Arc<dyn busbar_kernel::plane_driver::EngineHost>,
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-}
-
-impl GovCaller {
-    pub(crate) fn key(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
-        self.gov.lookup_by_sub(principal)
-    }
-}
-
-impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
-    fn key(&self, principal: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
-        self.key(principal)
-            .map(|k| busbar_kernel::plane_driver::CallerKey {
-                id: k.id.clone(),
-                name: k.name.clone(),
-            })
-    }
-
-    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
-        let group = principal
-            .and_then(|p| self.key(p))
-            .and_then(|k| k.group.clone());
-        self.host.caller_in_hook_groups(group.as_deref(), groups)
-    }
-
-    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
-        let key = self.key(principal)?;
-        let pin = self.host.meter_pin()?;
-        self.host
-            .rate_headroom(&pin, &key, Some(pool), busbar_kernel::store::now())
-    }
-
-    fn budget(&self, principal: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        match (self.key(principal), self.host.meter_pin()) {
-            (Some(key), Some(pin)) => {
-                self.host
-                    .budget_state(&pin, &key, busbar_kernel::store::now())
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn hook_read<'a>(
-        &'a self,
-        hook: &'a str,
-        principal: Option<&'a str>,
-        dialect: &'a str,
-        identity: bool,
-    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
-        self.host.hook_read(hook, principal, dialect, identity)
-    }
-
-    fn hook_reads<'a>(
-        &'a self,
-        hooks: &'a [&'a str],
-        principal: Option<&'a str>,
-        dialect: &'a str,
-        identity: bool,
-    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
-        self.host.hook_reads(hooks, principal, dialect, identity)
-    }
-}
-
-pub(crate) struct LiveHooks {
-    pub(crate) host: busbar_kernel::plane_driver::GenerationHost,
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-    pub(crate) dialects: Vec<String>,
-
-    pub(crate) plane_key: String,
-}
-
-impl LiveHooks {
-    pub(crate) fn current(&self) -> busbar_kernel::plane_driver::HostHooks {
-        let host = (self.host)();
-        busbar_kernel::plane_driver::HostHooks {
-            host: Arc::clone(&host),
-            caller: Arc::new(GovCaller {
-                host,
-                gov: Arc::clone(&self.gov),
-            }),
-            dialects: self.dialects.clone(),
-            plane_key: self.plane_key.clone(),
-        }
-    }
-}
-
-impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
-    fn bind(
-        &self,
-        bind: &busbar_kernel::plane_driver::Bind<'_>,
-    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
-        self.current().bind(bind)
-    }
-
-    fn denied(&self, dialect: u32, status: u16) {
-        self.current().denied(dialect, status);
-    }
-
-    fn dialect(&self, dialect: u32) -> String {
-        busbar_kernel::plane_driver::dialect_at(&self.dialects, dialect)
-    }
-}
-
 /// Reserved credential and hop fields never enter a plane request, regardless of carrier.
 fn keep_arrival_field(name: &[u8]) -> bool {
     !name.eq_ignore_ascii_case(b"x-busbar-recovery-work")
@@ -1441,7 +1342,7 @@ impl DataRoutes {
                 let runtime =
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
-                    busbar_kernel::host_services::ServingGeneration::new(
+                    busbar_kernel::host_services::ServingGeneration::try_new(
                         kernel,
                         Arc::new(DoorNests {
                             routes: Arc::clone(&snapshot),
@@ -1449,7 +1350,8 @@ impl DataRoutes {
                             runtime,
                             detached: busbar_kernel::detached::worker_detached(),
                         }),
-                    ),
+                    )
+                    .map_err(|_| "native routing generation counter exhausted".to_owned())?,
                 ))
             }
             None => None,
@@ -1460,18 +1362,21 @@ impl DataRoutes {
         }))
     }
 
-    /// Register the actual billed native unit against this selected immutable dispatch snapshot.
-    /// The exact driver Caller and checked unit record jointly create execution authority.
+    /// Register the allocated native unit against this selected immutable dispatch snapshot.
+    /// Monetary/effect authority remains pending until the retained task resolves its actual pool.
     pub(crate) fn native_unit(
         self: &Arc<Self>,
         seat: &busbar_kernel::plane_driver::port::PortSeat,
-        unit: &busbar_kernel::plane_driver::port::Unit,
+        unit: &mut busbar_kernel::plane_driver::port::Unit,
         ctx: &PlaneReqCtx,
     ) -> Result<NativeUnit, &'static str> {
         let generation = self
             .generation
             .as_ref()
             .ok_or("native route has no complete generation")?;
+        unit.ctx.generation = generation
+            .routing_generation()
+            .ok_or("native route has no allocated routing generation")?;
         let app = Arc::clone(&ctx.engine)
             .downcast::<busbar_kernel::state::App>()
             .map_err(|_| "native invocation needs its selected App snapshot")?;
@@ -1487,14 +1392,30 @@ impl DataRoutes {
         if self.frames_lock().contains_key(&id) || generation.core().units().get(id).is_some() {
             return Err("native unit is already registered");
         }
-        generation.core().units().admitted_for(
-            id,
-            seat.driver.caller(),
-            busbar_kernel::host_units::UnitRecord {
-                principal: Some(key),
-                depth: 0,
-            },
-        );
+        let registered = match &ctx.signed_authority {
+            Some(authority) => {
+                if !Arc::ptr_eq(&key, authority.original_key()) {
+                    return Err("native signed allocation has a different original key");
+                }
+                generation.core().units().pre_admitted_signed_for(
+                    id,
+                    seat.driver.caller(),
+                    authority.clone(),
+                    0,
+                )
+            }
+            None => generation.core().units().pre_admitted_for(
+                id,
+                seat.driver.caller(),
+                busbar_kernel::host_units::UnitRecord {
+                    principal: Some(key),
+                    depth: 0,
+                },
+            ),
+        };
+        if !registered {
+            return Err("native allocation could not be registered");
+        }
         let context = match seat.driver.invocation(Arc::clone(generation), id) {
             Ok(context) => context,
             Err(why) => {
@@ -1573,7 +1494,7 @@ pub(crate) struct NativeUnit {
 impl Drop for NativeUnit {
     fn drop(&mut self) {
         let id = self.context.unit();
-        self.context.generation().core().units().ended(id);
+        self.context.retire();
         self.routes.frames_lock().remove(&id);
     }
 }
@@ -1659,13 +1580,6 @@ impl std::fmt::Debug for DataRoutes {
     }
 }
 
-pub(crate) type DataMounts = (
-    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
-    Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-);
-
 pub(crate) struct DoorRequest {
     pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) method: axum::http::Method,
@@ -1701,10 +1615,6 @@ pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::
 
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
 
-#[cfg(test)]
-#[path = "tests/listener_plan.rs"]
-mod listener_plan_tests;
-
 pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
     busbar_contract::abi::transport::route::method_bit(method.as_str())
         | if method == RouteMethod::Get {
@@ -1713,36 +1623,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
             0
         }
 }
-
-/// The process's physical listeners and its boot-mounted plane routes. Application candidates
-/// supply their own plugin routes, auth instances and limits when each list is sealed.
-#[derive(Debug)]
-pub(crate) struct ListenerPlan {
-    pub(crate) root_claim: Result<String, String>,
-    pub(crate) initial: crate::root::boot::ListenerNeeds,
-    pub(crate) served: Option<Served>,
-    pub(crate) upgrades: Option<Vec<String>>,
-    pub(crate) claim_doors: Arc<serve_datagram::ClaimDoors>,
-    pub(crate) planes: Option<Vec<ListenerPlaneLine>>,
-    pub(crate) plane_sections: Option<foldhash::HashMap<String, (&'static str, bool)>>,
-    pub(crate) plane_keys: Option<foldhash::HashMap<String, String>>,
-    pub(crate) offers: Vec<TransportOffer>,
-    pub(crate) framers: foldhash::HashMap<String, (u64, bool)>,
-    pub(crate) refusals: Mutex<foldhash::HashMap<String, Vec<PlaneRefusalSpec>>>,
-    pub(crate) nests: NestRoutes,
-    pub(crate) plugin_mounts: Option<Vec<(String, RouteMethod, bool)>>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ListenerPlaneLine {
-    pub(crate) line: busbar_kernel::guest::Line,
-    pub(crate) transport: String,
-    pub(crate) root_only: bool,
-}
-
-#[cfg(test)]
-#[path = "tests/open_relay_composition.rs"]
-mod open_relay_composition_tests;
 
 const SESSION_QUEUE: usize = 64;
 
@@ -1889,7 +1769,10 @@ impl DataRoutes {
         } else {
             served.live.current()
         };
-        let node = self.post.node();
+        let Some(node) = self.post.node() else {
+            let _ = verdict.send(Err(None));
+            return;
+        };
         let unit = door
             .admission
             .as_ref()
@@ -1910,88 +1793,87 @@ impl DataRoutes {
             }
         };
         super::measurements::request(scope, async {
-        let carrier_end = CarrierEnd {
-            unit: unit.get(),
-            ended: attach.ended.take(),
-        };
-        self.frames_lock().insert(unit.get(), DispatchFrame {
-            app: Arc::clone(&door.app),
-            request: door.request.clone(),
-        });
-        let _frame = UnitFrame {
-            routes: &self,
-            unit: unit.get(),
-        };
-        let _ticket_source =
-            node.ticket_custody
-                .register(unit, door.key.as_ref(), served, &live, &door.app);
-        let steps = DoorSteps::new(
-            &live.facts,
-            &live.pools,
-            node.resolver(),
-            door.app,
-            Some(&*served.money),
-            DoorCaller {
-                principal: door.principal.clone(),
-                key: door.key,
-                open: door.open,
-                arrived: arrived.secs(),
-                records: Some(Arc::clone(served.kernel.units())),
-                depth: 0,
-                credential: door.credential.clone(),
-                ticket: door.ticket,
-            },
-        )
-        .with_invocation_owner(self.invocation_owner(door.plane))
-        .with_ticket_admission(
-            door.host_ticket_admission,
-            Arc::clone(&node.ticket_custody.nonce),
-            Arc::clone(&live.ticket_nonce),
-        );
-        let far = DoorFar {
-            observations: Some(observations::UnitBinding {
-                served,
-                live: &live,
-                unit,
-                selected_member: OnceLock::new(),
-            }),
-            authorization: Arc::clone(served.kernel.units()),
-            egress: live.egress.as_deref(),
-            shown: live.shown.as_ref(),
-            steps: &steps,
-            unit,
-            credential: door.credential,
-            far: OnceLock::new(),
-        };
-        let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
-        let Some((opened, ctx, slot)) = node
-            .open_borrowed(
-                unit,
-                arrived,
-                &door.principal,
-                &self.post,
-                &units,
-                (self.pin)(),
-                live.facts.audit_kind,
-                door.admission.as_ref(),
+            let carrier_end = CarrierEnd {
+                unit: unit.get(),
+                ended: attach.ended.take(),
+            };
+            self.frames_lock().insert(
+                unit.get(),
+                DispatchFrame {
+                    app: Arc::clone(&door.app),
+                    request: door.request.clone(),
+                },
+            );
+            let _frame = UnitFrame {
+                routes: &self,
+                unit: unit.get(),
+            };
+            let _ticket_source =
+                node.ticket_custody
+                    .register(unit, door.key.as_ref(), served, &live, &door.app);
+            let steps = DoorSteps::new(
+                &live.facts,
+                &live.pools,
+                node.resolver(),
+                door.app,
+                Some(&*served.money),
+                DoorCaller {
+                    principal: door.principal.clone(),
+                    key: door.key,
+                    open: door.open,
+                    arrived: arrived.secs(),
+                    records: Some(Arc::clone(served.kernel.units())),
+                    depth: 0,
+                    credential: door.credential.clone(),
+                    ticket: door.ticket,
+                },
             )
-            .await
-        else {
-            let _ = verdict.send(Err(None));
-            return;
-        };
-        let slot = slot.with_money(&served.money, &live.facts);
-        let admitted = match opened {
-            SessionOpen::Admitted {
-                route,
-                destinations,
-                ..
-            } => match units.open_hooks(&route, &ctx).await {
-                Err(reason) => {
-                    self.post.stopped(unit, reason);
-                    None
-                }
-                Ok(()) => match attach.admitted.take().map(|admitted| admitted(unit.get())) {
+            .with_invocation_owner(self.invocation_owner(door.plane))
+            .with_ticket_admission(
+                door.host_ticket_admission,
+                Arc::clone(&node.ticket_custody.nonce),
+                Arc::clone(&live.ticket_nonce),
+            );
+            let far = DoorFar {
+                observations: Some(observations::UnitBinding {
+                    served,
+                    live: &live,
+                    unit,
+                    selected_member: OnceLock::new(),
+                }),
+                authorization: Arc::clone(served.kernel.units()),
+                egress: live.egress.as_deref(),
+                shown: live.shown.as_ref(),
+                steps: &steps,
+                unit,
+                credential: door.credential,
+                far: OnceLock::new(),
+            };
+            let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
+            let Some((opened, ctx, slot)) = node
+                .open_borrowed(
+                    unit,
+                    arrived,
+                    &door.principal,
+                    &self.post,
+                    &units,
+                    (self.pin)(),
+                    live.facts.audit_kind,
+                    door.admission.as_ref(),
+                    &door.request,
+                )
+                .await
+            else {
+                let _ = verdict.send(Err(None));
+                return;
+            };
+            let slot = slot.with_money(&served.money, &live.facts);
+            let admitted = match opened {
+                SessionOpen::Admitted {
+                    route,
+                    destinations,
+                    ..
+                } => match attach.admitted.take().map(|admitted| admitted(unit.get())) {
                     Some(Err(reason)) => {
                         tracing::warn!(plane = %served.instance, unit = unit.get(), error = ?reason,
                             "session carrier could not attach to its admitted unit");
@@ -2000,46 +1882,46 @@ impl DataRoutes {
                     }
                     None | Some(Ok(())) => Some((route, destinations)),
                 },
-            },
-            SessionOpen::Refused | SessionOpen::Settled(_) => None,
-        };
-        let status = match admitted {
-            Some((route, destinations)) => {
-                let _ = verdict.send(Ok(()));
-                match units
-                    .session_priced(&route, &ctx, &destinations, steps.charged())
-                    .await
-                {
-                    Ok(()) => self.post.completed(unit),
-                    Err(reason) => self.post.stopped(unit, reason),
+                SessionOpen::Refused | SessionOpen::Settled(_) => None,
+            };
+            let status = match admitted {
+                Some((route, destinations)) => {
+                    let _ = verdict.send(Ok(()));
+                    match units
+                        .session_priced(&route, &ctx, &destinations, steps.charged())
+                        .await
+                    {
+                        Ok(()) => self.post.completed(unit),
+                        Err(reason) => self.post.stopped(unit, reason),
+                    }
+                    attach.answered
                 }
-                attach.answered
-            }
-            None => {
-                let rendered = units.take_rendered();
-                let status = rendered
-                    .as_ref()
-                    .map_or_else(|| refusal_status(ReasonCode::PlanePanic), |r| r.status);
-                let _ = verdict.send(Err(rendered));
-                status
-            }
-        };
+                None => {
+                    let rendered = units.take_rendered();
+                    let status = rendered
+                        .as_ref()
+                        .map_or_else(|| refusal_status(ReasonCode::PlanePanic), |r| r.status);
+                    let _ = verdict.send(Err(rendered));
+                    status
+                }
+            };
 
-        self.post
-            .reported(unit, report_of(&served.money, unit, &live.facts));
-        if let Err(error) = slot.finish_with(&self.post, &units).await {
-            // Persistence uncertainty cannot rewrite the observed client/plane
-            // outcome or invent a different fee/refund verdict. The original
-            // audit and checkpoint custody remain pending; no ticket becomes
-            // ready until the native audit confirmation succeeds.
-            tracing::error!(?error, "session audit was not durably confirmed");
-        }
-        served.money.settle_end(unit, status);
-        // This callback only unpairs the physical carrier. Keep it alive across
-        // terminal confirmation, then release it on failure as well: a real
-        // disconnect is resource cleanup, never a durable-success assertion.
-        drop(carrier_end);
-        }).await;
+            self.post
+                .reported(unit, report_of(&served.money, unit, &live.facts));
+            if let Err(error) = slot.finish_with(&self.post, &units).await {
+                // Persistence uncertainty cannot rewrite the observed client/plane
+                // outcome or invent a different fee/refund verdict. The original
+                // audit and checkpoint custody remain pending; no ticket becomes
+                // ready until the native audit confirmation succeeds.
+                tracing::error!(?error, "session audit was not durably confirmed");
+            }
+            served.money.settle_end(unit, status);
+            // This callback only unpairs the physical carrier. Keep it alive across
+            // terminal confirmation, then release it on failure as well: a real
+            // disconnect is resource cleanup, never a durable-success assertion.
+            drop(carrier_end);
+        })
+        .await;
     }
 
     /// The datagram opening as the owner tests drive it: a named carrier.
@@ -2069,15 +1951,6 @@ impl DataRoutes {
             .map_or("", |c| c.carrier.as_str());
         let whole = self.open_datagram_on(framer, carrier, door, arrival).await;
         stated((whole.status, whole.fields), Body::from(whole.body))
-    }
-
-    async fn open_datagram_neutral(
-        self: Arc<Self>,
-        (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
-        door: SessionDoor,
-        arrival: Arrival,
-    ) -> neutral::Whole {
-        self.open_datagram_on(framer, &carrier, door, arrival).await
     }
 
     async fn open_datagram_on(
@@ -2268,17 +2141,6 @@ impl DataRoutes {
         self.answer_with_session(plane, claim, req, None).await
     }
 
-    async fn answer_on_line(
-        self: Arc<Self>,
-        plane: usize,
-        claim: u32,
-        req: DoorRequest,
-        session: std::num::NonZeroU64,
-    ) -> Response {
-        self.answer_with_session(plane, claim, req, Some(session))
-            .await
-    }
-
     async fn answer_with_session(
         self: Arc<Self>,
         plane: usize,
@@ -2416,7 +2278,7 @@ impl DataRoutes {
         let frame = self.frames_lock().get(&nest.parent).cloned()?;
         let parent = self
             .post
-            .node()
+            .node()?
             .parent(busbar_contract::UnitKey::new(nest.parent))?;
         Some((frame, parent))
     }
@@ -2456,10 +2318,6 @@ impl DataRoutes {
             .constraints
             .as_ref()
             .map_or(NEST_REPLY_MAX, |c| c.grant.max_output_bytes);
-        let principal = match nest.principal.as_deref() {
-            Some(key) => PrincipalId::new(key.id.as_str()),
-            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
-        };
         let pools_plane = self.served.planes[plane].live.served_facts.section
             == busbar_contract::section::RESERVED_POOLS_KEY;
         let open = (pools_plane && app.auth.is_open())
@@ -2468,6 +2326,21 @@ impl DataRoutes {
                 .claims
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        // #105: the parent's key is not a credential the destination line verified (its auth
+        // chain, its plane's audience, its sender proof). Ordinary nesting carries it only to a
+        // destination that takes no credential; a protected destination is reached only under a
+        // hook grant, the host-issued delegation scoped to that exact plane, verb and target
+        // (checked above). Without one the child arrives unkeyed, so the destination's arrival
+        // rule refuses it (401 at Authenticate, audited) exactly as it refuses an unkeyed caller.
+        let key = if open || nest.constraints.is_some() {
+            nest.principal
+        } else {
+            None
+        };
+        let principal = match key.as_deref() {
+            Some(key) => PrincipalId::new(key.id.as_str()),
+            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
+        };
         let body = match request.adopt_input(nest.ask.body) {
             Ok(body) => body.into_bytes(),
             Err(_) => return NestReply::Unserved(NEST_INPUT_FULL),
@@ -2486,7 +2359,6 @@ impl DataRoutes {
             ancestry: nest.ancestry,
             constraints: nest.constraints,
         };
-        let key = nest.principal;
         let (caller, reply) = IngressCaller::new();
         let routes = Arc::clone(&self);
         let unit = async move {
@@ -2544,7 +2416,7 @@ impl DataRoutes {
         caller.began(started);
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
-        let node = self.post.node();
+        let node = self.post.node()?;
         let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
         let unit_id = node.unit_id(unit);
         if let Some(id) = unit_id {
@@ -2649,6 +2521,7 @@ impl DataRoutes {
                 live.facts.audit_kind,
                 admission,
                 Some(super::plane_node::Timing { started, caller }),
+                request,
             ),
         )
         .await;
@@ -2726,7 +2599,10 @@ fn journal_refused(
     post: &crate::root::plane_node::NodeEndPost,
     arrival: &Arrival,
 ) -> Option<Rendered> {
-    let why = post.node().journal_refusal()?;
+    let why = match post.node() {
+        Some(node) => node.journal_refusal()?,
+        None => "original node unavailable".to_owned(),
+    };
     let status = refusal_status(ReasonCode::DurabilityUnavailable);
     let dialect = served
         .snapshot
@@ -2764,7 +2640,17 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     // The meter gate's fold, carried (SP-M1): re-folded only when the counts moved since.
-    let (lane, attribution, fold) = money.attributed_usage(unit)?;
+    let view = money.usage_view(unit)?;
+    let (lane, attribution, fold) = match view.as_ref() {
+        busbar_kernel::plane_driver::UsageView::Legacy {
+            lane,
+            attribution,
+            usage,
+        } => (lane.clone(), attribution.clone(), usage.clone()),
+        busbar_kernel::plane_driver::UsageView::Partitioned(_) => {
+            return Some(crate::root::linked::node::Reported::Partitioned)
+        }
+    };
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for (class, sum) in fold.by_class() {
@@ -2787,12 +2673,12 @@ pub(crate) fn report_of(
             *n = n.checked_add(count).ok()?;
         }
     }
-    Some((
+    Some(crate::root::linked::node::Reported::Legacy((
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
         lane,
         attribution,
-    ))
+    )))
 }
 
 pub(crate) struct DoorFar<'d, 's> {

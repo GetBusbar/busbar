@@ -41,7 +41,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
+        req.header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     };
 
@@ -145,7 +145,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     let post = |body: &'static str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "reuse-key")
             .body(body)
@@ -249,7 +249,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "r"}))
         .send()
         .await
@@ -264,7 +264,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
         let (c, u, id) = (client.clone(), keys_url.clone(), id.clone());
         async move {
             c.post(format!("{u}/{id}/rotate"))
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .header("idempotency-key", k)
                 .send()
                 .await
@@ -369,7 +369,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "victim"}))
         .send()
         .await
@@ -388,7 +388,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let victim_header = "b:c";
     let victim_resp = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
@@ -407,7 +407,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let colliding_header = "c";
     let colliding = client
         .post(format!("{keys_url}/{colliding_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", colliding_header)
         .send()
         .await
@@ -433,7 +433,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 
     let replay = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
@@ -490,7 +490,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 
     let created = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "svc"}))
         .send()
         .await
@@ -515,7 +515,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 
     let read = client
         .get(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -572,7 +572,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     let post = |body: json::Value| {
         client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&body)
             .send()
     };
@@ -631,16 +631,16 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     println!("{WITNESS}");
 }
 
+/// ADMIN-API-1.6-ONE-MODEL §2 row 68: `POST /signing-key/rotate` reported intent and changed nothing,
+/// so 1.6.0 deletes it; a real rotation action is 1.6.x.
 #[tokio::test]
-async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
+async fn signing_key_rotate_is_gone() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_800A98AB78DB";
-    const WITNESS: &str =
-        "actual root case test_signing_key_rotate_reports_kid_and_revoke_all completed";
+    const WITNESS: &str = "actual root case signing_key_rotate_is_gone completed";
     isolated!(CHILD, WITNESS);
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let (module, directory, settings) = crate::distribution::rig::actual_store(
-        "test_signing_key_rotate_reports_kid_and_revoke_all-actual-store",
-    );
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("signing_key_rotate_is_gone-actual-store");
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"
@@ -713,29 +713,18 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/signing-key/rotate");
 
-    let unauth = client.post(&url).send().await.unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "signing-key rotate is admin-guarded"
-    );
-
     let r = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body = r.bytes().await.unwrap();
-    let body = json::parse_value(&body).unwrap();
     assert_eq!(
-        body["current_kid"],
-        busbar_kernel::governance::signing::DEFAULT_KID,
-        "reports the current signing-key id: {body}"
+        r.status().as_u16(),
+        404,
+        "the deleted route is not served: {:?}",
+        r.text().await
     );
-    assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
-
     let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
         0,
         audit_ring::MAX_AUDIT_ENTRIES,
@@ -743,13 +732,8 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         Some("signing-key"),
     );
     assert!(
-        rows.iter()
-            .any(|e| e.action == "signing_key.report" && e.outcome == audit_ring::OUTCOME_APPLIED),
-        "the report is recorded under a verb that does not claim a mutation"
-    );
-    assert!(
-        !rows.iter().any(|e| e.action == "signing_key.rotate"),
-        "and never under a verb asserting key material changed"
+        !rows.iter().any(|e| e.action.starts_with("signing_key.")),
+        "nothing is recorded for a route that does not exist"
     );
 
     handle.abort();
@@ -838,7 +822,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 
     let minted = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(json::json!({"name": "audit_key_probe_z3"}).to_string())
         .send()
@@ -852,7 +836,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 
     let audit = client
         .get(format!("http://{addr}/api/v1/admin/audit"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()

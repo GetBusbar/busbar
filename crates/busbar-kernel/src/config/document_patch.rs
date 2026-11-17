@@ -536,6 +536,9 @@ impl DocumentPatch {
     ) -> Result<busbar_contract::secure::SecureString, String> {
         let mut document = source::SourceDocument::parse(yaml)?;
         document.apply(self)?;
+        if let Some(refusal) = super::prepass::reserved_key_refusal(&document.value.0) {
+            return Err(refusal);
+        }
         let mapping = document
             .value
             .0
@@ -1094,9 +1097,9 @@ mod tests {
             }
         }
         fields.extend(
-            super::super::plane_sections::config_sections()
-                .into_iter()
-                .map(str::to_owned),
+            super::super::recognizer::core_keys()
+                .iter()
+                .map(|key| (*key).to_owned()),
         );
         assert!(
             fields.len() > 25,

@@ -11,6 +11,7 @@ use busbar_kernel::state::App;
 
 use crate::root::test_plugins as plugins;
 
+mod admin_listener_tests;
 mod browser;
 mod code_flow_tests;
 mod consent_tests;
@@ -95,6 +96,46 @@ async fn serve_tls(listener: tokio::net::TcpListener, router: axum::Router) {
     }
 }
 
+/// The admin listener, bound BEFORE the deployment is built so `admin_listen` names the socket the
+/// operator's browser really reaches: the authorization server publishes its approval pages there.
+async fn bind_admin() -> (tokio::net::TcpListener, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the admin listener");
+    let at = listener.local_addr().expect("admin address").to_string();
+    (listener, at)
+}
+
+/// Serve the deployment on two listeners, as the binary does: the data router on `data` (over TLS
+/// when `tls`) and the admin router on `admin` (plain HTTP, since no `admin_tls` is configured).
+fn serve_split(
+    app: Arc<App>,
+    data: tokio::net::TcpListener,
+    admin: tokio::net::TcpListener,
+    tls: bool,
+) {
+    let (data_router, admin_router, _handle) = busbar_kernel::build_split_routers_with_limits(
+        app,
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
+        0,
+        false,
+    );
+    tokio::spawn(async move {
+        axum::serve(admin, admin_router)
+            .await
+            .expect("serve the admin listener");
+    });
+    if tls {
+        tokio::spawn(serve_tls(data, data_router));
+    } else {
+        tokio::spawn(async move {
+            axum::serve(data, data_router)
+                .await
+                .expect("serve the data listener");
+        });
+    }
+}
+
 fn serve_boot_jwks(listener: std::net::TcpListener, app: Arc<App>) {
     struct Server {
         stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -146,18 +187,36 @@ async fn application_with_resource_auth(
     prior: Option<&App>,
     resource_auth: bool,
 ) -> Arc<App> {
-    build_application(oauth_as, prior, resource_auth, None, None).await
+    build_application(oauth_as, prior, resource_auth, None, None, None).await
+}
+
+/// [`application_with_resource_auth`] with `admin_listen` naming an admin listener the test bound
+/// first ([`bind_admin`]): the approval pages publish that address, so it must be the real one.
+async fn application_with_resource_auth_at(
+    oauth_as: Option<&OauthAsCfg>,
+    resource_auth: bool,
+    admin_listen: &str,
+) -> Arc<App> {
+    build_application(
+        oauth_as,
+        None,
+        resource_auth,
+        None,
+        None,
+        Some(admin_listen),
+    )
+    .await
 }
 
 async fn application_with_document(document: serde_json::Value) -> Arc<App> {
-    build_application(None, None, false, Some(document), None).await
+    build_application(None, None, false, Some(document), None, None).await
 }
 
 async fn application_with_auth_plugin(
     document: serde_json::Value,
     library: &std::path::Path,
 ) -> Arc<App> {
-    build_application(None, None, false, Some(document), Some(library)).await
+    build_application(None, None, false, Some(document), Some(library), None).await
 }
 
 async fn build_application(
@@ -166,6 +225,7 @@ async fn build_application(
     resource_auth: bool,
     document: Option<serde_json::Value>,
     auth_library: Option<&std::path::Path>,
+    admin_listen: Option<&str>,
 ) -> Arc<App> {
     let hosted_credentials = auth_library.is_some();
     static BUILDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -173,19 +233,13 @@ async fn build_application(
     crate::dist_root_install::install();
 
     let store_library = crate::root::test_plugins::application_store_library();
-    let stated = busbar_plugin_loader::dispatch::rendering_of_library(&store_library)
-        .expect("the actual store statement reads")
-        .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&stated)
-        .expect("the actual store statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&store_library).name;
     let library = std::fs::read(&store_library).expect("the actual store library reads");
-    let mut manifest = plugins::manifest(
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &store_library,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(stated));
     let instance = busbar_kernel::door::op_id().counter();
     let directory = plugins::scratch(&format!("oauth-application-{instance}"));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
@@ -201,11 +255,14 @@ async fn build_application(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "advanced": {  },
         })
     });
     document["store"] = serde_json::json!({"module":module,"settings":settings});
+    if let Some(at) = admin_listen {
+        document["admin_listen"] = serde_json::json!(at);
+    }
     if let Some(block) = oauth_as {
         document["oauth_as"] =
             serde_json::to_value(block.authoring(&busbar_kernel::seal::acquire()))

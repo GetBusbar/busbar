@@ -43,8 +43,12 @@ pub struct SecurityCfg {
 /// `busy_timeout_ms`; postgres/valkey read `url`). Required: exactly one store resolves
 /// from config — a config with no `store:` block is refused
 /// with [`store_required`], and no linked row stands in as a default.
+///
+/// Read as the map form or the positional `[module, settings]` ([`positional`]); `insecure_transport`
+/// is only ever a key beside `module` (TRANSPORT-SECURITY-POLICY §4), never a third position.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[serde(remote = "Self")]
 pub struct StoreCfg {
     /// The store module, by plugin ALIAS or CANONICAL NAME: a linked row's name opens in process; any
     /// other name is a STORE PLUGIN resolved from the `plugins.*` registry - the shipped first-party
@@ -94,10 +98,87 @@ pub fn store_required() -> String {
         .into()
 }
 
+/// The positional reading [`StoreCfg`] and [`SecretModuleCfg`] share: `[module]` or
+/// `[module, settings]`, `module` defaulting to empty only where `module_default`. A third item is
+/// refused: it would otherwise land in `insecure_transport`, which is a key beside `module`
+/// (TRANSPORT-SECURITY-POLICY §4), never a position.
+fn positional<'de, A: serde::de::SeqAccess<'de>>(
+    mut seq: A,
+    module_default: bool,
+    expecting: &dyn serde::de::Expected,
+) -> Result<(String, busbar_contract::plugin_settings::Settings), A::Error> {
+    let module = match seq.next_element::<String>()? {
+        Some(module) => module,
+        None if module_default => String::new(),
+        None => return Err(serde::de::Error::invalid_length(0, expecting)),
+    };
+    let settings = seq.next_element()?.unwrap_or_default();
+    if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+        return Err(serde::de::Error::invalid_length(3, expecting));
+    }
+    Ok((module, settings))
+}
+
+impl<'de> Deserialize<'de> for StoreCfg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Block;
+        impl<'de> serde::de::Visitor<'de> for Block {
+            type Value = StoreCfg;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a store block `{ module, settings }` or `[module, settings]`")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<StoreCfg, A::Error> {
+                StoreCfg::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<StoreCfg, A::Error> {
+                let (module, settings) = positional(seq, true, &self)?;
+                Ok(StoreCfg {
+                    module,
+                    settings,
+                    insecure_transport: None,
+                })
+            }
+        }
+        deserializer.deserialize_any(Block)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretModuleCfg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Block;
+        impl<'de> serde::de::Visitor<'de> for Block {
+            type Value = SecretModuleCfg;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a secret instance `{ module, settings }` or `[module, settings]`")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<SecretModuleCfg, A::Error> {
+                SecretModuleCfg::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<SecretModuleCfg, A::Error> {
+                let (module, settings) = positional(seq, false, &self)?;
+                Ok(SecretModuleCfg {
+                    module,
+                    settings,
+                    insecure_transport: None,
+                })
+            }
+        }
+        deserializer.deserialize_any(Block)
+    }
+}
+
 /// One named secret instance (IF §8.2): its image identity and opaque opening settings.
 /// References select the configured map key; shorthands select its unique instance.
+/// Read as the map form or the positional `[module, settings]` ([`positional`]), as [`StoreCfg`].
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
+#[serde(remote = "Self")]
 pub struct SecretModuleCfg {
     /// Admitted image identity or declared former name. Required in canonical 1.6 configuration.
     pub module: String,

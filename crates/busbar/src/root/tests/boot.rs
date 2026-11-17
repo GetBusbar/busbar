@@ -688,7 +688,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     .unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
-            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "providers": {}, "models": {}, "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {}
         }),
@@ -922,82 +922,6 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
                 "work": {"members": [{"model": "m"}]},
             }})
         )]
-    );
-}
-
-static SECRET_ROWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn dropped_secret(name: &str) -> Candidate {
-    Candidate {
-        kind: KindCode::Secret,
-        name: name.into(),
-        version: "1.0.0".into(),
-        aliases: Vec::new(),
-        sugar: Vec::new(),
-        verbs: Vec::new(),
-        selecting: Vec::new(),
-        schemes: Vec::new(),
-        needs: Vec::new(),
-        stated: Vec::new(),
-        origin: Origin::Dropped {
-            file: format!("{name}.tar.gz"),
-            bytes: Arc::new(Vec::new()),
-        },
-        disk: false,
-        orders: true,
-    }
-}
-
-#[test]
-fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
-    use busbar_contract::secret::SecretAxis as _;
-    let _held = SECRET_ROWS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let rows = crate::root::linked::secret_rows();
-    rows.set_dropped([dropped_secret("row159-live-vault")]);
-    assert!(
-        rows.answers("row159-live-vault"),
-        "the running node's dropped-in secret answers"
-    );
-
-    let off = PluginsCfg::default();
-    assert!(
-        !off.enabled,
-        "the dry run's configuration turns the plugins directory off"
-    );
-    crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
-        .expect("a build with the plugins directory off is the linked rows alone");
-    let answers = rows.answers("row159-live-vault");
-    rows.set_dropped(std::iter::empty());
-    assert!(
-        answers,
-        "a dry run's registry build replaced the running node's dropped-in secret rows"
-    );
-}
-
-#[tokio::test]
-async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
-    if !isolated_card_case("a_committing_builds_admission_replaces_the_dropped_secret_rows").await {
-        return;
-    }
-    use busbar_contract::secret::SecretAxis as _;
-    let rows = crate::root::linked::secret_rows();
-    rows.set_dropped([dropped_secret("row159-stale-vault")]);
-
-    let off = PluginsCfg::default();
-    let registry = crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
-        .expect("a build with the plugins directory off is the linked rows alone");
-
-    let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    admit_secrets(&plugin_rows, &off)
-        .await
-        .expect("no dropped-in secret contests a word");
-    let answers = rows.answers("row159-stale-vault");
-    rows.set_dropped(std::iter::empty());
-    assert!(
-        !answers,
-        "the committing build's admission kept a dropped-in secret its registry no longer has"
     );
 }
 
@@ -1239,4 +1163,89 @@ fn a_record_bootstrap_witness_resolves_only_compiled_core_schemas() {
     let scoped = busbar_kernel::host_records::record_key("plane", b"row");
     assert!(bootstrap_witness("plane-schema", &scoped, b"body").is_err());
     assert!(bootstrap_witness("unknown", b"row", b"body").is_err());
+}
+
+/// UPG-7 (#332): the plugin anti-downgrade floor is keyed by the deployment identity the store
+/// keeps, never by the host name. A fresh k8s pod has a fresh host name, so a host-keyed floor is
+/// off for exactly the pod a rollout starts, and its rows pile up per pod name.
+#[tokio::test]
+async fn the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name() {
+    if !isolated_card_case("the_plugin_floor_is_keyed_by_the_deployment_id_not_the_host_name").await
+    {
+        return;
+    }
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let authority = PLUGIN_FLOOR.get().expect("the floor authority is bound");
+    assert_eq!(authority.host, deployment);
+    assert_ne!(authority.host, crate::root::durability::host_identity());
+}
+
+/// UPG-7 (#332), PRD-4/ARC-5 migrate-on-boot: floors a 1.6 build already wrote under host names
+/// are carried into the deployment's slot on the first boot that keys by the deployment, and the
+/// host rows are deleted. Two hosts sharing one Store fold into the highest floor, so no host's
+/// floor is lowered; rerunning the step is a kernel test
+/// (`plugin_floor_tests`).
+#[tokio::test]
+async fn host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot() {
+    use busbar_kernel::persistence::plugin_floor::{Candidate, PluginFloor};
+    if !isolated_card_case("host_keyed_plugin_floors_are_carried_into_the_deployment_slot_on_boot")
+        .await
+    {
+        return;
+    }
+    let candidate = |version| Candidate {
+        name: "busbar-store-sqlite",
+        version,
+        file: "busbar-store-sqlite.so",
+        first_party: true,
+        linked: false,
+        rollback_pinned: false,
+    };
+    let core =
+        crate::root::real_store::core_over(crate::root::store_double::NativeFaults::open().await)
+            .await;
+    let seed = PluginFloor::new(core.clone()).unwrap();
+    for (host, version, keys) in [("pod-a", "1.6.2", 5), ("pod-b", "1.6.5", 7)] {
+        seed.enforce_candidate(host, candidate(version), true)
+            .await
+            .unwrap();
+        seed.enforce_release_keys(host, &[keys], true)
+            .await
+            .unwrap();
+    }
+    bind_plugin_floor(core.clone())
+        .await
+        .expect("the plugin floor binds to the opened store");
+    let deployment = busbar_kernel::persistence::boot_identity::BootIdentity::new(core.clone())
+        .unwrap()
+        .keep_deployment_id()
+        .await
+        .unwrap();
+    let floor = PluginFloor::new(core).unwrap();
+    assert_eq!(floor.release_keys_floor(&deployment).await.unwrap(), 7);
+    assert!(floor
+        .enforce_candidate(&deployment, candidate("1.6.4"), false)
+        .await
+        .is_err());
+    floor
+        .enforce_candidate(&deployment, candidate("1.6.5"), false)
+        .await
+        .unwrap();
+    for host in ["pod-a", "pod-b"] {
+        assert_eq!(floor.release_keys_floor(host).await.unwrap(), 0);
+        floor
+            .enforce_candidate(host, candidate("1.0.0"), false)
+            .await
+            .unwrap();
+    }
 }
