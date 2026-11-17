@@ -41,7 +41,7 @@ fn native_archives_are_not_legacy_supersession_candidates() {
         assert!(
             rows.iter()
                 .any(|r| r.file == native_file && r.status.starts_with("CONFLICT:")),
-            "native archive reaches duplicate conflict handling: {rows:?}"
+            "native archive reaches duplicate conflict handling"
         );
         assert!(scan_and_validate(&dir, &policy(&release)).is_err());
         std::fs::remove_dir_all(dir).unwrap();

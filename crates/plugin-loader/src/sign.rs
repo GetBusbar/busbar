@@ -1296,7 +1296,8 @@ pub fn validate_structure(
     supported_abi: &dyn Fn(&str) -> Option<u32>,
     host_identity: &str,
 ) -> Result<(), String> {
-    validate_identity(m, host_identity)?;
+    let native = native_stamp(lib_bytes)?;
+    validate_identity_for(m, host_identity, native.is_some())?;
     if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "manifest sha256 '{}' is not a 64-char hex digest",
@@ -1308,10 +1309,56 @@ pub fn validate_structure(
             "library bytes do not match the manifest sha256 (integrity failure)".to_string(),
         );
     }
-    validate_abi(m, supported_abi)
+    match native {
+        Some(stamp) => validate_native_manifest(m, &stamp),
+        None => validate_abi(m, supported_abi),
+    }
 }
 
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
+    validate_identity_for(m, host_identity, false)
+}
+
+/// Classify the actual image bytes, never a manifest claim. A broken native stamp is not legacy.
+pub(crate) fn native_stamp(
+    bytes: &[u8],
+) -> Result<Option<busbar_plugin_abi::stamp::Stamp>, String> {
+    match crate::scan::stamp(bytes) {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(crate::scan::StampScanErr::Missing) => Ok(None),
+        Err(error) => Err(error.refusal().to_string()),
+    }
+}
+
+fn validate_native_manifest(
+    m: &Manifest,
+    stamp: &busbar_plugin_abi::stamp::Stamp,
+) -> Result<(), String> {
+    let kind = busbar_plugin_abi::types::KindCode::from_raw(stamp.kind)
+        .ok_or("native stamp names an unknown kind")?;
+    if m.name != crate::scan::text(&stamp.name)
+        || m.version != crate::scan::text(&stamp.version)
+        || m.kind != crate::admit::kind_word(kind)
+        || m.abi_version != stamp.kind_abi
+        || stamp.kind_abi != busbar_plugin_abi::versions::abi_of(kind)
+    {
+        return Err("native manifest name/version/kind/ABI must match its validated stamp and the current native ABI".into());
+    }
+    if m.statement.is_some()
+        || m.settings_schema.is_some()
+        || m.schema_derived
+        || m.declares != Declares::default()
+        || m.needs != HookNeeds::default()
+    {
+        return Err(
+            "native operational metadata belongs to the signed image, not legacy manifest fields"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_identity_for(m: &Manifest, host_identity: &str, native: bool) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
             "manifest name '{}' is not a valid plugin name (lowercase [a-z0-9-]+)",
@@ -1330,11 +1377,25 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
                 "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
             ));
         }
-        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+        if *former == m.name
+            || (!native && *former == m.alias)
+            || m.former_names[..i].contains(former)
+        {
             return Err(format!(
                 "manifest former name '{former}' repeats another name of the plugin"
             ));
         }
+    }
+    if native
+        && (m.former_names.len() > 8
+            || m.former_names.iter().any(|name| name.len() > 64)
+            || m.former_names
+                .iter()
+                .filter(|name| **name == m.alias)
+                .count()
+                != 1)
+    {
+        return Err("native former_names must contain the alias exactly once and at most eight words of at most 64 bytes".into());
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
