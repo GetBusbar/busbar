@@ -259,6 +259,10 @@ impl NativeOrdinaryTerminalSlot {
         }
     }
 
+    pub(crate) fn fee_observer(&self) -> Option<Arc<crate::governance::fee_debt::FeeDebtObserver>> {
+        locked(&self.state).fee.clone()
+    }
+
     pub(super) fn source(&self) -> &busbar_contract::storage::StorageSource {
         &self.source
     }

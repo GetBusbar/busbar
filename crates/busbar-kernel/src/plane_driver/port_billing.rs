@@ -203,6 +203,14 @@ impl PortBilling {
         self.gov.bind_fee_debt_owner(owner).is_ok()
     }
 
+    /// FEE-DEBT r1: resolve this slot's transferred fee obligations against their exact pinned
+    /// owners. Called by the existing native pulse outside every Node, money and budget lock.
+    pub async fn resolve_fee_transfers(&self, slot: &NativeOrdinaryTerminalSlot) {
+        if let Some(observer) = slot.fee_observer() {
+            self.gov.resolve_fee_transfers(&observer).await;
+        }
+    }
+
     /// Transfer the slot's elected original intent once; `Ok(false)` means no intent yet.
     pub fn drive_ordinary_terminal(
         &self,

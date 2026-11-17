@@ -1963,6 +1963,53 @@ impl GovState {
         self.refund_fee_unit_in_era(cost, key, pool, now, fee_unit, None);
     }
 
+    /// FEE-DEBT r1: an observed extra fee-unit refund on exactly the legs the original charge
+    /// reached (never a recomputed chain). A leg whose cell is gone or recreated is unresolved.
+    pub(crate) fn refund_fee_unit_observed(
+        &self,
+        pool: &str,
+        fee_unit: &str,
+        era: Option<RawRateEra>,
+        observer: &super::fee_debt::FeeDebtObserver,
+    ) {
+        let (plane, _) = split_plane_lane(pool);
+        if plane.is_empty() {
+            return;
+        }
+        let fee_lane = plane_fee_lane(plane);
+        let mut leg = 0;
+        while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
+            leg += 1;
+            let Some(window) = window else {
+                observer.unresolved();
+                continue;
+            };
+            let mut map = self.budget.write(&bucket);
+            let Some(cell) = map.get_mut(&*bucket) else {
+                observer.unresolved();
+                continue;
+            };
+            if cell.fee_incarnation != incarnation || cell.window_start < window {
+                observer.unresolved();
+                continue;
+            }
+            cell.mutate(|cell| {
+                let held = (cell.models.iter_mut())
+                    .filter(|m| {
+                        &*m.model == fee_lane.as_str()
+                            && era.is_none_or(|era| m.era == era)
+                            && m.cur.get(fee_unit).is_some_and(|n| *n >= Count::ONE)
+                    })
+                    .max_by_key(|m| m.era);
+                if let Some(m) = held {
+                    take_one(&mut m.cur, fee_unit);
+                }
+                cell.dirty = true;
+            });
+            Self::fee_refund_marker(Some(observer), &bucket, window, cell);
+        }
+    }
+
     pub fn refund_fee_unit_in_era(
         &self,
         cost: &crate::cost::CostModel,

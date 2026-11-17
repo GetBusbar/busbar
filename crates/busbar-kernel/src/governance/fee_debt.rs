@@ -127,7 +127,21 @@ enum CaptureOutcome {
     /// The flight moved part of this debt back to the original cell: a later capture of the
     /// same original target must consume this witness once.
     Deferred,
+    /// An absorbed negative moved into its exact retained recovery owner. Applied only once that
+    /// owner's own raw operation and handoff graph reach their settled proof.
+    Transferred,
     Unresolved,
+}
+
+/// Opaque move-only identity of the exact owner an absorbed fee obligation transferred to. While
+/// held it pins that recovery-book entry so its settled proof cannot be forgotten.
+struct FeeDebtTransfer {
+    operation_id: [u8; 16],
+    revision: u64,
+    body: [u8; 32],
+    // The same capture also reparked a residual: after the owner settles, this capture still
+    // waits for the next original capture to consume its deferred witness.
+    deferred: bool,
 }
 
 #[derive(Default)]
@@ -147,6 +161,7 @@ pub struct FeeCapture {
     no_write: bool,
     outcome: Mutex<CaptureOutcome>,
     association: Mutex<Association>,
+    transfer: Mutex<Option<FeeDebtTransfer>>,
 }
 
 impl FeeCapture {
@@ -167,6 +182,7 @@ impl FeeCapture {
             no_write,
             outcome: Mutex::new(CaptureOutcome::Pending),
             association: Mutex::new(Association::default()),
+            transfer: Mutex::new(None),
         })
     }
 
@@ -192,6 +208,73 @@ impl FeeCapture {
         };
     }
 
+    /// Finish an associated capture whose absorbed part moved into an existing recovery owner.
+    /// The caller has already pinned that exact owner (operation, revision, body); a capture
+    /// that cannot be associated or whose own child is unproven stays Unresolved.
+    pub(crate) fn finish_transferred(
+        &self,
+        child_applied: bool,
+        deferred: bool,
+        operation_id: [u8; 16],
+        revision: u64,
+        body: [u8; 32],
+    ) -> bool {
+        let mut outcome = locked(&self.outcome);
+        if *outcome != CaptureOutcome::Pending
+            || !self.associated()
+            || !child_applied
+            || self.no_write
+        {
+            if *outcome == CaptureOutcome::Pending {
+                *outcome = CaptureOutcome::Unresolved;
+            }
+            return false;
+        }
+        *locked(&self.transfer) = Some(FeeDebtTransfer {
+            operation_id,
+            revision,
+            body,
+            deferred,
+        });
+        *outcome = CaptureOutcome::Transferred;
+        true
+    }
+
+    /// The exact owner a transferred capture waits on.
+    pub(crate) fn transfer_owner(&self) -> Option<([u8; 16], u64, [u8; 32])> {
+        if self.outcome() != CaptureOutcome::Transferred {
+            return None;
+        }
+        locked(&self.transfer)
+            .as_ref()
+            .map(|transfer| (transfer.operation_id, transfer.revision, transfer.body))
+    }
+
+    /// The last holder of an unresolved transfer is going away: retire its pin once. The
+    /// capture becomes Unresolved; it never becomes Applied by abandonment.
+    fn abandon_transfer(&self) -> Option<[u8; 16]> {
+        let mut outcome = locked(&self.outcome);
+        let transfer = locked(&self.transfer).take()?;
+        *outcome = CaptureOutcome::Unresolved;
+        Some(transfer.operation_id)
+    }
+
+    /// The owner reached its settled proof: consume the transfer once. Returns the pinned
+    /// operation for its single release.
+    pub(crate) fn settle_transfer(&self) -> Option<[u8; 16]> {
+        let mut outcome = locked(&self.outcome);
+        if *outcome != CaptureOutcome::Transferred {
+            return None;
+        }
+        let transfer = locked(&self.transfer).take()?;
+        *outcome = if transfer.deferred {
+            CaptureOutcome::Deferred
+        } else {
+            CaptureOutcome::Applied
+        };
+        Some(transfer.operation_id)
+    }
+
     fn outcome(&self) -> CaptureOutcome {
         *locked(&self.outcome)
     }
@@ -199,7 +282,8 @@ impl FeeCapture {
 
 /// One original bucket leg actually charged by the observed admission.
 struct Target {
-    bucket: Box<str>,
+    // Shared so refund hooks can name the charged leg without allocating under a lock.
+    bucket: Arc<str>,
     incarnation: u64,
     window: Option<u64>,
     last: u64,
@@ -261,7 +345,9 @@ impl Target {
             match capture.outcome() {
                 CaptureOutcome::Applied => applied = true,
                 CaptureOutcome::CancelledBeforeSend => {}
-                CaptureOutcome::Pending | CaptureOutcome::Deferred => return TargetStatus::Pending,
+                CaptureOutcome::Pending
+                | CaptureOutcome::Deferred
+                | CaptureOutcome::Transferred => return TargetStatus::Pending,
                 CaptureOutcome::Unresolved => return TargetStatus::Unresolved,
             }
         }
@@ -360,7 +446,11 @@ impl FeeDebtObserver {
         let count = buckets.clone().count();
         let names = buckets
             .clone()
-            .try_fold(0usize, |sum, bucket| sum.checked_add(bucket.len()))
+            .try_fold(0usize, |sum, bucket| {
+                // Each shared identifier carries its strong and weak counts.
+                sum.checked_add(bucket.len())?
+                    .checked_add(Layout::new::<[usize; 2]>().size())
+            })
             .ok_or(FeeDebtRefusal::Capacity)?;
         let bytes = Layout::array::<Target>(count)
             .map_err(|_| FeeDebtRefusal::Capacity)?
@@ -377,7 +467,7 @@ impl FeeDebtObserver {
         }
         for bucket in buckets {
             targets.push(Target {
-                bucket: bucket.into(),
+                bucket: Arc::from(bucket),
                 incarnation: 0,
                 window: None,
                 last: 0,
@@ -436,6 +526,31 @@ impl FeeDebtObserver {
         }
     }
 
+    /// The n-th original charged leg: (bucket, window, cell incarnation). No allocation.
+    pub(crate) fn charged_leg(&self, leg: usize) -> Option<(Arc<str>, Option<u64>, u64)> {
+        let state = locked(&self.state);
+        let target = state.targets.get(leg)?;
+        Some((target.bucket.clone(), target.window, target.incarnation))
+    }
+
+    /// The n-th retained capture waiting on a transferred owner; no allocation.
+    pub(crate) fn transferred(&self, mut index: usize) -> Option<Arc<FeeCapture>> {
+        let state = locked(&self.state);
+        for capture in state
+            .targets
+            .iter()
+            .flat_map(|target| target.captures.iter().flatten())
+        {
+            if capture.transfer_owner().is_some() {
+                if index == 0 {
+                    return Some(capture.clone());
+                }
+                index -= 1;
+            }
+        }
+        None
+    }
+
     /// The whole original target set: Complete only when every target is Applied or honestly
     /// CancelledBeforeSend.
     pub fn status(&self) -> FeeDebtStatus {
@@ -477,6 +592,14 @@ impl Drop for FeeDebtObserver {
         for target in &state.targets {
             if target.incarnation != 0 {
                 gov.release_fee_obligation(&target.bucket, target.incarnation);
+            }
+            for capture in target.captures.iter().flatten() {
+                // Only the last holder retires a pin; a shared capture keeps it for its peers.
+                if Arc::strong_count(capture) == 1 {
+                    if let Some(operation) = capture.abandon_transfer() {
+                        gov.fee_release(operation);
+                    }
+                }
             }
         }
     }

@@ -616,6 +616,18 @@ impl Node {
             }
             native.journal_confirmed = true;
         }
+        // Transferred fee obligations resolve against their exact pinned owners, outside locks.
+        let money_owner = {
+            let mut guard = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(native) = native_mut(&mut guard, class, key, call) else {
+                return false;
+            };
+            (native.ordinary.clone(), native.billing.clone())
+        };
+        money_owner.1.resolve_fee_transfers(&money_owner.0).await;
         // Every original join, then the single retirement of this exact entry.
         let removed = {
             let mut guard = self

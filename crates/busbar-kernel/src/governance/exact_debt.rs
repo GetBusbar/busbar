@@ -842,19 +842,18 @@ impl GovState {
             Err(error) => return (0, Some(error)),
         };
         let mut confirmed = 0;
-        // Applied for fee evidence requires the actual original recovery child settled; an
-        // absorbed prerequisite's monetary payload has no settled proof here, so it stays
-        // unresolved rather than being labelled Applied by a kept Intent.
+        // Applied for fee evidence requires the actual original recovery child Settled. An
+        // absorbed prerequisite is never proved by a kept Intent: its obligation transfers to
+        // that exact retained owner and waits for the owner's own settled proof.
         let mut fee_applied = true;
         if let Some(durable) = &flight.durable {
             if let Err(error) = self.drive_durable_usage_flight(durable).await {
                 return (0, Some(error));
             }
-            fee_applied = durable.prerequisite.is_none()
-                && durable.child.as_ref().is_none_or(|child| {
-                    self.recovery_event(child.operation_id)
-                        .is_some_and(|event| event.state == recovery::RecoveryState::Settled)
-                });
+            fee_applied = durable.child.as_ref().is_none_or(|child| {
+                self.recovery_event(child.operation_id)
+                    .is_some_and(|event| event.state == recovery::RecoveryState::Settled)
+            });
             let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
             debt.plain = ExactUsageDelta::default();
             debt.dated = ExactUsageDelta::default();
@@ -917,7 +916,36 @@ impl GovState {
                         let deferred = flight.durable.as_ref().is_some_and(|durable| {
                             !durable.deferred_plain.is_zero() || !durable.deferred_dated.is_zero()
                         });
-                        fee.finish(fee_applied, deferred);
+                        match flight
+                            .durable
+                            .as_ref()
+                            .and_then(|durable| durable.prerequisite.as_ref())
+                        {
+                            None => fee.finish(fee_applied, deferred),
+                            // Pin the exact owner before this flight (the previous evidence)
+                            // retires; a refused pin or unassociated capture is Unresolved.
+                            Some(owner) => {
+                                let pinned = self.fee_hold(
+                                    owner.operation_id,
+                                    owner.revision,
+                                    owner.body_fingerprint,
+                                );
+                                let installed = pinned
+                                    && fee.finish_transferred(
+                                        fee_applied,
+                                        deferred,
+                                        owner.operation_id,
+                                        owner.revision,
+                                        owner.body_fingerprint,
+                                    );
+                                if pinned && !installed {
+                                    self.fee_release(owner.operation_id);
+                                }
+                                if !pinned {
+                                    fee.finish(false, deferred);
+                                }
+                            }
+                        }
                     }
                     if let Some(child) = flight
                         .durable
@@ -1009,6 +1037,18 @@ impl GovState {
         if self.has_unsettled_raw_bucket(bucket)? {
             return Err(RecordStoreError(
                 "deletion requires confirmed raw usage custody".into(),
+            ));
+        }
+        // FEE-DEBT r1: a live native fee observer still owns this original cell; deletion
+        // reports it unresolved instead of discarding the frontier it depends on.
+        if self
+            .budget
+            .write(bucket)
+            .get(bucket)
+            .is_some_and(|cell| cell.fee_obligations != 0)
+        {
+            return Err(RecordStoreError(
+                "deletion requires resolved native fee obligations".into(),
             ));
         }
         Ok(())

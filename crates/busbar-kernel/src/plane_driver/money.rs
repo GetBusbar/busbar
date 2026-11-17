@@ -357,19 +357,23 @@ impl Drop for FeeParticipation {
                     .filter_map(|c| m.classes.get(*c as usize))
                     .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
                 {
-                    // The extra fee-unit refund recomputes its chain targets rather than carrying
-                    // the legs actually charged, so an observed admission cannot claim it.
-                    if let Some(observer) = observer {
-                        observer.unresolved();
+                    match observer {
+                        // Observed: refund exactly the legs the original charge reached.
+                        Some(observer) => self.account.gov.refund_fee_unit_observed(
+                            &m.pool,
+                            unit,
+                            Some(m.charge.raw_era()),
+                            observer,
+                        ),
+                        None => self.account.gov.refund_fee_unit_in_era(
+                            &m.cost,
+                            &m.key,
+                            &m.pool,
+                            m.arrived,
+                            unit,
+                            Some(m.charge.raw_era()),
+                        ),
                     }
-                    self.account.gov.refund_fee_unit_in_era(
-                        &m.cost,
-                        &m.key,
-                        &m.pool,
-                        m.arrived,
-                        unit,
-                        Some(m.charge.raw_era()),
-                    );
                 }
             }
         }
