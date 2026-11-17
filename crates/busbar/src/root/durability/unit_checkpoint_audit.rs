@@ -67,11 +67,10 @@ pub(super) async fn confirm(
             }
             Some(audit)
         }
-        None => {
-            evidence
-                .find_audit(snapshot.unit, facts.incarnation)
-                .await?
-        }
+        None => evidence
+            .find_audit(snapshot.unit, facts.incarnation)
+            .await?
+            .map(|(_, audit)| audit),
     };
     if let Some(audit) = found {
         if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
@@ -107,7 +106,7 @@ pub(super) async fn recover(
             "running money audit identity differs from its admitted principal",
         ));
     }
-    if let Some(audit) = evidence
+    if let Some((_node_seq, audit)) = evidence
         .find_audit(snapshot.unit, facts.incarnation)
         .await?
     {
@@ -128,7 +127,7 @@ pub(super) async fn recover(
 
         return Ok(());
     }
-    if let Some(pending) = evidence.pending_audit(snapshot.unit, facts.incarnation) {
+    if let Some((_node_seq, pending)) = evidence.pending_audit(snapshot.unit, facts.incarnation) {
         if pending.subject != Subject::PrincipalId(snapshot.principal.clone())
             || pending.what.op_class.as_str() != facts.op_class
         {
