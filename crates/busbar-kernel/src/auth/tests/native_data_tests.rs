@@ -539,10 +539,10 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        Ok(AdmittedUnit {
-            selected: None,
-            request: admitted,
-            unit: crate::plane_driver::port::Unit {
+        let rollback = book.admission_rollback(&admitted).unwrap();
+        Ok(AdmittedUnit::ordinary(
+            admitted,
+            crate::plane_driver::port::Unit {
                 ctx,
                 money: crate::plane_driver::port_money::PortMoney::new(
                     book.clone(),
@@ -551,7 +551,9 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
                 ),
                 journal: None,
             },
-        })
+            rollback,
+        )
+        .unwrap())
     });
     let pending = Arc::new(pending);
     let calls = PlaneCalls(AtomicUsize::new(0));

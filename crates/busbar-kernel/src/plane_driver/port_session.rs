@@ -1273,6 +1273,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         {
             return Err(SessionError::NotDriven);
         }
+        pending.accept_admission()?;
         self.admitted = Some((admitted.request.clone(), pending.routes()));
         Ok(())
     }
