@@ -8,7 +8,6 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::caps::KernelSeal;
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use busbar_contract::services::Caller;
 use busbar_kernel::plane_driver::port_egress::{MemberTarget, Targets};
@@ -21,11 +20,7 @@ use busbar_kernel::upstreams::{ConfiguredUpstreams, UpstreamDef, UpstreamTls, Up
 use busbar_plugin_abi::plane::{CARRIER_HTTP, OUTBOUND_DEFAULT};
 
 fn caller() -> Caller {
-    Caller::issue(
-        &KernelSeal::acquire_for_kernel(),
-        Arc::from("plane/test"),
-        KindCode::Plane,
-    )
+    Caller::for_test(Arc::from("plane/test"), KindCode::Plane)
 }
 
 fn upstream() -> Arc<UpstreamDef> {
