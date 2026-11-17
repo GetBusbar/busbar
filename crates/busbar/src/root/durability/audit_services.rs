@@ -17,13 +17,15 @@ use busbar_kernel::governance::drain::DrainClock;
 use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::{BootstrapSigner, Notary};
 
-use super::notary::{self, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
+use super::notary::{self, FloorHints, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
 use super::signer::{self, Checkpoint, Live, ResponseIntent, Seal, SignerHandle, SignerThreads};
 
 /// The handles and threads before their owners take them.
 struct Unstarted {
     live: SignerHandle<Live>,
     threads: SignerThreads,
+    pending: Vec<super::boot_jobs::PendingBootJob>,
+    delegated: Option<busbar_contract::crypto::PublicKey>,
 }
 
 /// THE BOOK'S AUDIT SERVICES.
@@ -57,6 +59,14 @@ impl std::fmt::Debug for AuditServices {
 pub(crate) type CheckpointHandle = SignerHandle<Checkpoint>;
 
 impl AuditServices {
+    #[cfg(test)]
+    pub(crate) fn cut_retained(&self) -> bool {
+        self.notary
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|task| task.progress().journal_cut_retained.load(Ordering::Acquire))
+    }
     /// START THE SIGNER THREADS from the bound key's capabilities. `start` is the resumed head the
     /// notary will begin after (read before recovery appends anything).
     pub(crate) fn spawn(
@@ -68,6 +78,8 @@ impl AuditServices {
         start: NotaryStart,
     ) -> std::io::Result<(Self, CheckpointHandle)> {
         let clock = Arc::new(OnceLock::new());
+        let delegated =
+            (notary.public_key() != bootstrap.public_key()).then(|| notary.public_key().clone());
         let notary_key_id = notary.key_id().to_owned();
         let bootstrap_key_id = bootstrap.key_id().to_owned();
         let signers = signer::spawn(notary, bootstrap, Arc::clone(&clock))?;
@@ -83,6 +95,8 @@ impl AuditServices {
             unstarted: Mutex::new(Some(Unstarted {
                 live: signers.live,
                 threads: signers.threads,
+                pending: Vec::new(),
+                delegated,
             })),
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
@@ -96,8 +110,15 @@ impl AuditServices {
 
     /// START THE NOTARY (once; later calls do nothing) on the current runtime, with
     /// `audit.seal_every` and SHUTDOWN-HANG's drain clock, and its 1 s watch. Returns whether this
-    /// call started it.
-    pub(crate) fn start_notary(&self, every_ms: u64, clock: Arc<DrainClock>) -> bool {
+    /// call started it. `floor` is the Ephemeral journal cut's floor (b) source (SEALING-FIX §3.9):
+    /// the oldest audit line a checkpoint in custody names.
+    pub(crate) fn start_notary(
+        &self,
+        every_ms: u64,
+        clock: Arc<DrainClock>,
+        floor: Option<FloorHints>,
+        book: Arc<Mutex<super::Durability>>,
+    ) -> bool {
         let _ = self.clock.set(Arc::clone(&clock));
         let host = super::host_identity();
         let template = busbar_kernel_audit::Stamp {
@@ -122,7 +143,12 @@ impl AuditServices {
             tracing::error!(reason = error, "original notary storage bound unavailable");
             return false;
         }
-        let Some(Unstarted { live, threads }) = self
+        let Some(Unstarted {
+            live,
+            threads,
+            pending,
+            delegated,
+        }) = self
             .unstarted
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -130,7 +156,20 @@ impl AuditServices {
         else {
             return false;
         };
-        let task = notary::spawn(
+        let boot = self.boot.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let needs_boot = !pending.is_empty() || delegated.is_some();
+        if needs_boot && boot.is_none() {
+            busbar_kernel::diag_error!(
+                busbar_kernel::diagnostics::AUDIT_STAMP_FAILED,
+                node = self.node,
+                reason = "bootstrap_signer_panic",
+                "audit live signing refused: pending boot work has no Bootstrap handle"
+            );
+            return false;
+        }
+        let boot = boot
+            .map(|handle| super::boot_jobs::BootPreparation::new(handle, book, pending, delegated));
+        let task = notary::spawn_with_boot(
             NotaryConfig {
                 node: self.node,
                 host,
@@ -141,7 +180,11 @@ impl AuditServices {
             Arc::clone(&self.journal),
             Arc::clone(&self.feed),
             live,
-            Some(clock),
+            notary::NotaryRuntime {
+                floor_hints: floor,
+                drain_clock: Some(clock),
+                boot,
+            },
         );
         let progress = Arc::clone(task.progress());
         let stall_after_ms = task.stall_after_ms();
@@ -198,6 +241,26 @@ impl AuditServices {
         self.boot.lock().unwrap_or_else(|p| p.into_inner()).take()
     }
 
+    /// Return the own-node phase's handle, retaining a failed sign or uncertain original ahead
+    /// of this boot's certificate. Called before start_notary consumes the cold ownership.
+    pub(crate) fn defer_boot(
+        &self,
+        handle: SignerHandle<Seal>,
+        pending: Option<super::boot_jobs::PendingBootJob>,
+    ) {
+        if let Some(job) = pending {
+            if let Some(unstarted) = self
+                .unstarted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_mut()
+            {
+                unstarted.pending.push(job);
+            }
+        }
+        *self.boot.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
+    }
+
     /// The predecessor sealer's Bootstrap handle (taken once).
     pub(crate) fn take_sealer_handle(&self) -> Option<SignerHandle<Seal>> {
         self.sealer.lock().unwrap_or_else(|p| p.into_inner()).take()
@@ -210,6 +273,7 @@ impl AuditServices {
             .unwrap_or_else(|p| p.into_inner())
             .take()
     }
+
     /// What the boot book knows that the predecessor sealer needs (this node, its take time and
     /// the bound key), set once at boot.
     pub(crate) fn set_predecessor_inputs(&self, inputs: super::predecessor::PredecessorInputs) {

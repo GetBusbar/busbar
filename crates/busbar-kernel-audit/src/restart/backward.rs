@@ -166,7 +166,7 @@ impl BackwardWalk {
 
     /// Consume the next item from the backwards journal read.
     pub fn push(&mut self, item: &TailItem, cx: &WalkContext<'_>) -> WalkOutcome {
-        let (record, wal) = match item {
+        let (line, node, link_line, digest_valid, legacy_candidate) = match item {
             TailItem::Stamp { stamp, .. } => {
                 self.saw_candidate = true;
                 self.candidates.push_back(Pending {
@@ -179,14 +179,37 @@ impl BackwardWalk {
                 self.undecodable = Some(*node_seq);
                 return WalkOutcome::NeedMore;
             }
-            TailItem::Line { record, node_seq } => (record, *node_seq),
-        };
-        let line = Line {
-            seq: record.seq,
-            wal,
-            hash: record.hash.clone(),
-            prev: record.prev_hash.clone(),
-            linked_ms: record.linked_ms,
+            TailItem::Line { record, node_seq } => (
+                Line {
+                    seq: record.seq,
+                    wal: *node_seq,
+                    hash: record.hash.clone(),
+                    prev: record.prev_hash.clone(),
+                    linked_ms: record.linked_ms,
+                },
+                record.node,
+                record.recipe.is_link(),
+                AuditChain::digest_of(record) == record.hash,
+                (!record.recipe.is_link() && record.signature.is_some())
+                    .then(|| AuditChain::verify_signature(record, cx.key).is_ok()),
+            ),
+            TailItem::Certificate { record, node_seq } => (
+                Line {
+                    seq: record.seq,
+                    wal: *node_seq,
+                    hash: record.fingerprint.to_string(),
+                    prev: if record.prev_link == Fingerprint::ZERO {
+                        String::new()
+                    } else {
+                        record.prev_link.to_string()
+                    },
+                    linked_ms: record.linked_ms,
+                },
+                record.node,
+                true,
+                record.recompute_fingerprint() == record.fingerprint,
+                None,
+            ),
         };
         if self.tail.is_none() {
             self.tail = Some(line.clone());
@@ -198,19 +221,19 @@ impl BackwardWalk {
             if let Some(kind) = crate::record::link_break(
                 &next.prev,
                 next.seq,
-                &record.hash,
-                record.seq.saturating_add(1),
+                &line.hash,
+                line.seq.saturating_add(1),
             ) {
                 let reason = if kind == AuditBreakKind::LinkMismatch {
                     BreakReason::Link
                 } else {
                     BreakReason::Sequence
                 };
-                self.remember_failure(self.at(record.seq, next.wal, reason));
+                self.remember_failure(self.at(line.seq, next.wal, reason));
             }
         }
         if let Some(wal) = self.undecodable.take() {
-            self.remember_failure(self.at(record.seq, wal, BreakReason::Decode));
+            self.remember_failure(self.at(line.seq, wal, BreakReason::Decode));
         }
 
         // A stamp remains unresolved only while its endpoint is below this line. Missing
@@ -226,21 +249,28 @@ impl BackwardWalk {
             if stamp.sig_alg != SIGNATURE_ALGORITHM {
                 return WalkOutcome::Unsupported;
             }
-            if stamp.to < record.seq {
+            if stamp.to < line.seq {
                 continue;
             }
-            let result = if stamp.to == record.seq && super::stamp_passes(stamp, record, cx) {
-                Ok(self.resolve(record.seq, Some(stamp), cx))
+            let result = if stamp.to == line.seq
+                && stamp.node == cx.node
+                && node == cx.node
+                && stamp.key_cert == 0
+                && stamp.verify(cx.key).is_ok()
+                && digest_valid
+                && Fingerprint::from_hex(&line.hash) == Some(stamp.fingerprint)
+            {
+                Ok(self.resolve(line.seq, Some(stamp), cx))
             } else {
                 Err(())
             };
             candidate.resolved = Some(result);
         }
         self.candidates = candidates;
-        if !record.recipe.is_link() && record.signature.is_some() {
+        if let Some(passes) = legacy_candidate {
             self.saw_candidate = true;
-            let resolved = if AuditChain::verify_signature(record, cx.key).is_ok() {
-                Ok(self.resolve(record.seq, None, cx))
+            let resolved = if passes {
+                Ok(self.resolve(line.seq, None, cx))
             } else {
                 Err(())
             };
@@ -254,18 +284,23 @@ impl BackwardWalk {
             return ready;
         }
 
-        if record.node != cx.node {
-            self.remember_failure(self.at(record.seq.saturating_sub(1), wal, BreakReason::Link));
-        } else if AuditChain::digest_of(record) != record.hash {
-            self.remember_failure(self.at(record.seq.saturating_sub(1), wal, BreakReason::Digest));
+        if node != cx.node {
+            self.remember_failure(self.at(line.seq.saturating_sub(1), line.wal, BreakReason::Link));
+        } else if !digest_valid {
+            self.remember_failure(self.at(
+                line.seq.saturating_sub(1),
+                line.wal,
+                BreakReason::Digest,
+            ));
         }
-        if record.recipe.is_link() {
+        if link_line {
             self.link_lines = true;
             if let Some(unsigned) = self.unsigned {
                 self.remember_failure(unsigned);
             }
         } else {
-            self.unsigned = Some(self.at(record.seq.saturating_sub(1), wal, BreakReason::Unsigned));
+            self.unsigned =
+                Some(self.at(line.seq.saturating_sub(1), line.wal, BreakReason::Unsigned));
         }
         self.next = Some(line);
         WalkOutcome::NeedMore

@@ -15,6 +15,7 @@ pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::Pe
     Arc::new(memory_backend::MemoryBackend::default())
 }
 
+/// Shared store clock for multi-process crash/lease conformance, without wall-clock sleeps.
 pub(crate) fn clocked_native_backend() -> (
     Arc<dyn busbar_contract::persistence::PersistenceBackend>,
     impl Fn(u64),
@@ -59,8 +60,9 @@ impl busbar_contract::persistence::PersistenceBackend for EphemeralInfo {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.0.commit(candidate)
+        self.0.commit(candidate, key)
     }
     fn clock(
         &self,
