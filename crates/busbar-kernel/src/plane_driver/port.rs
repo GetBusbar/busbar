@@ -355,6 +355,7 @@ impl PortDriver {
         if !data.accepts(self, input.route)
             || input.unit.is_some()
             || !input.request.same_request(snapshot.request())
+            || input.http.request_id != data.binding().invocation().request_id().get()
             || input.http.method != snapshot.method()
             || input.http.path != snapshot.path()
             || input.http.query != snapshot.query()
