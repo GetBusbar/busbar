@@ -317,3 +317,35 @@ async fn clean_stop_stamps_a_final_page() {
         .iter()
         .all(|page| page.kind == StampKind::Live));
 }
+
+#[tokio::test]
+async fn final_page_is_not_staged_after_the_seal_cut() {
+    let fixture = NativeFixture::new(43).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    seal_n(&book, 1, 3).await;
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let (journal, feed) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), Arc::clone(&held.head))
+    };
+    let (services, _checkpoint) = crate::root::durability::audit_services::AuditServices::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        journal.node(),
+        journal,
+        feed,
+        Default::default(),
+    )
+    .unwrap();
+    let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
+    clock.arm(tokio::time::Instant::now());
+    assert!(services.start_notary(1, clock));
+    let end = services.take_notary().unwrap().stop().await.unwrap();
+    assert_eq!(end.final_staged, Some(false));
+    assert!(
+        stamps(&book).await.is_empty(),
+        "a detached notary cannot stage a page after C3"
+    );
+}
