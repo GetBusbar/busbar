@@ -2784,7 +2784,19 @@ pub(crate) fn report_of(
     facts: &DoorFacts,
 ) -> Option<crate::root::linked::node::Reported> {
     // The meter gate's fold, carried (SP-M1): re-folded only when the counts moved since.
-    let (lane, attribution, fold) = money.attributed_usage(unit)?;
+    let view = money.usage_view(unit)?;
+    let (lane, attribution, fold) = match view.as_ref() {
+        busbar_kernel::plane_driver::UsageView::Legacy {
+            lane,
+            attribution,
+            usage,
+        } => (lane.clone(), attribution.clone(), usage.clone()),
+        busbar_kernel::plane_driver::UsageView::Partitioned(snapshot) => {
+            return Some(crate::root::linked::node::Reported::Partitioned(
+                snapshot.clone(),
+            ))
+        }
+    };
     let mut usage_units: BTreeMap<String, busbar_contract::Count> = BTreeMap::new();
     let mut fee = 0u32;
     for (class, sum) in fold.by_class() {
@@ -2807,12 +2819,12 @@ pub(crate) fn report_of(
             *n = n.checked_add(count).ok()?;
         }
     }
-    Some((
+    Some(crate::root::linked::node::Reported::Legacy((
         busbar_contract::billing::ExactUsage { usage_units },
         fee,
         lane,
         attribution,
-    ))
+    )))
 }
 
 pub(crate) struct DoorFar<'d, 's> {

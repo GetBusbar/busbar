@@ -4,7 +4,7 @@
 use busbar_kernel::governance::unit_checkpoint::{partitions as raw, UnitCheckpoint};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn terminal() -> UnitCheckpoint {
+pub(super) fn terminal() -> UnitCheckpoint {
     let classes = BTreeSet::from(["tokens.custom".to_owned()]);
     UnitCheckpoint {
         id: [7; 16],
@@ -99,4 +99,29 @@ fn unresolved_original_fee_cannot_be_signed_as_final() {
     };
     let view = raw::ValidatedSelectedCheckpoint::try_from(&snapshot).unwrap();
     assert!(super::selected_report::selected_billing(&view).is_err());
+}
+
+#[test]
+fn historical_running_audit_does_not_invent_selected_identity() {
+    let encoded = br#"{"incarnation":3,"principal":"payer","op_class":"chat","origin":"direct","parent":null,"wall":100,"mono":4,"destination":null,"rate_card":null,"policy_epoch":0,"hooks":[]}"#;
+    let mut audit: crate::root::durability::RunningAudit =
+        busbar_contract::json::parse(encoded).unwrap();
+    assert!(audit.selected_identity.is_none());
+    audit.selected_identity = Some(crate::root::durability::SelectedAuditIdentity {
+        node: 7,
+        boot_nonce: [9; 16],
+        user: Some("captured-user".into()),
+        labels: vec![("purpose".into(), "original".into())],
+    });
+    let serialized = busbar_contract::json::to_vec(&audit).unwrap();
+    let decoded: crate::root::durability::RunningAudit =
+        busbar_contract::json::parse(&serialized).unwrap();
+    let identity = decoded.selected_identity.unwrap();
+    assert_eq!(identity.node, 7);
+    assert_eq!(identity.boot_nonce, [9; 16]);
+    assert_eq!(identity.user.as_deref(), Some("captured-user"));
+    assert_eq!(
+        identity.labels,
+        [("purpose".to_owned(), "original".to_owned())]
+    );
 }
