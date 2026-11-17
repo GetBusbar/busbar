@@ -45,8 +45,8 @@ async fn signed_lifetime_survives_original_key_retention() {
     let proof = gov
         .verify_token_authority(&token, START, None)
         .expect("proof");
-    assert!(proof.current_key(&gov, END - 1, None).is_some());
-    assert!(proof.current_key(&gov, END, None).is_none());
+    assert!(proof.current_key(&gov, END - 1, None).is_ok());
+    assert!(proof.current_key(&gov, END, None).is_err());
     assert!(proof.original_key().enabled);
     assert!(proof.original_key().expires_at.is_none());
 }
@@ -58,11 +58,11 @@ async fn exact_verifying_key_survives_arc_replacement_but_not_same_kid_rotation(
         .verify_token_authority(&token, START, None)
         .expect("proof");
     gov.set_signing_key(Some(signer(9)));
-    assert!(proof.current_key(&gov, START, None).is_some());
+    assert!(proof.current_key(&gov, START, None).is_ok());
     gov.set_signing_key(Some(signer(8)));
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     gov.set_signing_key(None);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
 }
 
 #[tokio::test]
@@ -94,25 +94,25 @@ async fn current_hydrated_row_refuses_disable_delete_expiry_rotation_and_self_ho
     let mut changed = original.clone();
     changed.enabled = false;
     replace(&gov, changed);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     let mut changed = original.clone();
     changed.deleted_at = Some(START);
     replace(&gov, changed);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     let mut changed = original.clone();
     changed.expires_at = Some(START);
     replace(&gov, changed);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     let mut changed = original.clone();
     changed.generation_hash = super::binding_marker(&original.id, "rotated");
     replace(&gov, changed);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     let mut changed = original;
     changed.binding_mode = Some(super::SELF_KEY_BINDING_MODE.into());
     changed.idp_subject = Some("held-subject".into());
     replace(&gov, changed);
     gov.install_transition_self_holds(std::collections::BTreeSet::from(["held-subject".into()]));
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
 }
 
 #[tokio::test]
@@ -124,13 +124,13 @@ async fn current_revocation_and_missing_row_refuse_retained_proof() {
     gov.revoke_async(&proof.original_key().id, "regression")
         .await
         .expect("revoke");
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
     gov.caches
         .write()
         .unwrap()
         .by_id
         .remove(&proof.original_key().id);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
 }
 
 #[tokio::test]
@@ -142,7 +142,7 @@ async fn matching_signer_and_key_in_another_governance_domain_do_not_match_autho
     let (other, _) = fixture().await;
     replace(&other, proof.original_key().as_ref().clone());
     assert!(other.verify_token(&token, START, None).is_some());
-    assert!(proof.current_key(&other, START, None).is_none());
+    assert!(proof.current_key(&other, START, None).is_err());
 }
 
 #[tokio::test]
@@ -162,11 +162,11 @@ async fn retained_audience_is_exact_and_cannot_be_reinterpreted() {
     let proof = gov
         .verify_token_authority(&bound, START, Some(audience))
         .expect("bound proof");
-    assert!(proof.current_key(&gov, START, Some(audience)).is_some());
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, Some(audience)).is_ok());
+    assert!(proof.current_key(&gov, START, None).is_err());
     assert!(proof
         .current_key(&gov, START, Some("urn:test:other"))
-        .is_none());
+        .is_err());
     assert!(gov.verify_token_authority(&bound, START, None).is_none());
 }
 
@@ -193,11 +193,11 @@ async fn absent_signed_generation_cannot_survive_binding_rotation() {
     let proof = gov
         .verify_token_authority(&token, START, None)
         .expect("ungenerated binding");
-    assert!(proof.current_key(&gov, START, None).is_some());
+    assert!(proof.current_key(&gov, START, None).is_ok());
     let mut rotated = initial.as_ref().clone();
     rotated.generation_hash = super::binding_marker(&initial.id, "rotation");
     replace(&gov, rotated);
-    assert!(proof.current_key(&gov, START, None).is_none());
+    assert!(proof.current_key(&gov, START, None).is_err());
 }
 
 struct CountReads {
@@ -260,7 +260,7 @@ async fn current_read_never_schedules_stale_revocation_refresh() {
         .verify_token_authority(token.expose(&crate::seal::lend()), now, None)
         .expect("proof");
     let before = backend.reads.load(Ordering::SeqCst);
-    assert!(proof.current_key(&gov, later, None).is_some());
+    assert!(proof.current_key(&gov, later, None).is_ok());
     tokio::task::yield_now().await;
     assert_eq!(
         backend.reads.load(Ordering::SeqCst),
@@ -273,4 +273,117 @@ async fn current_read_never_schedules_stale_revocation_refresh() {
         backend.reads.load(Ordering::SeqCst) > before,
         "the same stale refresh is scheduled by the explicit outside-gate operation"
     );
+}
+
+#[tokio::test]
+async fn current_credential_refusal_retains_the_actual_checked_cause() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    let (gov, token) = fixture().await;
+    let proof = gov
+        .verify_token_authority(&token, START, None)
+        .expect("proof");
+    assert_eq!(proof.current_key(&gov, END, None), Err(Refusal::Expired));
+    assert_eq!(
+        proof.current_key(&gov, START, Some("different")),
+        Err(Refusal::AudienceMismatch)
+    );
+    gov.set_signing_key(Some(signer(8)));
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::UntrustedSigner)
+    );
+    gov.set_signing_key(None);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::SigningUnavailable)
+    );
+    let (foreign, _) = fixture().await;
+    assert_eq!(
+        proof.current_key(&foreign, START, None),
+        Err(Refusal::ForeignAuthority)
+    );
+}
+
+#[tokio::test]
+async fn hydrated_standing_refusals_preserve_each_source_branch() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    let (gov, token) = fixture().await;
+    let proof = gov
+        .verify_token_authority(&token, START, None)
+        .expect("proof");
+    let original = proof.original_key().as_ref().clone();
+    let mut key = original.clone();
+    key.enabled = false;
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::DisabledKey)
+    );
+    let mut key = original.clone();
+    key.deleted_at = Some(START);
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::DeletedKey)
+    );
+    let mut key = original.clone();
+    key.expires_at = Some(START);
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::KeyExpired)
+    );
+    let mut key = original.clone();
+    key.generation_hash = super::binding_marker(&key.id, "rotated");
+    replace(&gov, key);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::RotatedKey)
+    );
+    let mut key = original.clone();
+    key.binding_mode = Some(super::SELF_KEY_BINDING_MODE.into());
+    key.idp_subject = Some("held-subject".into());
+    replace(&gov, key);
+    gov.install_transition_self_holds(std::collections::BTreeSet::from(["held-subject".into()]));
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::SubjectHeld)
+    );
+    gov.caches.write().unwrap().by_id.remove(&original.id);
+    assert_eq!(
+        proof.current_key(&gov, START, None),
+        Err(Refusal::MissingKey)
+    );
+    replace(&gov, original);
+    gov.revoke_async(&proof.original_key().id, "refusal reason")
+        .await
+        .expect("revoke");
+    assert_eq!(proof.current_key(&gov, START, None), Err(Refusal::Revoked));
+}
+
+#[test]
+fn current_credential_codes_use_the_existing_auth_refusal_map() {
+    use super::current_credential::CurrentCredentialRefusal as Refusal;
+    use crate::refusal::{CoreRefusals, RefusalMap};
+    use busbar_plugin_abi::fail::refused::{R_BAD_CREDENTIAL, R_EXPIRED};
+    let map = CoreRefusals::new();
+    for reason in [Refusal::Expired, Refusal::KeyExpired] {
+        let reply = map.for_auth(1, reason.auth_code().expect("auth code"));
+        assert_eq!((reply.status, reply.code), (401, R_EXPIRED));
+    }
+    for reason in [
+        Refusal::SigningUnavailable,
+        Refusal::AudienceMismatch,
+        Refusal::UntrustedSigner,
+        Refusal::Revoked,
+        Refusal::SubjectHeld,
+        Refusal::MissingKey,
+        Refusal::DisabledKey,
+        Refusal::RotatedKey,
+        Refusal::DeletedKey,
+    ] {
+        let reply = map.for_auth(1, reason.auth_code().expect("auth code"));
+        assert_eq!((reply.status, reply.code), (401, R_BAD_CREDENTIAL));
+    }
+    assert_eq!(Refusal::ForeignAuthority.auth_code(), None);
 }
