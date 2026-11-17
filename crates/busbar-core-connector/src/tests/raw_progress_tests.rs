@@ -1,6 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[test]
+fn handshake_metadata_retains_actual_optional_values_and_original_storage() {
+    use busbar_contract::transport::wire::HandshakeInfo;
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let budget = ProcessAdmission::with_limits(1, 64, 8);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let info = HandshakeInfo::capture(&source, Some(b"h2"), Some("host")).unwrap();
+    assert_eq!(info.alpn(), Some(b"h2".as_slice()));
+    assert_eq!(info.server_name(), Some("host"));
+    assert_eq!(budget.used(), (6, 6));
+    let moved = info;
+    assert_eq!(budget.used(), (6, 6));
+    drop(moved);
+    assert_eq!(budget.used(), (0, 0));
+    let absent = HandshakeInfo::capture(&source, None, None).unwrap();
+    assert_eq!(absent.alpn(), None);
+    assert_eq!(absent.server_name(), None);
+    let binary = HandshakeInfo::capture(&source, Some(&[255]), None).unwrap();
+    assert_eq!(binary.alpn(), Some([255].as_slice()), "transport validation owns UTF8 refusal");
+}
+
 use std::collections::VecDeque;
 use std::io::{self, IoSlice};
 use std::pin::Pin;
