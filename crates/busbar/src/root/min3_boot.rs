@@ -1615,6 +1615,51 @@ pub(crate) async fn finish(
     ),
     String,
 > {
+    let store = startup
+        .store()
+        .ok_or("S6 did not retain the admitted Store")?;
+    let (startup, workers, exports, native, policy) = finish_with_store(
+        ready,
+        store,
+        Some(startup),
+        services,
+        work_binder,
+        environment,
+        export_observers,
+    )
+    .await?;
+    Ok((
+        startup.ok_or("initial native completion lost its admitted startup owner")?,
+        workers,
+        exports,
+        native,
+        policy,
+    ))
+}
+
+/// Initial boot retains Startup for conversion/re-exec; later generations borrow the admitted
+/// CoreStore instead of reopening or reconstructing its writer. Both use the same actual opens.
+pub(super) async fn finish_with_store(
+    ready: ServingReady,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    startup: Option<Startup>,
+    services: Option<Arc<KernelServices>>,
+    work_binder: Arc<WorkBinder>,
+    environment: Option<ServingEnvironment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
+) -> Result<
+    (
+        Option<Startup>,
+        super::boot::workers::PreparedWorkers,
+        super::exports::ports::Exports,
+        Arc<Booted>,
+        busbar_kernel::governance::selected_policy::PendingSelectedPolicy,
+    ),
+    String,
+> {
+    if ready.converting && startup.is_none() {
+        return Err("configuration conversion requires the original admitted startup owner".into());
+    }
     let ServingReady {
         candidate_secrets,
         images,
@@ -1657,9 +1702,6 @@ pub(crate) async fn finish(
     if let Some(hooks) = hooks {
         hooks.check_pools(&instances)?;
     }
-    let core = startup
-        .store()
-        .ok_or("S6 did not retain the admitted Store")?;
     let specs = specifications(&instances, public_url.as_deref(), converting);
     let records = Arc::new(StoreRecords::new(Arc::clone(&core)));
     let super::provisioning::PreparedProvisioning {
@@ -1827,7 +1869,7 @@ pub(crate) async fn finish(
         drop(opened_planes);
         let mut opened = walked.opened;
         opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
-        let admission = startup;
+        let admission = startup.ok_or("CONFIG: conversion lost its admitted startup owner")?;
         let core = admission
             .store()
             .ok_or("CONFIG: conversion has no admitted core store")?;
