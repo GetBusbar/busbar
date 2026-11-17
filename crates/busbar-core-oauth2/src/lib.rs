@@ -12,6 +12,7 @@ pub mod crypto_provider;
 mod cold;
 mod hosted_login;
 mod mount;
+mod page;
 mod sweep;
 // The plane's build, generation hand-over and sweep; its request path is the marked `plane::serve`.
 pub mod plane;

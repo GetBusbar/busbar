@@ -283,7 +283,6 @@ fn entry_of(
 /// and `store.disconnected` are the engine events section 17 writes; they are published ahead of
 /// their emitters.
 pub const AUDIT_ACTIONS: &[&str] = &[
-    "export.loss",
     "admin.forbidden",
     "admin.rate_limited",
     "admin.restart",
@@ -301,6 +300,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "credential.at_rest.open",
     "credential.at_rest.rewrap",
     "diagnostic.raised",
+    "export.loss",
     "group.create",
     "group.delete",
     "group.patch",

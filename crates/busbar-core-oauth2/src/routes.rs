@@ -128,7 +128,7 @@ fn store_unavailable() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(PAGE_NO_SESSION),
+        crate::page::Page(PAGE_NO_SESSION),
     )
         .into_response()
 }
@@ -222,7 +222,7 @@ fn error_page(response: oauth_as::http::Response) -> Response {
     (
         parts.status,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(page),
+        crate::page::Page(page),
     )
         .into_response()
 }
@@ -232,7 +232,7 @@ fn unresolved_grant(error: &oauth_as::store::StorageError) -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        axum::response::Html(PAGE_UNRESOLVED_GRANT),
+        crate::page::Page(PAGE_UNRESOLVED_GRANT),
     )
         .into_response()
 }
@@ -247,7 +247,7 @@ pub(crate) async fn consent_screen(
     let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
+            crate::page::Page(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -265,7 +265,7 @@ pub(crate) async fn consent_screen(
     }
     let page = consent_page(target, &pending);
 
-    let mut response = axum::response::Html(page).into_response();
+    let mut response = crate::page::Page(page).into_response();
     let headers = response.headers_mut();
     for cookie in session_cookies(plane.identity(), &id) {
         let Ok(value) = axum::http::HeaderValue::from_str(&cookie) else {
@@ -313,7 +313,7 @@ pub(crate) async fn consent_submit(
     let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
+            crate::page::Page(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -321,7 +321,7 @@ pub(crate) async fn consent_submit(
     let Some(session) = super::consent::session_id(&headers) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST),
+            crate::page::Page(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -332,7 +332,7 @@ pub(crate) async fn consent_submit(
         None | Some(_) => {
             return (
                 axum::http::StatusCode::BAD_REQUEST,
-                axum::response::Html(PAGE_NO_REQUEST),
+                crate::page::Page(PAGE_NO_REQUEST),
             )
                 .into_response()
         }
@@ -512,7 +512,7 @@ fn new_session_id() -> Option<String> {
 fn no_entropy() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        axum::response::Html(PAGE_NO_SESSION),
+        crate::page::Page(PAGE_NO_SESSION),
     )
         .into_response()
 }
@@ -520,7 +520,7 @@ fn no_entropy() -> Response {
 fn not_representable() -> Response {
     (
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        axum::response::Html(PAGE_NO_SESSION),
+        crate::page::Page(PAGE_NO_SESSION),
     )
         .into_response()
 }
