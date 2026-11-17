@@ -31,6 +31,9 @@ use crate::raw::{ChainId, CurrentGuard, TOKEN_SESSION, Token};
 
 /// Pages: page `p` holds `32 << p` slots, allocated on first use; 27 pages cover every `u32` index.
 const PAGES: usize = 27;
+/// Number of indices covered by the pages; the terminal counter value is not an index.
+#[cfg(test)]
+const SLOT_CAPACITY: u32 = (32 * ((1u64 << PAGES) - 1)) as u32;
 /// The largest slot generation; `next` wraps it to 1, so a generation is never 0.
 const GEN_MAX: u32 = 0x7FFF_FFFF;
 /// The low half of the free head: the top slot's index + 1 (0 = empty).
@@ -169,17 +172,16 @@ impl<T: Send> Slots<T> {
         }
     }
 
+    fn claim_fresh(&self) -> Option<u32> {
+        let index = self.fresh.fetch_add(1, Ordering::Relaxed);
+        (index != u32::MAX).then_some(index)
+    }
+
     /// Insert `v`; returns (index, generation). None: the table is exhausted (FAULT `Exhausted`).
     pub fn insert(&self, v: T) -> Option<(u32, u32)> {
         let index = match self.pop() {
             Some(index) => index,
-            None => {
-                let index = self.fresh.fetch_add(1, Ordering::Relaxed);
-                if index == u32::MAX {
-                    return None;
-                }
-                index
-            }
+            None => self.claim_fresh()?,
         };
         let slot = self.slot_or_alloc(index)?;
         let generation = slot.state.load(Ordering::Relaxed) >> 1;
@@ -221,6 +223,8 @@ impl<T: Send> Slots<T> {
         if slot.state.load(Ordering::Acquire) != (generation << 1) | 1 {
             return None;
         }
+        #[cfg(all(test, miri, not(loom)))]
+        tests::after_remove_match();
         // SAFETY: the state matched, so this is the live token's entry, and I6 makes it the only one: no
         // other reference to the value exists. A stale entry would not have matched.
         let value = unsafe { (*slot.value.get()).take() };
@@ -480,6 +484,82 @@ mod tests {
     use crate::raw::seal::ToChain;
     use crate::raw::{Arg, Bytes};
     use std::sync::atomic::AtomicBool;
+
+    #[cfg(miri)]
+    std::thread_local! {
+        static REMOVE_MATCH: core::cell::RefCell<Option<std::sync::Arc<std::sync::Barrier>>> =
+            const { core::cell::RefCell::new(None) };
+    }
+
+    #[cfg(miri)]
+    pub(super) fn after_remove_match() {
+        REMOVE_MATCH.with_borrow(|barrier| {
+            if let Some(barrier) = barrier {
+                barrier.wait();
+            }
+        });
+    }
+
+    /// #406: only the isolated Miri job runs this intentionally invalid pre-fix interleaving.
+    #[cfg(miri)]
+    #[test]
+    fn competing_live_removals_never_duplicate_free_publication() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        struct Counted(String, Arc<AtomicUsize>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let slots = Arc::new(Slots::new());
+        let (index, generation) = slots
+            .insert(Counted("first".into(), Arc::clone(&drops)))
+            .expect("insert");
+        let barrier = Arc::new(Barrier::new(2));
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let (slots, barrier) = (Arc::clone(&slots), Arc::clone(&barrier));
+                scope.spawn(move || {
+                    REMOVE_MATCH.set(Some(barrier));
+                    let removed = slots.remove(index, generation);
+                    REMOVE_MATCH.set(None);
+                    drop(removed);
+                });
+            }
+        });
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let first = slots
+            .insert(Counted("second".into(), Arc::clone(&drops)))
+            .expect("insert");
+        let second = slots
+            .insert(Counted("third".into(), Arc::clone(&drops)))
+            .expect("insert");
+        assert_ne!(first.0, second.0, "each free index is published once");
+        assert_eq!(slots.remove(first.0, first.1).expect("second").0, "second");
+        assert_eq!(slots.remove(second.0, second.1).expect("third").0, "third");
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn fresh_exhaustion_is_terminal_and_free_slots_remain_reusable() {
+        let slots = Slots::new();
+        let (index, generation) = slots.insert("original").expect("insert");
+        slots.fresh.store(SLOT_CAPACITY - 1, Ordering::Relaxed);
+        assert_eq!(slots.claim_fresh(), Some(SLOT_CAPACITY - 1));
+        for _ in 0..3 {
+            assert_eq!(slots.claim_fresh(), None, "fresh exhaustion is permanent");
+            assert_eq!(slots.fresh.load(Ordering::Relaxed), SLOT_CAPACITY);
+        }
+        assert_eq!(slots.count_live(), 1);
+        assert_eq!(slots.remove(index, generation), Some("original"));
+        let (reused, next) = slots.insert("reused").expect("free-list reuse");
+        assert_eq!(reused, index);
+        assert_ne!(next, generation);
+        assert_eq!(slots.fresh.load(Ordering::Relaxed), SLOT_CAPACITY);
+        assert_eq!(slots.remove(reused, next), Some("reused"));
+    }
 
     #[test]
     fn tokens_pack_and_unpack() {
