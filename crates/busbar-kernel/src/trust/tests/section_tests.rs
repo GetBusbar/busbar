@@ -291,6 +291,26 @@ fn allow_private_is_refused_by_name_where_no_plane_declares_it() {
     assert!(parse_entry("`tools.probe`", &entry("allow_private: null"), KEYS).is_ok());
 }
 
+/// #302 (owner 2026-11-16T23:15Z, config KEEP list item 2; UPSTREAMS-DECLARED r3 §2.4): a
+/// registration's `allow_private` is core's own boolean at its declared registration, read and
+/// judged by the upstream split (`upstreams::entry`). The trust reader neither refuses it by name
+/// nor reads it: the key is not a trust fact.
+#[test]
+fn allow_private_on_a_registration_is_not_a_trust_refusal() {
+    for written in [
+        "allow_private: true",
+        "allow_private: false",
+        "allow_private: null",
+        "{ url: 'https://a.test', allow_private: true }",
+    ] {
+        for at in ["`tools.probe`", "`agents.probe`"] {
+            assert!(parse_entry(at, &entry(written), KEYS).is_ok(), "{written}");
+            assert!(judge_entry(at, &entry(written), KEYS).is_ok(), "{written}");
+            assert!(parse_entry(at, &entry(written), &[]).is_ok(), "{written}");
+        }
+    }
+}
+
 #[test]
 fn configured_item_approvals_are_read_under_the_declared_field() {
     const APPROVALS: &[TrustKeyDecl] = &[TrustKeyDecl {
