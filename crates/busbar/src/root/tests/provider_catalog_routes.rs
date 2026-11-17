@@ -165,6 +165,10 @@ fn actual_definition_is_retained_in_the_model_table_and_exact_target_association
     for (key, row) in &staged.rows {
         let definition = staged.upstreams.get(&row.definition.name).unwrap();
         assert!(Arc::ptr_eq(&definition, &row.definition));
+        assert!(Arc::ptr_eq(
+            row.target.definition.as_ref().unwrap().as_arc(),
+            &definition,
+        ));
         assert_eq!(row.allocation.destination, allocations[key].destination);
         assert_eq!(
             row.target.registered_upstream.as_deref(),
