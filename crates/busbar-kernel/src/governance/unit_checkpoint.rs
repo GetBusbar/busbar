@@ -20,6 +20,9 @@ use crate::persistence::journal::runtime::Carried;
 const UNIT_FLUSH_BATCH: usize = 128;
 
 pub mod partitions;
+mod terminal_completion;
+pub use terminal_completion::SelectedTerminalCompletion;
+use terminal_completion::TerminalSignal;
 
 /// Terminal ownership is explicit. A refusal returns the entire unowned snapshot to its caller.
 pub enum SelectedTransfer {
@@ -125,6 +128,7 @@ use book::{Pending, PendingBook};
 
 #[derive(Default)]
 pub(super) struct UnitCheckpointBook {
+    identity: Arc<()>,
     sink: OnceLock<Arc<dyn UnitCheckpointSink>>,
     pending: PendingBook,
     flushing: tokio::sync::Mutex<()>,
@@ -302,7 +306,10 @@ impl GovState {
             pending.remove(&snapshot.id);
             SelectedTransfer::Applied(accepted)
         } else {
-            pending.insert(snapshot.id, Pending::selected(snapshot, false, true));
+            pending.insert(
+                snapshot.id,
+                Pending::selected(snapshot, false, true).require_terminal_reader(),
+            );
             SelectedTransfer::RetainedPending(accepted)
         }
     }
@@ -779,6 +786,14 @@ impl GovState {
         &self,
         id: [u8; 16],
     ) -> RecordStoreResult<Option<Arc<UnitCheckpoint>>> {
+        self.take_selected_terminal_snapshot_for(id, None)
+    }
+
+    fn take_selected_terminal_snapshot_for(
+        &self,
+        id: [u8; 16],
+        signal: Option<&Arc<TerminalSignal>>,
+    ) -> RecordStoreResult<Option<Arc<UnitCheckpoint>>> {
         let Some(item) = self.unit_flush_item(id)? else {
             return Ok(None);
         };
@@ -796,6 +811,11 @@ impl GovState {
         let Some(mut entry) = pending.edit(&id) else {
             return Ok(None);
         };
+        if !entry.matches_terminal_signal(signal) {
+            return Err(error(
+                "selected terminal reader belongs to a different completion lease",
+            ));
+        }
         if entry.snapshot() != snapshot.as_ref() {
             return Err(error(
                 "selected terminal revision changed before reader handoff",
