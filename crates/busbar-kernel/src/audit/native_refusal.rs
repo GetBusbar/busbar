@@ -16,6 +16,21 @@ pub struct NativeRefusalAudit {
 }
 
 impl NativeRefusalAudit {
+    pub fn binding(&self) -> &Arc<crate::inbound::native::RequestBinding> {
+        self.refusal.binding()
+    }
+
+    /// Confirmation of this exact queued original, independent of output cancellation.
+    /// Carrier/task retirement remains a separate obligation.
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed.load(Ordering::Acquire)
+    }
+
+    /// Observe the existing queue's actual progress without creating another retry owner.
+    pub async fn wait_original_confirmation(&self) {
+        wait_confirmation(&AUDIT_LOG, &self.confirmed).await;
+    }
+
     /// Retry the existing queue with its original attachment. This never enqueues a new row.
     pub async fn confirm(&self) -> RecordStoreResult<()> {
         if !self.confirmed.load(Ordering::Acquire) {
@@ -38,6 +53,18 @@ impl NativeRefusalAudit {
             return Err(self);
         }
         Ok(self.refusal)
+    }
+}
+
+pub(super) async fn wait_confirmation(log: &PlaneAuditLog, confirmed: &AtomicBool) {
+    loop {
+        let notified = log.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if confirmed.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
     }
 }
 
