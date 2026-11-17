@@ -81,11 +81,33 @@ impl KernelServices {
 pub struct ServingGeneration {
     core: Arc<KernelServices>,
     route: Arc<dyn NestRoute>,
+    routing_generation: Option<crate::registry::Generation>,
 }
 
 impl ServingGeneration {
     pub fn new(core: Arc<KernelServices>, route: Arc<dyn NestRoute>) -> Self {
-        Self { core, route }
+        Self {
+            core,
+            route,
+            routing_generation: None,
+        }
+    }
+
+    /// Native snapshot construction refuses counter exhaustion rather than assigning FIRST or
+    /// borrowing mutable metadata from a later publication.
+    pub fn try_new(
+        core: Arc<KernelServices>,
+        route: Arc<dyn NestRoute>,
+    ) -> Result<Self, crate::registry::GenerationExhausted> {
+        Ok(Self {
+            core,
+            route,
+            routing_generation: Some(crate::registry::Generation::allocate()?),
+        })
+    }
+
+    pub fn routing_generation(&self) -> Option<crate::registry::Generation> {
+        self.routing_generation
     }
 
     pub fn core(&self) -> &Arc<KernelServices> {
