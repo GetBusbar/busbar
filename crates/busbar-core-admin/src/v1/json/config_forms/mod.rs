@@ -60,17 +60,19 @@ pub(super) fn schema_document() -> Value {
         "store changes require a process restart"
     ]);
     definitions.insert("Store".into(), store);
-    let secret_module_object = object(json!({
+    let mut secret_module_object = object(json!({
+        "module":{"type":"string"},
         "settings":{"type":"object","default":{},"x-busbar-module-settings":true}
     }));
+    secret_module_object["required"] = json!(["module"]);
     let mut secret_module = json!({"oneOf":[secret_module_object,{
-        "type":"array","prefixItems":[{"type":"object","x-busbar-module-settings":true}],
-        "items":{},"minItems":0,"maxItems":1,
-        "description":"Existing positional parser form: [] or [settings]. Omitted settings default to an empty object."
+        "type":"array","prefixItems":[{"type":"string"},{"type":"object","x-busbar-module-settings":true}],
+        "items":{},"minItems":1,"maxItems":2,
+        "description":"Existing positional parser form: [module] or [module, settings]. Omitted settings default to an empty object."
     }]});
-    secret_module["description"] = json!("Module-level initialization settings, keyed by the secret module name or alias under secrets, canonically an object; the parser also accepts a positional array. This is not a named instance and has no inner module field. Per-reference SecretRef settings are a separate input.");
+    secret_module["description"] = json!("One named secret instance under secrets (IF §8.2), keyed by its instance name, canonically an object: module names the admitted secret image (or a declared former name) and settings are its own initialization settings. The parser also accepts a positional array. Per-reference SecretRef settings are a separate input.");
     secret_module["x-busbar-runtime-validation"] = json!([
-        "the map key must resolve to an admitted secret module; built-in env/file modules take no module-level configuration",
+        "module must resolve to an admitted secret image; built-in env/file modules take no module-level configuration",
         "initialization SecretRefs resolve only through the bootstrap env/file resolvers, never another secret plugin",
         "module lifecycle settings after bootstrap secret resolution",
         "secret module initialization changes require a process restart"

@@ -111,27 +111,30 @@ fn store_forms_match_actual_wrapper_and_deployment_parsers() {
 }
 
 #[test]
-fn secret_module_forms_match_actual_module_keyed_parser() {
+fn secret_module_forms_match_actual_named_instance_parser() {
     use busbar_kernel::config::SecretModuleCfg;
     let schema = super::schema_document();
     let module = compiled("SecretModule");
     for (index, case) in [
         json!({}),
         json!({"settings":{}}),
-        json!({"settings":{"token":{"env":"FIXTURE_TOKEN"}}}),
-        json!({"settings":{"token":{"file":"/fixture/token"},"opaque":[1,null]}}),
-        json!({"settings":null}),
-        json!({"settings":[]}),
+        json!({"module":"fixture"}),
         json!({"module":"fixture","settings":{}}),
-        json!({"unknown":true}),
+        json!({"module":"fixture","settings":{"token":{"env":"FIXTURE_TOKEN"}}}),
+        json!({"module":"fixture","settings":{"token":{"file":"/fixture/token"},"opaque":[1,null]}}),
+        json!({"module":"fixture","settings":null}),
+        json!({"module":"fixture","settings":[]}),
+        json!({"module":42}),
+        json!({"module":"fixture","unknown":true}),
         json!(null),
         json!([]),
-        json!([{}]),
-        json!([{"token":{"env":"FIXTURE_TOKEN"}}]),
-        json!([null]),
-        json!([[]]),
         json!(["fixture"]),
-        json!([{}, {}]),
+        json!(["fixture", {}]),
+        json!(["fixture", {"token":{"env":"FIXTURE_TOKEN"}}]),
+        json!([{}]),
+        json!([null]),
+        json!(["fixture", null]),
+        json!(["fixture", {}, "extra"]),
     ]
     .into_iter()
     .enumerate()
@@ -139,24 +142,24 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
         assert_eq!(
             module.is_valid(&case),
             serde_json::from_value::<SecretModuleCfg>(case).is_ok(),
-            "secret module wrapper case {index}"
+            "secret instance wrapper case {index}"
         );
     }
     let document = super::validator(&schema);
     for (index, case) in [
         json!({}),
-        json!({"fixture":{}}),
-        json!({"fixture":{"settings":{"token":{"env":"FIXTURE_TOKEN"}}}}),
-        // These names are accepted structurally; runtime validation rejects their initialization.
-        json!({"env":{"settings":{}}}),
-        json!({"file":{"settings":{}}}),
-        json!({"fixture":[]}),
-        json!({"fixture":[{}]}),
-        json!({"fixture":[{"token":{"file":"/fixture/token"}}]}),
-        json!({"fixture":[{},{}]}),
-        json!({"fixture":[null]}),
-        json!({"instance":{"module":"fixture","settings":{}}}),
-        json!({"fixture":null}),
+        json!({"vault":{"module":"fixture"}}),
+        json!({"vault":{"module":"fixture","settings":{"token":{"env":"FIXTURE_TOKEN"}}}}),
+        // These images are accepted structurally; runtime validation rejects their initialization.
+        json!({"env":{"module":"env","settings":{}}}),
+        json!({"file":{"module":"file","settings":{}}}),
+        json!({"vault":["fixture"]}),
+        json!({"vault":["fixture", {"token":{"file":"/fixture/token"}}]}),
+        json!({"vault":["fixture", {}, {}]}),
+        json!({"vault":[null]}),
+        json!({"vault":[]}),
+        json!({"vault":{"settings":{}}}),
+        json!({"vault":null}),
         json!(null),
         json!([]),
     ]
@@ -171,10 +174,10 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
                 &busbar_kernel::config::Grammar::empty()
             )
             .is_ok(),
-            "secret module map case {index}"
+            "secret instance map case {index}"
         );
     }
-    let defaults: SecretModuleCfg = serde_json::from_value(json!({})).unwrap();
+    let defaults: SecretModuleCfg = serde_json::from_value(json!({"module":"fixture"})).unwrap();
     assert_eq!(
         schema["$defs"]["SecretModule"]["oneOf"][0]["properties"]["settings"]["default"],
         json!(defaults.settings.authoring(&busbar_kernel::seal::acquire()))
@@ -184,13 +187,16 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
         schema["$defs"]["SecretModule"]["oneOf"][0]["additionalProperties"],
         false
     );
-    assert!(schema["$defs"]["SecretModule"]["oneOf"][0]
-        .get("required")
-        .is_none());
-    assert!(schema["$defs"]["SecretModule"]["oneOf"][0]["properties"]
-        .get("module")
-        .is_none());
-    let positional: SecretModuleCfg = serde_json::from_value(json!([])).unwrap();
+    assert_eq!(
+        schema["$defs"]["SecretModule"]["oneOf"][0]["required"],
+        json!(["module"])
+    );
+    assert_eq!(
+        schema["$defs"]["SecretModule"]["oneOf"][0]["properties"]["module"]["type"],
+        "string"
+    );
+    let positional: SecretModuleCfg = serde_json::from_value(json!(["fixture"])).unwrap();
+    assert_eq!(positional.module, "fixture");
     assert!(positional.settings.is_empty());
     assert!(
         serde_json::to_value(positional.authoring(&busbar_kernel::seal::acquire()))
@@ -206,7 +212,7 @@ fn store_secret_forms_keep_runtime_rules_and_never_publish_input_values() {
     let raw = json!({
         "providers":{},"models":{},
         "store":{"module":"fixture","settings":{"password":{"file":"/private/STORE_FORM_CANARY"}}},
-        "secrets":{"fixture":{"settings":{"token":{"env":"SECRET_FORM_CANARY"},"opaque":"PRIVATE_FORM_CANARY"}}}
+        "secrets":{"fixture":{"module":"fixture","settings":{"token":{"env":"SECRET_FORM_CANARY"},"opaque":"PRIVATE_FORM_CANARY"}}}
     });
     let parsed = busbar_kernel::config::deploy_from_deserializer(
         raw.clone(),
