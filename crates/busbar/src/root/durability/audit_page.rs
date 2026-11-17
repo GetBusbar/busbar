@@ -422,4 +422,196 @@ mod tests {
         }
         panic!("the fixed upper bound must terminate");
     }
+
+    /// A hand-framed journal body: text and bytes as a big-endian u32 length and the bytes,
+    /// numbers as big-endian u64, the journal's own framing, independent of any encoder.
+    #[derive(Default)]
+    struct Body(Vec<u8>);
+
+    impl Body {
+        fn bytes(mut self, bytes: &[u8]) -> Self {
+            self.0
+                .extend_from_slice(&u32::try_from(bytes.len()).unwrap().to_be_bytes());
+            self.0.extend_from_slice(bytes);
+            self
+        }
+
+        fn num(mut self, n: u64) -> Self {
+            self.0.extend_from_slice(&n.to_be_bytes());
+            self
+        }
+    }
+
+    /// The `u64`-length framing the certificate preimage and fingerprint use.
+    fn framed(fields: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for field in fields {
+            out.extend_from_slice(&(field.len() as u64).to_be_bytes());
+            out.extend_from_slice(field);
+        }
+        out
+    }
+
+    /// A Bootstrap-signed `audit.notary_key.v2` certificate line for `delegate`, linked after
+    /// `prev` at chain `seq` of `node`: its journal body and its fingerprint.
+    fn certificate_line(
+        node: u64,
+        seq: u64,
+        prev: [u8; 32],
+        bootstrap: &busbar_contract::crypto::LocalSigner,
+        delegate: &busbar_contract::crypto::LocalSigner,
+    ) -> (Vec<u8>, [u8; 32]) {
+        use busbar_contract::crypto::Signer;
+        let public = delegate.public_key();
+        let (key_id, sig_alg) = (public.key_id.as_bytes(), public.alg.as_str().as_bytes());
+        let mut preimage = b"busbar.audit.notary_key.v2\0".to_vec();
+        preimage.extend(framed(&[
+            &node.to_be_bytes(),
+            &seq.to_be_bytes(),
+            &prev,
+            key_id,
+            sig_alg,
+            &public.bytes,
+        ]));
+        let mut signature = Vec::new();
+        bootstrap.sign(&preimage, &mut signature).unwrap();
+        let signed_by = bootstrap.public_key().key_id.as_bytes();
+        let linked_ms = 1_700_000_000_000u64;
+        let fingerprint = busbar_contract::crypto::sha256(&framed(&[
+            b"busbar.audit.notary_key.record.v2",
+            &node.to_be_bytes(),
+            key_id,
+            sig_alg,
+            &public.bytes,
+            signed_by,
+            &signature,
+            &linked_ms.to_be_bytes(),
+            &seq.to_be_bytes(),
+            &prev,
+        ]));
+        let body = Body::default()
+            .bytes(b"audit.notary_key.v2")
+            .bytes(busbar_kernel_audit::LINK_RECIPE.as_bytes())
+            .num(seq)
+            .bytes(&prev)
+            .bytes(&fingerprint)
+            .num(linked_ms)
+            .num(node)
+            .bytes(key_id)
+            .bytes(sig_alg)
+            .bytes(&public.bytes)
+            .bytes(signed_by)
+            .bytes(&signature);
+        (body.0, fingerprint)
+    }
+
+    /// SEALING-FIX §3.5 "Reads": the range read carries, beside its records, the stamps over them
+    /// and the covering stamp of `to` (also as `anchor`), the `cover` lines from `to + 1` to that
+    /// stamp's `to`, the `notary_key` line each stamp's `key_cert` names (`certs`), and the node's
+    /// seal row, under the link recipe's envelope.
+    #[tokio::test]
+    async fn audit_range_carries_stamps_cover_certs_and_seal_row() {
+        use busbar_contract::crypto::LocalSigner;
+        use busbar_kernel_audit::{
+            stamp_body, AuditSigningKey, Fingerprint, LiveSigner, Notary, Stamp, StampKind,
+            LINK_RECIPE, STAMP_DOMAIN,
+        };
+        let fixture = NativeFixture::new(47).await;
+        let book = book(&fixture, 3).await;
+        let node = fixture.journal.node();
+        let seed = [0x31; 32];
+        let delegate_seed = [0x09; 32];
+        let third = {
+            let held = book.lock().unwrap();
+            Fingerprint::from_hex(&held.audit_records().last().unwrap().hash).unwrap()
+        };
+        let (cert_body, cert_fp) = certificate_line(
+            node,
+            4,
+            third.0,
+            &LocalSigner::from_seed(&seed).unwrap(),
+            &LocalSigner::from_seed(&delegate_seed).unwrap(),
+        );
+        let cert_at = book
+            .lock()
+            .unwrap()
+            .stage_entries(&[Entry::new(RecordClass::Transaction, cert_body)])
+            .unwrap()
+            .records()[0]
+            .node_seq;
+        let (notary, _) = AuditSigningKey::from_seed(&seed)
+            .into_grants(LiveSigner::Delegated(Box::new(
+                LocalSigner::from_seed(&delegate_seed).unwrap(),
+            )))
+            .unwrap();
+        let stamp = Notary::new(notary)
+            .sign_stamp(Stamp {
+                node,
+                from: 1,
+                to: 4,
+                fingerprint: Fingerprint(cert_fp),
+                kind: StampKind::Live,
+                sealer: node,
+                host: "range-host".into(),
+                every: 1000,
+                stamped_ms: 1_700_000_000_001,
+                down_from_ms: 0,
+                down_to_ms: 0,
+                crypto: String::new(),
+                sig_alg: String::new(),
+                key_id: String::new(),
+                key_cert: cert_at,
+                signature: Vec::new(),
+            })
+            .unwrap();
+        let stamp_at = book
+            .lock()
+            .unwrap()
+            .stage_entries(&[Entry::new(
+                RecordClass::Transaction,
+                stamp_body(&stamp).unwrap(),
+            )])
+            .unwrap()
+            .records()[0]
+            .node_seq;
+        fixture.journal.flush().await.unwrap();
+
+        let view = NodeAudit::new(Arc::clone(&book));
+        let body = page(&view, 1, 3, None).await;
+        assert_eq!(body["recipe"], LINK_RECIPE, "{body}");
+        assert_eq!(body["signature_domain"], STAMP_DOMAIN);
+        assert_eq!(body["records"].as_array().unwrap().len(), 3);
+        let stamps = body["stamps"].as_array().expect("stamps are carried");
+        assert_eq!(stamps.len(), 1, "{body}");
+        let carried = &body["stamps"][0];
+        assert_eq!(carried["node_seq"], stamp_at);
+        assert_eq!(carried["from"], 1);
+        assert_eq!(carried["to"], 4);
+        assert_eq!(carried["kind"], "live");
+        assert_eq!(carried["key_cert"], cert_at);
+        assert_eq!(carried["fingerprint"], Fingerprint(cert_fp).to_string());
+        assert_eq!(carried["signature"], hex::encode(&stamp.signature));
+        assert_eq!(
+            &body["anchor"], carried,
+            "the anchor is the covering stamp of `to`"
+        );
+        let cover = &body["cover"];
+        assert_eq!(
+            cover.as_array().expect("cover is carried").len(),
+            1,
+            "line 4 walks from `to` to the stamp"
+        );
+        assert_eq!(cover[0]["kind"], "notary_key");
+        assert_eq!(cover[0]["seq"], "4");
+        assert_eq!(cover[0]["node_seq"], cert_at);
+        assert_eq!(cover[0]["hash"], Fingerprint(cert_fp).to_string());
+        assert_eq!(cover[0]["prev_hash"], third.to_string());
+        assert_eq!(
+            body["certs"],
+            json!([cover[0].clone()]),
+            "the certificate the stamp's key_cert names"
+        );
+        assert!(body["seal_row"].is_null(), "a live node has no seal row");
+        assert!(body.get("seal_row").is_some(), "the seal row is reported");
+    }
 }
