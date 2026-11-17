@@ -281,3 +281,7 @@ pub struct Rewrap {
 #[cfg(test)]
 #[path = "tests/at_rest_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "at_rest/caller_tests.rs"]
+mod caller_tests;
