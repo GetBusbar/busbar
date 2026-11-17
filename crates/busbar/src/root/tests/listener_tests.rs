@@ -11,6 +11,38 @@ use tokio::sync::oneshot;
 
 struct HelloWrap;
 
+struct ObserveWrap(
+    std::sync::Mutex<
+        Option<std::sync::Arc<dyn busbar_contract::response_delivery::CarrierProgressReader>>,
+    >,
+);
+
+impl busbar_contract::transport::wire::ConnectionSecurity for ObserveWrap {
+    fn wrap<'a>(
+        &'a self,
+        io: busbar_contract::transport::wire::ConnectionIo,
+    ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
+        assert_eq!(io.progress.snapshot().written_plaintext, 0);
+        *self.0.lock().unwrap() = Some(std::sync::Arc::clone(&io.progress));
+        Box::pin(async move { Ok(busbar_contract::transport::wire::SecuredIo::anonymous(io)) })
+    }
+}
+
+#[tokio::test]
+async fn accepted_socket_hands_security_its_actual_raw_write_observer() {
+    let security = std::sync::Arc::new(ObserveWrap(std::sync::Mutex::new(None)));
+    let (addr, _stop) = spawn_secured_server(security.clone()).await;
+    let bytes = healthz_after(addr, b"").await;
+    assert!(bytes.starts_with(b"HTTP/1.1 200"));
+    let progress = security.0.lock().unwrap().as_ref().unwrap().snapshot();
+    assert_eq!(progress.written_plaintext, bytes.len() as u64);
+    assert_eq!(
+        progress.complete_records_plaintext,
+        progress.written_plaintext
+    );
+    assert_eq!(progress.fault, None);
+}
+
 impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     fn wrap<'a>(
         &'a self,
