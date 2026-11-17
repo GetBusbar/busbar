@@ -487,6 +487,17 @@ pub struct AdmittedRequest {
     open: Arc<()>,
 }
 impl AdmittedRequest {
+    /// Same original monetary and invocation ownership, including after effects retire.
+    /// This comparison grants no new admission and cannot be satisfied by a reused unit number.
+    pub fn same_admission(&self, other: &Self) -> bool {
+        self.context.same_unit(&other.context)
+            && Arc::ptr_eq(&self.book, &other.book)
+            && Arc::ptr_eq(&self.open, &other.open)
+            && Arc::ptr_eq(&self.grant, &other.grant)
+            && Arc::ptr_eq(&self.governance, &other.governance)
+            && Arc::ptr_eq(&self.money, &other.money)
+    }
+
     /// The original signed verification of this exact registered request, never a key lookup.
     pub fn signed_authority(
         &self,

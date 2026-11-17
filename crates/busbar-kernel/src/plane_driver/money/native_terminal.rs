@@ -112,6 +112,114 @@ impl Drop for SelectedTerminalReceipt {
 }
 
 impl NativeRequestMoney {
+    /// Root lends both values from the same privately registered response owner. That owner
+    /// binds the full ACK key to the original admission and captured audit identity before output.
+    /// This consumer additionally checks the exact retained admission and requires a frozen
+    /// physical-delivery outcome; a work END alone cannot retire monetary custody.
+    pub fn finish_delivery(
+        &self,
+        admission: &AdmittedRequest,
+        delivery: &dyn busbar_contract::response_delivery::DeliveryReader,
+        mut end: super::UnitEnd,
+    ) -> Result<super::UnitEnd, NativeAdmissionError> {
+        use crate::governance::unit_checkpoint::partitions::{
+            Disposition, Finality, ValidatedSelectedCheckpoint,
+        };
+        if !self.request.same_admission(admission)
+            || delivery.key().unit != Some(self.request.unit())
+        {
+            return Err(NativeAdmissionError::NotLive);
+        }
+        let observed = delivery.snapshot();
+        let (mut removed, terminal, release_request) = {
+            let mut all = self.money.shard(self.request.unit());
+            let open = all
+                .get_mut(&self.request.unit())
+                .ok_or(NativeAdmissionError::NotLive)?;
+            self.check_open_identity(open)
+                .map_err(|_| NativeAdmissionError::NotLive)?;
+            let native = open
+                .native
+                .as_ref()
+                .ok_or(NativeAdmissionError::Declaration)?;
+            let ending = native.work.ok_or(NativeAdmissionError::NotLive)?;
+            let (disposition, written, cut) = delivery_facts(ending, observed)?;
+            end.cut |= cut;
+            let mut snapshot = native.checkpoint().as_ref().clone();
+            let expected = native.accepted_revision();
+            let parts = snapshot
+                .partitions
+                .as_mut()
+                .ok_or(NativeAdmissionError::Declaration)?;
+            if parts.disposition != Disposition::Running
+                || parts
+                    .attempts
+                    .iter()
+                    .any(|attempt| attempt.finality == Finality::Live)
+            {
+                return Err(NativeAdmissionError::NotLive);
+            }
+            parts.disposition = disposition;
+            // far_end_answered and final_target came from the committed host attempt guard.
+            // In particular, written=true with no upstream head still bills zero on Cancel.
+            parts.caller_bytes_committed = written;
+            let (fee, completion) = open.fee.selected_fee();
+            parts.fee = fee;
+            snapshot.ended = true;
+            snapshot.metered = false;
+            let has_bill = ValidatedSelectedCheckpoint::try_from(&snapshot)
+                .and_then(|view| view.project())
+                .map_err(NativeAdmissionError::Custody)?
+                .partitions
+                .iter()
+                .any(|part| {
+                    part.billed_counts()
+                        .iter()
+                        .any(|(_, count)| !count.is_zero())
+                });
+            snapshot.metered = match snapshot
+                .partitions
+                .as_ref()
+                .expect("checked partitions")
+                .disposition
+            {
+                Disposition::End => (200..=299).contains(&end.caller_status),
+                Disposition::Cancel { .. } | Disposition::Failed => has_bill,
+                Disposition::Running | Disposition::RecoveredRunning => {
+                    return Err(NativeAdmissionError::Declaration)
+                }
+            };
+            let terminal = match self.money.gov.finish_selected_checkpoint_with_fee(
+                snapshot,
+                Some(expected),
+                completion,
+            ) {
+                SelectedTransfer::Applied(snapshot) => NativeTerminal::Ready(snapshot),
+                SelectedTransfer::RetainedPending(accepted) => NativeTerminal::Pending {
+                    accepted,
+                    gov: self.money.gov.clone(),
+                    completion: None,
+                },
+                SelectedTransfer::RejectedNotOwned { error, .. } => {
+                    return Err(NativeAdmissionError::Custody(error))
+                }
+            };
+            (
+                all.remove(&self.request.unit())
+                    .expect("same checked Open under shard"),
+                terminal,
+                end.refused_unspent && !has_bill,
+            )
+        };
+        if release_request {
+            self.money.gov.release_request(&removed.money.charge);
+        }
+        removed.fee.refundable = removed.money.fee.refunds(end.caller_status, &removed.last);
+        drop(removed);
+        self.terminal.publish(Ok(terminal));
+        Ok(end)
+    }
+
     pub(crate) fn work_ended(
         &self,
         ending: crate::plane_driver::usage::Ending,
@@ -163,6 +271,35 @@ impl NativeRequestMoney {
             terminal: None,
         })
     }
+}
+
+fn delivery_facts(
+    ending: crate::plane_driver::usage::Ending,
+    observed: busbar_contract::response_delivery::DeliverySnapshot,
+) -> Result<
+    (
+        crate::governance::unit_checkpoint::partitions::Disposition,
+        bool,
+        bool,
+    ),
+    NativeAdmissionError,
+> {
+    use crate::governance::unit_checkpoint::partitions::Disposition;
+    use crate::plane_driver::usage::Ending;
+    use busbar_contract::response_delivery::DeliveryTerminal;
+    let terminal = observed.terminal.ok_or(NativeAdmissionError::NotLive)?;
+    let disposition = match ending {
+        Ending::End => Disposition::End,
+        Ending::Failed => Disposition::Failed,
+        Ending::Cancel { cause, .. } => Disposition::Cancel {
+            reason: cause.as_str().to_owned(),
+        },
+    };
+    Ok((
+        disposition,
+        observed.first_payload_written,
+        matches!(terminal, DeliveryTerminal::Failed(_)),
+    ))
 }
 
 impl PlaneMoney {
@@ -246,3 +383,7 @@ impl PlaneMoney {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "native_terminal_tests.rs"]
+mod tests;

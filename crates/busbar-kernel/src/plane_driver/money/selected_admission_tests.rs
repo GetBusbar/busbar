@@ -509,3 +509,34 @@ async fn selected_work_end_survives_late_cancel_and_legacy_settlement_cannot_rem
     );
     assert_eq!(selected.work_ending().unwrap(), Some(Ending::End));
 }
+
+#[tokio::test]
+async fn terminal_admission_equality_retains_exact_owner_after_retirement() {
+    let (money, _, context, _lease, request) = selected_fixture(101, true).await;
+    let selected = money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let clone = selected.request().clone();
+    let (other_money, _, other_context, _other_lease, other_request) =
+        selected_fixture(101, true).await;
+    let other = other_money
+        .admit_existing_selected(
+            other_request,
+            declaration(&other_context),
+            other_context.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    context.retire();
+    assert!(selected.request().same_admission(&clone));
+    assert!(!selected.request().same_admission(other.request()));
+}
