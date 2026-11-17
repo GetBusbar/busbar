@@ -234,3 +234,50 @@ fn a_refused_command_exits_2_before_any_case() {
     let words = ["--pack".to_owned(), "/nonexistent.tar.gz".to_owned()];
     assert_eq!(command(&words), 2);
 }
+
+/// The conformance job judges a suite with no verdict.json a failure; a refusal must still write
+/// one, as `fail` (never `not-run`, which would not fail the job).
+#[test]
+fn a_refusal_with_out_writes_a_fail_verdict() {
+    let dir = std::env::temp_dir().join(format!("store-kit-verdict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let words: Vec<String> = [
+        "--pack",
+        "/nonexistent.tar.gz",
+        "--fixture",
+        "/nonexistent.json",
+        "--out",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain([dir.display().to_string()])
+    .collect();
+    assert_eq!(command(&words), 2);
+    let verdict: busbar_contract::json::Value =
+        busbar_contract::json::parse(&std::fs::read(dir.join("verdict.json")).unwrap()).unwrap();
+    use busbar_contract::json::JsonValueTrait;
+    assert_eq!(verdict.get("status").and_then(|v| v.as_str()), Some("fail"));
+    assert_eq!(verdict.get("armed").and_then(|v| v.as_bool()), Some(true));
+    assert!(verdict
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .is_some_and(|reason| reason.contains("refused before any case")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_passing_run_is_a_pass_verdict_with_no_reason() {
+    assert_eq!(
+        Verdict::of("store-kit", &Ok(())),
+        Verdict {
+            suite: "store-kit".into(),
+            status: "pass",
+            armed: true,
+            reason: None,
+        }
+    );
+    assert_eq!(
+        Verdict::of("store-kit", &Err("k1 failed".into())).status,
+        "fail"
+    );
+}

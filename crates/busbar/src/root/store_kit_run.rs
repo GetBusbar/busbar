@@ -23,7 +23,10 @@
 //! and nothing is retried.
 //!
 //! Exit status: 0 when every case passed; 1 when a case failed or timed out; 2 for a usage,
-//! fixture, pack or admission refusal, before any case ran.
+//! fixture, pack or admission refusal, before any case ran. With `--out` (the conformance job's
+//! `$CONFORMANCE_OUT`) the run writes `verdict.json` (`suite`, `status` pass or fail, `armed`,
+//! `reason`): the job judges a suite with no verdict a failure, and a refusal is `fail`, not
+//! `not-run`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -335,12 +338,67 @@ fn admit_image(
     Err("only Linux loads plugin images".into())
 }
 
-/// `busbar --store-kit …`: the exit status.
+/// The suite verdict the conformance job binds (busbar-release `common.yml` `verdict_bind`): a suite
+/// that writes none is judged a failure, so every run with `--out` writes one, refusals included.
+/// A refusal is `fail`, never `not-run`: a store-kit row that cannot run is a red row.
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+pub(crate) struct Verdict {
+    suite: String,
+    status: &'static str,
+    armed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+impl Verdict {
+    /// The verdict of one run of suite `suite`: `Ok` passed, `Err` the failure or refusal.
+    pub(crate) fn of(suite: &str, result: &Result<(), String>) -> Self {
+        Self {
+            suite: suite.to_owned(),
+            status: if result.is_ok() { "pass" } else { "fail" },
+            armed: true,
+            reason: result.as_ref().err().cloned(),
+        }
+    }
+
+    /// Write `<out>/verdict.json`.
+    ///
+    /// # Errors
+    /// The directory or the file could not be written.
+    pub(crate) fn write(&self, out: &Path) -> Result<(), String> {
+        let bytes = busbar_contract::json::to_vec(self)
+            .map_err(|error| format!("the verdict does not encode: {error}"))?;
+        std::fs::create_dir_all(out)
+            .and_then(|()| std::fs::write(out.join("verdict.json"), bytes))
+            .map_err(|error| format!("{}: {error}", out.display()))
+    }
+}
+
+/// The suite id the conformance job runs this row under (`CONFORMANCE_SUITE`), else `store-kit`.
+fn suite_id() -> String {
+    std::env::var("CONFORMANCE_SUITE")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "store-kit".to_owned())
+}
+
+/// `busbar --store-kit …`: the exit status. With `--out`, the run's verdict is written there.
 pub(crate) fn command(words: &[String]) -> i32 {
-    match prepare(words) {
+    let args = match Args::parse(words) {
+        Ok(args) => args,
         Err(refusal) => {
             eprintln!("busbar --store-kit: {refusal}");
-            EXIT_REFUSED
+            return EXIT_REFUSED;
+        }
+    };
+    let out = args.out.clone();
+    let (status, result) = match prepare(args) {
+        Err(refusal) => {
+            eprintln!("busbar --store-kit: {refusal}");
+            (
+                EXIT_REFUSED,
+                Err(format!("refused before any case: {refusal}")),
+            )
         }
         Ok(prepared) => {
             let result = run_kit(
@@ -349,40 +407,39 @@ pub(crate) fn command(words: &[String]) -> i32 {
                 CASE_DEADLINE,
                 RUN_DEADLINE,
             );
-            let out = prepared.out;
-            let (status, line) = match &result {
-                Ok(()) => (
-                    EXIT_PASSED,
-                    format!("{} passed every case", store_kit::MARK),
-                ),
-                Err(failure) => (EXIT_FAILED, format!("{} FAILED {failure}", store_kit::MARK)),
-            };
-            println!("{line}");
-            if let Some(out) = out {
-                if let Err(error) = std::fs::create_dir_all(&out)
-                    .and_then(|()| std::fs::write(out.join("store-kit.txt"), format!("{line}\n")))
-                {
-                    eprintln!("busbar --store-kit: {}: {error}", out.display());
-                    return EXIT_FAILED;
-                }
+            match &result {
+                Ok(()) => println!("{} passed every case", store_kit::MARK),
+                Err(failure) => println!("{} FAILED {failure}", store_kit::MARK),
             }
-            status
+            (
+                if result.is_ok() {
+                    EXIT_PASSED
+                } else {
+                    EXIT_FAILED
+                },
+                result,
+            )
+        }
+    };
+    if let Some(out) = out {
+        if let Err(error) = Verdict::of(&suite_id(), &result).write(&out) {
+            eprintln!("busbar --store-kit: the verdict: {error}");
+            return EXIT_FAILED.max(status);
         }
     }
+    status
 }
 
 /// Everything one run needs, kept alive for it.
 struct Prepared {
     runtime: tokio::runtime::Runtime,
     fixture: KitFixture<KitStore>,
-    out: Option<PathBuf>,
     /// The plugin process resources the registry's slots and ids come from, as `main` keeps
     /// them for the process.
     _process: Arc<busbar_plugin_loader::process::ProcessResources>,
 }
 
-fn prepare(words: &[String]) -> Result<Prepared, String> {
-    let args = Args::parse(words)?;
+fn prepare(args: Args) -> Result<Prepared, String> {
     let template = Template::parse(&read_bounded(&args.fixture, FIXTURE_MAX, "the fixture")?)?;
     let image = admit(&args.pack)?;
     let process = Arc::new(
@@ -413,7 +470,6 @@ fn prepare(words: &[String]) -> Result<Prepared, String> {
     Ok(Prepared {
         runtime,
         fixture: KitFixture::new(store, template),
-        out: args.out,
         _process: process,
     })
 }

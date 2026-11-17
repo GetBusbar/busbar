@@ -3,14 +3,19 @@
 
 //! THE STORE KIT'S OPEN PATH (DES-STOREKIT r2 §2.1), harness builds only.
 //!
-//! One admitted store image, opened as S6 opens the configured store:
-//! - [`super::build`]'s registry over the production Need handlers;
+//! One admitted store image, opened through the same open path S6 uses:
+//! - a `Registry` over the production Need handlers (the `Built` S6 uses);
 //! - the bootstrap Needs ([`super::Built::bootstrap_needs_for`]);
 //! - `Registry::open_store` with the kernel's own seal.
 //!
-//! The only difference from S6 is the instance: the kit opens a new instance name for every handle
-//! it asks for, so a second "process" reaches the same dataset through its own instance. No
-//! legacy door, linked twin or test seal is involved.
+//! No legacy door, linked twin or test seal is involved. It is not identical to S6, and it does not
+//! claim to be. The differences are:
+//! - **instance:** a new instance name for every handle the kit asks for, so a second "process"
+//!   reaches the same dataset through its own instance (S6 opens one configured instance);
+//! - **limits:** `InstanceLimits::default()`, not the deployment's configured store limits;
+//! - **purpose:** always `Canonical`, never the converting open of an unstamped 1.5.5 boot;
+//! - **binder:** no secret shorthand and no reference schema, because a kit config names no secret;
+//! - **guard:** the runner's, with private addresses allowed so the store reaches its CI service.
 
 use std::sync::Arc;
 
@@ -79,7 +84,8 @@ impl KitStore {
         })
     }
 
-    /// A new instance `name` over `config_json`, opened exactly as S6 opens the configured store.
+    /// A new instance `name` over `config_json`, through S6's open path with the differences the
+    /// module documentation lists (default limits, canonical purpose).
     ///
     /// # Errors
     /// The open's refusal, as the registry states it.
