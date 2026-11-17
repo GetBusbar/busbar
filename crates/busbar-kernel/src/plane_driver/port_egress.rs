@@ -447,6 +447,22 @@ pub struct SeatMember {
     pub url: Box<str>,
 }
 
+/// One admitted probe row. Destination alone cannot choose a pool's target or credential policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbeTarget {
+    pub destination: DestinationId,
+    pub pool: String,
+    pub qualified_member: String,
+}
+
+impl ProbeTarget {
+    /// Display spelling only; lookup always uses `qualified_member` intact.
+    pub fn name(&self) -> &str {
+        std::str::from_utf8(operator_name(self.qualified_member.as_bytes()))
+            .expect("a qualified UTF-8 member has a UTF-8 display name")
+    }
+}
+
 /// The pool a plane instance walks, composed from its configured upstreams (K9). Every upstream with a `url` is one
 /// member, in name order, named `<instance>\x1f<upstream>` (the lane spelling the walk's pins and the billing lane
 /// read back with `operator_name`); a `command` upstream is reached over a channel and is never walked. The pool is
@@ -554,10 +570,19 @@ impl SeatPool {
 
     /// The probe service's members: each walked member's destination and configured upstream name.
     #[must_use]
-    pub fn probe_members(&self) -> Vec<(DestinationId, String)> {
+    pub fn probe_members(&self) -> Vec<ProbeTarget> {
         self.members
             .iter()
-            .map(|member| (member.destination, member.upstream.to_string()))
+            .map(|member| ProbeTarget {
+                destination: member.destination,
+                pool: self.pool.clone(),
+                qualified_member: format!(
+                    "{}{}{}",
+                    self.pool,
+                    crate::governance::PLANE_LANE_SEP,
+                    member.upstream
+                ),
+            })
             .collect()
     }
 }
@@ -618,9 +643,8 @@ impl PortEgress {
 
     /// The probe service's side of this walk over `members` (member index, its destination and configured name).
     #[must_use]
-    pub fn probes(&self, members: Vec<(DestinationId, String)>) -> EgressProbes {
+    pub fn probes(&self, members: Vec<ProbeTarget>) -> EgressProbes {
         EgressProbes {
-            pool: self.pool.clone(),
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
@@ -647,12 +671,11 @@ impl PortUpstream for PortEgress {
 /// The probe service's far end: one probe exchange to one member, judged like any other dial, and the finding
 /// handed to the breaker.
 pub struct EgressProbes {
-    pool: String,
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
     handle: Handle,
     accept: Accept,
-    members: Vec<(DestinationId, String)>,
+    members: Vec<ProbeTarget>,
     targets: Targets,
 }
 
@@ -662,15 +685,25 @@ struct ProbeSender {
     kernel: Arc<Kernel>,
     handle: Handle,
     accept: Accept,
-    destination: DestinationId,
+    selected: ProbeTarget,
     timeout: Duration,
 }
 
 impl UpSend for ProbeSender {
-    fn send(&mut self, _member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
+        if member.pool.as_ref() != self.selected.pool
+            || member.qualified_member.as_ref() != self.selected.qualified_member
+        {
+            return Err(SendFailed);
+        }
         let far = self
             .egress
-            .probe(self.destination, self.timeout)
+            .probe_selected(
+                &self.selected.pool,
+                &self.selected.qualified_member,
+                self.selected.destination,
+                self.timeout,
+            )
             .ok_or(SendFailed)?
             .accepting(self.accept);
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
@@ -695,20 +728,19 @@ impl UpSend for ProbeSender {
 
 impl ProbeFar for EgressProbes {
     fn suppressing(&self, member: usize) -> bool {
-        self.members.get(member).is_some_and(|(destination, _)| {
-            (self.egress.breaker)().suppressing(*destination, self.egress.clock.now_secs())
+        self.members.get(member).is_some_and(|selected| {
+            (self.egress.breaker)().suppressing(selected.destination, self.egress.clock.now_secs())
         })
     }
 
     fn candidate(&self, member: usize) -> Option<Candidate> {
-        let (_, name) = self.members.get(member)?;
-        let qualified_member = format!("{}{}{name}", self.pool, crate::governance::PLANE_LANE_SEP);
-        let target = (self.targets)(&self.pool, &qualified_member)?;
+        let selected = self.members.get(member)?;
+        let target = (self.targets)(&selected.pool, &selected.qualified_member)?;
         Some(Candidate {
-            pool: self.pool.clone().into(),
-            qualified_member: qualified_member.into(),
+            pool: selected.pool.clone().into(),
+            qualified_member: selected.qualified_member.clone().into(),
             identity: target.identity,
-            upstream: name.as_str().into(),
+            upstream: selected.name().into(),
             provider: target.provider,
             base_path: target.base_path,
             flags: target.flags,
@@ -717,21 +749,26 @@ impl ProbeFar for EgressProbes {
     }
 
     fn sender(&self, member: usize, timeout: Duration) -> Option<Box<dyn UpSend + Send>> {
-        let (destination, _) = self.members.get(member)?;
+        let selected = self.members.get(member)?;
         // A member that relays the caller's own credential is never probed.
-        self.egress.probe(*destination, timeout)?;
+        self.egress.probe_selected(
+            &selected.pool,
+            &selected.qualified_member,
+            selected.destination,
+            timeout,
+        )?;
         Some(Box::new(ProbeSender {
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
             accept: self.accept,
-            destination: *destination,
+            selected: selected.clone(),
             timeout,
         }))
     }
 
     fn reported(&self, member: usize, outcome: ProbeOutcome) {
-        let Some((destination, _)) = self.members.get(member) else {
+        let Some(selected) = self.members.get(member) else {
             return;
         };
         let outcome = match outcome {
@@ -740,7 +777,12 @@ impl ProbeFar for EgressProbes {
             ProbeOutcome::Declined => return,
         };
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
-        (self.egress.breaker)().probed(*destination, outcome, self.egress.clock.now_secs(), &token);
+        (self.egress.breaker)().probed(
+            selected.destination,
+            outcome,
+            self.egress.clock.now_secs(),
+            &token,
+        );
     }
 }
 

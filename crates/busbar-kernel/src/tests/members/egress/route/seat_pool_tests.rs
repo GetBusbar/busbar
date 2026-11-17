@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::*;
 use crate::plane_driver::port_egress::{
-    upstream_targets, PortEgress, PortUpstream, SeatPool, SessionFacts,
+    upstream_targets, PortEgress, PortUpstream, ProbeTarget, SeatPool, SessionFacts,
 };
 use crate::plane_driver::port_session::UpExchange;
 use crate::plane_driver::port_upstream::{Members, UpSend, Wants};
@@ -67,8 +67,16 @@ fn a_seat_walks_one_member_per_network_upstream_in_name_order_under_its_lane() {
     assert_eq!(
         pool.probe_members(),
         [
-            (DestinationId::new(0), "alpha".to_owned()),
-            (DestinationId::new(1), "beta".to_owned())
+            ProbeTarget {
+                destination: DestinationId::new(0),
+                pool: "mcp".into(),
+                qualified_member: "mcp\u{1f}alpha".into()
+            },
+            ProbeTarget {
+                destination: DestinationId::new(1),
+                pool: "mcp".into(),
+                qualified_member: "mcp\u{1f}beta".into()
+            },
         ]
     );
 }

@@ -426,16 +426,23 @@ impl Egress {
         timeout: Duration,
     ) -> Option<EgressFarEnd<'_>> {
         let route = self.routes.get(&destination)?;
-        let AuthBinding::Native(bindings) = route.auth.as_ref()? else {
-            return None;
-        };
-        bindings.select(pool, qualified_member, destination).ok()?;
+        match route.auth.as_ref() {
+            Some(AuthBinding::Native(bindings)) => {
+                bindings.select(pool, qualified_member, destination).ok()?;
+            }
+            Some(AuthBinding::Configured(binding)) if binding.passthrough => return None,
+            _ => {}
+        }
         let member = self
             .pools
             .get(pool)?
             .members
             .iter()
-            .find(|member| member.name == qualified_member && member.destination == destination)?
+            .find(|member| {
+                !member.passthrough
+                    && member.name == qualified_member
+                    && member.destination == destination
+            })?
             .clone();
         Some(self.probe_member(pool.to_owned(), member, timeout))
     }
