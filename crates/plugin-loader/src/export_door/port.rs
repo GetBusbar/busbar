@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
+
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::{
     Delivered as Queued, ExportCalls, ExportCustodyLevel, ExportDropReason, ExportLossKind,
@@ -79,6 +81,24 @@ impl DestAppend for NoDest {
     fn append(&self, _dest: u32, _bytes: AppendBytes<'_>) -> Result<(), AppendDenied> {
         Err(AppendDenied::Foreign)
     }
+}
+
+/// One export instance's live binding: its port and its disk lane, always swapped together (DES-454 §4.1).
+pub struct ExportBinding {
+    pub port: Arc<dyn ExportPort>,
+    pub disk: Arc<dyn DestAppend>,
+}
+
+/// Why [`PortDoor::swap_binding`] kept the binding it holds. The successor is handed back with it, so the caller
+/// closes it explicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwapRefused {
+    /// The successor differs in streams, scopes, recorder needs, span records or custody ceiling.
+    ShapeChanged,
+    /// The door is draining or stopped.
+    Stopping,
+    /// The door no longer holds the binding the caller read (another swap won).
+    Superseded,
 }
 
 static DELIVERY: OnceLock<AtomicU64> = OnceLock::new();
@@ -147,8 +167,9 @@ impl StopReport {
 }
 
 struct Shared {
-    port: Arc<dyn ExportPort>,
-    disk: Arc<dyn DestAppend>,
+    /// DES-454 §4.1: the port and its disk lane, one cell swapped whole. The pump loads it once per attempt;
+    /// every other reader once per call.
+    binding: ArcSwap<ExportBinding>,
     observer: Arc<dyn ExportObserver>,
     label: Box<str>,
     timeout: Duration,
@@ -215,6 +236,7 @@ impl Shared {
 
     fn call(
         &self,
+        port: &dyn ExportPort,
         stream: u8,
         delivery: u64,
         attempt: u32,
@@ -229,7 +251,7 @@ impl Shared {
             *slot = Some(send);
         }
         let result = futures::executor::block_on(futures::future::select(
-            self.port.deliver(
+            port.deliver(
                 self.cx(delivery),
                 u32::from(stream),
                 delivery,
@@ -366,10 +388,19 @@ impl Shared {
                 return;
             }
             let views: Vec<&[u8]> = lines[start..].iter().map(|l| l.bytes.as_slice()).collect();
-            let Some(answer) = self.call(stream, delivery, attempt, &views) else {
+            // Per attempt: an attempt already running on the old binding completes there; every later one
+            // goes to whatever the cell holds then (DES-454 §4.3).
+            let binding = self.binding.load_full();
+            let Some(answer) = self.call(&*binding.port, stream, delivery, attempt, &views) else {
                 self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
                 return;
             };
+            // DES-454 §4.3: a refusal or failure from a binding the door no longer holds is not final. Before any
+            // backoff, the next attempt goes to the successor, and still counts against DELIVER_ATTEMPTS.
+            if answer.is_err() && !Arc::ptr_eq(&self.binding.load(), &binding) {
+                attempt += 1;
+                continue;
+            }
             let resend = |attempt: &mut u32, retry_after_s: Option<u64>| {
                 *attempt += 1;
                 if *attempt <= DELIVER_ATTEMPTS {
@@ -402,8 +433,8 @@ impl Shared {
                         continue;
                     }
                     let appended = match bytes {
-                        Some(b) => self.disk.append(dest, AppendBytes::Owned(b)),
-                        None => self.disk.append(dest, AppendBytes::Batch(&views[..n])),
+                        Some(b) => binding.disk.append(dest, AppendBytes::Owned(b)),
+                        None => binding.disk.append(dest, AppendBytes::Batch(&views[..n])),
                     };
                     match appended {
                         Ok(()) => {
@@ -581,8 +612,7 @@ impl PortDoor {
             .map(|scope| scope.path.to_string())
             .collect();
         let shared = Arc::new(Shared {
-            port,
-            disk,
+            binding: ArcSwap::from_pointee(ExportBinding { port, disk }),
             observer,
             label: label.into(),
             timeout,
@@ -640,10 +670,40 @@ impl PortDoor {
         }
     }
 
+    /// The binding in service now.
+    #[must_use]
+    pub fn binding(&self) -> Arc<ExportBinding> {
+        self.shared.binding.load_full()
+    }
+
+    /// DES-454 §4.2 step 6, the export swap seam (core #454; reload reuses it, #461): replace `expected` with
+    /// `next` when `next` matches the served shape exactly, the door is not stopping, and the door still holds
+    /// `expected`. Queued lines and the delivery and attempt of a set in flight carry over; the attempt already
+    /// running finishes on `expected`. Ok: the predecessor, which the caller drops off the pump thread once the
+    /// pump has released it (`Arc::strong_count == 1`, §4.4). Err: `next` comes back for the caller to close.
+    pub fn swap_binding(
+        &self,
+        expected: &Arc<ExportBinding>,
+        next: ExportBinding,
+    ) -> Result<Arc<ExportBinding>, (SwapRefused, ExportBinding)> {
+        // Under the queue lock: `begin_drain` sets `stop` under it, and swaps serialise on it.
+        let _queue = self.shared.lock();
+        if self.shared.stop.load(Ordering::Acquire) || self.shared.expired() {
+            return Err((SwapRefused::Stopping, next));
+        }
+        if !Arc::ptr_eq(&self.shared.binding.load(), expected) {
+            return Err((SwapRefused::Superseded, next));
+        }
+        if !same_shape(&*expected.port, &*next.port) {
+            return Err((SwapRefused::ShapeChanged, next));
+        }
+        Ok(self.shared.binding.swap(Arc::new(next)))
+    }
+
     /// The custody ceiling the instance stated in its `open` answer (§8.5), read through L7.
     #[must_use]
     pub fn custody_ceiling(&self) -> Option<u32> {
-        self.shared.port.custody_ceiling()
+        self.shared.binding.load().port.custody_ceiling()
     }
 
     /// `export_custody_total{instance, stream, level}`.
@@ -668,10 +728,15 @@ impl PortDoor {
         self.shared.shed.load(Ordering::Relaxed)
     }
 
-    fn render(&self, scope: u32, families: &[Family]) -> Result<Vec<u8>, String> {
+    fn render(
+        &self,
+        binding: &ExportBinding,
+        scope: u32,
+        families: &[Family],
+    ) -> Result<Vec<u8>, String> {
         let mut body = Vec::new();
         with_snapshot(families, |snapshot| {
-            self.shared
+            binding
                 .port
                 .render(scope, snapshot, &mut |_content_type, bytes| {
                     body.extend_from_slice(bytes)
@@ -708,10 +773,15 @@ impl Drop for PortDoor {
 
 impl ExportCalls for PortDoor {
     fn recorder_requirements(&self) -> Option<RecorderRequirements> {
-        self.shared.port.recorder().map(|r| RecorderRequirements {
-            retention_seconds: r.retention_s,
-            key_gauge_limit: usize::try_from(r.key_gauge_limit).unwrap_or(usize::MAX),
-        })
+        self.shared
+            .binding
+            .load()
+            .port
+            .recorder()
+            .map(|r| RecorderRequirements {
+                retention_seconds: r.retention_s,
+                key_gauge_limit: usize::try_from(r.key_gauge_limit).unwrap_or(usize::MAX),
+            })
     }
 
     fn streams(&self) -> &[u8] {
@@ -729,6 +799,8 @@ impl ExportCalls for PortDoor {
 
     fn scope(&self, path: &str) -> Option<u32> {
         self.shared
+            .binding
+            .load()
             .port
             .scopes()
             .iter()
@@ -737,8 +809,9 @@ impl ExportCalls for PortDoor {
     }
 
     fn render_scope(&self, scope: u32, families: &[Family]) -> Result<Served, String> {
-        if !self
-            .shared
+        // One load serves both the check and the render.
+        let binding = self.shared.binding.load_full();
+        if !binding
             .port
             .scopes()
             .iter()
@@ -752,7 +825,7 @@ impl ExportCalls for PortDoor {
             body: Vec::new(),
         };
         with_snapshot(families, |snapshot| {
-            self.shared
+            binding
                 .port
                 .render(scope, snapshot, &mut |content_type, bytes| {
                     response.headers = vec![("content-type".into(), content_type.into())];
@@ -797,16 +870,16 @@ impl ExportCalls for PortDoor {
     }
 
     fn takes_span_records(&self) -> bool {
-        self.shared.port.span_records()
+        self.shared.binding.load().port.span_records()
     }
 
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String> {
-        self.render(x::SCOPE_METRICS, families)
+        self.render(&self.shared.binding.load_full(), x::SCOPE_METRICS, families)
     }
 
     fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
-        if !self
-            .shared
+        let binding = self.shared.binding.load_full();
+        if !binding
             .port
             .scopes()
             .iter()
@@ -814,7 +887,7 @@ impl ExportCalls for PortDoor {
         {
             return Err("this instance renders no hook families".to_string());
         }
-        self.render(x::SCOPE_HOOKS, families)
+        self.render(&binding, x::SCOPE_HOOKS, families)
     }
 
     fn status(&self) -> Option<Vec<u8>> {
@@ -838,6 +911,25 @@ impl ExportCalls for PortDoor {
                 .observe(ExportObservation::IntegrityFailed),
         }
     }
+}
+
+/// DES-454 §4.2 step 5: a successor serves in place of its predecessor only with the same streams, scopes,
+/// recorder needs, span records and custody ceiling, because the door's routes and streams stay as they are.
+fn same_shape(served: &dyn ExportPort, next: &dyn ExportPort) -> bool {
+    let recorder = |port: &dyn ExportPort| {
+        port.recorder()
+            .map(|needs| (needs.retention_s, needs.key_gauge_limit))
+    };
+    served.streams() == next.streams()
+        && served.span_records() == next.span_records()
+        && served.custody_ceiling() == next.custody_ceiling()
+        && recorder(served) == recorder(next)
+        && served.scopes().len() == next.scopes().len()
+        && served
+            .scopes()
+            .iter()
+            .zip(next.scopes())
+            .all(|(a, b)| a.scope == b.scope && a.path == b.path)
 }
 
 /// Core's words for a port error: the code only, never the plugin's text (§12.16).
