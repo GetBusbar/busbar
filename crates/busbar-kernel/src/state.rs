@@ -362,7 +362,7 @@ pub struct App {
     /// advanced by compare-and-set to `max(stored, prior) + 1` before every publication, so it never
     /// repeats across restarts (unlike `config_version`). One cell is shared by every snapshot of a handle.
     pub config_generation: Arc<std::sync::atomic::AtomicU64>,
-    /// `auth.policy.require_if_match`: a guarded config mutation without `If-Match` is 428.
+    /// `auth.require_if_match`: a guarded config mutation without `If-Match` is 428.
     pub require_if_match: bool,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".

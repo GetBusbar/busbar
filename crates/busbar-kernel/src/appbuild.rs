@@ -2690,7 +2690,7 @@ async fn build_app_native(
     app.require_if_match = cfg
         .auth
         .as_ref()
-        .and_then(|a| a.policy.require_if_match)
+        .and_then(|a| a.require_if_match)
         .unwrap_or(false);
     Ok((
         app,
