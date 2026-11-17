@@ -162,3 +162,27 @@ async fn the_arc_impl_is_the_same_custody() {
     let shared = Arc::clone(&s);
     assert!(LoginStates::take(&shared, &who, &key).await.is_some());
 }
+
+/// DES-331 §B4: login states are keyed under the restore epoch. A state put before a declared restore is not found
+/// after it (an OAuth callback replayed against the restored Store gets nothing), and one put after it is taken.
+#[tokio::test]
+async fn a_state_put_before_a_declared_restore_is_not_taken_after_it() {
+    let core = crate::real_store::core().await;
+    let before = StoreLoginStates::at_restore_epoch(core.clone(), clock, 0);
+    let after = StoreLoginStates::at_restore_epoch(core, clock, 1);
+    let who = auth("auth-oidc", "corp");
+    let old = before.new_key();
+    before.put(&who, &old, b"issuer|old").await.expect("put");
+    assert!(after.take(&who, &old).await.is_none());
+    let fresh = after.new_key();
+    after.put(&who, &fresh, b"issuer|fresh").await.expect("put");
+    assert!(before.take(&who, &fresh).await.is_none());
+    assert_eq!(
+        after
+            .take(&who, &fresh)
+            .await
+            .expect("the state")
+            .as_slice(),
+        b"issuer|fresh"
+    );
+}

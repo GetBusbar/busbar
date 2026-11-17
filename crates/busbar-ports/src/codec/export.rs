@@ -185,9 +185,14 @@ pub fn decode_confirmed(a: &Answer<'_>) -> Result<CustodyRec, RecErr> {
     confirmed(a.records())
 }
 
+/// The most deliveries an export instance may hold pending custody (DES-EXPORT-1.6 r3 #236). Bookkeeping only:
+/// bytes are bounded by the content budget. A describe above it refuses the instance at admit; core never clamps.
+pub const PENDING_CAPACITY_MAX: u64 = 4096;
+
 /// Round 33: D_DELIVERY's `pending_capacity` (None when absent), with §8.5's describe rules checked in the
 /// same pass as D_STREAMS and FB_SPAN_RECORDS: M_CONFIRM ⇔ D_DELIVERY, STREAM_CONTENT declared, no D_DEST_PATH,
-/// ≥ 1, at most one. In 1.6.0 L7 calls it for the validation only; the value is kept from 1.6.x.
+/// `1..=PENDING_CAPACITY_MAX` (refused above it, never clamped: #236), at most one. In 1.6.0 L7 calls it for the
+/// validation only; the value is kept from 1.6.x.
 pub fn decode_delivery(describe: Records<'_>, methods: u64) -> Result<Option<u64>, RecErr> {
     let mut capacity = None;
     let mut content = false;
@@ -208,7 +213,7 @@ pub fn decode_delivery(describe: Records<'_>, methods: u64) -> Result<Option<u64
                     return Err(RecErr::Size);
                 }
                 let pending = rec.pod::<DeliveryRec>()?.pending_capacity;
-                if pending == 0 {
+                if pending == 0 || pending > PENDING_CAPACITY_MAX {
                     return Err(RecErr::Size);
                 }
                 capacity = Some(pending);

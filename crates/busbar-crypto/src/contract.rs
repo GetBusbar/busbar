@@ -3,6 +3,11 @@
 
 //! The backend contract (CRYPTO-SEAM §2.2). Any `busbar-crypto-backend` that misses an item, changes
 //! a signature or carries a stale `API` fails to compile here, in the build that swapped it in.
+//!
+//! This file is the contract, and ci/crypto-api.pin freezes it (tests/contract_pin.rs): its `use`,
+//! `type`, `const` and `const fn` items, with their `cfg`s and assert messages, and the facade's
+//! rustls, rustls-pki-types and dimpl requirements are hashed. Changing any of them raises
+//! `busbar_crypto_backend::API` and the assert below, appends a pin line and adds a CHANGELOG line.
 
 use busbar_crypto_backend as b;
 
@@ -52,10 +57,53 @@ const fn name_ok(n: &str) -> bool {
     true
 }
 
+/// `b::Error`, frozen: exactly these variants and payloads. The facade's `map` matches them too; this
+/// copy keeps the list in the contract (and its hash).
+const fn error_variant(e: b::Error) -> u8 {
+    match e {
+        b::Error::Refused { alg, reason } => {
+            let _: (&'static str, &'static str) = (alg, reason);
+            0
+        }
+        b::Error::Rng => 1,
+        b::Error::Invalid(what) => {
+            let _: &'static str = what;
+            2
+        }
+        b::Error::Mismatch => 3,
+        b::Error::SelfTest(what) => {
+            let _: &'static str = what;
+            4
+        }
+        b::Error::ProviderUnavailable => 5,
+    }
+}
+
+/// `b::rsa::Scheme`, frozen: the facade re-exports it as `rsa::Scheme`, so a new variant would
+/// otherwise reach callers silently.
+const fn scheme_variant(s: b::rsa::Scheme) -> u8 {
+    match s {
+        b::rsa::Scheme::Pkcs1Sha256 => 0,
+        b::rsa::Scheme::Pkcs1Sha384 => 1,
+        b::rsa::Scheme::Pkcs1Sha512 => 2,
+        b::rsa::Scheme::PssSha256 => 3,
+        b::rsa::Scheme::PssSha384 => 4,
+        b::rsa::Scheme::PssSha512 => 5,
+    }
+}
+
 const _: () = {
-    assert!(b::API == 3, "busbar-crypto-backend API mismatch");
+    assert!(
+        b::API == 3,
+        "busbar-crypto-backend API must be 3 (the 1.6.0 contract: VALIDATION and the checked operations); update the backend"
+    );
     // Required, no default (IF §5.2 round 13): a backend that never states it does not build.
     let _: bool = b::EXTERNAL_PLUGINS;
+    // Required, no default (ADMIN-API-1.6-ONE-MODEL §10.1): validated_mode is derived from it alone.
+    let _: Option<&'static str> = b::VALIDATION;
+    // The frozen variant lists: a backend that adds, drops or reshapes one does not build.
+    let _: fn(b::Error) -> u8 = error_variant;
+    let _: fn(b::rsa::Scheme) -> u8 = scheme_variant;
     assert!(
         name_ok(b::NAME),
         "busbar-crypto-backend NAME must be 1..=8 of [a-z0-9-]"
@@ -163,6 +211,12 @@ const _: () = {
     let _: fn() -> R<b::DtlsCert> = b::dtls_self_signed;
     let _: fn(&b::DtlsCert) -> &[u8] = b::DtlsCert::der;
     let _: fn(&b::DtlsCert) -> &[u8] = b::DtlsCert::handle;
+};
+
+// The backend's test-certificate crate, re-exported by `testing::rcgen` (test-support builds only).
+#[cfg(feature = "test-support")]
+const _: () = {
+    let _: Option<&b::testing::rcgen::CertificateParams> = None;
 };
 
 /// The facade's start-up known answers, through this API (after the backend's own checks).

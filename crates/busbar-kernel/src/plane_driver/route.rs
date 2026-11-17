@@ -1452,7 +1452,6 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     {
         let mut attempt_no = 0;
 
-        let mut failed: Option<&'static str> = None;
         'attempt: loop {
             attempt_no += 1;
             if let Some(t) = turn {
@@ -1635,8 +1634,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 Ok(true) => {}
 
                 Ok(false) => {
-                    failed = self.far.failure(run.token);
-                    timing.retry(failed);
+                    timing.retry(self.far.failure(run.token));
                     continue 'attempt;
                 }
                 Err(end) => {
@@ -1670,8 +1668,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     if exchanges > 1 {
                         return End::Failed(ReasonCode::DestinationUnreachable);
                     }
-                    failed = self.far.failure(run.token);
-                    timing.retry(failed);
+                    timing.retry(self.far.failure(run.token));
                     continue 'attempt;
                 }
                 {
@@ -1725,8 +1722,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if exchanges > 1 {
                             return End::Failed(ReasonCode::DestinationUnreachable);
                         }
-                        failed = self.far.failure(run.token);
-                        timing.retry(failed);
+                        timing.retry(self.far.failure(run.token));
                         continue 'attempt;
                     }
                     Step::Answered(_) if !followup.verb.is_empty() => {

@@ -44,14 +44,21 @@ pub use tls::{
 };
 
 /// The backend contract version `busbar-crypto` asserts. Raised on any breaking change to this API.
-/// 2 (MIN-3 H0b): `EXTERNAL_PLUGINS`, `hmac_sha384`, `aes_ctr::apply`, `ecdsa_p384`, the SPKI
-/// verification forms and `ed25519::SigningKey::from_pkcs8`.
+/// 3 (the 1.6.0 contract): the checked operations bound to a verification authority, and
+/// [`VALIDATION`]. 2 (MIN-3 H0b): `EXTERNAL_PLUGINS`, `hmac_sha384`, `aes_ctr::apply`, `ecdsa_p384`,
+/// the SPKI verification forms and `ed25519::SigningKey::from_pkcs8`.
 pub const API: u32 = 3;
 
 /// Whether a plugin that brings its own crypto (stamp `crypto = "external"`) may load under this
 /// backend. Required, with no default (IF §5.2 round 13): a backend that never states it fails the
 /// facade's contract, so none admits by omission. The software backend admits them.
 pub const EXTERNAL_PLUGINS: bool = true;
+
+/// This backend's validation statement: a certificate reference for a validated module, or `None`.
+/// Required, with no default (ADMIN-API-1.6-ONE-MODEL §10.1, E-17): the facade derives
+/// `validated_mode` from this and nothing else, never from [`NAME`], a feature, an entitlement or
+/// configuration. The software backend states no validation.
+pub const VALIDATION: Option<&'static str> = None;
 
 /// This backend's name: `[a-z0-9-]`, 1..=8 bytes. Shown in `--version`, `/healthz` and the audit stamp.
 pub const NAME: &str = "software";

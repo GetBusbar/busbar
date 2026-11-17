@@ -181,6 +181,19 @@ Both dialects are accepted. The method spelling decides the dialect: v0.3's are 
 
 `ListTasks`, the four push-config verbs, and the refusals of `SubscribeToTask` are answered by Busbar itself from its own task records; every other method is relayed.
 
+### `ListTasks`
+
+An agent's own task list names every caller's tasks, so Busbar never relays `ListTasks`. Busbar checks the caller's `a2a_agent:<id>` grant first and meters the call against the agent. A caller without the grant gets the usual `403`. Busbar then answers from the task records it keeps in the caller's own scope: one record for each task the caller created through Busbar, naming the agent that holds it. Only tasks on the agent the request names are listed. Another caller's tasks are never in the answer.
+
+- **What each task carries.** Each task is `{id, status: {state}}`. The state is the last one Busbar saw, or `TASK_STATE_UNSPECIFIED` when it has seen none. The answer has no `contextId`, history, status message or artifacts. `GetTask` returns the full task.
+- **Paging.** Tasks are sorted by id. `pageSize` is 1 to 100 (default 50); any other value is refused with `INVALID_PARAMS` (-32602). `nextPageToken` resumes after the last task of the page, and is empty on the last page. A `pageToken` Busbar did not issue is refused with `INVALID_PARAMS`.
+- **`totalSize`** is the number of matching tasks when that page was read. A terminal task's record expires 300 seconds after Busbar saw it end, so the count can fall between pages.
+- **The bound.** If more than 256 tasks are held for this caller **across all agents**, the list is refused with `UNSUPPORTED_OPERATION` (-32004). Busbar refuses rather than answer with a truncated list. The count spans all agents because a task record's key does not name the agent.
+- **Filters.** `status` is applied. `historyLength` is satisfied, since no history is returned. A non-empty `contextId`, a set `statusTimestampAfter` or `includeArtifacts: true` is refused with `INVALID_PARAMS`, which names the field and points to `GetTask`. A filter is never silently ignored.
+- **Audit.** Each refused `ListTasks` writes one rejected audit row (`a2a.list_tasks`) before the answer. Each answered list writes one applied row.
+
+This list is not the agent's own list: see [the 1.6.0 upgrade notes](/docs/migration-1.6/#requests-and-callers).
+
 On the HTTP lines a request that names no protocol version is a 0.3 request; on the gRPC line it is a 1.0 request, because there is no v0.3 protobuf. The version metadata key is `a2a-version`.
 
 ### What Busbar publishes

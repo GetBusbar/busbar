@@ -19,7 +19,7 @@
 use busbar_crypto_backend as b;
 use core::fmt;
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "conformance")]
 pub mod conformance;
 mod contract;
 #[cfg(feature = "tls")]
@@ -44,6 +44,18 @@ pub const BACKEND: &str = b::NAME;
 /// backend's required answer (IF §5.2 round 13; `false` in a FIPS build). Admission reads this and
 /// nothing else; [`supports`] answers `"EXTERNAL_PLUGINS"` from it, so there is no second answer.
 pub const EXTERNAL_PLUGINS: bool = b::EXTERNAL_PLUGINS;
+
+/// The linked backend's contract version (3 in 1.6.0; the contract block refuses any other).
+pub const API: u32 = b::API;
+
+/// The linked backend's validation statement (a certificate reference), or `None`: the backend's
+/// required constant, served as `/info.crypto.validation` and `core/process state.crypto.validation`.
+pub const VALIDATION: Option<&'static str> = b::VALIDATION;
+
+/// Whether this binary runs a validated crypto module: derived here, once, from [`VALIDATION`] and
+/// nothing else (never from [`BACKEND`], a feature, an entitlement or configuration;
+/// ADMIN-API-1.6-ONE-MODEL §10.1). Every surface that states it reads this constant.
+pub const VALIDATED_MODE: bool = VALIDATION.is_some();
 
 /// An algorithm or parameter the linked backend refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +153,7 @@ pub(crate) fn map(e: b::Error) -> Error {
     }
 }
 
-/// The module identity for `/healthz` `crypto_module` and the boot log.
+/// The module identity for `--version`, the boot log and `core/process` `state.crypto.module`.
 #[must_use]
 pub fn module_version() -> &'static str {
     b::module_version()

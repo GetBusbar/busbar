@@ -211,3 +211,27 @@ async fn serve(router: axum::Router, book: crate::root::durability::NodeBook) ->
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (addr, handle, book)
 }
+
+/// [`actual_store`] with its settings as a JSON facade value, so a new test builds its deployment document
+/// without serde_json (DEP-3). The conversion is this rig's boundary; the rig itself still speaks serde_json
+/// (flagged for W-SERDE, #162).
+pub(super) fn actual_store_facade(
+    tag: &str,
+) -> (String, std::path::PathBuf, busbar_contract::json::Value) {
+    let (module, directory, settings) = actual_store(tag);
+    let settings = busbar_contract::json::parse_value(settings.to_string().as_bytes())
+        .expect("the actual Store settings read back through the JSON facade");
+    (module, directory, settings)
+}
+
+/// [`actual_root`] for a deployment document built through the JSON facade (DEP-3); see
+/// [`actual_store_facade`].
+pub(super) async fn actual_root_facade(
+    document: &busbar_contract::json::Value,
+    directory: &std::path::Path,
+    module: &str,
+) -> Served {
+    let document: serde_json::Value = serde_json::from_str(&document.to_string())
+        .expect("a JSON facade document reads as the rig's deployment document");
+    actual_root(document, directory, module).await
+}

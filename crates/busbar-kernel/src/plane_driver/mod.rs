@@ -857,15 +857,6 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             && st.declined_flags & busbar_contract::abi::plane::REFUSED_AFTER_ADMISSION != 0
     }
 
-    fn status_for(&self, reason: ReasonCode) -> u32 {
-        let st = self.lock();
-        let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
-        match st.declined {
-            Some((_, status)) if reason == ReasonCode::DecodeFailed => status,
-            _ => self.driver.config.status(dialect, reason),
-        }
-    }
-
     pub fn take_rendered(&self) -> Option<Rendered> {
         self.lock().rendered.take()
     }

@@ -264,6 +264,21 @@ pub struct InfoView {
     pub config_generation: u64,
     /// Conditions an operator should know about this process, oldest first; empty normally.
     pub warnings: Vec<InfoWarning>,
+    /// Whether this binary runs a validated crypto module, and the linked backend's validation
+    /// statement (E-17). The backend's name and module version are `core/process` `state.crypto`.
+    pub crypto: InfoCrypto,
+}
+
+/// `InfoView.crypto` (ADMIN-API-1.6-ONE-MODEL §10.1, E-17): the one validated-mode answer, the same
+/// values `core/process` `state.crypto` serves.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct InfoCrypto {
+    /// True only when the linked crypto backend states a validation; derived from that statement
+    /// alone, never from the backend's name, a feature, an entitlement or configuration.
+    pub validated_mode: bool,
+    /// The linked backend's validation statement (a certificate reference), or null.
+    pub validation: Option<&'static str>,
 }
 
 /// One `InfoView.warnings` entry.
