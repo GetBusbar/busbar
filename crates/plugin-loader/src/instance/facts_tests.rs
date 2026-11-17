@@ -132,3 +132,25 @@ fn outbound_styles_keep_describe_order_and_their_declared_flags() {
     );
     assert!(auth_styles_of_described(&described(None, &[]), |_| 1).is_empty());
 }
+
+/// A chain module is an auth image that declares inbound verify. The legacy "reads no host-held
+/// credentials" half needs no native fact: in MIN-3 core alone reads host-held credentials
+/// (KEY_CARRIERS, `Keys::build`; ABI-MIN3 r34 l.12131, §12.8, §16.119).
+#[test]
+fn an_auth_image_declaring_inbound_verify_is_a_chain_module() {
+    use busbar_plugin_abi::auth::{M_OUTBOUND, M_VERIFY, M_VERIFY_IO};
+    let mut verify = described(None, &[]);
+    verify.methods = M_VERIFY;
+    assert!(declares_chain_module(&verify));
+    let mut verify_io = described(None, &[]);
+    verify_io.methods = M_VERIFY_IO | M_OUTBOUND;
+    assert!(declares_chain_module(&verify_io));
+
+    let mut outbound_only = described(None, &[]);
+    outbound_only.methods = M_OUTBOUND;
+    assert!(!declares_chain_module(&outbound_only));
+    let mut other_kind = described(None, &[]);
+    other_kind.kind = KindCode::Store;
+    other_kind.methods = M_VERIFY;
+    assert!(!declares_chain_module(&other_kind));
+}

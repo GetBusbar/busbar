@@ -50,6 +50,16 @@ impl Images {
         auth_styles_of_described(&described, |name| self.style_flags(identity, name))
     }
 
+    /// Whether the admitted image `identity` is a data-auth chain module: an auth image whose describe
+    /// declares inbound verify (`M_VERIFY` or `M_VERIFY_IO`). The legacy rule also required that the
+    /// plugin not read host-held credentials; in MIN-3 that is always true, because core alone reads them
+    /// (KEY_CARRIERS, `Keys::build`; ABI-MIN3 r34 l.12131, §12.8, §16.119).
+    #[must_use]
+    pub fn auth_chain_module(&self, identity: &str) -> bool {
+        self.described(identity)
+            .is_some_and(|described| declares_chain_module(&described))
+    }
+
     /// The public settings of the admitted image `identity`, from its D_SCHEMA and D_SECRET_PATH
     /// items. `Ok(None)` when it declares no public setting or no such image is admitted.
     ///
@@ -66,6 +76,13 @@ impl Images {
         };
         public_settings_of_described(identity, &self.names(identity), &described, words)
     }
+}
+
+/// [`Images::auth_chain_module`] over one image's admitted facts.
+pub(crate) fn declares_chain_module(described: &Described) -> bool {
+    use busbar_plugin_abi::auth::{M_VERIFY, M_VERIFY_IO};
+    described.kind == busbar_plugin_abi::types::KindCode::Auth
+        && described.methods & (M_VERIFY | M_VERIFY_IO) != 0
 }
 
 /// [`Images::auth_styles`] over one image's admitted facts; `flags` answers a style's D_STYLE_FLAGS.
