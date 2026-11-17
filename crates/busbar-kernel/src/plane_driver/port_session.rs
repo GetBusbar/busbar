@@ -336,6 +336,10 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
+        None
+    }
+
     /// Execution context supplied by the root's admitted dispatch. Open/check and
     /// health-only operations have no nested execution authority.
     fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {

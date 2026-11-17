@@ -78,3 +78,13 @@ pub trait Binder: Send + Sync {
     fn enforcing(&self, route: u32) -> bool;
     fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str>;
 }
+
+/// Per-unit inputs retained alongside the admitted invocation.
+pub struct Invocation {
+    pub binder: Arc<dyn Binder>,
+    pub principal: Option<Arc<str>>,
+    pub now_s: u64,
+    pub classes: Vec<busbar_ports::plane::UsageClass>,
+    pub journal: Option<Arc<dyn super::hooks::HookJournal>>,
+    pub unit: busbar_contract::UnitKey,
+}
