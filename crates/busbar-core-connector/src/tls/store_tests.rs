@@ -532,3 +532,120 @@ fn roots_system_reads_ssl_cert_file_and_refuses_an_empty_bundle() {
     assert!(errors.join("\n").contains("BUSBAR-3140"), "{errors:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn need_plan(trust: Option<&Ca>) -> crate::need::TlsPlan<'static> {
+    crate::need::TlsPlan {
+        sni: "separate-peer-name.internal",
+        alpn: "",
+        trust: trust.map(|ca| {
+            Arc::new(busbar_kernel::plugin_config::TrustAnchor {
+                der: vec![ca.cert.der().to_vec()],
+                sha256: busbar_contract::crypto::sha256(ca.cert.der().as_ref()),
+            })
+        }),
+        cert: None,
+        waive: false,
+    }
+}
+
+#[test]
+fn native_need_tls_preserves_roots_none_and_logical_host_policy() {
+    let private = ca("Native Need CA");
+    let s = build(&format!(
+        "roots: none\ndestinations:\n  - match: secret.internal\n    trust_anchors: [{}]\n",
+        inline(&private.pem())
+    ))
+    .expect("store");
+    let plan = need_plan(None);
+    let offered = [b"h2".to_vec(), b"http/1.1".to_vec()];
+    let config = s
+        .config_for_need("secret.internal", &plan, &offered)
+        .expect("logical host policy");
+    assert_eq!(config.alpn_protocols, offered);
+    handshake(config, "secret.internal", private.issue("secret.internal")).expect("operator CA");
+    assert!(matches!(
+        s.config_for_need(plan.sni, &plan, &[]),
+        Err(TrustRefusal::NoAnchors(_))
+    ));
+}
+
+#[test]
+fn native_need_instance_anchor_does_not_erase_operator_pin_or_withdrawal() {
+    let operator = ca_with("Operator CA", true, None, (2020, 1, 1), (2030, 1, 2));
+    let instance = ca("Instance CA");
+    let (chain, key) = instance.issue("secret.internal");
+    let pin = crate::tls::client::peer_key_pin(chain[0].as_ref()).expect("pin");
+    let s = build(&format!(
+        "roots: none\ndestinations:\n  - match: secret.internal\n    trust_anchors: [{}]\n    pin_spki_sha256: {pin}\n",
+        inline(&operator.pem())
+    )).expect("store");
+    let plan = need_plan(Some(&instance));
+    let c = s
+        .config_for_need("secret.internal", &plan, &[])
+        .expect("composed");
+    handshake(c.clone(), "secret.internal", (chain, key)).expect("instance CA and operator pin");
+    assert!(handshake(c, "secret.internal", instance.issue("secret.internal")).is_err());
+    s.sweep(at_2030() + Duration::from_secs(2 * 24 * 3600));
+    assert!(matches!(
+        s.config_for_need("secret.internal", &plan, &[]),
+        Err(TrustRefusal::Withdrawn(_))
+    ));
+}
+
+#[test]
+fn native_need_client_identity_conflicts_and_waivers_refuse() {
+    let private = ca("Native identity CA");
+    let (chain, key) = private.issue("client.internal");
+    let cert = pem_of("CERTIFICATE", chain[0].as_ref());
+    let key_pem = pem_of("PRIVATE KEY", key.secret_der());
+    let s = build(&format!(
+        "destinations:\n  - match: secret.internal\n    client_identity: {{ cert: {}, key: {} }}\n",
+        inline(&cert),
+        inline(&key_pem)
+    ))
+    .expect("store");
+    let mut plan = need_plan(None);
+    plan.cert = Some(Arc::new(busbar_contract::secure::SecureVec::from(
+        format!("{cert}{key_pem}").into_bytes(),
+    )));
+    assert!(s
+        .config_for_need("secret.internal", &plan, &[])
+        .expect("same identity")
+        .client_auth_cert_resolver
+        .has_certs());
+    let (other, key) = private.issue("different.internal");
+    plan.cert = Some(Arc::new(busbar_contract::secure::SecureVec::from(
+        format!(
+            "{}{}",
+            pem_of("CERTIFICATE", other[0].as_ref()),
+            pem_of("PRIVATE KEY", key.secret_der())
+        )
+        .into_bytes(),
+    )));
+    assert!(s.config_for_need("secret.internal", &plan, &[]).is_err());
+    plan.cert = None;
+    plan.waive = true;
+    assert!(s.config_for_need("secret.internal", &plan, &[]).is_err());
+}
+
+#[test]
+fn native_need_waiver_preserves_operator_key_pin() {
+    let private = ca("Waived peer CA");
+    let (chain, key) = private.issue("other-name.internal");
+    let pin = crate::tls::client::peer_key_pin(chain[0].as_ref()).expect("pin");
+    let s = build(&format!(
+        "destinations:\n  - match: secret.internal\n    pin_spki_sha256: {pin}\n"
+    ))
+    .expect("store");
+    let mut plan = need_plan(None);
+    plan.waive = true;
+    let c = s
+        .config_for_need("secret.internal", &plan, &[])
+        .expect("waived");
+    handshake(c.clone(), "secret.internal", (chain, key))
+        .expect("explicit waiver permits peer name and CA");
+    assert!(
+        handshake(c, "secret.internal", private.issue("secret.internal")).is_err(),
+        "waiver cannot erase configured pin"
+    );
+}

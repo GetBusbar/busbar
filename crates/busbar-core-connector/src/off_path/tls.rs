@@ -550,7 +550,7 @@ impl TrustStore {
             .filter(|(_, e)| !e.plaintext && e.matcher.matches(d))
             .map(|(i, _)| i)
             .collect();
-        let config = Arc::new(self.build_for(host, &matched)?);
+        let config = Arc::new(self.build_for(host, &matched, None)?);
         if let Some(key) = key {
             let mut cache = self.cache.lock().expect("tls cache");
             if self.generation.load(std::sync::atomic::Ordering::Acquire) == generation {
@@ -560,10 +560,34 @@ impl TrustStore {
         Ok(Some(config))
     }
 
+    /// Compose the operator's logical-destination policy with a host-checked Need plan.
+    /// SNI affects peer naming only; it never selects operator roots or pins.
+    /// Configurations containing client identities are never cached here.
+    pub fn config_for_need(
+        &self,
+        host: &str,
+        plan: &crate::need::TlsPlan<'_>,
+        alpn: &[Vec<u8>],
+    ) -> Result<Arc<rustls::ClientConfig>, TrustRefusal> {
+        let destination = crate::tls::store::dialled(host)
+            .ok_or_else(|| TrustRefusal::NoAnchors(host.to_owned()))?;
+        let matched: Vec<_> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.plaintext && entry.matcher.matches(&destination))
+            .map(|(index, _)| index)
+            .collect();
+        let mut config = self.build_for(host, &matched, Some(plan))?;
+        config.alpn_protocols = alpn.to_vec();
+        Ok(Arc::new(config))
+    }
+
     fn build_for(
         &self,
         host: &str,
         matched: &[usize],
+        need: Option<&crate::need::TlsPlan<'_>>,
     ) -> Result<rustls::ClientConfig, TrustRefusal> {
         let withdrawn = self.withdrawn.read().expect("withdrawn").clone();
         let entries: Vec<&Entry> = matched.iter().map(|i| &self.entries[*i]).collect();
@@ -595,6 +619,13 @@ impl TrustStore {
                 }
             }
         }
+        if let Some(anchor) = need.and_then(|plan| plan.trust.as_ref()) {
+            for der in &anchor.der {
+                roots
+                    .add(CertificateDer::from(der.clone()))
+                    .map_err(|_| TrustRefusal::Build("instance anchor is invalid".into()))?;
+            }
+        }
         if roots.is_empty() {
             return Err(TrustRefusal::NoAnchors(host.to_owned()));
         }
@@ -602,18 +633,58 @@ impl TrustStore {
             .iter()
             .flat_map(|e| e.pins.iter().copied())
             .collect();
-        let pinned = if pins.is_empty() {
+        let waived = need.is_some_and(|plan| plan.waive);
+        let instance_identity = need
+            .and_then(|plan| plan.cert.as_deref())
+            .map(|pem| {
+                let chain = CertificateDer::pem_slice_iter(pem.as_slice())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| TrustRefusal::InvalidNeed)?;
+                if chain.is_empty() {
+                    return Err(TrustRefusal::InvalidNeed);
+                }
+                let key = PrivateKeyDer::from_pem_slice(pem.as_slice())
+                    .map_err(|_| TrustRefusal::InvalidNeed)?;
+                Ok((chain, Arc::new(key)))
+            })
+            .transpose()?;
+        let mut identity = instance_identity.as_ref();
+        for operator in entries.iter().filter_map(|entry| entry.identity.as_ref()) {
+            if identity.is_some_and(|(chain, key)| {
+                chain != &operator.0 || key.secret_der() != operator.1.secret_der()
+            }) {
+                return Err(TrustRefusal::Build("conflicting client identities".into()));
+            }
+            identity = Some(operator);
+        }
+        if waived && identity.is_some() {
+            return Err(TrustRefusal::Build(
+                "unverified TLS cannot present a client identity".into(),
+            ));
+        }
+        let verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>> = if waived {
+            let inner = crate::tls::client::unverified_verifier();
+            Some(if pins.is_empty() {
+                inner
+            } else {
+                Arc::new(PinnedKeyVerifier {
+                    inner,
+                    pins: pins.iter().copied().collect(),
+                })
+            })
+        } else if pins.is_empty() {
             None
         } else {
-            Some(PinnedKeyVerifier::try_new(roots.clone(), &pins).map_err(TrustRefusal::Build)?)
+            Some(Arc::new(
+                PinnedKeyVerifier::try_new(roots.clone(), &pins).map_err(TrustRefusal::Build)?,
+            ))
         };
-        let identity = entries.iter().find_map(|e| e.identity.as_ref());
         crypto_tls::client_config(|builder| {
-            let wants = match pinned {
+            let wants = match verifier {
                 None => builder.with_root_certificates(roots),
                 Some(verifier) => builder
                     .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(verifier)),
+                    .with_custom_certificate_verifier(verifier),
             };
             match identity {
                 None => Ok(wants.with_no_client_auth()),

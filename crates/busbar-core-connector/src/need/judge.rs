@@ -9,17 +9,42 @@
 //! no text (I2); a failed resolution is `Unavailable`.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use crate::proxy::{ProxyChoice, ProxyHop};
+use busbar_kernel::config::tls::ProxyResolution;
 
 use busbar_plugin_abi::host_side::needs::NeedErr;
 use futures::channel::oneshot;
 
-use crate::guard::{Guard, Resolve};
+use crate::guard::{FrozenGuard, Guard, Resolve};
 
 /// The Need judge: the connector's own guard and its resolver (no judge type parameter, IF 13).
 #[derive(Debug)]
 pub struct Judge<R: Resolve> {
-    guard: Guard,
+    guard: FrozenGuard,
     resolver: R,
+    proxy: Option<Arc<ProxyChoice>>,
+    resolution: ProxyResolution,
+    observations: Arc<super::observations::Observations>,
+}
+
+/// One admitted connection route; proxy hop admission never grants origin authority.
+#[derive(Debug)]
+pub struct Route {
+    /// Pinned socket addresses for the direct destination or selected proxy.
+    pub addrs: Vec<SocketAddr>,
+    /// The selected proxy tunnel, when configured and not exempt.
+    pub tunnel: Option<Tunnel>,
+}
+
+/// The proxy handshake selected for one logical destination.
+#[derive(Debug)]
+pub struct Tunnel {
+    /// The exact operator-selected hop; credentials remain confined to CONNECT.
+    pub hop: Arc<ProxyHop>,
+    /// Original authority in Proxy mode, admitted pinned address in Local mode.
+    pub target: String,
 }
 
 /// `host` and `port` of a `host:port` dest (a bracketed IPv6 literal loses its brackets).
@@ -82,16 +107,55 @@ impl<R: Resolve> Judge<R> {
     /// A judge over `guard` and `resolver`.
     #[must_use]
     pub fn new(guard: Guard, resolver: R) -> Self {
-        Judge { guard, resolver }
+        Self::from_frozen(guard.freeze(), resolver)
     }
 
-    /// The guard, for the boot metadata publish (`Guard::publish_own`, `Guard::publish`).
+    /// A judge over an already frozen generation's destination policy.
     #[must_use]
-    pub fn guard(&self) -> &Guard {
-        &self.guard
+    pub fn from_frozen(guard: FrozenGuard, resolver: R) -> Self {
+        Self::with_proxy(guard, resolver, None, ProxyResolution::Local)
     }
 
-    async fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+    /// A frozen network generation's explicit proxy and resolution policy.
+    #[must_use]
+    pub fn with_proxy(
+        guard: FrozenGuard,
+        resolver: R,
+        proxy: Option<Arc<ProxyChoice>>,
+        resolution: ProxyResolution,
+    ) -> Self {
+        Self::observed(guard, resolver, proxy, resolution, Arc::default())
+    }
+
+    /// A frozen network judge writing to its generation's bounded pre-store observations.
+    #[must_use]
+    pub fn observed(
+        guard: FrozenGuard,
+        resolver: R,
+        proxy: Option<Arc<ProxyChoice>>,
+        resolution: ProxyResolution,
+        observations: Arc<super::observations::Observations>,
+    ) -> Self {
+        Judge {
+            guard,
+            resolver,
+            proxy,
+            resolution,
+            observations,
+        }
+    }
+
+    /// Record a fixed denial without consulting any process or store singleton.
+    pub fn denied(&self, host: &str, owner: u64, class: u32, verdict: u64) {
+        self.observations.record(
+            host,
+            Some(owner),
+            Some(class),
+            super::observations::Outcome::Denied(verdict),
+        );
+    }
+
+    async fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, NeedErr> {
         let (tx, rx) = oneshot::channel();
         self.resolver.resolve(
             host,
@@ -101,7 +165,8 @@ impl<R: Resolve> Judge<R> {
             }),
         );
         rx.await
-            .unwrap_or_else(|_| Err("the resolver dropped the lookup".to_owned()))
+            .map_err(|_| NeedErr::Closed)?
+            .map_err(|_| NeedErr::Unavailable)
     }
 
     /// Judge a dial of `host:port` under the judged `class` and return the addresses to connect
@@ -117,25 +182,101 @@ impl<R: Resolve> Judge<R> {
         class: u32,
         owner: (u64, u32),
     ) -> Result<Vec<SocketAddr>, NeedErr> {
-        let refused = |why: crate::guard::Refusal| {
-            crate::egress_audit::dial_refused(
+        self.addresses(host, port, class, false, owner, false).await
+    }
+
+    /// Plan one direct or proxied dial under already checked instance authority.
+    /// Proxy mode delegates only DNS failure/no-address, never a policy refusal or cancellation.
+    pub async fn plan(
+        &self,
+        host: &str,
+        port: u16,
+        class: u32,
+        reach: bool,
+        secured: bool,
+        owner: (u64, u32),
+    ) -> Result<Route, NeedErr> {
+        self.guard
+            .judge_name_with(host, class, false, reach)
+            .map_err(|why| {
+                self.denied(host, owner.0, class, why.verdict);
+                NeedErr::Denied
+            })?;
+        let proxy = self
+            .proxy
+            .as_ref()
+            .and_then(|choice| choice.select(secured, host));
+        let delegated = proxy.is_some() && self.resolution == ProxyResolution::Proxy;
+        let origin = self
+            .addresses(host, port, class, reach, owner, delegated)
+            .await?;
+        let Some(hop) = proxy else {
+            return Ok(Route {
+                addrs: origin,
+                tunnel: None,
+            });
+        };
+        if delegated && origin.is_empty() {
+            self.observations.record(
                 host,
+                Some(owner.0),
                 Some(class),
-                crate::egress_audit::verdict_name(why.verdict),
-                Some(owner),
+                super::observations::Outcome::Delegated,
             );
+        }
+        let target = if delegated {
+            if host.contains(':') {
+                format!("[{host}]:{port}")
+            } else {
+                format!("{host}:{port}")
+            }
+        } else {
+            origin.first().ok_or(NeedErr::Unavailable)?.to_string()
+        };
+        let addrs = self
+            .addresses(
+                hop.host(),
+                hop.port(),
+                busbar_plugin_abi::need::egress::OPERATOR_INFRASTRUCTURE,
+                false,
+                owner,
+                false,
+            )
+            .await?;
+        Ok(Route {
+            addrs,
+            tunnel: Some(Tunnel { hop, target }),
+        })
+    }
+
+    async fn addresses(
+        &self,
+        host: &str,
+        port: u16,
+        class: u32,
+        reach: bool,
+        owner: (u64, u32),
+        delegated: bool,
+    ) -> Result<Vec<SocketAddr>, NeedErr> {
+        let refused = |why: crate::guard::Refusal| {
+            self.denied(host, owner.0, class, why.verdict);
             NeedErr::Denied
         };
         let ips = match self
             .guard
-            .judge_name_with(host, class, false, false)
+            .judge_name_with(host, class, false, reach)
             .map_err(refused)?
         {
             Some(literal) => vec![literal],
             None => {
-                let answer = self.resolve(host).await.map_err(|_| NeedErr::Unavailable)?;
+                let answer = match self.resolve(host).await {
+                    Ok(answer) if delegated && answer.is_empty() => return Ok(Vec::new()),
+                    Ok(answer) => answer,
+                    Err(NeedErr::Unavailable) if delegated => return Ok(Vec::new()),
+                    Err(error) => return Err(error),
+                };
                 self.guard
-                    .judge_answer_with(host, &answer, class, false, false)
+                    .judge_answer_with(host, &answer, class, false, reach)
                     .map_err(refused)?;
                 answer
             }
@@ -144,7 +285,7 @@ impl<R: Resolve> Judge<R> {
             .map(|ip| {
                 let at = SocketAddr::new(ip, port);
                 self.guard
-                    .not_the_node(class, at, true)
+                    .not_the_node(class, at)
                     .map(|()| at)
                     .map_err(refused)
             })

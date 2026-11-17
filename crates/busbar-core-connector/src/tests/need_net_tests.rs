@@ -29,7 +29,11 @@ async fn listener() -> (TcpListener, SocketAddr) {
 
 fn plain(addrs: &[SocketAddr]) -> Dial<'_> {
     Dial {
-        addrs,
+        dest: "upstream.test:443",
+        route: super::super::judge::Route {
+            addrs: addrs.to_vec(),
+            tunnel: None,
+        },
         unix: None,
         tls: None,
         timeout: BUDGET,
@@ -100,7 +104,7 @@ async fn a_plain_dial_writes_and_reads_what_a_loopback_peer_echoes() {
         s.read_exact(&mut b).await.unwrap();
         s.write_all(&b).await.unwrap();
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let mut d = io.dial(plain(&addrs)).await.unwrap();
     assert_eq!(&*d.alpn, "");
@@ -115,7 +119,7 @@ async fn a_plain_dial_writes_and_reads_what_a_loopback_peer_echoes() {
 async fn a_dial_nobody_answers_is_unavailable() {
     let (l, addr) = listener().await;
     drop(l);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     assert_eq!(
         io.dial(plain(&addrs)).await.err(),
@@ -132,14 +136,14 @@ async fn the_next_admitted_address_is_tried_when_the_first_refuses() {
         let _held = l.accept().await.unwrap();
         tokio::time::sleep(BUDGET).await;
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [gone, addr];
     assert!(io.dial(plain(&addrs)).await.is_ok());
 }
 
 #[tokio::test]
 async fn a_dial_with_nowhere_to_go_is_invalid() {
-    let io = ConnectorIo::new();
+    let io = test_io();
     assert_eq!(io.dial(plain(&[])).await.err(), Some(NeedErr::Invalid));
 }
 
@@ -150,7 +154,7 @@ async fn a_read_the_peer_never_answers_times_out() {
         let _held = l.accept().await.unwrap();
         tokio::time::sleep(BUDGET).await;
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let mut d = io.dial(plain(&addrs)).await.unwrap();
     let mut buf = [0u8; 8];
@@ -166,7 +170,7 @@ async fn a_peer_that_hangs_up_reads_as_end_of_stream() {
     tokio::spawn(async move {
         drop(l.accept().await.unwrap());
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let mut d = io.dial(plain(&addrs)).await.unwrap();
     let mut buf = [0u8; 8];
@@ -184,7 +188,7 @@ async fn a_conn_is_healthy_only_while_idle_and_open() {
         // Then hold it open until the test is done with it.
         tokio::time::sleep(BUDGET).await;
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let d = io.dial(plain(&addrs)).await.unwrap();
     assert!(
@@ -206,7 +210,7 @@ async fn a_conn_the_peer_closed_is_not_healthy() {
     tokio::spawn(async move {
         drop(l.accept().await.unwrap());
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let d = io.dial(plain(&addrs)).await.unwrap();
     let mut spent = 0;
@@ -222,11 +226,15 @@ async fn a_tls_dial_trusts_the_anchor_the_need_binds_and_negotiates_its_alpn() {
     let (ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("upstream.test", Some(anchor(ca)), false)),
             timeout: BUDGET,
@@ -245,11 +253,15 @@ async fn a_tls_dial_without_the_anchor_does_not_trust_a_private_ca() {
     let (_ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let got = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("upstream.test", None, false)),
             timeout: BUDGET,
@@ -263,11 +275,15 @@ async fn a_tls_dial_is_verified_against_the_name_it_asked_for() {
     let (ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let got = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("other.test", Some(anchor(ca)), false)),
             timeout: BUDGET,
@@ -281,11 +297,15 @@ async fn only_a_held_accept_waives_verification() {
     let (_ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let mut d = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("elsewhere.test", None, true)),
             timeout: BUDGET,
@@ -303,11 +323,15 @@ async fn a_peer_that_does_not_speak_tls_is_a_tls_failure() {
         let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
         tokio::time::sleep(BUDGET).await;
     });
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let got = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("upstream.test", None, false)),
             timeout: BUDGET,
@@ -321,7 +345,7 @@ async fn starttls_upgrades_the_plain_conn_in_place() {
     let (ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let d = io.dial(plain(&addrs)).await.unwrap();
     let mut up = io
@@ -344,11 +368,15 @@ async fn a_conn_that_is_already_tls_cannot_be_upgraded_again() {
     let (ca, acceptor) = tls_server(&["upstream.test"]);
     let (l, addr) = listener().await;
     serve_tls_echo(l, acceptor);
-    let io = ConnectorIo::new();
+    let io = test_io();
     let addrs = [addr];
     let secured = io
         .dial(Dial {
-            addrs: &addrs,
+            dest: "upstream.test:443",
+            route: super::super::judge::Route {
+                addrs: addrs.to_vec(),
+                tunnel: None,
+            },
             unix: None,
             tls: Some(plan("upstream.test", Some(anchor(ca.clone())), false)),
             timeout: BUDGET,
@@ -370,7 +398,7 @@ fn a_waiver_with_a_client_certificate_is_refused_not_silently_anonymous() {
     let mut p = plan("upstream.test", None, true);
     p.cert = Some(Arc::new(SecureVec::from(&b"not a pem"[..])));
     assert_eq!(
-        Configs::default().get(&p, &[]).err(),
+        test_configs().get("upstream.test", &p, &[]).err(),
         Some(NeedErr::Invalid)
     );
 }
@@ -380,20 +408,48 @@ fn a_client_certificate_that_does_not_parse_is_invalid() {
     let mut p = plan("upstream.test", None, false);
     p.cert = Some(Arc::new(SecureVec::from(&b"not a pem"[..])));
     assert_eq!(
-        Configs::default().get(&p, &[]).err(),
+        test_configs().get("upstream.test", &p, &[]).err(),
         Some(NeedErr::Invalid)
     );
 }
 
 #[test]
 fn a_config_is_built_once_per_trust_and_alpn() {
-    let configs = Configs::default();
+    let configs = test_configs();
     let p = plan("upstream.test", None, false);
     let alpn = [b"h2".to_vec()];
-    let first = configs.get(&p, &alpn).unwrap();
-    assert!(Arc::ptr_eq(&first, &configs.get(&p, &alpn).unwrap()));
+    let first = configs.get("upstream.test", &p, &alpn).unwrap();
+    assert!(Arc::ptr_eq(
+        &first,
+        &configs.get("upstream.test", &p, &alpn).unwrap()
+    ));
     assert_eq!(first.alpn_protocols, vec![b"h2".to_vec()]);
-    let other = configs.get(&p, &[]).unwrap();
+    let other = configs.get("upstream.test", &p, &[]).unwrap();
     assert!(!Arc::ptr_eq(&first, &other));
     assert!(other.alpn_protocols.is_empty());
+}
+
+fn test_configs() -> Configs {
+    Configs::new(Arc::new(
+        crate::tls::store::TrustStore::build(
+            &Default::default(),
+            std::time::SystemTime::now(),
+            &|_| None,
+        )
+        .expect("test trust"),
+    ))
+}
+
+#[test]
+fn ordered_alpn_protocol_boundaries_never_alias_in_native_cache() {
+    let configs = test_configs();
+    let p = plan("upstream.test", None, false);
+    let first = configs
+        .get("upstream.test", &p, &[b"ab".to_vec(), b"c".to_vec()])
+        .unwrap();
+    let second = configs
+        .get("upstream.test", &p, &[b"a".to_vec(), b"bc".to_vec()])
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert_eq!(second.alpn_protocols, [b"a".to_vec(), b"bc".to_vec()]);
 }
