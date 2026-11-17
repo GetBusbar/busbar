@@ -705,3 +705,34 @@ fn v7_records_verify_against_the_published_page() {
         "an attempt is digested"
     );
 }
+
+/// #315 step 4: `docs/audit-link-v1.md` is the link line's whole contract. The verifier checks a
+/// link line by that page alone, and the page names no other recipe page.
+#[test]
+fn the_link_recipe_is_verified_from_its_own_page_alone() {
+    assert!(
+        recipe(LINK_RECIPE).unwrap() == LINK,
+        "a link line verifies by its own page"
+    );
+    for stale in [
+        "busbar.audit.digest.v",
+        "audit-chain-digest-v",
+        "audit.v7",
+        "unsupported by that tool",
+    ] {
+        assert!(
+            !LINK.contains(stale),
+            "the link page still leans on {stale}"
+        );
+    }
+    for field in [
+        "`subject_tag`",
+        "`attempts_total`",
+        "`labels[].value`",
+        "`linked_ms`",
+        "`prev_hash`",
+        "`busbar.audit.notary_key.record.v2`",
+    ] {
+        assert!(LINK.contains(field), "the link page does not state {field}");
+    }
+}

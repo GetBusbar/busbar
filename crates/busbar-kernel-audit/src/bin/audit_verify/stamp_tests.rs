@@ -606,6 +606,7 @@ fn a_live_stamp_under_a_certified_notary_key_authenticates_its_page() {
 /// current. Every case fails verify ("stamp key not certified" or a bad signature).
 #[test]
 fn notary_key_authority_follows_the_key_map() {
+    use busbar_contract::crypto::Signer;
     let (cert, units, body) = certified();
     let last = &units[2]["hash"];
     let refused = |body: &Value, why: &str| {
