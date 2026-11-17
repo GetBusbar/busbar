@@ -252,3 +252,40 @@ fn inconsistent_header_iterator_cannot_trigger_unreserved_growth() {
     ));
     assert_eq!(budget.used(), (0, 0));
 }
+
+#[derive(Clone)]
+struct HugeHeaders;
+impl Iterator for HugeHeaders {
+    type Item = (&'static str, &'static [u8]);
+    fn next(&mut self) -> Option<Self::Item> { panic!("overflow must refuse before reading headers") }
+    fn size_hint(&self) -> (usize, Option<usize>) { (usize::MAX, Some(usize::MAX)) }
+}
+impl ExactSizeIterator for HugeHeaders {}
+
+#[test]
+fn header_extent_overflow_is_rejected_before_copy_or_iteration() {
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    assert!(matches!(ChargedRequestSnapshot::capture(SnapshotInput {
+        method: "", path: "", query: "", query_present: false, authority: "",
+        headers: HugeHeaders, peer: "", tls_peer_cert: &[], body: &[], now_s: 0,
+    }, &request), Err(SnapshotError::Overflow)));
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn retained_body_bytes_keep_the_complete_snapshot_charge_and_original_admission() {
+    let budget = ProcessAdmission::with_limits(2, 4096, 0);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let snapshot = ChargedRequestSnapshot::capture(input(&[]), &request).unwrap();
+    let charged = budget.used();
+    let body = snapshot.body_bytes();
+    let tail = body.slice(1..);
+    drop((body, snapshot, request));
+    assert_eq!(tail.as_ref(), b"ody");
+    assert_eq!(budget.used(), charged);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(tail);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
