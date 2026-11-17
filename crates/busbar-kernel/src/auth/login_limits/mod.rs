@@ -378,7 +378,7 @@ pub struct Context<'a> {
 }
 
 /// `busbar_login_attempts_total{method,outcome}`: every credential submission, by outcome.
-const LOGIN_ATTEMPTS_TOTAL: &str = "busbar_login_attempts_total";
+pub(crate) const LOGIN_ATTEMPTS_TOTAL: &str = "busbar_login_attempts_total";
 /// `busbar_login_throttled_total{method,limiter}`: every throttled submission, by limiter.
 pub(crate) const LOGIN_THROTTLED_TOTAL: &str = "busbar_login_throttled_total";
 

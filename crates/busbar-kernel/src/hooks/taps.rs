@@ -37,4 +37,4 @@ where
 
 const TAP_GATE_NAME: &str = "tap";
 
-const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";
+pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";

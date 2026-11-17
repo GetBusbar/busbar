@@ -8,6 +8,7 @@ use crate::state::App;
 
 mod money;
 
+pub mod catalogue;
 mod source;
 
 pub(crate) use source::request_store;
@@ -205,6 +206,12 @@ pub const PLUGIN_INSPECT_CAP_REFUSALS_TOTAL: &str = "busbar_plugin_inspect_cap_r
 pub const PLUGIN_INSPECT_SLOT_HELD_SECONDS: &str = "busbar_plugin_inspect_slot_held_seconds";
 
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
+
+/// Request-log webhook deliveries shed under backpressure; a plane may carry it (DES-337).
+pub const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped_total";
+
+/// Request-log file appends shed under backpressure; a plane may carry it (DES-337).
+pub const FILE_LOGS_DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total";
 
 /// Terminal audit originals refused before native confirmation (no labels).
 pub const AUDIT_STAGE_FAILURES_TOTAL: &str = "busbar_audit_stage_failures_total";
@@ -486,169 +493,18 @@ fn spawn_maintenance(interval: Duration) {
     }
 }
 
+/// Help and unit for every catalogued family, from [`catalogue::HOST_METRICS`] (DES-337).
 fn describe() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
-    describe_counter!(
-        REQUESTS_TOTAL,
-        "Total ingress requests, by ingress protocol, pool, and outcome"
-    );
-    describe_counter!(
-        PLANE_REQUESTS_TOTAL,
-        "Total mounted-plane requests, by plane, ingress protocol, pool, and outcome"
-    );
-    describe_counter!(
-        UPSTREAM_ATTEMPTS_TOTAL,
-        "Upstream call attempts, by pool and lane"
-    );
-    describe_counter!(
-        UPSTREAM_FAILURES_TOTAL,
-        "Upstream failures, by pool, lane, and breaker disposition"
-    );
-    describe_counter!(
-        BREAKER_TRIPS_TOTAL,
-        "Circuit-breaker trips, by pool and lane"
-    );
-    describe_counter!(FAILOVERS_TOTAL, "Failover events, by pool and reason");
-    describe_counter!(
-        ROUTE_POLICY_SELECTIONS_TOTAL,
-        "Requests whose routing policy produced a ranked order, by policy name and pool"
-    );
-    describe_counter!(
-        ROUTE_POLICY_REJECTIONS_TOTAL,
-        "Requests deliberately rejected by the routing policy's reject verb, by policy name, pool, and status"
-    );
-    describe_counter!(
-        TRANSLATIONS_TOTAL,
-        "Cross-protocol translations, by source and target protocol"
-    );
-    describe_counter!(
-        INSECURE_TRANSPORT_ADMITTED_TOTAL,
-        "Needs (OPEN, STARTTLS, FETCH) admitted under an instance's insecure_transport acceptance, by kind, instance and accept; pooled reuse included, not TCP dials"
-    );
-    describe_counter!(
-        BILLING_TAP_DECODE_FAIL_TOTAL,
-        "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
-    );
-    describe_counter!(
-        METERING_PENDING_COALESCED_TOTAL,
-        "Metering cells coalesced into a per-bucket overflow sentinel because the write-behind accumulator was at its cap (sustained store outage); totals preserved, per-key attribution collapsed"
-    );
-    describe_counter!(
-        TELEMETRY_OVERFLOW_REPLAYS_TOTAL,
-        "Full histogram buffers replayed into the recorder on the request thread because the slot already had two buffers parked or the 8 MiB park budget was spent"
-    );
-    describe_histogram!(
-        REQUEST_DURATION_SECONDS,
-        Unit::Seconds,
-        "End-to-end request duration in seconds"
-    );
-    describe_histogram!(
-        PLANE_REQUEST_DURATION_SECONDS,
-        Unit::Seconds,
-        "End-to-end mounted-plane request duration in seconds, by plane"
-    );
-    describe_histogram!(
-        LANE_REQUEST_DURATION_SECONDS,
-        Unit::Seconds,
-        "Request duration in seconds by lane, labelled pool, target, model and instance"
-    );
-    describe_counter!(
-        UNIT_REFUSALS_TOTAL,
-        "Units that did not complete, by closed reason and plane instance"
-    );
-    describe_counter!(
-        AUDIT_STAGE_FAILURES_TOTAL,
-        "Terminal audit originals refused before native confirmation"
-    );
-    describe_counter!(
-        EXPORT_DROPPED_TOTAL,
-        "Terminally discarded export lines by instance and bounded reason"
-    );
-    describe_counter!(
-        crate::export::delivery::EXPORT_CUSTODY_TOTAL,
-        "Accepted export lines by instance, stream and checked custody level"
-    );
-    describe_counter!(
-        EXPORT_CAPTURE_REFUSALS_TOTAL,
-        "Export capture admission refusals by instance and bounded reason"
-    );
-    describe_counter!(
-        EXPORT_INTEGRITY_FAILURES_TOTAL,
-        "Export audit integrity failure occurrences by instance"
-    );
-    describe_gauge!(
-        EXPORT_HELD_LINES,
-        "Current retained export ciphertext lines with an unavailable key by instance"
-    );
-
-    describe_gauge!(
-        KEY_SPEND_CENTS,
-        Unit::Count,
-        "Per-virtual-key accumulated spend in cents for the current budget window (scrape-time)"
-    );
-    describe_gauge!(
-        BUCKET_TOKENS,
-        "Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)"
-    );
-    describe_gauge!(
-        BUCKET_SPEND_CENTS,
-        Unit::Count,
-        "Derived spend (abstract minor units) per budget-group bucket for its current window, recomputed from the token ledger x the current rate card at scrape time"
-    );
-    describe_gauge!(
-        BUCKET_BUDGET_REMAINING_CENTS,
-        Unit::Count,
-        "Budget-group cap minus derived spend for the current window"
-    );
-    describe_gauge!(
-        KEY_TOKENS_TOTAL,
-        Unit::Count,
-        "Per-virtual-key accumulated tokens consumed in the current budget window (scrape-time)"
-    );
-    describe_gauge!(
-        LANE_STATE,
-        Unit::Count,
-        "Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped (scrape-time)"
-    );
-    describe_gauge!(
-        LANE_AVAILABLE,
-        Unit::Count,
-        "Per-(pool,lane) availability from the shared classify taxonomy: 1 = would admit, 0 = unavailable for any reason (breaker/capacity/dead/budget) (scrape-time)"
-    );
-    describe_gauge!(
-        LANE_RECOVERY_HINT_MS,
-        Unit::Milliseconds,
-        "Per-(pool,lane) honest lower bound (ms) on when an unavailable lane could next serve; 0 when available or no self-recovery basis (scrape-time)"
-    );
-    describe_gauge!(
-        LANE_INFLIGHT,
-        Unit::Count,
-        "Per-(pool,lane) in-flight requests (held concurrency permits) (scrape-time)"
-    );
-    describe_gauge!(
-        LANE_AVAILABLE_PERMITS,
-        Unit::Count,
-        "Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample)"
-    );
-    describe_gauge!(
-        BUILD_INFO,
-        "Build identity: always 1, labelled with the running version"
-    );
-    describe_gauge!(
-        POOL_QUEUED,
-        Unit::Count,
-        "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time)"
-    );
-    describe_gauge!(
-        UNIT_CHECKPOINTS_TERMINAL,
-        Unit::Count,
-        "Finished governed units whose spend awaits settlement in the store (the admission gate's terminal backlog, capped at 20,000) (scrape-time)"
-    );
-    describe_gauge!(
-        GOVERNED_ADMISSIONS_LIVE,
-        Unit::Count,
-        "Governed admissions alive: released only after the unit's terminal checkpoint is staged (scrape-time)"
-    );
+    metrics::with_recorder(|recorder| {
+        for d in catalogue::HOST_METRICS {
+            let (name, help) = (d.name.into(), d.help.into());
+            match d.kind {
+                catalogue::Kind::Counter => recorder.describe_counter(name, d.unit, help),
+                catalogue::Kind::Gauge => recorder.describe_gauge(name, d.unit, help),
+                catalogue::Kind::Histogram => recorder.describe_histogram(name, d.unit, help),
+            }
+        }
+    });
 }
 
 #[inline]
