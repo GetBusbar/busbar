@@ -1547,10 +1547,13 @@ async fn lingering_shutdown_and_drain_share_one_total_deadline() {
     // almost all of it. The latter must not receive a fresh read-drain budget afterwards.
     for shutdown in [Duration::from_secs(60), Duration::from_secs(29)] {
         let dropped = Arc::new(AtomicBool::new(false));
-        drop(super::Lingering(Some(SlowShutdown {
-            ready: Box::pin(tokio::time::sleep(shutdown)),
-            dropped: dropped.clone(),
-        })));
+        drop(super::Lingering(
+            Some(SlowShutdown {
+                ready: Box::pin(tokio::time::sleep(shutdown)),
+                dropped: dropped.clone(),
+            }),
+            None,
+        ));
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(29)).await;
         tokio::task::yield_now().await;
@@ -1565,4 +1568,174 @@ async fn lingering_shutdown_and_drain_share_one_total_deadline() {
             "shutdown and read-drain must release IO within one 30-second budget"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn admission_checks_deadlines_even_before_the_controller_is_polled() {
+    let first = super::ConnectionLifetime::new();
+    tokio::time::advance(super::HTTP_FIRST_REQUEST_TIMEOUT).await;
+    assert!(
+        first.admit(hyper::Version::HTTP_2).is_none(),
+        "equality expires first headers"
+    );
+    assert_eq!(
+        first.closed().await,
+        super::ConnectionDeadline::FirstRequest
+    );
+
+    let lifetime = super::ConnectionLifetime::new();
+    tokio::time::advance(super::HTTP_FIRST_REQUEST_TIMEOUT - Duration::from_nanos(1)).await;
+    let first_request = lifetime
+        .admit(hyper::Version::HTTP_2)
+        .expect("strictly before expiry");
+    drop(first_request);
+    tokio::time::advance(super::HTTP2_IDLE_TIMEOUT - Duration::from_nanos(1)).await;
+    let second_request = lifetime
+        .admit(hyper::Version::HTTP_2)
+        .expect("idle window still open");
+    // An active request cancels the old zero-active window even if its handler runs for minutes.
+    tokio::time::advance(Duration::from_secs(120)).await;
+    assert!(!lifetime.forced());
+    drop(second_request);
+    tokio::time::advance(super::HTTP2_IDLE_TIMEOUT).await;
+    assert!(
+        lifetime.admit(hyper::Version::HTTP_2).is_none(),
+        "equality expires idle"
+    );
+    assert_eq!(
+        lifetime.closed().await,
+        super::ConnectionDeadline::Http2Idle
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn handler_and_both_body_legs_share_activity_until_the_last_obligation_finishes() {
+    use http_body_util::BodyExt as _;
+    let lifetime = super::ConnectionLifetime::new();
+    let handler = lifetime.admit(hyper::Version::HTTP_2).unwrap();
+    let request = super::ActiveBody::new(
+        axum::body::Body::new(http_body_util::StreamBody::new(futures::stream::pending::<
+            Result<http_body::Frame<bytes::Bytes>, std::io::Error>,
+        >())),
+        &handler,
+    );
+    let mut response = super::ActiveBody::new(axum::body::Body::from("response"), &handler);
+    drop(handler);
+    assert_eq!(lifetime.state.lock().unwrap().active, 1);
+    assert!(response.frame().await.unwrap().is_ok());
+    // Retaining an already-complete response object does not retain activity, but the unread
+    // request body still does. The last-zero instant is the actual release instant.
+    assert!(response.activity.is_none());
+    tokio::time::advance(Duration::from_secs(65)).await;
+    assert_eq!(lifetime.state.lock().unwrap().active, 1);
+    drop(request);
+    let now = tokio::time::Instant::now();
+    assert_eq!(lifetime.state.lock().unwrap().idle_since, Some(now));
+    drop(response);
+    assert_eq!(lifetime.state.lock().unwrap().active, 0);
+
+    let handler = lifetime.admit(hyper::Version::HTTP_2).unwrap();
+    let empty_request = super::ActiveBody::new(axum::body::Body::empty(), &handler);
+    let empty_response = super::ActiveBody::new(axum::body::Body::empty(), &handler);
+    assert!(empty_request.activity.is_none() && empty_response.activity.is_none());
+    tokio::time::advance(Duration::from_secs(65)).await;
+    assert_eq!(
+        lifetime.state.lock().unwrap().active,
+        1,
+        "empty bodies do not end the handler"
+    );
+    drop(handler);
+    assert_eq!(lifetime.state.lock().unwrap().active, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn errored_or_cancelled_body_releases_activity_exactly_once() {
+    use http_body_util::BodyExt as _;
+    let lifetime = super::ConnectionLifetime::new();
+    let handler = lifetime.admit(hyper::Version::HTTP_2).unwrap();
+    let mut response = super::ActiveBody::new(
+        http_body_util::StreamBody::new(futures::stream::iter([Err::<
+            http_body::Frame<bytes::Bytes>,
+            _,
+        >(std::io::Error::other(
+            "body failed",
+        ))])),
+        &handler,
+    );
+    drop(handler);
+    assert!(response.frame().await.unwrap().is_err());
+    assert_eq!(lifetime.state.lock().unwrap().active, 0);
+    drop(response);
+    assert_eq!(
+        lifetime.state.lock().unwrap().active,
+        0,
+        "error plus drop is one release"
+    );
+
+    let handler = lifetime.admit(hyper::Version::HTTP_2).unwrap();
+    let request = super::ActiveBody::new(
+        http_body_util::StreamBody::new(futures::stream::pending::<
+            Result<http_body::Frame<bytes::Bytes>, std::io::Error>,
+        >()),
+        &handler,
+    );
+    drop(request);
+    assert_eq!(lifetime.state.lock().unwrap().active, 1);
+    drop(handler);
+    assert_eq!(
+        lifetime.state.lock().unwrap().active,
+        0,
+        "cancelled handler releases final lease"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn admission_capacity_follows_normal_linger_and_forced_transport_drop() {
+    use std::sync::Arc;
+    let capacity = Arc::new(tokio::sync::Semaphore::new(1));
+    let permit = capacity.clone().acquire_owned().await.unwrap();
+    let (_client, server) = tokio::io::duplex(16);
+    let lifetime = super::ConnectionLifetime::new();
+    let handler = lifetime.admit(hyper::Version::HTTP_2).unwrap();
+    drop(super::Lingering(
+        Some(super::AdmittedIo {
+            inner: server,
+            _hold: Some(Box::new(permit)),
+            _guard: None,
+        }),
+        Some(lifetime),
+    ));
+    tokio::task::yield_now().await;
+    assert_eq!(
+        capacity.available_permits(),
+        0,
+        "normal linger retains actual IO capacity"
+    );
+    tokio::time::advance(super::LINGER_IDLE).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        capacity.available_permits(),
+        1,
+        "normal drain releases the slot"
+    );
+    drop(handler);
+
+    let permit = capacity.clone().acquire_owned().await.unwrap();
+    let (_client, server) = tokio::io::duplex(16);
+    let lifetime = super::ConnectionLifetime::new();
+    tokio::time::advance(super::HTTP_FIRST_REQUEST_TIMEOUT).await;
+    lifetime.closed().await;
+    drop(super::Lingering(
+        Some(super::AdmittedIo {
+            inner: server,
+            _hold: Some(Box::new(permit)),
+            _guard: None,
+        }),
+        Some(lifetime),
+    ));
+    assert_eq!(
+        capacity.available_permits(),
+        1,
+        "forced closure releases synchronously without linger"
+    );
 }
