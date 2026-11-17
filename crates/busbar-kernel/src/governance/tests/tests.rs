@@ -6451,6 +6451,7 @@ fn exhausted_unit(
         audit: None,
         measurement: None,
         unread: None,
+        partitions: None,
     }
 }
 

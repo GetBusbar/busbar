@@ -342,6 +342,7 @@ impl Fixture {
             audit: Some(serde_json::to_vec(&audit).unwrap()),
             measurement: None,
             unread: None,
+            partitions: None,
         }
     }
     pub(super) fn stage(&self, count: usize) {

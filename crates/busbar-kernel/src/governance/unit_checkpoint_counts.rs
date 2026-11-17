@@ -12,6 +12,9 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        if snapshot.partitions.is_some() {
+            return Self::selected_terminal_events(snapshot);
+        }
         let mut cell = BudgetCell::default();
         // No counts, no row (#42): accrue_raw creates a lane row only from a non-zero count.
         cell.accrue_raw(&snapshot.lane, snapshot.era(), &snapshot.units)
@@ -106,6 +109,104 @@ impl GovState {
             counts = remaining;
         }
         Ok(events)
+    }
+
+    /// Build all selected children without touching the recovery book. One usage child per
+    /// admitted target includes every original lane, and each meter retains its exact provider.
+    fn selected_terminal_events(
+        snapshot: &UnitCheckpoint,
+    ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        use super::unit_checkpoint::partitions::{
+            ValidatedSelectedCheckpoint, MAX_TERMINAL_EVENTS,
+        };
+        let projection = ValidatedSelectedCheckpoint::try_from(snapshot)?.project()?;
+        let mut cell = BudgetCell::default();
+        for (lane, counts) in projection.billed_by_lane()? {
+            cell.accrue_raw(&lane, snapshot.era(), &counts)
+                .map_err(crate::governance::store_error)?;
+        }
+        let plain = ExactUsageDelta::of(&cell, false);
+        let dated = ExactUsageDelta::of(&cell, true);
+        let initial = |child: super::recovery::RecoveryChild| RecoveryEvent {
+            operation_id: child.operation_id,
+            revision: 0,
+            previous_event: None,
+            kind: child.kind,
+            body_fingerprint: child.body_fingerprint,
+            state: RecoveryState::Intent,
+            first_sent_at_ms: child.first_sent_at_ms,
+            payload: child.payload,
+        };
+        let mut events = Vec::new();
+        for target in &snapshot.targets {
+            if let Some(child) = Self::usage_recovery_child(
+                &target.bucket,
+                target.window,
+                plain.clone(),
+                dated.clone(),
+            )? {
+                events.push(initial(child));
+            }
+        }
+        let sent_at_ms = crate::store::now_ms();
+        for (key, mut counts) in selected_meter_counts(&projection) {
+            while !counts.is_zero() {
+                if events.len() == MAX_TERMINAL_EVENTS {
+                    return Err(RecordStoreError(
+                        "selected terminal vector exceeds bound".into(),
+                    ));
+                }
+                let (delta, remaining) = metering_flush::metering_chunk(&key, &counts);
+                events.push(initial(Self::metering_recovery_child(
+                    crate::door::op_id().0,
+                    sent_at_ms,
+                    &delta,
+                )?));
+                counts = remaining;
+            }
+        }
+        Ok(events)
+    }
+
+    pub(super) fn validate_selected_terminal(
+        &self,
+        snapshot: &UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        if snapshot.partitions.is_none() {
+            return Ok(());
+        }
+        let Some(actual) = &snapshot.terminal else {
+            return Ok(());
+        };
+        let expected = Self::selected_terminal_events(snapshot)?;
+        if actual.len() != expected.len()
+            || actual.iter().zip(expected).any(|(a, e)| {
+                a.revision != 0
+                    || a.previous_event.is_some()
+                    || a.state != RecoveryState::Intent
+                    || a.kind != e.kind
+                    || a.body_fingerprint != e.body_fingerprint
+                    || a.payload != e.payload
+            })
+        {
+            return Err(RecordStoreError(
+                "selected terminal vector differs from immutable projection".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_selected_terminal_capacity(
+        &self,
+        snapshot: &UnitCheckpoint,
+    ) -> RecordStoreResult<()> {
+        if snapshot.partitions.is_none() {
+            return Ok(());
+        }
+        let events = Self::selected_terminal_events(snapshot)?;
+        let mut sealed = snapshot.clone();
+        sealed.terminal = Some(events);
+        super::unit_checkpoint::partitions::check_size(&sealed)
     }
 
     /// Once a recovered unit's durable receipts settle, reload its exact targets before allowing
@@ -254,6 +355,9 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> Result<(), CountError> {
+        if snapshot.partitions.is_some() {
+            return self.apply_selected_checkpoint_counts(snapshot, true);
+        }
         self.accrue_count_targets(
             &snapshot.targets,
             &snapshot.lane,
@@ -279,11 +383,73 @@ impl GovState {
         durable: bool,
         before_commit: impl FnOnce() -> Result<(), CountError>,
     ) -> Result<(), CountError> {
+        self.accrue_lanes_targets(targets, &[(lane, units)], era, now, durable, before_commit)
+    }
+
+    fn apply_selected_checkpoint_counts(
+        &self,
+        snapshot: &UnitCheckpoint,
+        durable: bool,
+    ) -> Result<(), CountError> {
+        let projection =
+            super::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(snapshot)
+                .and_then(|view| view.project())
+                .map_err(|_| CountError::Malformed)?;
+        let grouped = projection
+            .billed_by_lane()
+            .map_err(|_| CountError::Overflow)?;
+        let lanes: Vec<_> = grouped
+            .iter()
+            .map(|(lane, counts)| (lane.as_str(), counts))
+            .collect();
+        if durable {
+            self.accrue_lanes_targets(
+                &snapshot.targets,
+                &lanes,
+                snapshot.era(),
+                snapshot.arrived,
+                true,
+                || Ok(()),
+            )
+        } else {
+            let meters = selected_meter_counts(&projection);
+            self.accrue_lanes_targets(
+                &snapshot.targets,
+                &lanes,
+                snapshot.era(),
+                snapshot.arrived,
+                false,
+                || {
+                    self.pending_metering
+                        .try_accrue_selected(&snapshot.principal, &meters)
+                },
+            )
+        }
+    }
+
+    pub(super) fn apply_selected_checkpoint_memory(
+        &self,
+        snapshot: &UnitCheckpoint,
+    ) -> Result<(), CountError> {
+        self.apply_selected_checkpoint_counts(snapshot, false)
+    }
+
+    fn accrue_lanes_targets<T: CountTarget, G>(
+        &self,
+        targets: &[T],
+        lanes: &[(&str, &std::collections::BTreeMap<String, Count>)],
+        era: RawRateEra,
+        now: u64,
+        durable: bool,
+        before_commit: impl FnOnce() -> Result<G, CountError>,
+    ) -> Result<(), CountError> {
         // A count-free unit (e.g. a pool 503 before any member bound its lane) adds no row and no
         // count, matching `record_counts_served_in_era`, so the served and checkpoint bills agree
         // (UPG-H2). It still touches a cell it already charged in this window: its terminal
         // checkpoint is custody of that cell (UPG-A04c).
-        let count_free = units.values().all(|n| n.is_zero());
+        let count_free = lanes
+            .iter()
+            .all(|(_, units)| units.values().all(|n| n.is_zero()));
         // A request charges a handful of buckets: the shard list, its guards and the staged cells
         // stay inline on the stack.
         // Kept ascending and distinct as it is built, so the guards are taken in shard order.
@@ -330,7 +496,6 @@ impl GovState {
             }
             // An exhausted pool unit reports the empty lane with no counts; accrue_raw adds no
             // row for it (#42, LINT-RULES R35).
-            cell.accrue_raw(lane, era, units)?;
             fn finish(
                 cell: &mut BudgetCell,
                 lane: &str,
@@ -387,9 +552,12 @@ impl GovState {
                 }
                 Ok(())
             }
-            finish(&mut cell, lane, era, units, durable)?;
-            if let Some(branch) = cell.correction.as_mut() {
-                finish(&mut branch.accepted, lane, era, units, durable)?;
+            for (lane, units) in lanes {
+                cell.accrue_raw(lane, era, units)?;
+                finish(&mut cell, lane, era, units, durable)?;
+                if let Some(branch) = cell.correction.as_mut() {
+                    finish(&mut branch.accepted, lane, era, units, durable)?;
+                }
             }
             cell.mutate(|cell| {
                 if let Some(group) = target.group() {
@@ -402,7 +570,9 @@ impl GovState {
             });
             changes.push((index, bucket, cell));
         }
-        before_commit()?;
+        // Selected metering returns its shard guard here, retaining the existing budget-before-
+        // meter lock order through the final infallible publication of every budget cell.
+        let publication = before_commit()?;
         for (index, bucket, cell) in changes {
             match guards[index].get_mut(bucket) {
                 Some(slot) => *slot = cell,
@@ -411,8 +581,56 @@ impl GovState {
                 }
             }
         }
+        drop(publication);
         Ok(())
     }
+}
+
+fn selected_meter_counts(
+    projection: &super::unit_checkpoint::partitions::UsageProjection,
+) -> Vec<(MeterKey, MeterCounts)> {
+    let common = &projection.common;
+    let key = |lane: &str, provider: Option<&str>| {
+        (
+            common.principal.clone(),
+            metering_bucket(common.arrived),
+            lane.to_owned(),
+            provider.unwrap_or_default().to_owned(),
+            common.era.effective_from,
+            common.group.clone(),
+            common
+                .era
+                .entry_id
+                .map(|id| id.metering_version())
+                .unwrap_or_default(),
+        )
+    };
+    let mut meters = Vec::new();
+    for partition in &projection.partitions {
+        let usage_units = partition.billed_counts();
+        if !usage_units.is_empty() {
+            meters.push((
+                key(
+                    &partition.identity.lane,
+                    partition.identity.provider.as_deref(),
+                ),
+                MeterCounts {
+                    usage_units,
+                    ..MeterCounts::default()
+                },
+            ));
+        }
+    }
+    if let Some(request) = &projection.logical_request {
+        meters.push((
+            key(&request.lane, request.provider.as_deref()),
+            MeterCounts {
+                requests: 1,
+                ..MeterCounts::default()
+            },
+        ));
+    }
+    meters
 }
 
 /// One bucket an accrual charges: its id, its window and the group that owns it.

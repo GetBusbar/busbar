@@ -182,6 +182,25 @@ impl GovState {
         first_sent_at_ms: u64,
         delta: &MeteringDelta,
     ) -> RecordStoreResult<RecoveryEvent> {
+        let child = Self::metering_recovery_child(operation_id, first_sent_at_ms, delta)?;
+        self.new_recovery_event(
+            child.operation_id,
+            child.kind,
+            child.body_fingerprint,
+            RecoveryState::Intent,
+            child.first_sent_at_ms,
+            child.payload,
+        )
+        .map_err(invalid)
+    }
+
+    /// Encode one immutable child without publishing recovery custody. Selected units must
+    /// validate their complete terminal vector before publishing any of its children.
+    pub(super) fn metering_recovery_child(
+        operation_id: [u8; 16],
+        first_sent_at_ms: u64,
+        delta: &MeteringDelta,
+    ) -> RecordStoreResult<RecoveryChild> {
         let custody = MeteringCustody {
             delta: delta.clone(),
             age_unknown: false,
@@ -189,15 +208,13 @@ impl GovState {
             handoffs: Vec::new(),
             verdict: None,
         };
-        self.new_recovery_event(
+        Ok(RecoveryChild {
             operation_id,
-            RecoveryKind::Metering,
-            fingerprint(b"busbar.metering-recovery.body.v1\0", delta)?,
-            RecoveryState::Intent,
-            Some(first_sent_at_ms),
-            encode(&custody)?,
-        )
-        .map_err(invalid)
+            kind: RecoveryKind::Metering,
+            body_fingerprint: fingerprint(b"busbar.metering-recovery.body.v1\0", delta)?,
+            first_sent_at_ms: Some(first_sent_at_ms),
+            payload: encode(&custody)?,
+        })
     }
 
     pub(super) async fn validate_recovery_origin(

@@ -219,3 +219,109 @@ async fn selected_no_winner_recovery_uses_the_captured_host_request_origin() {
     assert_eq!(meters[1].requests, 1);
     assert!(meters[1].usage_units.is_empty());
 }
+
+#[tokio::test]
+async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
+    use crate::governance::unit_checkpoint::SelectedTransfer;
+    use crate::governance::{MeterCounts, MAX_PENDING_METERING_PER_SHARD};
+    let gov = governance().await;
+    let snapshot = decode(&selected_value());
+    {
+        let mut shard = gov
+            .pending_metering
+            .shard_for(&snapshot.principal)
+            .lock()
+            .unwrap();
+        for i in 0..MAX_PENDING_METERING_PER_SHARD {
+            shard.insert(
+                (
+                    snapshot.principal.clone(),
+                    0,
+                    format!("occupied-{i}"),
+                    String::new(),
+                    0,
+                    String::new(),
+                    String::new(),
+                ),
+                MeterCounts::default(),
+            );
+        }
+    }
+    assert!(matches!(
+        gov.finish_selected_checkpoint(snapshot.clone(), None),
+        SelectedTransfer::RetainedPending(_)
+    ));
+    assert!(gov
+        .budget
+        .read(&snapshot.principal)
+        .get(&snapshot.principal)
+        .is_none());
+    assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
+    assert!(matches!(
+        gov.finish_selected_checkpoint(snapshot.clone(), None),
+        SelectedTransfer::RetainedPending(_)
+    ));
+    assert!(gov
+        .budget
+        .read(&snapshot.principal)
+        .get(&snapshot.principal)
+        .is_none());
+    drop(gov.pending_metering.drain().collect::<Vec<_>>());
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(!gov.unresolved_unit_target(&snapshot.principal, 0));
+    assert_eq!(
+        gov.budget.read(&snapshot.principal)[&snapshot.principal].total_tokens(),
+        Count::from(20u64)
+    );
+    let meters: Vec<_> = gov.pending_metering.drain().collect();
+    assert_eq!(
+        meters
+            .iter()
+            .map(|(_, counts)| counts.requests)
+            .sum::<u64>(),
+        1
+    );
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(gov.pending_metering.drain().next().is_none());
+    assert_eq!(
+        gov.budget.read(&snapshot.principal)[&snapshot.principal].total_tokens(),
+        Count::from(20u64)
+    );
+}
+
+#[tokio::test]
+async fn selected_replay_refuses_an_incomplete_or_changed_terminal_vector() {
+    let gov = governance().await;
+    let mut snapshot = decode(&selected_value());
+    snapshot.terminal = Some(gov.unit_terminal_events(&snapshot).unwrap());
+    gov.validate_selected_terminal(&snapshot).unwrap();
+    let original = snapshot.clone();
+    snapshot.terminal.as_mut().unwrap().pop();
+    assert!(gov.validate_selected_terminal(&snapshot).is_err());
+    snapshot = original;
+    snapshot.terminal.as_mut().unwrap()[0].payload.push(0);
+    assert!(gov.validate_selected_terminal(&snapshot).is_err());
+}
+
+#[tokio::test]
+async fn selected_refused_publication_retains_the_previous_revision_and_sources() {
+    let gov = governance().await;
+    let mut value = selected_value();
+    value["ended"] = json::json!(false);
+    value["partitions"]["disposition"] = json::json!("running");
+    let accepted = gov.stage_selected_checkpoint(decode(&value), None).unwrap();
+    let mut changed = (*accepted).clone();
+    changed.partitions.as_mut().unwrap().attempts[1]
+        .usage
+        .classes
+        .get_mut("work")
+        .unwrap()
+        .reported = None;
+    assert!(gov
+        .stage_selected_checkpoint(changed, Some(accepted.revision))
+        .is_err());
+    let repeated = gov
+        .stage_selected_checkpoint((*accepted).clone(), Some(accepted.revision))
+        .unwrap();
+    assert_eq!(accepted, repeated);
+}
