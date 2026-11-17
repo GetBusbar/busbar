@@ -461,7 +461,7 @@ pub struct RequestBinding {
 struct PhysicalBody {
     // Field drop order: wipe backing before retiring its original count/byte custody.
     bytes: SecureVec,
-    _credit: ByteCredit,
+    credit: ByteCredit,
 }
 impl RequestBinding {
     /// The originating publication handle; an equal App in another handle is not equivalent.
@@ -576,16 +576,24 @@ impl PhysicalRequest {
     /// Transfer the complete decoded body and its pre-existing credit exactly once.
     /// This adds no charge and never releases an independently retained input's backing.
     pub fn finish_input(self, body: SecureVec, credit: ByteCredit) -> Result<Self, ArrivalRefusal> {
+        // Bundle before any refusal so every exit wipes backing before refunding its credit.
+        let body = PhysicalBody {
+            bytes: body,
+            credit,
+        };
         let binding = self.binding();
         binding.check_live()?;
-        if credit.len() != body.len() || !binding.request.same_request(credit.request()) {
+        if body.credit.len() != body.bytes.len()
+            || body.bytes.capacity() > body.credit.len()
+            || !binding.request.same_request(body.credit.request())
+        {
             return Err(ArrivalRefusal::ForeignInput);
         }
         let limit = binding.app.limits.as_ref().map_or(
             crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
             |limits| limits.request_body_max_bytes,
         );
-        if body.len() > limit {
+        if body.bytes.len() > limit {
             return Err(ArrivalRefusal::BodyTooLarge);
         }
         let phase = binding
@@ -598,10 +606,7 @@ impl PhysicalRequest {
         }
         binding
             .body
-            .set(PhysicalBody {
-                bytes: body,
-                _credit: credit,
-            })
+            .set(body)
             .map_err(|_| ArrivalRefusal::ForeignInput)?;
         // Retain the state guard through the one-time body publication. No await or callback.
         drop(phase);

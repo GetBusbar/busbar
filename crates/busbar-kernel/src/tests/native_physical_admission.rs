@@ -452,6 +452,21 @@ fn native_physical_foreign_body_credit_never_enters_the_request() {
 }
 
 #[test]
+fn native_physical_body_rejects_unfunded_spare_capacity() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let credit = request.binding().request().try_reserve(4).unwrap();
+    let mut body = SecureVec::with_capacity(16).unwrap();
+    body.extend(b"body").unwrap();
+    assert!(matches!(
+        request.finish_input(body, credit),
+        Err(ArrivalRefusal::ForeignInput)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
 fn native_physical_incomplete_body_cannot_enter_completion() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
