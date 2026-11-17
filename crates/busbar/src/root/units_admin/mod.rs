@@ -809,7 +809,7 @@ async fn audit_keys_page(
     let window = match cursor::window(&query, "audit-keys", "", LIST_LIMIT_DEFAULT) {
         Ok(window) => window,
         Err(response) => {
-            let (parts, body) = response.into_parts();
+            let (parts, body) = (*response).into_parts();
             let bytes = axum::body::to_bytes(body, 64 * 1024)
                 .await
                 .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
