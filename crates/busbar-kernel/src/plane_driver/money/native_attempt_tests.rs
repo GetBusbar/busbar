@@ -241,3 +241,46 @@ fn preparation_gaps_are_valid_but_live_or_exhausted_predecessors_are_not() {
     assert!(super::preparation_follows(7, &[prior], 7));
     assert!(!super::preparation_follows(7, &[], 0));
 }
+
+#[test]
+fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
+    use crate::governance::unit_checkpoint::partitions::ClassFacts;
+    let mut partition = attempt();
+    partition.usage.classes.insert(
+        "tokens.in".into(),
+        ClassFacts {
+            reported: Some(Count::from(8)),
+            floor: Some(Count::from(16)),
+            estimated: Some(Count::from(20)),
+            rate_high_water: Count::from(20),
+        },
+    );
+    partition.usage.classes.insert(
+        "tokens.zero".into(),
+        ClassFacts {
+            reported: Some(Count::ZERO),
+            ..Default::default()
+        },
+    );
+    partition.usage.classes.insert(
+        "tokens.floor".into(),
+        ClassFacts {
+            floor: Some(Count::from(5)),
+            rate_high_water: Count::from(5),
+            ..Default::default()
+        },
+    );
+    let classes: Vec<Box<str>> = ["tokens.in", "tokens.zero", "tokens.floor", "tokens.missing"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let view = super::effective_tokens(&classes, &partition);
+    assert_eq!(view.0[0].quantity, Some(Count::from(20)));
+    assert!(view.0[0].authoritative);
+    assert_eq!(view.0[1].quantity, Some(Count::ZERO));
+    assert!(view.0[1].authoritative);
+    assert_eq!(view.0[2].quantity, Some(Count::from(5)));
+    assert!(!view.0[2].authoritative);
+    assert_eq!(view.0[3].quantity, None);
+    assert!(!view.0[3].authoritative);
+}

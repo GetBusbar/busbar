@@ -40,6 +40,7 @@ pub mod provider_catalog;
 pub mod request_admission;
 pub use money::native_attempt::NativeRequestMoney;
 pub(crate) use money::native_attempt::PreparedRateAttempt;
+pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError};
 pub(crate) use money::observation_budget_id;
 pub use money::NativeAdmissionError;
 pub(crate) mod needs;
