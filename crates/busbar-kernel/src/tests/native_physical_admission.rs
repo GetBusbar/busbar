@@ -511,7 +511,8 @@ fn native_physical_body_rejects_unfunded_spare_capacity() {
 
 #[test]
 fn native_physical_head_charges_unused_descriptor_backing() {
-    let f = fixture();
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
     let conn = f.listener.connect(accepted());
     let mut original = head("/one");
     original.fields = Vec::with_capacity(8);
@@ -527,7 +528,8 @@ fn native_physical_head_charges_unused_descriptor_backing() {
 
 #[test]
 fn native_physical_head_charges_spare_string_backing() {
-    let f = fixture();
+    let mut f = fixture();
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 256, 128);
     let conn = f.listener.connect(accepted());
     let mut original = head("/one");
     original.authority = String::with_capacity(256);
@@ -569,7 +571,7 @@ fn native_physical_response_owner_retains_request_count_after_input_drop() {
 #[test]
 fn native_physical_snapshot_captures_original_fields_once() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
     let facts = accepted_with_certificate(b"certificate");
     let conn = f.listener.connect(facts);
     let mut original = head("/one");
@@ -619,7 +621,7 @@ fn native_physical_snapshot_captures_original_fields_once() {
 #[test]
 fn native_physical_snapshot_requires_complete_input_and_preserves_absent_query() {
     let mut f = fixture();
-    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 4096);
+    f.budget = crate::limits::process_admission::ProcessAdmission::with_limits(3, 4096, 128);
     let conn = f.listener.connect(accepted());
     let (request, _owner) = arrive(&f, &conn, 1);
     assert!(matches!(
