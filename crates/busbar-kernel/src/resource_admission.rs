@@ -17,7 +17,7 @@ use busbar_plugin_abi::plane::{CARRIER_DEFAULT, CARRIER_HTTP, OUTBOUND_DEFAULT};
 
 use crate::plane_driver::port_egress::Targets;
 use crate::plane_driver::port_session::UpExchange;
-use crate::plane_driver::port_upstream::Candidate;
+use crate::plane_driver::port_upstream::{Candidate, TargetIdentity};
 use crate::plane_driver::HeadFields;
 use crate::state::InvocationId;
 use crate::upstreams::{UpstreamDef, Upstreams};
@@ -31,6 +31,8 @@ pub const MAX_VALUE: usize = 256;
 #[derive(Debug, Clone)]
 pub struct ForwardFact {
     pub descriptor: u32,
+    pub pool: Box<str>,
+    pub member: Box<str>,
     pub upstream: Box<str>,
     pub dialect: Box<str>,
     pub model: Box<str>,
@@ -137,6 +139,54 @@ fn add_size(total: &mut usize, bytes: usize, max: usize) -> Result<(), ResourceE
 }
 
 impl ResourceInventory {
+    /// Decode the pure plane's bounded inventory, then resolve every entry against the
+    /// host's admitted pool/full-member and upstream tables from the same generation.
+    pub fn from_wire(
+        caller: &Caller,
+        epoch: u64,
+        kinds: Vec<Box<str>>,
+        bytes: &[u8],
+        upstreams: Arc<dyn Upstreams>,
+        targets: Targets,
+        config_byte_limit: usize,
+    ) -> Result<Arc<Self>, ResourceError> {
+        let entries =
+            busbar_plugin_abi::resource_admission::decode_inventory(bytes, config_byte_limit)
+                .map_err(|_| ResourceError::Selection)?;
+        let facts = entries
+            .into_iter()
+            .map(|r| ResourceFact {
+                scope: ScopeRef {
+                    kind: r.scope.kind.into(),
+                    value: r.scope.value.into(),
+                },
+                forwards: r
+                    .forwards
+                    .into_iter()
+                    .map(|f| ForwardFact {
+                        descriptor: f.descriptor,
+                        pool: f.pool.into(),
+                        member: f.member.into(),
+                        upstream: f.upstream.into(),
+                        dialect: f.dialect.into(),
+                        model: f.model.into(),
+                        method: f.method.into(),
+                        target: f.target.into(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Self::build(
+            caller,
+            epoch,
+            kinds,
+            facts,
+            upstreams,
+            targets,
+            config_byte_limit,
+        )
+    }
+
     /// Resolve factual descriptors against the *admitted* upstream and projected target
     /// tables. This root-facing constructor creates no principal authorization.
     pub fn build(
@@ -193,11 +243,32 @@ impl ResourceInventory {
                 if forward.descriptor == 0 || descriptors.contains_key(&forward.descriptor) {
                     return Err(ResourceError::Duplicate);
                 }
-                for value in [&*forward.upstream, &*forward.dialect, &*forward.model] {
+                for value in [&*forward.upstream, &*forward.pool] {
                     if !valid_value(value) {
                         return Err(ResourceError::Value);
                     }
                     add_size(&mut size, value.len(), config_byte_limit)?;
+                }
+                if forward.member.is_empty() || forward.member.len() > 512 {
+                    return Err(ResourceError::Value);
+                }
+                add_size(&mut size, forward.member.len(), config_byte_limit)?;
+                // The first cohort has an authoritative UpstreamDef only for registered
+                // targets. Model targets stay unsupported until their owner publishes the
+                // actual configured destination association; no name/URL inference.
+                let projected =
+                    targets(&forward.pool, &forward.member).ok_or(ResourceError::Upstream)?;
+                if projected.identity != TargetIdentity::Registration {
+                    return Err(ResourceError::Unsupported);
+                }
+                for value in [&*forward.dialect, &*forward.model] {
+                    if value.len() > MAX_VALUE || value.chars().any(char::is_control) {
+                        return Err(ResourceError::Value);
+                    }
+                    add_size(&mut size, value.len(), config_byte_limit)?;
+                }
+                if projected.registered_upstream.as_deref() != Some(forward.upstream.as_ref()) {
+                    return Err(ResourceError::Upstream);
                 }
                 add_size(&mut size, forward.method.len(), config_byte_limit)?;
                 add_size(&mut size, forward.target.len(), config_byte_limit)?;
@@ -223,7 +294,6 @@ impl ResourceInventory {
                 {
                     return Err(ResourceError::Upstream);
                 }
-                let projected = targets(&forward.upstream).ok_or(ResourceError::Upstream)?;
                 add_size(&mut size, projected.provider.len(), config_byte_limit)?;
                 add_size(&mut size, projected.base_path.len(), config_byte_limit)?;
                 for (name, value) in &projected.params {
@@ -231,6 +301,9 @@ impl ResourceInventory {
                     add_size(&mut size, value.len(), config_byte_limit)?;
                 }
                 let candidate = Candidate {
+                    pool: forward.pool,
+                    qualified_member: forward.member,
+                    identity: projected.identity,
                     upstream: forward.upstream,
                     provider: projected.provider,
                     base_path: projected.base_path,
@@ -305,7 +378,7 @@ impl ResourceInventory {
     }
 
     /// Freeze the complete factual all-of set. No role binding or replay is performed here.
-    pub fn select(
+    fn select(
         self: &Arc<Self>,
         request: FrozenRequest,
         scopes: &[ScopeRef],

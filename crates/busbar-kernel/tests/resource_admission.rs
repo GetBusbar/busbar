@@ -419,10 +419,27 @@ fn exact_pool_member_projection_refuses_unknown_or_model_like_resource_facts() {
         build(&owner, vec![wrong_member]),
         Err(ResourceError::Upstream)
     ));
-    let mut wrong_model = fact("chat", 1);
-    wrong_model.forwards[0].model = "invented".into();
+    let targets: Targets = Arc::new(|_, _| {
+        let mut target = MemberTarget::bare();
+        target.identity = busbar_kernel::plane_driver::port_upstream::TargetIdentity::Model {
+            dialect: "fixture".into(),
+            model: "invented".into(),
+        };
+        Some(target)
+    });
+    let upstreams: Arc<dyn Upstreams> = Arc::new(ConfiguredUpstreams::from_definitions(
+        BTreeMap::from([("shared".into(), upstream())]),
+    ));
     assert!(matches!(
-        build(&owner, vec![wrong_model]),
+        ResourceInventory::build(
+            &owner,
+            7,
+            vec!["pool".into()],
+            vec![fact("chat", 1)],
+            upstreams,
+            targets,
+            1 << 20
+        ),
         Err(ResourceError::Unsupported)
     ));
 }
