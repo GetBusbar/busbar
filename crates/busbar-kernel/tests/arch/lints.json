@@ -84,7 +84,6 @@
       "crates/plugin-loader/src/dispatch/measurement.rs": ["Authority"],
       "crates/plugin-loader/src/dispatch/ticket.rs": ["WakeRoute"],
       "crates/plugin-loader/src/dispatch/worker.rs": ["Job", "Settle"],
-      "crates/plugin-loader/src/hook_door/port.rs": ["HookOpener"],
       "crates/plugin-loader/src/observe.rs": ["PluginObserver"],
       "crates/busbar-ports/src/auth.rs": ["AuthPort"],
       "crates/busbar-ports/src/export.rs": ["ExportPort"],

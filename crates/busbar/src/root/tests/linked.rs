@@ -242,7 +242,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 }
 
 #[test]
-fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
+fn the_linked_store_is_a_row_of_the_linked_tables() {
     let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
     assert_eq!(stores, [true], "one linked store: ephemeral");
     assert_eq!(
@@ -250,36 +250,6 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
         busbar_contract::abi::mechanism::DOOR_MAGIC,
         "the linked store states its door"
     );
-    let strategies = [
-        busbar_kernel::config::STRATEGY_CHEAPEST,
-        busbar_kernel::config::STRATEGY_FASTEST,
-        busbar_kernel::config::STRATEGY_LEAST_BUSY,
-        busbar_kernel::config::STRATEGY_USAGE,
-    ];
-
-    let words: Vec<Vec<String>> = crate::LINKED
-        .hook_doors
-        .iter()
-        .map(|door| {
-            let stated =
-                crate::root::loader::dispatch::rendering_of(*door).expect("the door states");
-            busbar_contract::abi::mechanism::rendering::read(&stated)
-                .expect("the rendering reads")
-                .mark_words
-                .into_iter()
-                .filter(|(class, _)| {
-                    *class == busbar_contract::abi::mechanism::door::MARK_WORD_HOOK
-                })
-                .map(|(_, word)| word)
-                .collect()
-        })
-        .collect();
-    let want: Vec<Vec<String>> = if cfg!(linked_axis_hooks) {
-        vec![strategies.iter().map(|s| s.to_string()).collect()]
-    } else {
-        Vec::new()
-    };
-    assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
 #[test]
@@ -330,32 +300,6 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
         &door_probe_dispatcher(),
         &crate::root::dispatch::dispatcher()
     ));
-}
-
-#[test]
-fn the_admin_compiled_in_hooks_are_the_linked_hook_rows() {
-    assert_eq!(
-        crate::LINKED_HOOK_NAMES.len(),
-        crate::LINKED.hook_doors.len(),
-        "one printed name per linked hook row: {:?}",
-        crate::LINKED_HOOK_NAMES
-    );
-    let mut seen = std::collections::HashSet::new();
-    for name in crate::LINKED_HOOK_NAMES {
-        assert!(
-            !name.is_empty(),
-            "a linked hook row's printed name is not empty"
-        );
-        assert!(
-            seen.insert(*name),
-            "`{name}` is printed for two linked hook rows"
-        );
-    }
-    assert_eq!(
-        cfg!(linked_axis_hooks),
-        !crate::LINKED_HOOK_NAMES.is_empty(),
-        "a build that links a hook row prints it"
-    );
 }
 
 mod blocked_disk_resolver {

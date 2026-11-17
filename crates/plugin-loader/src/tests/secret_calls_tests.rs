@@ -12,7 +12,7 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::hook_door_conformance_tests::hook_door_plugin;
+use crate::hook_door_plugin;
 use crate::neutral_secret as secret_fixture;
 use secret_fixture::door;
 use secret_fixture::NAME;

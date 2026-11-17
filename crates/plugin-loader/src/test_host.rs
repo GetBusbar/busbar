@@ -421,20 +421,6 @@ impl Host {
             .map_err(Refused::Open)
     }
 
-    /// A hook image opened as the loader's typed [`HookInstance`](crate::hook_door::HookInstance).
-    pub fn hook(
-        &self,
-        img: Image<Hook>,
-        name: &str,
-        settings: &[u8],
-    ) -> Result<crate::hook_door::HookInstance, Refused> {
-        let plugin = self.bind(&img, name)?;
-        crate::hook_door::HookInstance::open(plugin, Arc::clone(&self.dispatcher), settings, || {
-            Err(String::from("the test host does not rebind"))
-        })
-        .map_err(Refused::Open)
-    }
-
     /// An export image opened as the loader's typed [`ExportInstance`](crate::export_door::ExportInstance).
     pub fn export(
         &self,

@@ -648,10 +648,6 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     modules
 }
 
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
-}
-
 const MAX_PLUGIN_FILENAME_LEN: usize = 256;
 
 fn validate_plugin_filename(app: &App, file: &str) -> Result<String, AdminError> {

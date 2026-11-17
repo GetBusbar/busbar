@@ -454,16 +454,6 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
-                    plugins.push(PluginView::basic(
-                        name.to_string(),
-                        "hooks",
-                        "compiled-in",
-                        None,
-                        None,
-                    ));
-                }
-
                 let mut externals: Vec<PluginView> = self
                     .app
                     .hook_registry

@@ -522,7 +522,7 @@ fn listener_candidates_from(
             .transpose()?
             .unwrap_or_default(),
     );
-    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+    for door in linked.plane_doors {
         let candidate = Candidate::linked(*door)?;
         if !candidates
             .iter()

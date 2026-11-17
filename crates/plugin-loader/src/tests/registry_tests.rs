@@ -724,40 +724,6 @@ fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
 }
 
 #[test]
-fn the_hook_axis_refuses_a_non_hook_kind() {
-    use busbar_contract::hook_calls::HookAxis;
-    let release = key(1);
-    let dir = tmpdir("hookkind");
-    let m = crate::sign::seal_test_artifact(
-        &release,
-        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
-        b"store lib",
-    );
-    write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
-    let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    assert!(reg.resolve("gamma").is_some(), "the store row resolves");
-    let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
-        crate::dispatch::DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    let rows = crate::hook_door::HookRows::new(&[], Some(&reg), dispatcher).expect("the axis");
-    let err = rows
-        .open(
-            "gamma",
-            "gamma",
-            &crate::dispatch::test_settings(&serde_json::json!({})),
-            std::time::Duration::from_secs(1),
-        )
-        .map(|_| ())
-        .unwrap_err();
-    assert!(
-        err.contains("no `kind: hook` plugin answers to 'gamma'"),
-        "got {err}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn a_conflict_marks_only_the_rows_it_names() {
     let release = key(1);
     let dir = tmpdir("conflictjoin");

@@ -164,23 +164,6 @@ pub mod highwater;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod hook_door;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 #[deny(unsafe_code)]
 mod host;
 pub mod migration_secrets;
@@ -496,8 +479,8 @@ mod transport_door_conformance_tests;
 mod transport_door_tests;
 
 #[cfg(test)]
-#[path = "tests/hook_door_conformance_tests.rs"]
-mod hook_door_conformance_tests;
+#[path = "../tests/fixtures/hook_door_plugin.rs"]
+pub(crate) mod hook_door_plugin;
 
 #[cfg(test)]
 #[path = "tests/conformance_auth_form_tests.rs"]

@@ -103,27 +103,6 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let entries = entries(REGISTRY);
     let mut skipped = Vec::new();
 
-    for door in crate::LINKED.hook_doors {
-        let c = Candidate::linked(*door).expect("a linked hook states itself");
-        let row = Row::of_door(&c, "hook");
-        let want = entries
-            .iter()
-            .find(|e| {
-                e.kind == "hook" && (row.aliases.contains(&e.alias) || row.canonical == e.alias)
-            })
-            .map_or_else(
-                || {
-                    "its plugins.yaml manifest_name (none of its aliases answers an entry yet)"
-                        .to_string()
-                },
-                |e| format!("'{}'", e.manifest_name),
-            );
-        skipped.push(format!(
-            "linked hook '{}': the hook row is the in-tree crate until P5 #484; the pinned repo \
-             states {want}",
-            row.canonical
-        ));
-    }
     for t in crate::LINKED.transports {
         skipped.push(format!(
             "linked transport '{}': a wire is keyed by its scheme, not a registry row with a \

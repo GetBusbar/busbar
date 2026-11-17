@@ -21,7 +21,6 @@ pub mod alloc;
 mod auth;
 mod export;
 mod frames;
-mod hook;
 mod host;
 mod plane;
 mod report;
@@ -106,11 +105,11 @@ const USAGE: &str = "\
 busbar-plugin-bench: load ONE busbar plugin and hammer it (report only, never a gate)
 
 USAGE:
-  busbar-plugin-bench --kind <store|plane|secret|auth|hook|export|transport> [--plugin <path/to/libX.{so,dylib}>] [options]
+  busbar-plugin-bench --kind <store|plane|secret|auth|export|transport> [--plugin <path/to/libX.{so,dylib}>] [options]
 
 OPTIONS:
   --plugin <path>        a dropped-in cdylib (default: the door linked into this binary)
-  --kind <kind>          store | plane | secret | auth | hook | export | transport
+  --kind <kind>          store | plane | secret | auth | export | transport
   --ops <n>              calls per op (default 1000000, split over the threads)
   --threads <list>       thread counts to run, e.g. 1,4 (default 1,4)
   --budget-secs <s>      wall budget per scenario and thread count (default 10); a run that hits
@@ -256,7 +255,6 @@ fn run_with(cfg: &Config, target: &Target) -> Result<bool, String> {
         "plane" => plane::specs(cfg, target)?,
         "secret" => secret::specs(cfg, target)?,
         "auth" => auth::specs(cfg, target)?,
-        "hook" => hook::specs(cfg, target)?,
         "export" => export::specs(cfg, target)?,
         "transport" => transport::specs(cfg, target)?,
         other => {

@@ -178,10 +178,6 @@ pub struct RootInstall {
     pub endpoint_locate: Option<EndpointLocate>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
-    /// The printed name of each hook row this build LINKS, in manifest order (the root's
-    /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
-    /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
-    pub hook_names: &'static [&'static str],
     /// The root's store axis: what boot opens the configured store through.
     pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the

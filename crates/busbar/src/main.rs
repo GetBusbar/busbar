@@ -295,8 +295,6 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 
-include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
-
 fn register_protocols() {
     root::linked::register_protocols(&LINKED);
 }
