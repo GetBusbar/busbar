@@ -168,7 +168,7 @@ impl<'a> Verifier<'a> {
             Err(error) => Err(error),
         }
     }
-    pub(crate) fn primitive<T>(&self, result: std::result::Result<T, Failure>) -> Result<T> {
+    pub(crate) fn primitive<T>(result: std::result::Result<T, Failure>) -> Result<T> {
         result.map_err(|error| {
             if error.is_unavailable() {
                 VerificationError::Unavailable(error)

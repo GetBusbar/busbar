@@ -132,7 +132,13 @@ impl<'a> Context<'a> {
     /// Import an Ed25519 key without caching permission for subsequent operations.
     pub fn import_ed25519(&self, bytes: &[u8; 32]) -> Result<ed25519::VerifyingKey, Failure> {
         self.guarded(Operation::Ed25519Import, || {
-            ed25519::VerifyingKey::from_bytes(bytes)
+            let key = ed25519::VerifyingKey::from_bytes(bytes)?;
+            if key.is_weak() {
+                return Err(Error::Invalid(
+                    "weak ed25519 public key (small-order point): it would verify any signature",
+                ));
+            }
+            Ok(key)
         })
     }
 

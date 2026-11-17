@@ -116,7 +116,7 @@ pub(crate) fn p256_from_hex_guarded(
     if point[0] != 4 {
         return Err("p256 public key is not an uncompressed SEC1 point (04 || x || y)".into());
     }
-    verifier.primitive(verifier.crypto.validate_p256(&point))?;
+    Verifier::primitive(verifier.crypto.validate_p256(&point))?;
     Ok(ReleaseKey::P256(point))
 }
 

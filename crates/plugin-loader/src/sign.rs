@@ -1111,13 +1111,8 @@ pub(crate) fn public_key_from_hex_guarded(
         .as_slice()
         .try_into()
         .map_err(|_| format!("public key must be 32 bytes, got {}", bytes.len()))?;
-    verifier.primitive(verifier.crypto.validate_ed25519(&arr))?;
-    let key = VerifyingKey::from_facade(verifier.primitive(verifier.crypto.import_ed25519(&arr))?);
-    if key.is_weak() {
-        return Err(
-            "weak ed25519 public key (small-order point): it would verify any signature".into(),
-        );
-    }
+    Verifier::primitive(verifier.crypto.validate_ed25519(&arr))?;
+    let key = VerifyingKey::from_facade(Verifier::primitive(verifier.crypto.import_ed25519(&arr))?);
     Ok(key)
 }
 
