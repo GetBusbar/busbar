@@ -9,6 +9,9 @@ use crate::host_units::UnitRecord;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::services::Caller;
 
+#[path = "request_registration_tests.rs"]
+mod registration_tests;
+
 struct NoChildren;
 impl NestRoute for NoChildren {
     fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
@@ -42,7 +45,7 @@ fn context_with_key(
             depth: 0,
         }
     ));
-    let generation = Arc::new(ServingGeneration::new(core, Arc::new(NoChildren)));
+    let generation = Arc::new(ServingGeneration::try_new(core, Arc::new(NoChildren)).unwrap());
     (
         InvocationContext::new(generation, caller, unit).unwrap(),
         lease,
@@ -123,6 +126,33 @@ fn pending_registration_does_not_replace_an_existing_unit() {
     ));
     assert_eq!(context.principal().unwrap().id, "payer");
     assert!(!context.effects_allowed());
+}
+
+#[test]
+fn retiring_old_context_preserves_a_reused_numeric_allocation() {
+    let (old, _lease) = context(17);
+    let core = old.generation().core();
+    core.units().ended(old.unit());
+    let caller = Caller::for_test(Arc::from("seat"), KindCode::Plane);
+    let _new_lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        old.unit(),
+        &caller,
+        UnitRecord {
+            principal: Some(Arc::new(VirtualKey {
+                id: "new-payer".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let new = InvocationContext::new(old.generation().clone(), caller, old.unit()).unwrap();
+    old.retire();
+    assert!(new.is_live());
+    assert_eq!(new.principal().unwrap().id, "new-payer");
+    new.retire();
+    assert!(!new.is_live());
 }
 
 fn catalog_routes() -> RequestRoutes {
@@ -298,6 +328,65 @@ fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
         other.admitted_view(&admitted),
         Err(AdmissionViewUnavailable::ForeignGovernor)
     ));
+    let parent = money.parent_money(admitted.unit(), admitted.key()).unwrap();
+    let child_caller = Caller::for_test(Arc::from("seat"), KindCode::Plane);
+    let _child_lease = ctx
+        .generation()
+        .core()
+        .admit_native_invocation(&child_caller)
+        .unwrap();
+    assert!(ctx.generation().core().units().pre_admitted_for(
+        18,
+        &child_caller,
+        UnitRecord {
+            principal: Some(admitted.key().clone()),
+            depth: 1,
+        }
+    ));
+    let child_context = InvocationContext::new(ctx.generation().clone(), child_caller, 18).unwrap();
+    let child_walk = RequestWalk::new(&child_context).unwrap();
+    let child_receipt = RequestAllocation::new(child_context.clone(), parent.cost().clone(), 101)
+        .unwrap()
+        .forward(&routes, &child_walk, Some("q"))
+        .unwrap();
+    let child = money
+        .admit_existing_child(
+            child_receipt.begin().unwrap(),
+            &parent,
+            Arc::from([]),
+            super::super::money::FeeRefund::CallerStatus,
+        )
+        .unwrap();
+    assert_eq!(child.domain(), &RequestDomain::NamedPool("q".into()));
+    assert_eq!(
+        child.pool(),
+        admitted.pool(),
+        "child routing cannot replace the parent's admitted monetary scope"
+    );
+    assert_eq!(child.arrived(), admitted.arrived());
+    let child_view = gov.admitted_view(&child).unwrap();
+    assert_eq!(
+        child_view.rate_headroom,
+        Some(0.8),
+        "a child takes no second request admission"
+    );
+    assert!(child_view
+        .budgets
+        .iter()
+        .any(|bucket| bucket.pool.as_deref() == Some("p")));
+    assert!(child_view
+        .budgets
+        .iter()
+        .all(|bucket| bucket.pool.as_deref() != Some("q")));
+    money.settle_end_as(
+        child.unit(),
+        UnitEnd {
+            caller_status: 200,
+            cut: false,
+            refused_unspent: false,
+        },
+    );
+    child_context.retire();
     money.settle_end_as(
         admitted.unit(),
         UnitEnd {
@@ -311,4 +400,74 @@ fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
         gov.admitted_view(&admitted),
         Err(AdmissionViewUnavailable::Stale)
     ));
+}
+
+#[path = "../money/selected_admission_tests.rs"]
+mod selected_money;
+
+#[test]
+fn command_registration_retains_the_real_definition_without_a_url_walk() {
+    use crate::upstreams::{
+        ConfiguredUpstreams, ProgramPin, StdioCommand, UpstreamDef, UpstreamTls,
+    };
+    let definition = Arc::new(UpstreamDef {
+        name: "command".into(),
+        allow_private: false,
+        url: None,
+        command: Some(StdioCommand {
+            argv: vec!["/usr/bin/true".into()],
+            env: vec![],
+            cwd: None,
+            pin: ProgramPin::Unpinned,
+            idle_s: 30,
+        }),
+        tls: UpstreamTls {
+            pin_spki: vec![],
+            client_identity: None,
+            trust: None,
+        },
+        auth: None,
+    });
+    let table = Arc::new(ConfiguredUpstreams::from_definitions(
+        [("command".into(), definition.clone())].into(),
+    ));
+    let routes = RequestRoutes::new("seat", Some(Arc::from("server")), None, None)
+        .unwrap()
+        .with_registrations(table)
+        .unwrap();
+    let (ctx, _lease) = context(19);
+    let receipt = allocation(ctx)
+        .registration(&routes, None, "command")
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        receipt.registered_command().unwrap(),
+        &definition
+    ));
+    assert_eq!(
+        receipt.domain(),
+        &RequestDomain::Registration("command".into())
+    );
+    assert!(
+        receipt.walk_key().is_none(),
+        "a command cannot masquerade as an HTTP exchange"
+    );
+    assert!(receipt.member_grants().is_empty());
+    for (model, selected) in [(Some("unknown"), "command"), (None, "missing")] {
+        let (ctx, _lease) = context(20);
+        assert!(allocation(ctx)
+            .registration(&routes, model, selected)
+            .is_err());
+    }
+    let (ctx, _lease) = context_with_key(
+        21,
+        Arc::new(VirtualKey {
+            id: "denied".into(),
+            enabled: true,
+            allowed_scopes: Some(vec![]),
+            ..Default::default()
+        }),
+    );
+    assert!(allocation(ctx)
+        .registration(&routes, None, "command")
+        .is_err());
 }

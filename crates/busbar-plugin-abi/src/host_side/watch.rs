@@ -163,6 +163,44 @@ fn claim(table: &Table, claim: &Claim) -> Option<u32> {
     None
 }
 
+/// A native entry's exact enclosing watch state. Cancellation has no output frame and can nest
+/// beyond the fixed output depth, so restoration cannot rely on the legacy `saved` array.
+pub(crate) struct Entry {
+    saved: Option<(u64, usize)>,
+    _thread: core::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Entry {
+    pub(crate) fn enter(slot: u32, entry: u8) -> Self {
+        let scope = Self {
+            saved: CLAIM
+                .try_with(|claim| (claim.word.get(), claim.depth.get()))
+                .ok(),
+            _thread: core::marker::PhantomData,
+        };
+        enter(slot, entry);
+        scope
+    }
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        let Some((word, depth)) = self.saved else {
+            return;
+        };
+        let _ = CLAIM.try_with(|claim| {
+            claim.word.set(word);
+            claim.depth.set(depth);
+            if let Some(published) = TABLE
+                .get()
+                .and_then(|table| table.words.get(claim.idx.get() as usize))
+            {
+                published.0.store(word, Ordering::Relaxed);
+            }
+        });
+    }
+}
+
 /// Registers the calling thread on its first entry (cold, below), then two Relaxed stores.
 pub fn enter(slot: u32, entry: u8) {
     let Some(table) = TABLE.get() else {
@@ -370,6 +408,66 @@ mod tests {
             assert_eq!(my_word(), outer, "the outer entry's word, unchanged");
             leave();
             assert_eq!(my_word(), 0);
+        })
+        .join()
+        .expect("thread");
+    }
+
+    #[test]
+    fn scoped_entries_restore_exact_words_and_depths_beyond_the_saved_array() {
+        let _serial = serial();
+        init();
+        std::thread::spawn(|| {
+            enter(7, ENTRY_RESUME);
+            let outer = my_word();
+            let index = CLAIM.with(|claim| claim.idx.get());
+            let mut scopes = Vec::new();
+            for _ in 0..NEST + 3 {
+                let word = my_word();
+                let depth = CLAIM.with(|claim| claim.depth.get());
+                let scope = Entry::enter(9, ENTRY_CANCEL);
+                assert!(
+                    my_word() >> 32 > word >> 32,
+                    "each nested entry advances the sequence"
+                );
+                scopes.push((scope, word, depth));
+            }
+            let deepest = my_word();
+            let deepest_depth = CLAIM.with(|claim| claim.depth.get());
+            let panicked = std::panic::catch_unwind(|| {
+                let _scope = Entry::enter(11, ENTRY_CANCEL);
+                panic!("unwind a nested no-output entry");
+            });
+            assert!(panicked.is_err());
+            assert_eq!(
+                my_word(),
+                deepest,
+                "unwind restores the exact word including its sequence"
+            );
+            assert_eq!(CLAIM.with(|claim| claim.depth.get()), deepest_depth);
+            let sequence = CLAIM.with(|claim| claim.seq.get());
+            while let Some((scope, word, depth)) = scopes.pop() {
+                drop(scope);
+                assert_eq!(my_word(), word);
+                CLAIM.with(|claim| {
+                    assert_eq!(claim.word.get(), word);
+                    assert_eq!(claim.depth.get(), depth);
+                    assert_eq!(
+                        claim.seq.get(),
+                        sequence,
+                        "restoration never rewinds sequence allocation"
+                    );
+                    assert_eq!(claim.idx.get(), index, "the same thread retains its claim");
+                });
+            }
+            assert_eq!(
+                my_word(),
+                outer,
+                "a scoped entry restores its enclosing legacy entry"
+            );
+            leave();
+            assert_eq!(my_word(), 0);
+            assert_eq!(CLAIM.with(|claim| claim.depth.get()), 0);
         })
         .join()
         .expect("thread");

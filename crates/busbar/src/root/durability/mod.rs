@@ -30,7 +30,7 @@ mod unit_checkpoint_audit;
 mod usage_recovery;
 pub(crate) use unit_checkpoint::unit_checkpoint_sink;
 #[cfg(test)]
-pub(crate) use unit_checkpoint_audit::RunningAudit;
+pub(crate) use unit_checkpoint_audit::{RunningAudit, SelectedAuditIdentity};
 pub(crate) use usage_recovery::usage_recovery_sink;
 
 mod store_identity;
@@ -55,6 +55,7 @@ mod audit_page;
 pub(crate) mod audit_services;
 pub(crate) mod notary;
 pub(crate) mod predecessor;
+pub(crate) mod response_intent;
 pub(crate) mod restart_seal;
 pub(crate) mod signer;
 pub(crate) use notary::HeadFeed;
@@ -465,6 +466,9 @@ pub(crate) fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>
 }
 
 pub struct NodeBook {
+    /// Verified persisted deployment public keys, retained with journal/export history.
+    pub audit_verification_keys: Arc<AuditKeySet>,
+    pub(crate) response_intents: Option<Arc<response_intent::ResponseIntentService>>,
     pub durability: Arc<std::sync::Mutex<Durability>>,
     pub runtime_journal: Arc<RuntimeJournal>,
     pub node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
@@ -499,6 +503,8 @@ pub(crate) async fn node_book(
     )
     .await?;
     Ok(NodeBook {
+        audit_verification_keys: Arc::new(AuditKeySet::new()),
+        response_intents: None,
         durability: Arc::new(std::sync::Mutex::new(durability)),
         runtime_journal: journal,
         node_lease: None,
@@ -597,3 +603,7 @@ mod notary_tests;
 #[cfg(test)]
 #[path = "../tests/durability_signer.rs"]
 mod signer_tests;
+
+#[cfg(test)]
+#[path = "../tests/response_intent.rs"]
+mod response_intent_tests;

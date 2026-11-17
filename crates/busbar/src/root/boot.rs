@@ -2143,6 +2143,12 @@ impl BookPreparation {
         // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
         // keeps only the public half. The notary starts from the resumed head, read before any
         // recovery line is appended, once serving begins (`main`).
+        let audit_verification_keys = Arc::new(bound.verification_keys);
+        super::durability::response_intent::verify_history(
+            self.durability.as_ref().unwrap(),
+            audit_verification_keys.as_ref(),
+        )
+        .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
@@ -2242,14 +2248,36 @@ impl BookPreparation {
         super::measurements::install(app)?;
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
-        self.phase = BookPhase::Ready;
-        Ok(super::durability::NodeBook {
+        let mut book = super::durability::NodeBook {
+            audit_verification_keys,
+            response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
             verb_store,
-            audit: Some(audit),
-        })
+            audit: Some(Arc::clone(&audit)),
+        };
+        if !book.runtime_journal.is_bound_to(&self.core) {
+            return Err("response intent journal belongs to another Store attachment".into());
+        }
+        let incarnation = book
+            .durability
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .incarnation;
+        book.response_intents = Some(
+            super::durability::response_intent::ResponseIntentService::new(
+                Arc::clone(&book.runtime_journal),
+                incarnation,
+                book.audit_verification_keys.as_ref().clone(),
+                audit
+                    .take_response_intent_handle()
+                    .ok_or("response intent signer was already transferred")?,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+        self.phase = BookPhase::Ready;
+        Ok(book)
     }
 }
 async fn bind_boot_keyset(

@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLockWriteGuard};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use busbar_contract::{Count, MeterClassId};
+use busbar_contract::Count;
+use busbar_plugin_abi::fallback_usage::class_text;
 use foldhash::HashMap;
 
 use super::selected_policy::ResolvedSelectedRules;
@@ -129,14 +130,14 @@ pub(crate) struct RateRejected {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct EffectiveToken {
-    pub(crate) class: MeterClassId,
+pub(crate) struct EffectiveToken<'a> {
+    pub(crate) class: &'a str,
     pub(crate) quantity: Option<Count>,
     pub(crate) authoritative: bool,
 }
 
 /// One complete declaration-aligned view, after the money consumer selects each source.
-pub(crate) struct EffectiveTokenView(pub(crate) Vec<EffectiveToken>);
+pub(crate) struct EffectiveTokenView<'a>(pub(crate) Vec<EffectiveToken<'a>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TokenCoverage {
@@ -156,7 +157,7 @@ pub(crate) enum RateObservationError {
 #[derive(Debug)]
 pub(crate) struct RateFinalSnapshot {
     pub(crate) rules: Vec<RateSnapshot>,
-    pub(crate) highwater: Vec<(MeterClassId, Count)>,
+    pub(crate) highwater: Vec<(Box<str>, Count)>,
 }
 
 struct RateClock {
@@ -508,16 +509,18 @@ impl SelectedRates {
         })
     }
 
-    fn reserve_terms(
+    fn reserve_terms<C: AsRef<str>>(
         self: &Arc<Self>,
         terms: Vec<RateTerms>,
-        classes: &[MeterClassId],
+        classes: &[C],
     ) -> Result<RateHold, RateRefusal> {
         if classes.len() > MAX_CLASSES
-            || classes
-                .iter()
-                .enumerate()
-                .any(|(at, class)| classes[..at].contains(class))
+            || classes.iter().enumerate().any(|(at, class)| {
+                class_text(class.as_ref().as_bytes()).is_err()
+                    || classes[..at]
+                        .iter()
+                        .any(|old| old.as_ref() == class.as_ref())
+            })
         {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
         }
@@ -571,7 +574,7 @@ impl SelectedRates {
             classes: classes
                 .iter()
                 .map(|class| ClassHighwater {
-                    class: *class,
+                    class: class.as_ref().into(),
                     amount: Count::ZERO,
                     authoritative: false,
                 })
@@ -604,7 +607,7 @@ enum Phase {
 }
 
 struct ClassHighwater {
-    class: MeterClassId,
+    class: Box<str>,
     amount: Count,
     authoritative: bool,
 }
@@ -683,13 +686,16 @@ impl RateHold {
         }
     }
 
-    fn observe(&mut self, view: &EffectiveTokenView) -> Result<(), RateObservationError> {
+    fn observe(&mut self, view: &EffectiveTokenView<'_>) -> Result<(), RateObservationError> {
         if self.phase != Phase::Committed {
             return Err(RateObservationError::Sealed);
         }
         if view.0.len() != self.classes.len()
             || view.0.iter().enumerate().any(|(at, value)| {
-                !self.classes.iter().any(|held| held.class == value.class)
+                !self
+                    .classes
+                    .iter()
+                    .any(|held| held.class.as_ref() == value.class)
                     || view.0[..at].iter().any(|other| other.class == value.class)
                     || value.quantity.is_some_and(Count::is_negative)
                     || (value.authoritative && value.quantity.is_none())
@@ -701,7 +707,7 @@ impl RateHold {
             let quantity = view
                 .0
                 .iter()
-                .find(|value| value.class == held.class)
+                .find(|value| value.class == held.class.as_ref())
                 .and_then(|value| value.quantity)
                 .unwrap_or(Count::ZERO);
             // Both values are nonnegative; subtracting the smaller is exact and cannot overflow.
@@ -743,7 +749,7 @@ impl RateHold {
             let value = view
                 .0
                 .iter()
-                .find(|value| value.class == held.class)
+                .find(|value| value.class == held.class.as_ref())
                 .expect("complete validated physical class view");
             held.amount = held.amount.max(value.quantity.unwrap_or(Count::ZERO));
             held.authoritative = value.authoritative;
@@ -795,7 +801,7 @@ impl RateHold {
             highwater: self
                 .classes
                 .iter()
-                .map(|held| (held.class, held.amount))
+                .map(|held| (held.class.clone(), held.amount))
                 .collect(),
         })
     }
@@ -827,6 +833,14 @@ impl RateReservation {
         &self.prepared
     }
 
+    /// Releases the unsent hold before returning the original preparation for no-send
+    /// finalization or a permitted retry within the same prepared partition.
+    pub(crate) fn cancel(self) -> PreparedRateAttempt {
+        let Self { hold, prepared } = self;
+        drop(hold);
+        prepared
+    }
+
     pub(crate) fn try_commit(self) -> Result<CommittedRate, RateRejected> {
         let Self { mut hold, prepared } = self;
         match hold.commit() {
@@ -848,7 +862,7 @@ impl CommittedRate {
 
     pub(crate) fn observe(
         &mut self,
-        view: &EffectiveTokenView,
+        view: &EffectiveTokenView<'_>,
     ) -> Result<(), RateObservationError> {
         self.hold.observe(view)
     }

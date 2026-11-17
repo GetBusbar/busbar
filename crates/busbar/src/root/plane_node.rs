@@ -38,6 +38,11 @@ struct LaneNames {
     consulted: u64,
 }
 
+struct ResponseIntentOwner {
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
+}
+
 /// WHEN ONE UNIT ARRIVED — one reading of the wall clock, spelled in both the units this loop asks
 /// for.
 ///
@@ -135,6 +140,7 @@ pub(crate) struct Node {
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
+    response_intent: std::sync::OnceLock<ResponseIntentOwner>,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
@@ -168,6 +174,7 @@ impl Node {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            response_intent: std::sync::OnceLock::new(),
             sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
@@ -231,7 +238,20 @@ impl Node {
     }
 
     pub(crate) fn arrived(&self) -> Arrived {
-        Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
+        self.checked_arrived()
+            .expect("node monotonic clock exhausted")
+    }
+
+    /// Response finalization can refuse exhausted identity before publishing any output.
+    /// All node stamps share this allocator, so an ordinary arrival cannot wrap it first.
+    pub(crate) fn checked_arrived(&self) -> Result<Arrived, &'static str> {
+        let mono = self
+            .mono
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| "node monotonic clock exhausted")?;
+        Ok(Arrived::at(self.clock.now(), mono))
     }
 
     #[cfg(test)]
@@ -258,6 +278,65 @@ impl Node {
         let _ = self.lane.set(journal);
         let _ = self.sealing.set(sealing);
         let _ = self.book.set(book);
+    }
+
+    pub(crate) fn bind_response_intents(
+        &self,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
+    ) -> Result<(), &'static str> {
+        let book = self
+            .book
+            .get()
+            .ok_or("response intent node book unavailable")?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self
+            .lane
+            .get()
+            .is_some_and(|journal| Arc::ptr_eq(journal, service.journal()))
+            || !service.journal().is_bound_to(&store)
+            || book.incarnation != service.incarnation()
+            || book.record.node() != service.journal().node()
+        {
+            return Err("response intent owner differs from the admitted node journal");
+        }
+        self.response_intent
+            .set(ResponseIntentOwner { store, service })
+            .map_err(|_| "response intent owner already installed")
+    }
+
+    pub(crate) fn response_intents(
+        &self,
+    ) -> Option<Arc<crate::root::durability::response_intent::ResponseIntentService>> {
+        self.response_intent
+            .get()
+            .map(|owner| Arc::clone(&owner.service))
+    }
+
+    pub(crate) fn response_intent_stamp(
+        &self,
+        journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    ) -> Result<busbar_kernel_audit::response_intent::ResponseIntentStamp, String> {
+        let owner = self
+            .response_intent
+            .get()
+            .ok_or("response intent owner unavailable")?;
+        if !Arc::ptr_eq(journal, owner.service.journal()) || !journal.is_bound_to(&owner.store) {
+            return Err("response intent journal differs from the retained attachment".into());
+        }
+        let authority = owner
+            .store
+            .authority()
+            .map_err(|error| format!("response intent writer: {error:?}"))?;
+        let history = crate::root::kernel::ROOT_CARD.pin();
+        let captured = self.checked_arrived()?;
+        Ok(busbar_kernel_audit::response_intent::ResponseIntentStamp {
+            lease_epoch: authority.writer_epoch,
+            policy_epoch: policy_in_force(history.as_ref(), captured.ms()),
+            wall: captured.secs(),
+            mono: captured.mono(),
+        })
     }
 
     /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
@@ -1091,7 +1170,7 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    fn of((usage, fee_count, lane, attribution): Reported) -> Self {
+    fn of((usage, fee_count, lane, attribution): crate::root::linked::node::LegacyReport) -> Self {
         Report {
             usage,
             fee_count,
@@ -1147,7 +1226,25 @@ impl LateAccrual {
 
         let completed = outcome.is_some_and(Outcome::is_completed);
         // A report that bills nothing is not sealed as usage, but its attribution still is.
-        let (report, attribution) = match late().map(Report::of) {
+        let reported = late();
+        if matches!(
+            reported,
+            Some(Reported::Selected(_)) | Some(Reported::Partitioned(_))
+        ) {
+            return selected_confirmation(
+                reported.expect("selected branch"),
+                custody,
+                book,
+                line,
+                history,
+                durability_token,
+                principal,
+                arrived,
+                outcome,
+                seal,
+            );
+        }
+        let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
             Some(report)
                 if completed
                     || report.fee_count > 0
@@ -1421,7 +1518,10 @@ impl SessionSlot<'_> {
         let mut open = post.take(self.key);
         if let Some(open) = open.as_mut() {
             if open.sealing.report.is_none() {
-                open.sealing.report = self.money_report().map(Report::of);
+                open.sealing.report = self
+                    .money_report()
+                    .and_then(Reported::legacy)
+                    .map(Report::of);
             }
         }
         let outcome = override_outcome
@@ -1761,7 +1861,7 @@ impl NodeEndPost {
 
     pub(crate) fn reported(&self, key: UnitKey, report: Option<Reported>) {
         if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.report = report.map(Report::of);
+            open.sealing.report = report.and_then(Reported::legacy).map(Report::of);
         }
     }
 
@@ -1849,6 +1949,8 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 /// very bytes that record reads back.
 #[derive(serde::Serialize)]
 struct RunningAuditFacts<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_identity: Option<crate::root::durability::SelectedAuditIdentity>,
     incarnation: u64,
     principal: &'a str,
     op_class: &'a str,
@@ -1892,6 +1994,19 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let captured = RunningAuditFacts {
+            selected_identity: Some(crate::root::durability::SelectedAuditIdentity {
+                node: book.record.node(),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                user: open.sealing.ran.records.user.clone(),
+                labels: open
+                    .sealing
+                    .ran
+                    .records
+                    .labels
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.clone()))
+                    .collect(),
+            }),
             incarnation: book.incarnation,
             principal: open.principal.as_str(),
             op_class: open.checkpoint_class?.as_str(),
@@ -2138,8 +2253,133 @@ impl Accruing {
 // task runs the confirmation itself; a confirmation dropped unfinished (never
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the existing late accrual transfers its original owners together"
+)]
+fn selected_confirmation(
+    reported: Reported,
+    custody: Arc<crate::root::serve::TicketCustody>,
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+    line: Option<crate::root::durability::LineIdentity>,
+    history: crate::root::kernel::PinnedHistory,
+    token: Grant<busbar_contract::caps::DurableWrite>,
+    principal: PrincipalId,
+    arrived: Arrived,
+    outcome: Option<Outcome>,
+    seal: Option<Sealing>,
+) -> Option<TerminalConfirmation> {
+    let (Some(seal), Some(outcome)) = (seal, outcome) else {
+        return None;
+    };
+    let key = seal.seal.key;
+    let Reported::Selected(reader) = reported else {
+        custody.terminal(key, false);
+        return Some(TerminalConfirmation {
+            inner: Err("selected audit requires final reader custody, not a usage preview".into()),
+        });
+    };
+    let confirmation_custody = custody.clone();
+    Some(TerminalConfirmation {
+        inner: Ok(Some(TerminalTask::Selected(SelectedConfirm {
+            reader,
+            stage: Some(Box::new(move |snapshot| {
+                let billing = seal.selected_billing(&snapshot, line, &principal, arrived)?;
+                let completed = outcome.is_completed();
+                let audit = seal
+                    .seal_billing(
+                        &book,
+                        line,
+                        &token,
+                        &principal,
+                        arrived,
+                        Some(&history),
+                        outcome,
+                        Vec::new(),
+                        billing.fee_count(),
+                        None,
+                        String::new(),
+                        Some(billing),
+                    )
+                    .map_err(|error| crate::root::cold::terminal_audit_stage_failed(&error))?;
+                Ok(Confirm {
+                    audit,
+                    custody: confirmation_custody,
+                    key,
+                    completed,
+                })
+            })),
+            snapshot: None,
+            confirm: None,
+            custody,
+            key,
+        }))),
+    })
+}
+
 struct TerminalConfirmation {
-    inner: Result<Option<Confirm>, String>,
+    inner: Result<Option<TerminalTask>, String>,
+}
+
+enum TerminalTask {
+    Staged(Confirm),
+    Selected(SelectedConfirm),
+}
+
+struct SelectedConfirm {
+    reader: busbar_kernel::plane_driver::SelectedTerminalReceipt,
+    stage: Option<
+        Box<
+            dyn FnOnce(
+                    Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>,
+                ) -> Result<Confirm, String>
+                + Send,
+        >,
+    >,
+    snapshot: Option<Arc<busbar_kernel::governance::unit_checkpoint::UnitCheckpoint>>,
+    confirm: Option<Confirm>,
+    custody: Arc<crate::root::serve::TicketCustody>,
+    key: UnitKey,
+}
+
+impl TerminalTask {
+    async fn run(&mut self) -> Result<(), String> {
+        match self {
+            Self::Staged(confirm) => confirm.run().await,
+            Self::Selected(selected) => {
+                if selected.snapshot.is_none() {
+                    selected.snapshot = Some(
+                        selected
+                            .reader
+                            .wait()
+                            .await
+                            .map_err(|error| error.to_string())?,
+                    );
+                }
+                if selected.confirm.is_none() {
+                    let stage = selected
+                        .stage
+                        .take()
+                        .ok_or("selected audit staging already refused")?;
+                    selected.confirm = Some(stage(
+                        selected
+                            .snapshot
+                            .as_ref()
+                            .expect("final snapshot retained")
+                            .clone(),
+                    )?);
+                }
+                selected.confirm.as_mut().expect("audit staged").run().await
+            }
+        }
+    }
+
+    fn failed(&self) {
+        match self {
+            Self::Staged(confirm) => confirm.custody.terminal(confirm.key, false),
+            Self::Selected(selected) => selected.custody.terminal(selected.key, false),
+        }
+    }
 }
 
 struct Confirm {
@@ -2150,7 +2390,7 @@ struct Confirm {
 }
 
 impl Confirm {
-    async fn run(self) -> Result<(), String> {
+    async fn run(&mut self) -> Result<(), String> {
         let confirmed = self.audit.journal.confirm(&self.audit.run).await;
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
@@ -2169,31 +2409,30 @@ impl TerminalConfirmation {
     }
 
     async fn wait(mut self) -> Result<(), String> {
-        let Some(inner) = self.inner.as_ref().map_err(Clone::clone)? else {
+        let Some(inner) = self.inner.as_mut().map_err(|error| error.clone())? else {
             return Ok(());
         };
-        let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
-        if confirmed.is_ok() {
-            crate::root::durability::records_pulse().notify_waiters();
+        let confirmed = inner.run().await;
+        if confirmed.is_err() {
+            inner.failed();
         }
-        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
-            return Ok(());
-        };
-        inner
-            .custody
-            .terminal(inner.key, inner.completed && confirmed.is_ok());
-        confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
+        self.inner = Ok(None);
+        confirmed
     }
 }
 
 impl Drop for TerminalConfirmation {
     fn drop(&mut self) {
-        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
+        let Ok(Some(mut inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(inner.run())),
-            Err(_) => inner.custody.terminal(inner.key, false),
+            Ok(runtime) => drop(runtime.spawn(async move {
+                if inner.run().await.is_err() {
+                    inner.failed();
+                }
+            })),
+            Err(_) => inner.failed(),
         }
     }
 }
@@ -2221,12 +2460,12 @@ impl StagedAudit {
             return None;
         }
         Some(TerminalConfirmation {
-            inner: Ok(Some(Confirm {
+            inner: Ok(Some(TerminalTask::Staged(Confirm {
                 audit: self,
                 custody,
                 key,
                 completed,
-            })),
+            }))),
         })
     }
 }
@@ -2350,9 +2589,56 @@ fn attempts_recorded_on_failover() {
 }
 
 impl Sealing {
+    fn selected_billing(
+        &self,
+        snapshot: &busbar_kernel::governance::unit_checkpoint::UnitCheckpoint,
+        line: Option<crate::root::durability::LineIdentity>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+    ) -> Result<busbar_kernel_audit::record::billing::PartitionedBillingV1, String> {
+        let line = line.ok_or("selected audit lacks original node identity")?;
+        let captured: crate::root::durability::RunningAudit = busbar_contract::json::parse(
+            snapshot
+                .audit
+                .as_deref()
+                .ok_or("selected audit lacks captured facts")?,
+        )
+        .map_err(|error| error.to_string())?;
+        let identity = captured
+            .selected_identity
+            .as_ref()
+            .ok_or("selected audit lacks captured response identity")?;
+        let labels: Vec<_> = self
+            .ran
+            .records
+            .labels
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect();
+        if snapshot.unit != self.seal.key.get()
+            || snapshot.principal != principal.as_str()
+            || snapshot.arrived != arrived.secs()
+            || captured.principal != principal.as_str()
+            || captured.incarnation != line.incarnation
+            || identity.node != line.node
+            || identity.boot_nonce != busbar_kernel::snapshot::boot_nonce()
+            || captured.wall != arrived.secs()
+            || captured.mono != arrived.mono()
+            || captured.op_class != self.seal.facts.op_class.as_str()
+            || captured.parent != self.seal.parent.map(UnitKey::get)
+            || identity.user != self.ran.records.user
+            || identity.labels != labels
+        {
+            return Err("selected terminal differs from its original audit identity".into());
+        }
+        let view = busbar_kernel::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(snapshot)
+            .map_err(|error| error.to_string())?;
+        crate::root::selected_report::selected_billing(&view)
+    }
+
     #[expect(
         clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
+        reason = "the legacy call retains its established unit ownership"
     )]
     fn seal(
         self,
@@ -2367,6 +2653,41 @@ impl Sealing {
         fee_count: u32,
         served: Option<&str>,
         attribution: String,
+    ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
+        self.seal_billing(
+            book,
+            line,
+            token,
+            principal,
+            arrived,
+            card,
+            outcome,
+            lines,
+            fee_count,
+            served,
+            attribution,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
+    fn seal_billing(
+        self,
+        book: &Arc<Mutex<crate::root::durability::Durability>>,
+        line: Option<crate::root::durability::LineIdentity>,
+        token: &Grant<busbar_contract::caps::DurableWrite>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
+        outcome: Outcome,
+        lines: Vec<RecordLine>,
+        fee_count: u32,
+        served: Option<&str>,
+        attribution: String,
+        billing: Option<busbar_kernel_audit::record::billing::PartitionedBillingV1>,
     ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let (attempts, attempts_total) = ran.attempts(outcome);
@@ -2403,9 +2724,17 @@ impl Sealing {
                 stale_policy: false,
             },
             usage: RecordUsage {
-                lines: if refused { Vec::new() } else { lines },
+                lines: if refused || billing.is_some() {
+                    Vec::new()
+                } else {
+                    lines
+                },
                 tier_bp: 10_000,
-                fee_count: if refused { 0 } else { fee_count },
+                fee_count: billing
+                    .as_ref()
+                    .map_or(if refused { 0 } else { fee_count }, |billing| {
+                        billing.fee_count()
+                    }),
                 rate_card_version: card_in_force(card, arrived.ms()),
                 bucket_chain_ref: String::new(),
             },
@@ -2414,6 +2743,7 @@ impl Sealing {
             // Recipe v7 (ADMIN-API-1.6 §3.2): copies of what the unit already holds, and the one
             // attribution text its report built.
             unit: busbar_kernel_audit::UnitFacts {
+                billing,
                 wall_ms: arrived.ms(),
                 attribution,
                 boot_nonce: busbar_kernel::snapshot::boot_nonce(),
@@ -2576,6 +2906,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         },
     ];
     let borrowed = RunningAuditFacts {
+        selected_identity: None,
         incarnation: 7,
         principal: "key-1",
         op_class: "chat",
@@ -2589,6 +2920,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         hooks: HookFacts(&hooks),
     };
     let owned = crate::root::durability::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "key-1".to_owned(),
         op_class: "chat".to_owned(),

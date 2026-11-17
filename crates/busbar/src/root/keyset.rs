@@ -7,7 +7,7 @@ use busbar_kernel::persistence::boot_identity::BootIdentity;
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_kernel::registry::{bootstrap, BootstrapVerdict};
 use busbar_kernel_audit::{
-    AuditSigningKey, AuditVerifyingKey, BootstrapGrant, LiveSigner, NotaryGrant,
+    AuditKeySet, AuditSigningKey, AuditVerifyingKey, BootstrapGrant, LiveSigner, NotaryGrant,
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
 
@@ -227,6 +227,10 @@ async fn bind_key(
 /// The book keeps only the public half (`AuditChain::bound_to`); nothing on the request path can
 /// reach a grant.
 pub(crate) struct BoundKey {
+    /// Full supported deployment history: native deployment keys are kept once and their
+    /// persisted Bootstrap fingerprint is verified before this public projection is created.
+    /// Audit-key replacement requires a separate historical-key lifecycle; no active-key fallback.
+    pub(crate) verification_keys: AuditKeySet,
     /// `derived_secret(CALLER_REF_MATERIAL)`, for governance's deployment caller ref.
     pub(crate) caller_ref: [u8; 32],
     /// The live notary's grant.
@@ -257,6 +261,8 @@ pub(crate) async fn bind_split(
     let (source, key) = bind_key(durability, identity, token, at, now).await?;
     let public = AuditVerifyingKey::from_hex(&key.public_key_hex())
         .map_err(|_| KeysetError::Store("the deployment key's public half is invalid".into()))?;
+    let mut verification_keys = AuditKeySet::new();
+    verification_keys.insert(public.clone());
     let caller_ref = key.derived_secret(CALLER_REF_MATERIAL);
     let deployment_id = identity
         .keep_deployment_id()
@@ -273,6 +279,7 @@ pub(crate) async fn bind_split(
     Ok((
         source,
         BoundKey {
+            verification_keys,
             caller_ref,
             notary,
             bootstrap,

@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[test]
+fn response_clock_shares_the_actual_node_sequence_and_samples_wall_once() {
+    struct Clock(std::sync::atomic::AtomicU64);
+    impl busbar_kernel::Clock for Clock {
+        fn now(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            12_345
+        }
+    }
+    let clock = Arc::new(Clock(std::sync::atomic::AtomicU64::new(0)));
+    let node = Node::with_clock(clock.clone());
+    assert_eq!(node.arrived(), Arrived::at(12_345, 0));
+    let stamp = node.checked_arrived().unwrap();
+    assert_eq!(stamp, Arrived::at(12_345, 1));
+    assert_eq!(stamp.secs(), 12);
+    assert_eq!(clock.0.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn response_clock_exhaustion_never_wraps_or_samples_an_unused_wall_time() {
+    struct NoClock;
+    impl busbar_kernel::Clock for NoClock {
+        fn now(&self) -> u64 {
+            panic!("exhausted node clock must refuse before wall sampling")
+        }
+    }
+    let node = Node::with_clock(Arc::new(NoClock));
+    node.mono.store(u64::MAX, Ordering::SeqCst);
+    assert!(node.checked_arrived().is_err());
+    assert!(node.checked_arrived().is_err());
+    assert_eq!(node.mono.load(Ordering::SeqCst), u64::MAX);
+}
+
 fn ledger_entry(report: &Report, at: Arrived) -> busbar_kernel_ledger::cost::LedgerEntry {
     report.usage.usage_units.iter().fold(
         busbar_kernel_ledger::cost::LedgerEntry::new(&report.lane, at.ms())
@@ -3827,6 +3860,7 @@ async fn the_tap_reports_the_end_a_status_line_cannot() {
         );
         let (usage, _fee_count, lane, _attribution) = reached
             .reported
+            .and_then(Reported::legacy)
             .unwrap_or_else(|| panic!("{label}: the tap reported nothing at all"));
         assert_eq!(
             lane, LANE,
