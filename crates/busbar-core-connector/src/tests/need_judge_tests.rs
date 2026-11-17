@@ -153,3 +153,26 @@ fn a_url_splits_into_host_and_port_with_the_scheme_default() {
         assert_eq!(split_url(bad), Err(NeedErr::Invalid), "{bad}");
     }
 }
+
+#[tokio::test]
+async fn native_judge_keeps_its_own_listener_snapshot() {
+    let guard = Guard::default();
+    guard.publish_own(&[8080], &[]);
+    let make = || Fixed {
+        answer: Err("literal only".into()),
+        lookups: Arc::default(),
+    };
+    let boot = Judge::new(guard.clone(), make());
+    guard.publish_own(&[9090], &[]);
+    let serving = Judge::new(guard, make());
+    assert_eq!(
+        boot.dial("127.0.0.1", 8080, OPS, OWNER).await,
+        Err(NeedErr::Denied)
+    );
+    assert!(boot.dial("127.0.0.1", 9090, OPS, OWNER).await.is_ok());
+    assert_eq!(
+        serving.dial("127.0.0.1", 9090, OPS, OWNER).await,
+        Err(NeedErr::Denied)
+    );
+    assert!(serving.dial("127.0.0.1", 8080, OPS, OWNER).await.is_ok());
+}
