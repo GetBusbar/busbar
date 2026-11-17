@@ -13,6 +13,9 @@ use serde::Serialize;
 /// The `schema` every [`UnitRecord`] carries.
 pub const UNIT_RECORD_SCHEMA: &str = "busbar.unit_record.v1";
 
+/// Complete selected-attempt records; legacy items retain their v1 shape.
+pub const UNIT_RECORD_SCHEMA_V2: &str = "busbar.unit_record.v2";
+
 /// At most this many sealed records are scanned per request (V6): a filtered page may be short
 /// or empty with a cursor that continues.
 pub const RECORDS_SCAN_BOUND: u64 = 10_000;
@@ -112,6 +115,9 @@ pub struct UnitRecord {
     pub attempts_total: u32,
     /// What the unit used.
     pub usage: UnitUsage,
+    /// Complete signed partition evidence, present only on v2 items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billing: Option<UnitBilling>,
     /// The unit's spend in micro-units, priced at read by the rule `/usage` uses, as exact
     /// decimal text (at most three fractional places); null when unpriced.
     pub spend_micros: Option<String>,
@@ -176,6 +182,132 @@ pub struct UnitUsage {
     pub classes: BTreeMap<String, String>,
     /// How many request fees were charged.
     pub fee_count: u32,
+}
+
+/// Exact captured monetary era; an absent entry remains unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BillingEra {
+    /// Original entry effective date in milliseconds.
+    pub effective_from: u64,
+    /// Original 24-hex entry identity.
+    pub entry_id: Option<String>,
+}
+
+/// One selected source, including a known zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BillingQuantity {
+    /// Exact decimal quantity.
+    pub count: String,
+    /// `reported`, `floor` or `estimated`.
+    pub source: &'static str,
+}
+
+/// All signed raw and derived quantities for one declared class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BillingClass {
+    /// Reported quantity, null when unknown.
+    pub reported: Option<String>,
+    /// Observed lower bound, null when unknown.
+    pub floor: Option<String>,
+    /// Estimate, null when unknown.
+    pub estimated: Option<String>,
+    /// Producer's source selection.
+    pub selected: Option<BillingQuantity>,
+    /// Producer's eligible bill; never an estimate.
+    pub billed: Option<BillingQuantity>,
+    /// Independent physical high-water quantity.
+    pub rate_high_water: String,
+}
+
+/// One retained session or preparation; diagnostic attempts never truncate this list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BillingPartition {
+    /// `session` or `attempt`.
+    pub scope: &'static str,
+    /// Nonzero preparation ordinal for an attempt.
+    pub preparation: Option<u32>,
+    /// Actual committed dispatch ordinal, if any.
+    pub dispatch: Option<u32>,
+    /// `session`, `model` or `registration`.
+    pub kind: &'static str,
+    /// Original configured instance.
+    pub instance: String,
+    /// Qualified logical lane.
+    pub lane: String,
+    /// Actual configured provider.
+    pub provider: Option<String>,
+    /// Actual selected pool.
+    pub selected_pool: Option<String>,
+    /// Canonical resource identity.
+    pub resource: Option<String>,
+    /// `prepared`, `committed`, `no_send`, or null for session.
+    pub transport: Option<&'static str>,
+    /// `complete`, `partial` or `unknown` source coverage.
+    pub finality: &'static str,
+    /// All declared classes, including unknown and zero.
+    pub classes: BTreeMap<String, BillingClass>,
+    /// Historical entry used for this component, null if unpriced.
+    pub priced_by: Option<String>,
+}
+
+/// The single logical fee, whose ownership is independent of the delivered target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BillingFee {
+    /// `not_owner`, `charged`, `refunded` or `unknown`.
+    pub state: &'static str,
+    /// Original fee lane; null means the flat fee base.
+    pub lane: Option<String>,
+    /// Original fee era.
+    pub era: BillingEra,
+    /// Historical entry used for the fee, null if no fee was priced.
+    pub priced_by: Option<String>,
+}
+
+/// Full selected billing provenance from one signed immutable unit revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct UnitBilling {
+    /// Extension version, currently 1.
+    pub version: u32,
+    /// Accepted revision as exact decimal text.
+    pub revision: String,
+    /// Original request pool.
+    pub request_pool: String,
+    /// Original routing generation as exact decimal text.
+    pub routing_generation: String,
+    /// Original usage era.
+    pub era: BillingEra,
+    /// Original host instance, present even with no session quantities.
+    pub session_instance: String,
+    /// Original qualified host lane.
+    pub session_lane: String,
+    /// Actual original host provider, if any.
+    pub session_provider: Option<String>,
+    /// `none`, `host_origin` or `delivered_preparation`.
+    pub logical_request: &'static str,
+    /// Logical request's delivered preparation, if any.
+    pub logical_preparation: Option<u32>,
+    /// Original logical fee.
+    pub fee: BillingFee,
+    /// `end`, `failed`, `cancel` or `recovered_running`.
+    pub disposition: &'static str,
+    /// Captured cancellation reason, if any.
+    pub reason: Option<String>,
+    /// Captured far-end response evidence.
+    pub far_end_answered: bool,
+    /// Captured caller write evidence.
+    pub caller_bytes_committed: bool,
+    /// Actual delivered preparation ordinal, if any.
+    pub final_target: Option<u32>,
+    /// Number of committed dispatches, distinct from diagnostic attempts_total.
+    pub dispatched: u32,
+    /// Complete ordered partitions.
+    pub partitions: Vec<BillingPartition>,
 }
 
 /// THE CLASS OF A REASON as a record names it: `client`, `policy`, `upstream` or `engine`, from

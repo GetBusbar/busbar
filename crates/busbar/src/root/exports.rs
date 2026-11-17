@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::export_calls::{ExportAxis, ExportCalls, Probed};
-use std::sync::Arc;
+use busbar_contract::export_calls::{ExportAxis, Probed};
 
 use crate::root::loader::export_axis::ExportRows;
 
@@ -40,25 +39,6 @@ impl ExportAxis for RootExports {
         instances: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>> {
         rows()?.check(module, phase, instances)
-    }
-
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &busbar_contract::export_calls::PreparedExport,
-    ) -> Result<Arc<dyn ExportCalls>, String> {
-        let rows = rows().ok_or_else(|| crate::root::cold::no_export_plugin(module))?;
-        let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
-            crate::root::connector::the().clone();
-        rows.with_disk(
-            busbar_contract::services::disk_admission::DiskAuthority::issue(
-                &busbar_kernel::seal::acquire(),
-            ),
-        )
-        .with_logs(crate::root::linked::logs())
-        .with_conns(crate::root::connector::admit(conns))
-        .open(module, label, settings)
     }
 
     fn linked(&self, module: &str) -> bool {

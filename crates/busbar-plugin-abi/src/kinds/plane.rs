@@ -24,6 +24,8 @@ crate::kind! {
         /// (§12.23): non-zero exactly on a ROUTE_LINE route, the same value for every line of one carrier,
         /// never reused in the process; 0 elsewhere. work = the durable-work reference core is recovering
         /// (§12.24): non-empty exactly when flags has RQ_RECOVERY (the text a WORK_OPEN answered).
+        /// Pure `select_resources` is pre-authentication: auth is 0, identity/ticket_record are empty,
+        /// carrier is 0 and work is empty. The request bytes and host-selected route remain exact.
         pub struct PlaneReq<'a> {
             pub route: u32,
             pub flags: u32,
@@ -58,11 +60,11 @@ crate::kind! {
             pub base_path: crate::types::Str<'a>,
             pub upstream: crate::types::Str<'a>,
             pub provider: crate::types::Str<'a>,
-            /// The `path` parameter is the raw UTF-8 full static request-path override, including
-            /// its configured query. The plane applies it before wire encoding, query precedence
-            /// and signing. `base_path` remains the separate configured path_base.
+            // The `path` parameter is the raw UTF-8 full static request-path override, including
+            // its configured query. The plane applies it before wire encoding, query precedence
+            // and signing. `base_path` remains the separate configured path_base.
             pub params: crate::types::Slice<'a, crate::types::Pair<'a>>,
-            /// Host-prepared admission records; an empty block conveys no resource authority.
+            // Host-prepared admission records; an empty block conveys no resource authority.
             pub admission: crate::types::Bytes<'a>,
         }
         }

@@ -116,7 +116,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
             grant(plugin, &[SeriesDecl::new(name, "histogram")]);
         }
         let source: &'static crate::snapshot::Source =
-            Box::leak(Box::new(crate::snapshot::Source::new(
+            Box::leak(Box::new(crate::snapshot::Source::isolated(
                 crate::snapshot::GAUGE_IDLE_TIMEOUT,
                 crate::snapshot::SUMMARY_BUCKETS,
                 crate::snapshot::GAUGE_IDLE_TIMEOUT,
@@ -148,7 +148,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
             observe(entry("over-budget", 0));
             observe(entry("audit", 0));
         });
-        let families = source.snapshot();
+        let families = source.snapshot().unwrap();
         let family = families.iter().find(|family| family.name == name).unwrap();
         assert_eq!(
             family.kind,
@@ -211,7 +211,7 @@ fn observer_counters_and_gauges_keep_their_quantile_dimension() {
     let plugin = "quantile-scalar-control";
     forget_cardinality(plugin);
     let source: &'static crate::snapshot::Source =
-        Box::leak(Box::new(crate::snapshot::Source::new(
+        Box::leak(Box::new(crate::snapshot::Source::isolated(
             crate::snapshot::GAUGE_IDLE_TIMEOUT,
             crate::snapshot::SUMMARY_BUCKETS,
             crate::snapshot::GAUGE_IDLE_TIMEOUT,
@@ -230,7 +230,13 @@ fn observer_counters_and_gauges_keep_their_quantile_dimension() {
             );
         }
     });
-    let families = source.snapshot();
+    // Recorder health is independent of the two unchanged observer-emitted scalar families.
+    let families: Vec<_> = source
+        .snapshot()
+        .unwrap()
+        .into_iter()
+        .filter(|family| !family.name.starts_with("busbar_telemetry_request_"))
+        .collect();
     assert_eq!(families.len(), 2);
     for family in families {
         assert_eq!(family.samples.len(), 1);

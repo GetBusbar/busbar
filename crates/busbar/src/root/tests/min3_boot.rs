@@ -259,25 +259,32 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
     use crate::root::migrate::admit_for_host;
     let configured = SecretRef::None;
     let hex = "ab".repeat(32);
-    publish_at_rest(Some(&configured), |_, _| {
+    let verdict = publish_at_rest(Some(&configured), |_, _| {
         let hex = hex.clone();
         async move { Ok(SecureVec::from(hex.into_bytes())) }
     })
     .await;
+    assert_eq!(verdict, Ok(true));
     assert_eq!(
         admit_for_host(3),
         Ok(()),
         "a configured key admits the store's recoverable rows"
     );
 
-    publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
+    let verdict =
+        publish_at_rest(None, |_, _| async { Err("nothing is resolved".to_owned()) }).await;
+    assert_eq!(verdict, Ok(false));
     let no_key = admit_for_host(3).unwrap_err();
     assert!(no_key.contains("Set `auth.signing_key`"), "{no_key}");
 
-    publish_at_rest(Some(&configured), |what, _| async move {
+    let verdict = publish_at_rest(Some(&configured), |what, _| async move {
         Err(format!("{what} could not be resolved (Denied)"))
     })
     .await;
+    assert_eq!(
+        verdict,
+        Err("the signing key could not be resolved (Denied)".to_owned())
+    );
     assert_eq!(
         admit_for_host(3),
         Err("CONFIG: the signing key could not be resolved (Denied)".to_owned())

@@ -30,6 +30,7 @@ async fn fixture() -> (Arc<GovState>, PlaneMoney, UnitMoney) {
         GroupCfg {
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Concurrent,
                 amount: 8,
                 per: None,
@@ -231,4 +232,93 @@ async fn child_activation_refusal_does_not_mark_original_fee_incurred() {
         assert_eq!(totals(&gov, &unit).await, (1, 0));
         assert_eq!(gov.concurrent_in_flight("g"), 0);
     }
+}
+
+#[tokio::test]
+async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_attach() {
+    use crate::governance::unit_checkpoint::partitions::{
+        Disposition, PartitionedUsageV1, SessionOrigin,
+    };
+    use crate::governance::unit_checkpoint::UnitCheckpoint;
+    use crate::plane_driver::money::native_attempt::NativeMoney;
+    use crate::plane_driver::{ObservationPolicy, ObservationRuntimeError};
+    use std::collections::BTreeSet;
+
+    let (gov, money, mut unit) = fixture().await;
+    unit.classes = Arc::from(vec!["tokens.in".to_owned()]);
+    money
+        .install_native_pending(UnitKey::new(1), pending(&gov, &unit), |_, _, _| Ok(()))
+        .unwrap();
+    {
+        let mut shard = money.shard(UnitKey::new(1));
+        let open = shard.get_mut(&UnitKey::new(1)).unwrap();
+        let (fee, _) = open.fee.selected_fee();
+        let checkpoint = UnitCheckpoint {
+            id: open.checkpoint_id,
+            revision: 0,
+            unit: 1,
+            principal: unit.key.id.clone(),
+            group: "g".into(),
+            arrived: NOW,
+            lane: String::new(),
+            provider: None,
+            era_at: open.money.charge.raw_era().effective_from,
+            era_entry: open.money.charge.raw_era().entry_id.map(|id| id.0),
+            units: BTreeMap::new(),
+            targets: Vec::new(),
+            metered: false,
+            ended: false,
+            terminal: None,
+            audit: None,
+            measurement: None,
+            unread: None,
+            partitions: Some(PartitionedUsageV1 {
+                version: 1,
+                request_pool: unit.pool.clone(),
+                routing_generation: 0,
+                attempt_limit: 1,
+                declared_classes: BTreeSet::from(["tokens.in".into()]),
+                attempt_classes: BTreeSet::from(["tokens.in".into()]),
+                physical_classes: BTreeSet::from(["tokens.in".into()]),
+                session_origin: SessionOrigin {
+                    instance: "native".into(),
+                    lane: "native\u{1f}".into(),
+                    provider: None,
+                },
+                fee,
+                session: None,
+                attempts: Vec::new(),
+                far_end_answered: false,
+                caller_bytes_committed: false,
+                disposition: Disposition::Running,
+                final_target: None,
+            }),
+        };
+        // Frozen ownership facts, with no accepted usage and no synthetic selection authority.
+        open.native = Some(NativeMoney::from_accepted(Arc::new(checkpoint)));
+    }
+    let policy = ObservationPolicy {
+        instance: "native".into(),
+        destination: "provider".into(),
+        serving_subject: "native\u{1f}m0".into(),
+        accounting_namespace: "usage".into(),
+        classes: vec![0],
+        rated_subjects: Vec::new(),
+        reserve_nanos: 1,
+        ordered_revisions: true,
+    };
+    assert!(matches!(
+        money
+            .issue_observation_scope(UnitKey::new(1), &policy)
+            .await,
+        Err(ObservationRuntimeError::LegacyOverlap),
+    ));
+    assert!(matches!(
+        money
+            .attach_observation_scope(UnitKey::new(1), &policy, [0; 32])
+            .await,
+        Err(ObservationRuntimeError::LegacyOverlap),
+    ));
+    assert!(money.observation_scope(UnitKey::new(1)).is_none());
+    assert_eq!(totals(&gov, &unit).await, (1, 5));
 }

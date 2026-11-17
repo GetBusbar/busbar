@@ -18,6 +18,27 @@ use crate::refusal::ClientRefusal;
 pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
+    pub selected: Option<super::NativeRequestMoney>,
+    rollback: Mutex<Option<super::AdmissionRollback>>,
+}
+
+impl AdmittedUnit {
+    /// Keep exact money rollback armed until the same Task has accepted all admission proofs.
+    pub fn ordinary(
+        request: AdmittedRequest,
+        unit: Unit,
+        rollback: super::AdmissionRollback,
+    ) -> Result<Self, super::NativeAdmissionError> {
+        if unit.ctx.key != request.unit() || !rollback.accepts(&request) {
+            return Err(super::NativeAdmissionError::Declaration);
+        }
+        Ok(Self {
+            request,
+            unit,
+            selected: None,
+            rollback: Mutex::new(Some(rollback)),
+        })
+    }
 }
 
 enum Commit {
@@ -41,6 +62,9 @@ pub struct Pending {
     commit: Mutex<Option<Commit>>,
     admitted: OnceLock<AdmittedUnit>,
     journal: Option<Arc<dyn super::HookJournal>>,
+    channel_budget: Option<crate::channels::budget::UnitBudget>,
+    route: Option<super::route_identity::OriginalPlaneRoute>,
+    current_rates: Option<crate::state::SelectedRateAdmission>,
 }
 
 impl Pending {
@@ -57,6 +81,9 @@ impl Pending {
             commit: Mutex::new(Some(Commit::Ordinary(Box::new(commit)))),
             admitted: OnceLock::new(),
             journal,
+            channel_budget: None,
+            route: None,
+            current_rates: None,
         }
     }
 
@@ -76,17 +103,53 @@ impl Pending {
             commit: Mutex::new(Some(Commit::Selected(Box::new(commit)))),
             admitted: OnceLock::new(),
             journal,
+            channel_budget: None,
+            route: None,
+            current_rates: None,
         }
     }
 
     pub fn context(&self) -> &InvocationContext {
         &self.context
     }
+    pub fn with_channel_budget(mut self, budget: crate::channels::budget::UnitBudget) -> Self {
+        self.channel_budget = Some(budget);
+        self
+    }
+    pub fn channel_budget(&self) -> Option<&crate::channels::budget::UnitBudget> {
+        self.channel_budget.as_ref()
+    }
+    pub fn with_route(mut self, route: super::route_identity::OriginalPlaneRoute) -> Self {
+        self.route = Some(route);
+        self
+    }
+    pub fn original_route(&self) -> Option<&super::route_identity::OriginalPlaneRoute> {
+        self.route.as_ref()
+    }
+    pub fn with_current_rates(mut self, rates: crate::state::SelectedRateAdmission) -> Self {
+        self.current_rates = Some(rates);
+        self
+    }
+    pub(crate) fn current_rates(&self) -> Option<&crate::state::SelectedRateAdmission> {
+        self.current_rates.as_ref()
+    }
     pub fn journal(&self) -> Option<Arc<dyn super::HookJournal>> {
         self.journal.clone()
     }
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
+    }
+    pub(crate) fn accept_admission(&self) -> Result<(), SessionError> {
+        let admitted = self.admitted.get().ok_or(SessionError::NotDriven)?;
+        let mut held = admitted.rollback.lock().unwrap();
+        let rollback = held.as_ref().ok_or(SessionError::NotDriven)?;
+        if !admitted.request.is_live() || !rollback.accepts(&admitted.request) {
+            return Err(SessionError::NotDriven);
+        }
+        held.take()
+            .expect("checked original rollback owner")
+            .commit();
+        Ok(())
     }
     pub(crate) fn routes(&self) -> Arc<RequestRoutes> {
         self.routes.clone()
@@ -107,6 +170,10 @@ impl Pending {
             .unwrap()
             .take()
             .ok_or(SessionError::NotDriven)?;
+        let selected_required = declaration.selected();
+        if selected_required && declaration.original_route().is_none() {
+            return Err(SessionError::NotDriven);
+        }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
             return Err(SessionError::NotDriven);
         }
@@ -141,6 +208,15 @@ impl Pending {
         if !admitted.request.context().same_unit(&self.context)
             || admitted.unit.ctx.key != admitted.request.unit()
             || !admitted.request.is_live()
+            || (selected_required && admitted.selected.is_none())
+            || admitted.selected.as_ref().is_some_and(|money| {
+                !money
+                    .request()
+                    .context()
+                    .same_unit(admitted.request.context())
+                    || !money.request().is_live()
+                    || money.request().unit() != admitted.request.unit()
+            })
         {
             return Err(SessionError::NotDriven);
         }

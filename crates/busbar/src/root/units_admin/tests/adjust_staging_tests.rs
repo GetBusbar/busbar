@@ -188,6 +188,7 @@ impl Fixture {
         store
             .ledger()
             .add_metering(&MeteringDelta {
+                pricing: None,
                 scale: 0,
                 key_id: key.id.clone(),
                 bucket: busbar_kernel::governance::metering_bucket(now),
@@ -262,7 +263,7 @@ impl Fixture {
     }
 
     fn unit(&self, action: &str, delta: &str) -> RequestUnit {
-        RequestUnit {
+        RequestUnit::test_fixture(crate::root::units_admin::TestAdminRequest {
             method: "POST".into(),
             path: "/api/v1/admin/adjust".into(),
             credential: None,
@@ -276,12 +277,12 @@ impl Fixture {
             .unwrap(),
             at: self.now,
             unit: 1,
-        }
+        })
     }
     async fn ask(&self, unit: &RequestUnit) -> AdminAnswer {
         adjust_request(
             unit,
-            &unit.body,
+            unit.body(),
             busbar_contract::authz::Scope::Full,
             "actor",
             Some(&self.replay),

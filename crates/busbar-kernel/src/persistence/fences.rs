@@ -59,7 +59,7 @@ fn prepare(id: AttemptId, changes: Vec<Change>) -> Result<PreparedCandidate, Inv
 }
 
 /// Prepare the first authority records for a separately classified fresh dataset.
-/// The backend must still prove the complete logical dataset is empty during COMMIT.
+/// Core supplies the absent-root fence during encoding.
 pub fn initialize(
     dataset: DatasetId,
     writer: [u8; 16],
@@ -69,8 +69,8 @@ pub fn initialize(
 }
 
 /// Initialize authority and its opaque metadata in one atomic candidate. Every
-/// supplied record is guarded Absent; the backend still proves the whole dataset
-/// empty at COMMIT. Opaque values retain wiping custody throughout construction;
+/// supplied record is guarded Absent; core supplies the absent-root fence during
+/// encoding. Opaque values retain wiping custody throughout construction;
 /// this builder grants no additional control authority.
 pub fn initialize_with_records(
     dataset: DatasetId,
@@ -87,21 +87,18 @@ pub fn initialize_with_records(
     let registered = control::Writer {
         retired_through: 0,
         admitted_through: 1,
+    };
+    let mut changes = vec![(
+        address(control::DATASET_KEY.to_vec()),
+        None,
+        Secret::new(root.to_vec()),
+    )];
+    for mutation in control::writer_put(writer, None, registered).ok_or(InvalidFence::Transition)? {
+        let Mutation::Put { address, value } = mutation else {
+            return Err(InvalidFence::Transition);
+        };
+        changes.push((address, None, value));
     }
-    .encode()
-    .ok_or(InvalidFence::Transition)?;
-    let mut changes = vec![
-        (
-            address(control::DATASET_KEY.to_vec()),
-            None,
-            Secret::new(root.to_vec()),
-        ),
-        (
-            address(control::writer_key(writer).to_vec()),
-            None,
-            Secret::new(registered.to_vec()),
-        ),
-    ];
     for (at, value) in records {
         if at.namespace == control::NAMESPACE.0 || at.namespace == control::GENERATION_NAMESPACE.0 {
             return Err(InvalidFence::Transition);

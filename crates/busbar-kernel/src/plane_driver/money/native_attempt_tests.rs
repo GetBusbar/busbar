@@ -226,3 +226,80 @@ fn accepted_fractional_usage_preserves_existing_half_even_rounding_signal() {
     );
     assert!(staged.rounded);
 }
+
+#[test]
+fn preparation_gaps_are_valid_but_live_or_exhausted_predecessors_are_not() {
+    let mut prior = attempt();
+    assert!(!super::preparation_follows(7, &[prior.clone()], 4));
+    prior.finality = Finality::Partial;
+    assert!(super::preparation_follows(7, &[prior.clone()], 5));
+    assert!(!super::preparation_follows(7, &[prior.clone()], 3));
+    assert!(!super::preparation_follows(7, &[prior.clone()], 8));
+    prior.transport = Transport::NoSend;
+    prior.dispatch = None;
+    prior.finality = Finality::Unknown;
+    assert!(super::preparation_follows(7, &[prior], 7));
+    assert!(!super::preparation_follows(7, &[], 0));
+}
+
+#[test]
+fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
+    use crate::governance::unit_checkpoint::partitions::ClassFacts;
+    let mut partition = attempt();
+    partition.usage.classes.insert(
+        "tokens.in".into(),
+        ClassFacts {
+            reported: Some(Count::from(8)),
+            floor: Some(Count::from(16)),
+            estimated: Some(Count::from(20)),
+            rate_high_water: Count::from(20),
+        },
+    );
+    partition.usage.classes.insert(
+        "tokens.zero".into(),
+        ClassFacts {
+            reported: Some(Count::ZERO),
+            ..Default::default()
+        },
+    );
+    partition.usage.classes.insert(
+        "tokens.floor".into(),
+        ClassFacts {
+            floor: Some(Count::from(5)),
+            rate_high_water: Count::from(5),
+            ..Default::default()
+        },
+    );
+    let classes: Vec<Box<str>> = ["tokens.in", "tokens.zero", "tokens.floor", "tokens.missing"]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    let view = super::effective_tokens(&classes, &partition);
+    assert_eq!(view.0[0].quantity, Some(Count::from(20)));
+    assert!(view.0[0].authoritative);
+    assert_eq!(view.0[1].quantity, Some(Count::ZERO));
+    assert!(view.0[1].authoritative);
+    assert_eq!(view.0[2].quantity, Some(Count::from(5)));
+    assert!(!view.0[2].authoritative);
+    assert_eq!(view.0[3].quantity, None);
+    assert!(!view.0[3].authoritative);
+}
+
+#[test]
+fn spill_member_scope_does_not_replace_original_request_pool() {
+    let grants = BTreeMap::from([
+        ("seat\u{1f}p".to_owned(), vec!["seat\u{1f}a".to_owned()]),
+        ("seat\u{1f}q".to_owned(), vec!["seat\u{1f}b".to_owned()]),
+    ]);
+    assert!(super::member_granted(&grants, "seat\u{1f}q", "seat\u{1f}b"));
+    assert!(!super::member_granted(
+        &grants,
+        "seat\u{1f}q",
+        "seat\u{1f}a"
+    ));
+    assert!(!super::member_granted(
+        &grants,
+        "seat\u{1f}other",
+        "seat\u{1f}b"
+    ));
+}

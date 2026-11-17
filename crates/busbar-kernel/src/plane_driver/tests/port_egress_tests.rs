@@ -148,11 +148,31 @@ fn target_for(_pool: &str, name: &str) -> Option<MemberTarget> {
         identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
         resource: None,
         registered_upstream: None,
+        definition: None,
         provider: "{\"k\":1}".into(),
         base_path: "/v1".into(),
         flags: 2,
         params: vec![("region".into(), "eu".into())],
     })
+}
+
+#[test]
+fn target_definition_retains_the_actual_registration_allocation() {
+    use std::sync::Arc;
+
+    let definition = crate::upstreams::UpstreamDef::from_config(
+        "actual",
+        &serde_json::json!({"url": "https://example.com"}),
+        &crate::config::min3::UpstreamCfg::default(),
+        &|_| unreachable!("this registration has no custom trust anchor"),
+    )
+    .unwrap();
+    let actual = Arc::new(definition.clone());
+    let lookalike = Arc::new(definition);
+    let target = super::TargetDefinition::new(Arc::clone(&actual));
+    assert!(Arc::ptr_eq(target.as_arc(), &actual));
+    assert_eq!(target, target.clone());
+    assert_ne!(target, super::TargetDefinition::new(lookalike));
 }
 
 #[test]

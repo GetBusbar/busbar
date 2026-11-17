@@ -191,6 +191,13 @@ impl PortCarrier {
     /// One request's carrier: its own exchange map and the host its CHANNEL intents attach through.
     #[must_use]
     pub fn session(&self) -> CarrierSession {
+        self.session_with_budget(None)
+    }
+
+    pub fn session_with_budget(
+        &self,
+        budget: Option<crate::channels::budget::UnitBudget>,
+    ) -> CarrierSession {
         let map = Arc::new(ExchangeUpstreams::new(Arc::clone(&self.upstreams)));
         let of = Arc::clone(&map);
         let host = UpstreamHost::new(
@@ -198,7 +205,8 @@ impl PortCarrier {
             self.who.clone(),
             Box::new(move |exchange| of.of(exchange)),
             self.rt.clone(),
-        );
+        )
+        .with_budget(budget);
         CarrierSession {
             host,
             map,

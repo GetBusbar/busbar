@@ -19,8 +19,10 @@ use crate::teller::{Ended, UnitCtx};
 
 mod native_admission;
 pub(super) mod native_attempt;
-pub use native_admission::NativeAdmissionError;
+pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
+mod selected_view;
+pub use selected_view::UsageView;
 mod observations;
 pub(crate) use observations::budget_id as observation_budget_id;
 pub use observations::{ObservationPolicy, ObservationRuntimeError};
@@ -1034,11 +1036,6 @@ impl PlaneMoney {
     }
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd {
-            caller_status,
-            refused_unspent,
-            ..
-        } = end;
         let removed = {
             busbar_contract::stage_probe::tick(
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
@@ -1046,9 +1043,49 @@ impl PlaneMoney {
             let mut all = self.shard(key);
             all.remove(&key)
         };
-        let Some(mut open) = removed else {
+        let Some(open) = removed else {
             return;
         };
+        self.settle_removed(key, open, end);
+    }
+
+    /// Terminal cleanup checks and removes the exact admitted Open in the same critical section.
+    /// Retiring its invocation cannot prevent cleanup, and reusing a numeric unit cannot redirect it.
+    pub fn settle_admitted(
+        &self,
+        request: &super::request_admission::AdmittedRequest,
+        end: UnitEnd,
+    ) -> Result<bool, NativeAdmissionError> {
+        let removed = {
+            let mut all = self.shard(request.unit());
+            let Some(open) = all.get(&request.unit()) else {
+                return Ok(false);
+            };
+            let Some(grant) = &open.grant else {
+                return Err(NativeAdmissionError::NotLive);
+            };
+            if !request.matches_money_identity(&self.book, &open.identity, grant)
+                || !request.matches_governance(&self.gov)
+            {
+                return Err(NativeAdmissionError::NotLive);
+            }
+            if open.native.is_some() {
+                return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            all.remove(&request.unit())
+        };
+        if let Some(open) = removed {
+            self.settle_removed(request.unit(), open, end);
+        }
+        Ok(true)
+    }
+
+    fn settle_removed(&self, key: UnitKey, mut open: Open, end: UnitEnd) {
+        let UnitEnd {
+            caller_status,
+            refused_unspent,
+            ..
+        } = end;
         // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
         if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
             self.gov.release_request(&open.money.charge);
@@ -1065,19 +1102,24 @@ impl PlaneMoney {
     }
 
     #[must_use]
-    pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get(&key)
-            .map(|o| o.last.clone())
-            .unwrap_or_default()
+    pub fn last_counts(&self, key: UnitKey) -> Option<Vec<(u32, Count)>> {
+        self.usage_fold(key)?
+            .by_class()
+            .map(|(class, count)| count.map(|count| (class, count)))
+            .collect()
     }
 
     /// The unit's last reported usage, folded once per revision (SP-M1): the meter gate's input.
     #[must_use]
     pub fn usage_fold(&self, key: UnitKey) -> Option<Arc<UsageFold>> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(Open::usage_fold)
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                UsageFold::selected(native.checkpoint(), &open.money.classes).map(Arc::new)
+            } else {
+                Some(open.usage_fold())
+            }
+        })
     }
 
     /// The unit's serving lane with its usage fold, under one shard lock: the late accrual's
@@ -1085,9 +1127,13 @@ impl PlaneMoney {
     #[must_use]
     pub fn usage(&self, key: UnitKey) -> Option<(String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get_mut(&key)
-            .map(|open| (open.money.lane.clone(), open.usage_fold()))
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                None
+            } else {
+                Some((open.money.lane.clone(), open.usage_fold()))
+            }
+        })
     }
 
     /// [`PlaneMoney::usage`] with the unit's sealed attribution (ADMIN-API-1.6 §3.2): its key's
@@ -1096,7 +1142,10 @@ impl PlaneMoney {
     #[must_use]
     pub fn attributed_usage(&self, key: UnitKey) -> Option<(String, String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(|open| {
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                return None;
+            }
             let m = &open.money;
             let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
             let attribution = busbar_kernel_audit::attribution(
@@ -1104,14 +1153,25 @@ impl PlaneMoney {
                 pool,
                 open.provider.as_deref().unwrap_or_default(),
             );
-            (m.lane.clone(), attribution, open.usage_fold())
+            Some((m.lane.clone(), attribution, open.usage_fold()))
         })
     }
 
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get(&key).map(|o| o.money.lane.clone())
+        self.shard(key).get(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                let parts = native.checkpoint().partitions.as_ref()?;
+                let target = parts.final_target?;
+                return parts
+                    .attempts
+                    .iter()
+                    .find(|attempt| attempt.preparation == target)
+                    .map(|attempt| attempt.usage.lane.clone());
+            }
+            Some(open.money.lane.clone())
+        })
     }
 
     #[must_use]
@@ -1130,6 +1190,9 @@ impl PlaneMoney {
         counts: &[(u32, busbar_contract::Count)],
         metered: bool,
     ) -> Option<crate::governance::unit_checkpoint::UnitCheckpoint> {
+        if open.native.is_some() {
+            return None;
+        }
         use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitTarget};
         let m = &open.money;
         let mut units = BTreeMap::<String, busbar_contract::Count>::new();
@@ -1177,6 +1240,7 @@ impl PlaneMoney {
             terminal: None,
             measurement: None,
             unread: None,
+            partitions: None,
             audit: self
                 .post
                 .checkpoint_facts(key)

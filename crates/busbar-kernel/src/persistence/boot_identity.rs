@@ -322,6 +322,20 @@ impl WriterRetirements {
         )
         .map_err(error)?;
         let body = fence.candidate();
+        // Preserve the shared writer transition's epoch and slot cleanup, and retain
+        // the predecessor mark in that same exact candidate through every retry.
+        let mut mutations = control::writer_put(writer, Some(old), permanently_closed)
+            .ok_or("invalid writer retirement transition")?;
+        mutations.push(native::Mutation::Put {
+            address: mark_address,
+            value: Secret::new(
+                FenceMark {
+                    lease_expires_ms: lease_row.expires_ms,
+                    sealed: Vec::new(),
+                }
+                .bytes(),
+            ),
+        });
         let candidate = native::PreparedCandidate::new(native::Candidate {
             id: body.id,
             codec: body.codec,
@@ -336,29 +350,7 @@ impl WriterRetirements {
                     expected: native::ExpectedValue::Exact(lease),
                 },
             ],
-            mutations: vec![
-                native::Mutation::Put {
-                    address: control_address,
-                    value: Secret::new(
-                        permanently_closed
-                            .encode()
-                            .ok_or("invalid permanent fence")?
-                            .to_vec(),
-                    ),
-                },
-                // SEALING-FIX r11-r12 (decision 193): the fence mark commits with the fence, so a
-                // fenced node with no seal row is known to be between its fence and its seal.
-                native::Mutation::Put {
-                    address: mark_address,
-                    value: Secret::new(
-                        predecessor_seal::FenceMark {
-                            lease_expires_ms: lease_row.expires_ms,
-                            sealed: Vec::new(),
-                        }
-                        .bytes(),
-                    ),
-                },
-            ],
+            mutations,
             time: Some(native::TimeGuard {
                 not_before: Some(closable_ms.div_ceil(1000)),
                 before: None,

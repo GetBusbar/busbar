@@ -533,6 +533,8 @@ pub enum OpenPurpose {
 
 pub struct InstanceSpec<'a> {
     pub purpose: OpenPurpose,
+    /// One Store-open recovery verdict. Never copied to Applied or a serving/reopen context.
+    pub store_migration: Option<Arc<busbar_plugin_abi::host_side::entry::StoreMigrationAdmission>>,
     pub identity: &'a str,
     pub name: &'a str,
     pub config_json: &'a [u8],
@@ -1136,9 +1138,24 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .map(Box::from)
                 .collect();
-            let adapter =
-                crate::adapters::transport::TransportAdapter::open(proxy, opened.errors, protocols)
-                    .map_err(crate::answer::open_error)?;
+            let listener_slots = busbar_ports::codec::transport::decode_listener_slots(
+                opened.described.facts,
+                opened
+                    .described
+                    .items
+                    .iter()
+                    .map(|(tag, body)| (*tag, body.as_slice())),
+            )
+            .map_err(|_| {
+                OpenError::Unknown(format!("{}: invalid initial listener slots", spec.name))
+            })?;
+            let adapter = crate::adapters::transport::TransportAdapter::open(
+                proxy,
+                opened.errors,
+                protocols,
+                listener_slots,
+            )
+            .map_err(crate::answer::open_error)?;
             self.remember(&spec, KindCode::Transport, &needs, &refs, None);
             let port: Arc<dyn TransportPort> = Arc::new(adapter);
             Ok(port)
@@ -1298,6 +1315,7 @@ impl Registry {
                 })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &merged,
@@ -1344,6 +1362,7 @@ impl Registry {
             })?;
             let spec = InstanceSpec {
                 purpose: OpenPurpose::Canonical,
+                store_migration: None,
                 identity: &stored.identity,
                 name: &name,
                 config_json: &stored.config,

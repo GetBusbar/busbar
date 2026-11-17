@@ -346,15 +346,22 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
+async fn chain_principal(
+    ctx: &PlaneReqCtx,
+    bearer: Option<&str>,
+) -> (
+    Seen,
+    Option<GovCtx>,
+    Option<busbar_kernel::auth::SignedRequestAuthority>,
+) {
     let Some(token) = bearer else {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return (Seen::Rejected, None);
+        return (Seen::Rejected, None, None);
     };
     if app.auth.is_open() {
-        return (Seen::Anonymous, None);
+        return (Seen::Anonymous, None, None);
     }
     let target = ctx
         .uri
@@ -369,9 +376,19 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Opti
         None,
     )
     .await;
+    let signed = match &verdict {
+        busbar_kernel::auth::ChainVerdict::Identified {
+            signed_authority, ..
+        } => signed_authority.clone(),
+        _ => None,
+    };
     match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
-        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
-        Err(why) => (seen_of(Err(why)), None),
+        Ok((principal, gov)) => (
+            seen_of(Ok((principal, GovCtx::default()))),
+            Some(gov),
+            signed,
+        ),
+        Err(why) => (seen_of(Err(why)), None, None),
     }
 }
 
@@ -551,13 +568,27 @@ async fn answer(
     let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
         Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
         None if resolves_credential(route.effective) => {
-            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            let (seen, gov, signed_authority) = chain_principal(&ctx, bearer.as_deref()).await;
             ctx.gov = gov;
+            ctx.signed_authority = signed_authority;
             seen
         }
         None => Seen::Anonymous,
     };
-    let unit = allocate_unit(seat, billing, &ctx);
+    // The occurrence proof owns its original key. An unrelated resolved key may not
+    // select the payer before the atomic one-shot registration below.
+    if let Some(authority) = &ctx.signed_authority {
+        if !ctx
+            .gov
+            .as_ref()
+            .and_then(|gov| gov.key.as_ref())
+            .is_some_and(|key| Arc::ptr_eq(key, authority.original_key()))
+        {
+            return failed(StatusCode::UNAUTHORIZED);
+        }
+    }
+    let mut unit = allocate_unit(seat, billing, &ctx);
+
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
             billing: billing.clone(),
@@ -566,7 +597,7 @@ async fn answer(
         }),
         _ => None,
     };
-    let invocation = match (&unit, generation) {
+    let invocation = match (&mut unit, generation) {
         (Some(unit), Some(generation)) => match generation.native_unit(seat, unit, &ctx) {
             Ok(invocation) => Some(invocation),
             Err(why) => {
@@ -591,39 +622,53 @@ async fn answer(
                 Ok(allocation) => allocation,
                 Err(_) => return failed(StatusCode::SERVICE_UNAVAILABLE),
             };
+            let Some(original_route) = seat.retain_route(&invocation.context, route.route) else {
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            };
             let billing = billing.clone();
             let classes = seat.driver.usage_classes();
             let route_id = route.route;
             let retry_after = Arc::clone(&retry_after);
-            Some(Arc::new(Pending::new(
-                allocation,
-                Arc::clone(&seat.request_routes),
-                unit.journal.clone(),
-                move |receipt| {
-                    use busbar_kernel::refusal::RefusalMap;
-                    let unavailable = || {
-                        busbar_kernel::refusal::CoreRefusals::new()
-                            .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
-                    };
-                    let receipt = receipt.begin().map_err(|_| unavailable())?;
-                    let request = billing
-                        .admit_existing(
-                            receipt,
-                            classes,
-                            busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(Arc::from([])),
-                            busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
-                        )
-                        .map_err(|error| match error {
-                            NativeAdmissionError::Blocked(blocked) => {
-                                let (refusal, wait) = blocked_client(&blocked);
-                                *retry_after.lock().unwrap_or_else(PoisonError::into_inner) = wait;
-                                refusal
-                            }
-                            _ => unavailable(),
-                        })?;
-                    Ok(AdmittedUnit { request, unit })
-                },
-            )))
+            Some(Arc::new(
+                Pending::new(
+                    allocation,
+                    Arc::clone(&seat.request_routes),
+                    unit.journal.clone(),
+                    move |receipt| {
+                        use busbar_kernel::refusal::RefusalMap;
+                        let unavailable = || {
+                            busbar_kernel::refusal::CoreRefusals::new()
+                                .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                        };
+                        let receipt = receipt.begin().map_err(|_| unavailable())?;
+                        let request = billing
+                            .admit_existing(
+                                receipt,
+                                classes,
+                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(
+                                    Arc::from([]),
+                                ),
+                                busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                            )
+                            .map_err(|error| match error {
+                                NativeAdmissionError::Blocked(blocked) => {
+                                    let (refusal, wait) = blocked_client(&blocked);
+                                    *retry_after.lock().unwrap_or_else(PoisonError::into_inner) =
+                                        wait;
+                                    refusal
+                                }
+                                _ => unavailable(),
+                            })?;
+                        let rollback = billing
+                            .admission_rollback(&request)
+                            .map_err(|_| unavailable())?;
+                        AdmittedUnit::ordinary(request, unit, rollback).map_err(|_| unavailable())
+                    },
+                )
+                .with_channel_budget(seat.channel_budget.unit())
+                .with_current_rates(ctx.handle.selected_rate_admission())
+                .with_route(original_route),
+            ))
         }
         (None, None, _) => None,
         _ => return failed(StatusCode::SERVICE_UNAVAILABLE),

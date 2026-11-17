@@ -896,7 +896,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
             panic!("one retained initialization")
         };
         let candidate = attempt.candidate();
-        assert_eq!(candidate.candidate().mutations.len(), 4);
+        assert_eq!(candidate.candidate().mutations.len(), 5);
         assert!(control::initialization(candidate, backend.info().dataset));
         {
             let mut native = backend.0.lock().unwrap();
@@ -918,7 +918,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
             );
             assert_eq!(
                 native.rows.len(),
-                if interruption == "before" { 0 } else { 4 }
+                if interruption == "before" { 0 } else { 5 }
             );
         }
         assert_eq!(start.advance().await.unwrap(), Progress::Advanced);
@@ -934,7 +934,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
                 "retry retains the complete original candidate"
             );
             assert_eq!(native.applied, 1, "no separate format publication commit");
-            assert_eq!(native.rows.len(), 4);
+            assert_eq!(native.rows.len(), 5);
             assert!(native.rows.contains_key(&root_address()));
             assert!(native.rows.contains_key(&manifest_address()));
             assert!(native.rows.contains_key(&first_start::address()));
@@ -1434,6 +1434,35 @@ async fn initialized_only(backend: &Arc<Backend>) {
     assert!(matches!(first.phase, Phase::Inspect));
 }
 
+#[tokio::test]
+async fn first_register_native_fences_are_satisfied_by_declared_initialize_effects() {
+    let backend = Arc::new(Backend::default());
+    initialized_only(&backend).await;
+    let mut start = startup(&backend, false);
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    let Phase::Register(_, _, _, attempt, _) = &start.phase else {
+        panic!("first Register retained before submission")
+    };
+    assert_eq!(control::admit(attempt.candidate()), Ok(()));
+    {
+        let native = backend.0.lock().unwrap();
+        let fences = control::fences(attempt.candidate());
+        assert_eq!(fences.len(), 2);
+        for fence in fences {
+            let ExpectedValue::Exact(expected) = fence.expected else {
+                panic!("Register requires exact root and epoch fences")
+            };
+            assert_eq!(
+                native.rows.get(&fence.address),
+                Some(&expected),
+                "Initialize must declare every row needed by the first Register fence"
+            );
+        }
+    }
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    assert_eq!(start.advance().await, Ok(Progress::Admitted));
+}
+
 /// 8.2b: racing initializers, plain and with the loser's reply lost. The loser
 /// resolves its lost attempt definitively and re-inspects. Under FIRST-START-TAKEOVER it
 /// never refuses: over the winner's live first start it waits (`Pending`) and writes
@@ -1532,7 +1561,12 @@ async fn racing_initializers_winner_late_registers_retiring_nobody() {
     assert_eq!(writer_rows(&backend), rows + 1, "A wrote nothing");
     let seal = crate::seal::lend();
     for (address, value) in &backend.0.lock().unwrap().rows {
-        if address.namespace == control::NAMESPACE.0 && address.key != control::DATASET_KEY {
+        if address.namespace == control::NAMESPACE.0
+            && matches!(
+                control::Key::decode(&address.key),
+                Some(control::Key::Writer(_))
+            )
+        {
             let writer = control::Writer::decode(value.expose(&seal)).unwrap();
             assert!(writer.admits(1), "nobody was retired");
         }
