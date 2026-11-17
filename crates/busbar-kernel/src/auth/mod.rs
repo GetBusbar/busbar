@@ -26,6 +26,7 @@ mod admitted;
 pub mod effect;
 pub mod native_admin;
 pub mod native_chain;
+pub mod native_data;
 pub mod native_policy;
 pub mod relend;
 pub mod verdicts;
