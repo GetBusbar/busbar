@@ -834,3 +834,118 @@ fn a_key_narrowed_after_admission_loses_the_selected_walk() {
         );
     }
 }
+
+/// Section pools over registrations `m1`, `m2`: `p` is `member_granted`, `q` is ordinary.
+fn section_routes(scope_kind: &str) -> RequestRoutes {
+    let upstreams = table(&[definition("m1", false), definition("m2", false)]);
+    let registration = Arc::new(SeatPool::of("seat", &upstreams).unwrap());
+    let pool = |member_granted: bool| SectionPool {
+        members: vec!["m1".into(), "m2".into()],
+        fallback: None,
+        member_granted,
+    };
+    RequestRoutes::new(
+        "seat",
+        Some(Arc::from(scope_kind)),
+        None,
+        Some(registration),
+    )
+    .unwrap()
+    .with_registrations(upstreams)
+    .unwrap()
+    .with_section_pools(BTreeMap::from([
+        ("p".to_owned(), pool(true)),
+        ("q".to_owned(), pool(false)),
+    ]))
+    .unwrap()
+}
+
+fn lanes(members: &[&str]) -> Vec<String> {
+    members
+        .iter()
+        .map(|member| format!("seat{PLANE_LANE_SEP}{member}"))
+        .collect()
+}
+
+/// DES-NATIVE-ROUTE-CLASSES test 32 (#108, R5): a member-granted pool passes on a granted
+/// member, never on its own name, and the walk reaches only the granted members.
+#[test]
+fn member_granted_section_pool_walks_only_the_granted_members() {
+    let routes = section_routes("pool");
+    let walk_of = |unit: u64, key: Arc<VirtualKey>, selector: &str| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let walk = RequestWalk::new(&ctx).unwrap();
+        allocation(ctx)
+            .forward(&routes, &walk, Some(selector))
+            .map(|receipt| receipt.member_grants().get(selector).cloned())
+    };
+    assert_eq!(
+        walk_of(61, pool_scoped("member", &["m1"]), "p"),
+        Ok(Some(lanes(&["m1"]))),
+        "a key granting m1 reaches p, and only m1"
+    );
+    assert_eq!(
+        walk_of(62, pool_scoped("name", &["p"]), "p"),
+        Err(AdmissionError::Scope),
+        "a member-granted pool's own name is no grant"
+    );
+    assert_eq!(
+        walk_of(63, pool_scoped("ordinary", &["q"]), "q"),
+        Ok(Some(lanes(&["m1", "m2"]))),
+        "an ordinary pool's grant reaches all its members"
+    );
+}
+
+/// Errata §2.3 R5: member-granted pools apply to the core kind `pool` only; any other declared
+/// kind keeps R2 (the pool's own name).
+#[test]
+fn member_granted_is_ignored_for_a_non_pool_kind() {
+    let routes = section_routes("server");
+    let walk_of = |unit: u64, key: Arc<VirtualKey>| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let walk = RequestWalk::new(&ctx).unwrap();
+        allocation(ctx)
+            .forward(&routes, &walk, Some("p"))
+            .map(|receipt| receipt.member_grants().get("p").cloned())
+    };
+    assert_eq!(
+        walk_of(64, server_scoped("member", &["m1"])),
+        Err(AdmissionError::Scope)
+    );
+    assert_eq!(
+        walk_of(65, server_scoped("name", &["p"])),
+        Ok(Some(lanes(&["m1", "m2"])))
+    );
+}
+
+/// Test 32, current half: the current-key re-check uses the same R5 rule, so a key narrowed
+/// from m1 to m2 loses m1.
+#[test]
+fn a_narrowed_member_grant_loses_the_member_on_the_current_check() {
+    use crate::config::groups::ExhaustionMode;
+    use crate::governance::GovState;
+    use crate::plane_driver::{EndPost, PlaneMoney};
+    struct Posted;
+    impl EndPost for Posted {
+        fn post(&self, _: &crate::teller::UnitCtx, _: crate::teller::Ended) {}
+    }
+    let routes = section_routes("pool");
+    let (ctx, _lease) = context_with_key(66, pool_scoped("member", &["m1"]));
+    let walk = RequestWalk::new(&ctx).unwrap();
+    let receipt = allocation(ctx).forward(&routes, &walk, Some("p")).unwrap();
+    let store = futures::executor::block_on(crate::real_store::core());
+    let gov =
+        Arc::new(futures::executor::block_on(GovState::new_with_core(store, None, None)).unwrap());
+    let money = PlaneMoney::new(gov, Arc::new(Posted));
+    let admitted = money
+        .admit_existing(
+            receipt.begin().unwrap(),
+            Arc::from([]),
+            crate::plane_driver::money::FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let m1 = format!("seat{PLANE_LANE_SEP}m1");
+    assert!(routes.allows_current_pair(&admitted, admitted.key(), "p", &m1));
+    assert!(!routes.allows_current_pair(&admitted, &pool_scoped("member", &["m2"]), "p", &m1));
+}

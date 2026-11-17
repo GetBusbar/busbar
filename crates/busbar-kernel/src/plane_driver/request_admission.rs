@@ -20,6 +20,9 @@ use crate::resource_admission::SelectedResources;
 #[path = "request_registration.rs"]
 mod registration;
 use registration::SelectedCommand;
+#[path = "request_section_pools.rs"]
+mod sections;
+pub use sections::SectionPool;
 #[path = "request_current.rs"]
 mod current;
 
@@ -83,6 +86,7 @@ pub struct RequestRoutes {
     catalog: Option<Arc<CatalogPlan>>,
     registration: Option<Arc<SeatPool>>,
     registrations: Option<Arc<crate::upstreams::ConfiguredUpstreams>>,
+    section_pools: BTreeMap<String, SectionPool>,
 }
 impl RequestRoutes {
     pub fn new(
@@ -112,6 +116,7 @@ impl RequestRoutes {
             catalog,
             registration,
             registrations: None,
+            section_pools: BTreeMap::new(),
         })
     }
 
@@ -147,8 +152,8 @@ impl RequestRoutes {
         }
     }
 
-    // These resolved producers describe ordinary pool/direct scope. A descriptor requiring
-    // member-granted semantics needs its typed producer before root can assemble this path.
+    // Catalog and registration walks are ordinary pool/direct scope. Member-granted pools are
+    // the section pools, granted per member in `section_grants` (#108, R5).
     fn member_grants(
         &self,
         key: &VirtualKey,
@@ -192,6 +197,7 @@ impl RequestRoutes {
                 }
             }
         }
+        self.section_grants(key, selection, &mut grants);
         grants
     }
     fn resolve(&self, selector: Option<&str>) -> Result<(RequestDomain, String), AdmissionError> {
@@ -213,6 +219,9 @@ impl RequestRoutes {
                         registration.pool.clone(),
                     ));
                 }
+            }
+            if self.section_pools.contains_key(name) {
+                return Ok((RequestDomain::NamedPool(name.into()), name.into()));
             }
             return Err(AdmissionError::Route);
         }

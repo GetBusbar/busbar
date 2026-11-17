@@ -329,6 +329,7 @@ impl ServingFixture {
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
                 table: ConnTable::installed(),
+                section_pools: super::super::plane_seats::section_pools(&cfg.instance_sections())?,
             },
             probes: Mutex::default(),
         };
