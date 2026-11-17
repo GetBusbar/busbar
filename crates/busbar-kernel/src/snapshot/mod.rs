@@ -8,8 +8,6 @@ use crate::state::App;
 
 mod money;
 
-pub(crate) mod hooks;
-
 mod source;
 
 pub(crate) use source::request_store;
@@ -431,7 +429,7 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
         Err(e) => {
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
-                "prometheus recorder install failed; /metrics will be empty: {e}"
+                "the metrics recorder install failed; the metrics route will be empty: {e}"
             );
             None
         }

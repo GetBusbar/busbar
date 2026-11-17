@@ -13,8 +13,8 @@ use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool};
 use foldhash::{HashMap, HashSet};
 
 use crate::root::model_egress::{
-    CellPlan, LatencyReservoir, ModelLane, ModelPool, ModelPools, ModelServing, ModelShown,
-    ModelSignals, ModelTelemetry, WalkCells,
+    CellPlan, ModelLane, ModelPool, ModelPools, ModelServing, ModelShown, ModelSignals,
+    ModelTelemetry, WalkCells,
 };
 
 /// The member facts by model, in the map type the kernel's far end takes them as.
@@ -275,13 +275,6 @@ pub fn compose(
         direct.insert(model.clone());
     }
     let permits = Arc::new(crate::root::egress_ports::MemberPermits::new(limits));
-    let reservoirs: Arc<HashMap<usize, LatencyReservoir>> = Arc::new(
-        serving
-            .lanes
-            .values()
-            .map(|lane| (*lane, LatencyReservoir::default()))
-            .collect(),
-    );
     let stable_names: Arc<HashMap<DestinationId, String>> =
         Arc::new(names.iter().cloned().collect());
     let shown = ModelShown {
@@ -290,7 +283,6 @@ pub fn compose(
             app: serving.app.clone(),
             names: Arc::clone(&stable_names),
             permits: Arc::clone(&permits),
-            reservoirs: Arc::clone(&reservoirs),
         }),
     };
     let cells = Arc::new(CellPlan {
@@ -315,7 +307,6 @@ pub fn compose(
                 app: serving.app.clone(),
                 names: stable_names,
                 queued: crate::root::egress_ports::WalkTelemetry::new(names),
-                reservoirs,
             }),
             pools: built,
             routes: sealed,

@@ -35,7 +35,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
         "the section list must be the union of the two tables that DECLARE the config grammar"
     );
 
-    for was_hardcoded in ["pools", "tools", "agents", "export", "identity-providers"] {
+    for was_hardcoded in ["pools", "export", "identity-providers"] {
         assert!(
             config_sections().contains(&was_hardcoded),
             "`{was_hardcoded}:` was in the deleted literal and must still be derived"

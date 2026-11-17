@@ -308,18 +308,19 @@ impl KernelServices {
                 }
                 return Ok(proposed);
             }
-            let op_id = store
-                .next_id()
+            let op: crate::persistence::scoped::Op = store
+                .record_op()
+                .await
                 .map_err(|_| "caller binding id unavailable")?
-                .operation;
+                .into();
             let request = match &mut binding {
                 Some(request) => {
-                    request.op_id = op_id;
+                    request.op = op;
                     request
                 }
                 None => {
                     let first = crate::cold::host::services_caller_binding(
-                        op_id, CALLERS, principal, &proposed,
+                        op, CALLERS, principal, &proposed,
                     );
                     binding.insert(first)
                 }

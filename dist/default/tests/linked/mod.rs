@@ -4,36 +4,12 @@
 use busbar_kernel::plane_driver::registry::{plane_decls, PlaneDecl};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
-include!(concat!(env!("OUT_DIR"), "/test_linked_secrets.rs"));
 
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         busbar_kernel::plane_driver::registry::install_planes(door_rows());
-        busbar_kernel::preflight::install_linked_rows(busbar_kernel::preflight::RootInstall {
-            secret_axis: Some(secret_rows()),
-            ..Default::default()
-        });
     });
-}
-
-/// The test-linked secret sources on one axis, as the root links its own: what a test's references
-/// are read through (the source shorthand their Statements declare).
-pub fn secret_rows() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
-    static ROWS: std::sync::OnceLock<busbar_plugin_loader::secret_calls::SecretRows> =
-        std::sync::OnceLock::new();
-    ROWS.get_or_init(|| {
-        let mut rows = busbar_plugin_loader::secret_calls::SecretRows::new(dispatcher, || None);
-        for &(door, declares) in TEST_LINKED_SECRETS {
-            rows.link(door)
-                .unwrap_or_else(|e| panic!("a test-linked secret source states itself: {e}"));
-            if let Some(json) = declares {
-                rows.declare_linked(door, json)
-                    .unwrap_or_else(|e| panic!("a test-linked secret source declares: {e}"));
-            }
-        }
-        rows
-    })
 }
 
 fn dispatcher() -> std::sync::Arc<busbar_plugin_loader::dispatch::Dispatcher> {

@@ -215,11 +215,11 @@ struct TicketOperation {
     delivered: AtomicBool,
     runner: super::BudgetFlushRunner,
 }
-fn request_id(core: &CoreStore) -> Option<[u8; 16]> {
-    // Preserve the scoped logical receipt's node8/counter8 partitioning while
-    // checking current admission before staging new retained work.
+/// The request's receipt identity, held by the retained `TicketOperation` until it drops.
+async fn request_id(core: &CoreStore) -> Option<crate::persistence::scoped::Op> {
+    // Check current admission before staging new retained work.
     core.next_id().ok()?;
-    Some(crate::door::op_id().0)
+    core.record_op().await.ok().map(Into::into)
 }
 fn scope(core: Arc<CoreStore>) -> Option<ScopedStore> {
     ScopedStore::host_private(
@@ -479,7 +479,7 @@ impl GovState {
                 core: core.clone(),
                 kind: OperationKind::Cleanup,
                 request: Request {
-                    op_id: request_id(&core)?,
+                    op: request_id(&core).await?,
                     predicates: vec![
                         Predicate {
                             schema: TICKET_RECORD_KIND.into(),
@@ -630,14 +630,14 @@ impl GovState {
             let record = crate::cold::governance::state::tickets_record_body(
                 &original.expose(&crate::seal::lend())[9..],
             );
-            let op_id = request_id(&core)?;
+            let op = request_id(&core).await?;
             let mut spent = vec![1];
             spent.extend_from_slice(&expires_at.to_be_bytes());
             let candidate = Arc::new(TicketOperation {
                 core: core.clone(),
                 kind: OperationKind::Spend,
                 request: Request {
-                    op_id,
+                    op,
                     predicates: vec![
                         Predicate {
                             schema: TICKET_RECORD_KIND.into(),
@@ -848,7 +848,7 @@ impl GovState {
             core: core.clone(),
             kind: OperationKind::Mint,
             request: Request {
-                op_id: request_id(&core).ok_or(TicketRefusal::NotKept)?,
+                op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
                 predicates: vec![
                     Predicate {
                         schema: TICKET_RECORD_KIND.into(),
@@ -926,7 +926,7 @@ impl GovState {
         };
         if let Err(why) = bind(&identity) {
             let cleanup = Request {
-                op_id: request_id(&core).ok_or(TicketRefusal::NotKept)?,
+                op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
                 predicates: vec![
                     Predicate {
                         schema: TICKET_RECORD_KIND.into(),

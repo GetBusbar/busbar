@@ -256,9 +256,11 @@ impl PersistenceBackend for Backend {
         })
     }
 }
+/// A CoreStore as Startup hands it over: attached, with its first receipt generation open
+/// (DES-264 §3.2). `sent` then lists only the commits made through the returned store.
 pub async fn attach(backend: Arc<Backend>) -> CoreStore {
-    CoreStore::attach(
-        backend,
+    let store = CoreStore::attach(
+        backend.clone(),
         WriterAuthority {
             writer_epoch: 2,
             writer: [4; 16],
@@ -272,5 +274,8 @@ pub async fn attach(backend: Arc<Backend>) -> CoreStore {
         },
     )
     .await
-    .unwrap()
+    .unwrap();
+    store.open_record_generation().await.unwrap();
+    backend.state.lock().unwrap().sent.clear();
+    store
 }

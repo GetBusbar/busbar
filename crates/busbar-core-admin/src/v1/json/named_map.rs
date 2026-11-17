@@ -7,7 +7,7 @@ use tracing::instrument::WithSubscriber as _;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch};
+use axum::routing::{any, get, patch};
 use axum::Extension;
 use axum::Router;
 
@@ -48,7 +48,50 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                 .route_layer(Extension(section)),
         );
     }
+    for word in RETIRED_DEV_SECTIONS {
+        if routed_sections().iter().any(|s| s.key() == word) {
+            continue;
+        }
+        router = router.merge(
+            Router::new()
+                .route(&format!("/{word}"), any(retired_section))
+                .route(&format!("/{word}/{{name}}"), any(retired_section))
+                .route(&format!("/{word}/{{name}}/settings"), any(retired_section))
+                .route_layer(Extension(RetiredSection(word))),
+        );
+    }
     router
+}
+
+/// The 1.6.0-dev plane-named sections whose CRUD paths are retired with their top-level keys
+/// (WP1-GAP-plane-sections r3 B4). Until WP3 maps a plane's own ROUTE_ADMIN routes, a request
+/// gets the audited config refusal rather than an unmatched route or a 500.
+const RETIRED_DEV_SECTIONS: [&str; 2] = ["tools", "agents"];
+
+#[derive(Clone, Copy)]
+struct RetiredSection(&'static str);
+
+async fn retired_section(
+    Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
+    Extension(RetiredSection(word)): Extension<RetiredSection>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> Response {
+    let actor = principal.actor_id().to_string();
+    audit::AUDIT.record_by(
+        &format!("{word}.{}", method.as_str().to_ascii_lowercase()),
+        &format!("{word}:{}", uri.path()),
+        audit::OUTCOME_REJECTED,
+        &actor,
+    );
+    err_json_cond(
+        &AdminError::Validation(format!(
+            "`{word}` is not a core section and no admitted plane answers to it: a plane's \
+             settings live under its own instance section, and its entries are written through \
+             the config document"
+        )),
+        Cond::UnknownResource,
+    )
 }
 
 /// The sections the named-map CRUD serves: the plane-owned ones.

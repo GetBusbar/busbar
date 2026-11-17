@@ -41,8 +41,8 @@ impl NativeWrite {
             Err(_) => return Some(Err(WRITE_FAILED)),
         };
         if self.request.is_none() {
-            let operation = match store.next_id() {
-                Ok(id) => id.operation,
+            let held = match store.record_op().await {
+                Ok(held) => held,
                 Err(_) => return Some(Err(WRITE_FAILED)),
             };
             if let Some(framing) = self.write.chain {
@@ -66,18 +66,18 @@ impl NativeWrite {
                     framing,
                 };
                 let (request, position) =
-                    match book.prepare_ordinary_async(&rows, input, operation).await {
+                    match book.prepare_ordinary_async(&rows, input, &held).await {
                         Ok(prepared) => prepared,
                         Err(why) => return Some(Err(why)),
                     };
-                match native_request(&self.write.instance, &request) {
+                match native_request(&self.write.instance, &request, held) {
                     Ok(request) => self.request = Some(request),
                     Err(why) => return Some(Err(why)),
                 };
                 self.positions.push(position);
             } else {
                 let request = Request {
-                    op_id: operation,
+                    op: held.into(),
                     predicates: Vec::<Predicate>::new(),
                     mutations: vec![if self.write.value.as_slice().is_empty() {
                         Mutation::Delete {
@@ -139,8 +139,12 @@ impl NativeWrite {
 fn native_request(
     instance: &str,
     request: &conditional::Request,
+    held: crate::persistence::record_ops::HeldOp,
 ) -> Result<crate::persistence::scoped::Request, &'static str> {
     use crate::persistence::scoped::{Expected, Mutation, Predicate, Request};
+    if request.op_id != held.op_id() {
+        return Err(WRITE_FAILED);
+    }
     let scope = record_key(instance, &[]);
     let key = |key: &[u8]| {
         key.strip_prefix(scope.as_slice())
@@ -148,7 +152,7 @@ fn native_request(
             .ok_or(WRITE_FAILED)
     };
     Ok(Request {
-        op_id: request.op_id.0,
+        op: held.into(),
         predicates: request
             .predicates
             .iter()
@@ -259,9 +263,11 @@ impl ConditionalWrite {
             self.positions = positions;
             self.prepared = true;
         }
-        let result = match self.native_pending {
-            Some(id) => rows.retry(id).await,
-            None => rows.conditional(&self.request).await,
+        let result = match (self.native_pending, self.held.as_ref()) {
+            (Some(id), _) => rows.retry(id).await,
+            (None, Some(held)) => rows.conditional(held, &self.request).await,
+            // Admitted for CoreStore without its held identity: never submitted.
+            (None, None) => return Some(Err(ConditionalFailure::Refused(WRITE_FAILED))),
         };
         let decision = match result {
             Ok(Outcome::Applied) => conditional::Decision::Applied,
