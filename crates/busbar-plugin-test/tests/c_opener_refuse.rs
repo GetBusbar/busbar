@@ -569,7 +569,7 @@ mod fixed_piece {
         );
 
         let message = queue.recv().await.unwrap();
-        let (mut writer, mut reader) = tokio::io::duplex(1);
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
         let run = tokio::spawn(async move { message.write(&mut writer).await });
         let mut first = [0; 1];
         reader.read_exact(&mut first).await.unwrap();
