@@ -204,7 +204,8 @@ pub(crate) struct Booted {
     pub(crate) registry: Arc<MinRegistry>,
     _bootstrap_registry: Arc<MinRegistry>,
     _channel_accounts: Arc<ChannelAccounts>,
-    _transports: Vec<transports::ServedTransport>,
+    pub(crate) framers: super::min3_framers::NativeFramers,
+    pub(crate) inventories: Arc<super::min3_physical::Inventories>,
     _native_invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
     _opened: Vec<(
         u32,
@@ -815,6 +816,8 @@ struct Steps<'r> {
     instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
     seats: Mutex<Vec<PortSeat>>,
+    inventory_inputs:
+        Mutex<std::collections::BTreeMap<String, super::min3_physical::InventoryInputs>>,
     invocations: Mutex<Vec<busbar_kernel::host_services::NativeInvocationAdmission>>,
     shared: Arc<Shared>,
     directory: Directory,
@@ -965,6 +968,26 @@ impl Steps<'_> {
             rt.clone(),
         )
         .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
+        // This cap bounds each validated configuration output, not aggregate process memory.
+        const RESOURCE_INVENTORY_OUTPUT_BYTES: usize = 1_048_576;
+        if self
+            .inventory_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                spec.name.to_owned(),
+                super::min3_physical::InventoryInputs {
+                    upstreams: wiring.inventory_upstreams,
+                    targets: wiring.inventory_targets,
+                    byte_limit: RESOURCE_INVENTORY_OUTPUT_BYTES,
+                },
+            )
+            .is_some()
+        {
+            return Err(OpenError::Unknown(
+                "duplicate native inventory source owner".into(),
+            ));
+        }
         if let Some(probes) = wiring.probes {
             self.probes
                 .lock()
@@ -1666,6 +1689,7 @@ pub(crate) async fn finish(
         instances: &specs,
         services,
         seats: Mutex::default(),
+        inventory_inputs: Mutex::default(),
         invocations: Mutex::default(),
         shared: Arc::clone(&shared),
         directory: Arc::clone(&directory),
@@ -1989,6 +2013,17 @@ pub(crate) async fn finish(
         .seats
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner);
+    let inventories = Arc::new(super::min3_physical::build_inventories(
+        &seats,
+        environment
+            .app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        &steps
+            .inventory_inputs
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner),
+    )?);
     let probes = steps
         .probes
         .into_inner()
@@ -2003,7 +2038,8 @@ pub(crate) async fn finish(
         resolver: Arc::clone(candidate_secrets.resolver()),
         registry: built.registry,
         _bootstrap_registry,
-        _transports: transports,
+        framers: super::min3_framers::NativeFramers::new(transports),
+        inventories,
         _native_invocations: invocations,
         _opened: walked.opened,
         auth,

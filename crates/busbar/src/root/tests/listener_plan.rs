@@ -233,6 +233,7 @@ async fn projection_boundary_app(
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
     candidate.config_projection = Some(Arc::new(crate::root::door_steps::DoorConfig {
+        native_slots: Default::default(),
         listener_routes: None,
         root_binds: Ok(topology
             .binds
