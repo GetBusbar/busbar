@@ -298,3 +298,4 @@ BUSBAR-2056	audit-predecessor-refused	1.6.0
 BUSBAR-2057	audit-predecessor-seal-failed	1.6.0
 BUSBAR-3171	config-reserved-key	1.6.0
 BUSBAR-9025	format-migration-waiting	1.6.0
+BUSBAR-9026	store-restored	1.6.0

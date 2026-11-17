@@ -9,7 +9,7 @@
 //! another node writing `pending` (§B5.1). Quarantine is one-way inside a process: only a
 //! declaration lifts it.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::persistence::control::{self, Restore, RestoreState};
@@ -18,6 +18,12 @@ use busbar_contract::persistence::{Address, PersistenceBackend, Read, ReadResult
 use super::commit::SubmitResult;
 use super::facade::CoreStore;
 use super::startup::{manifest_address, Manifest, RECORD_FORMAT, RESTORED_FORMAT};
+
+/// The launch option that starts this process in restore quarantine (§B5.1). A launch flag, not a
+/// config key (DES-331 §B12).
+pub const LAUNCH_OPTION: &str = "--restore-quarantine";
+/// Set by the command line before boot when [`LAUNCH_OPTION`] is given.
+pub static LAUNCH_FLAG: AtomicBool = AtomicBool::new(false);
 
 /// The restore row's address.
 #[must_use]
@@ -150,10 +156,32 @@ impl Gate {
     }
 
     fn enter(&self, reason: Reason) {
-        let _ = self
+        if self
             .reason
-            .compare_exchange(0, reason.code(), Ordering::AcqRel, Ordering::Acquire);
+            .compare_exchange(0, reason.code(), Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            crate::diag_warn!(crate::diagnostics::STORE_RESTORED,
+                reason = reason.as_str(), restore_epoch = self.booted_epoch(),
+                "this node is in restore quarantine: it serves admin reads only until the restore is declared");
+        }
     }
+}
+
+/// Boot (§B5.2): read the restore row before any writer registration commit and decide this
+/// process's quarantine from it and [`LAUNCH_FLAG`].
+pub async fn boot(backend: &dyn PersistenceBackend) -> Result<Option<Reason>, String> {
+    let row = read(backend).await?;
+    Ok(gate().boot(row, LAUNCH_FLAG.load(Ordering::Acquire)))
+}
+
+/// After registration (§B5.1): a process launched with [`LAUNCH_OPTION`] writes the pending marker,
+/// so every other node quarantines at its next boot or lease refresh.
+pub async fn admitted(core: &CoreStore) -> Result<(), String> {
+    if gate().reason() == Some(Reason::Flag) {
+        mark_pending(core).await?;
+    }
+    Ok(())
 }
 
 /// Read the restore row straight from the backend, before any writer registration commit
