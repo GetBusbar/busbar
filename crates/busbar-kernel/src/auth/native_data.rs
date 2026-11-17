@@ -400,6 +400,7 @@ impl NativeDataAllocation {
             |allocation, routes, commit| {
                 Pending::new(allocation, routes, None, move |receipt| commit(receipt, ()))
             },
+            |pending| pending,
         )
     }
 
@@ -411,9 +412,103 @@ impl NativeDataAllocation {
             + Send
             + 'static,
     ) -> NativeDataPending {
-        self.into_pending_using(commit, |allocation, routes, commit| {
-            Pending::new_selected(allocation, routes, None, commit)
-        })
+        self.into_pending_using(
+            commit,
+            |allocation, routes, commit| Pending::new_selected(allocation, routes, None, commit),
+            |pending| pending,
+        )
+    }
+
+    /// Wire the original candidate's route and budgets before exposing the preparatory Task.
+    pub fn into_pending_runtime(
+        self,
+        seat: &PortSeat,
+        journal: Option<Arc<dyn crate::plane_driver::HookJournal>>,
+        commit: impl FnOnce(RequestPoolReceipt) -> Result<AdmittedUnit, ClientRefusal> + Send + 'static,
+    ) -> Result<NativeDataPending, DataRefused> {
+        if !seat
+            .driver
+            .caller()
+            .same_incarnation(&self.authorization.route.caller)
+            || !Arc::ptr_eq(
+                &seat.request_routes,
+                &self.authorization.route.owners.routes,
+            )
+        {
+            return Err(DataRefused::Binding);
+        }
+        let route = seat
+            .retain_route(
+                self.context(),
+                self.authorization.route.binding.line().route.rung,
+            )
+            .ok_or(DataRefused::Binding)?;
+        let budget = seat.channel_budget.unit();
+        let rates = self
+            .authorization
+            .binding
+            .handle()
+            .selected_rate_admission();
+        Ok(self.into_pending_using(
+            move |receipt, ()| commit(receipt),
+            move |allocation, routes, commit| {
+                Pending::new(allocation, routes, journal, move |receipt| {
+                    commit(receipt, ())
+                })
+            },
+            move |pending| {
+                pending
+                    .with_route(route)
+                    .with_channel_budget(budget)
+                    .with_current_rates(rates)
+            },
+        ))
+    }
+
+    /// Selected Tasks additionally retain their own declaration through the monetary callback.
+    pub fn into_pending_selected_runtime(
+        self,
+        seat: &PortSeat,
+        journal: Option<Arc<dyn crate::plane_driver::HookJournal>>,
+        commit: impl FnOnce(RequestPoolReceipt, RequestDeclaration) -> Result<AdmittedUnit, ClientRefusal>
+            + Send
+            + 'static,
+    ) -> Result<NativeDataPending, DataRefused> {
+        if !seat
+            .driver
+            .caller()
+            .same_incarnation(&self.authorization.route.caller)
+            || !Arc::ptr_eq(
+                &seat.request_routes,
+                &self.authorization.route.owners.routes,
+            )
+        {
+            return Err(DataRefused::Binding);
+        }
+        let route = seat
+            .retain_route(
+                self.context(),
+                self.authorization.route.binding.line().route.rung,
+            )
+            .ok_or(DataRefused::Binding)?;
+        let budget = seat.channel_budget.unit();
+        let rates = self
+            .authorization
+            .binding
+            .handle()
+            .selected_rate_admission();
+        Ok(self.into_pending_using(
+            commit,
+            move |allocation, routes, commit| {
+                Pending::new_selected(allocation, routes, journal, commit)
+            },
+            move |pending| {
+                pending
+                    .with_route(route)
+                    .with_channel_budget(budget)
+                    .with_current_rates(rates)
+            },
+        ))
     }
 
     fn into_pending_using<D: Send + 'static>(
@@ -422,6 +517,7 @@ impl NativeDataAllocation {
             + Send
             + 'static,
         build: impl FnOnce(RequestAllocation, Arc<RequestRoutes>, DataCommit<D>) -> Pending,
+        configure: impl FnOnce(Pending) -> Pending,
     ) -> NativeDataPending {
         let Self {
             authorization,
@@ -479,7 +575,7 @@ impl NativeDataAllocation {
             }),
         );
         NativeDataPending {
-            pending: Arc::new(pending),
+            pending: Arc::new(configure(pending)),
             execution,
             context,
             route,
@@ -543,6 +639,12 @@ impl NativeDataPending {
     }
     pub fn execution(&self) -> Option<&DataExecutionAdmission> {
         self.execution.get()
+    }
+
+    /// Lend the same accepted monetary owner for the registered response's terminal join.
+    pub fn admitted(&self) -> Option<&AdmittedUnit> {
+        self.execution.get()?;
+        self.pending.admitted()
     }
 }
 
