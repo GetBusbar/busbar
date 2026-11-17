@@ -242,6 +242,12 @@ impl PortDriver {
         })
     }
 
+    pub(crate) fn has_hooks(&self, route: u32) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|binder| binder.active(route))
+    }
+
     /// The exact instance owner admitted by root; callers must never mint a lookalike.
     pub fn caller(&self) -> &Caller {
         &self.caller

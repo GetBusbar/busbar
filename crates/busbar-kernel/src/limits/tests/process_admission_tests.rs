@@ -297,3 +297,134 @@ fn mismatched_precharged_storage_is_discarded_without_leaking_capacity() {
     assert!(credit.into_input(b"too much".to_vec()).is_err());
     assert_eq!(budget.used(), (0, 0));
 }
+
+#[derive(Default)]
+struct ReservationRecorder {
+    visits: AtomicU64,
+    increments: Arc<AtomicU64>,
+}
+impl metrics::Recorder for ReservationRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(key.name(), crate::snapshot::ADMISSION_DENIED_TOTAL);
+        assert!(key
+            .labels()
+            .any(|label| label.key() == "gate" && label.value() == "inbound_body_bytes"));
+        metrics::Counter::from_arc(Arc::clone(&self.increments))
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Histogram::noop()
+    }
+}
+
+#[test]
+fn private_reservation_never_reenters_a_recorder_on_success_capacity_or_overflow() {
+    let budget = budget(0);
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        assert_eq!(budget.reserve(AdmissionClass::Data, 12), Ok(12));
+        assert!(budget.reserve(AdmissionClass::Data, 1).is_err());
+        assert!(budget.reserve(AdmissionClass::Data, usize::MAX).is_err());
+        assert_eq!(budget.used(), (12, 12));
+        budget.release(AdmissionClass::Data, 12);
+    });
+    assert_eq!(
+        recorder.visits.load(Ordering::Relaxed),
+        0,
+        "reservation under a registry guard must not look up any recorder handle"
+    );
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn public_byte_denials_still_report_once_per_failed_attempt() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve(12).unwrap();
+        assert!(request.try_reserve(1).is_err());
+        assert!(request.try_reserve(usize::MAX).is_err());
+        drop(credit);
+    });
+    assert_eq!(recorder.increments.load(Ordering::Relaxed), 2);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn unreported_credit_preserves_class_and_request_without_recorder_access() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    let credit = metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve_unreported(12).unwrap();
+        assert!(request.try_reserve_unreported(1).is_err());
+        assert!(request.try_reserve_unreported(usize::MAX).is_err());
+        credit
+    });
+    assert_eq!(recorder.visits.load(Ordering::Relaxed), 0);
+    assert_eq!(credit.request().class(), AdmissionClass::Data);
+    drop(request);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(budget.used(), (12, 12));
+    drop(credit);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn request_identity_distinguishes_admissions_in_the_same_process_and_class() {
+    let budget = ProcessAdmission::with_limits(4, 32, 8);
+    let first = budget.try_enter(AdmissionClass::Data).unwrap();
+    let shared = first.clone();
+    let second = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let other_budget = ProcessAdmission::with_limits(4, 32, 8);
+    let other = other_budget.try_enter(AdmissionClass::Data).unwrap();
+
+    assert!(first.same_request(&first));
+    assert!(first.same_request(&shared));
+    assert!(shared.same_request(&first));
+    assert!(!first.same_request(&second));
+    assert!(!second.same_request(&first));
+    assert!(!first.same_request(&operator));
+    assert!(!first.same_request(&other));
+    let input = first.copy_input(b"owned").unwrap();
+    assert!(input.request().same_request(&first));
+    assert!(!input.request().same_request(&second));
+    drop(first);
+    assert!(input.request().same_request(&shared));
+    assert_eq!(budget.used(), (5, 5));
+    drop(input);
+    assert_eq!(budget.used(), (0, 0));
+}

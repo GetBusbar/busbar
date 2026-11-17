@@ -398,3 +398,6 @@ fn real_admission_view_keeps_selected_pool_and_rejects_retired_authority() {
         Err(AdmissionViewUnavailable::Stale)
     ));
 }
+
+#[path = "../money/selected_admission_tests.rs"]
+mod selected_money;
