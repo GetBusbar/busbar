@@ -607,3 +607,153 @@ fn inherited_default_suppresses_unused_strategy_but_keeps_its_live_fallback() {
             .contains("unused-unknown")
     );
 }
+
+#[test]
+fn typed_walk_tables_keep_named_pools_direct_models_and_registration_distinct() {
+    let hooks = ["global", "fast", "slow", "registration"]
+        .into_iter()
+        .map(|name| (name.into(), definition()))
+        .collect::<HookRegistry>();
+    let ports = hooks
+        .keys()
+        .map(|name| (name.clone(), opened(1 << POINT_ROUTE, 0, &[])))
+        .collect();
+    let pool = |gate: &str| crate::config::PoolCfg {
+        gates: vec![gate.into()],
+        ..Default::default()
+    };
+    let plan = WalkPlan::new(
+        vec!["global".into()],
+        Vec::new(),
+        vec![
+            WalkBinding::NamedPool {
+                name: "shared".into(),
+                config: pool("fast"),
+            },
+            WalkBinding::NamedPool {
+                name: "other".into(),
+                config: pool("slow"),
+            },
+            WalkBinding::DirectModel {
+                name: "shared".into(),
+            },
+            WalkBinding::Registration {
+                pool: "shared".into(),
+                config: pool("registration"),
+            },
+        ],
+    )
+    .unwrap();
+    let tables = plan.bind(&hooks, &ports, &BTreeMap::new()).unwrap();
+    let groups = BTreeMap::new();
+    for (pool, container, expected) in [
+        ("shared", "shared", vec!["global", "fast"]),
+        ("other", "other", vec!["global", "slow"]),
+        ("", "shared", vec!["global"]),
+        ("shared", "", vec!["global", "registration"]),
+        ("", "", vec!["global"]),
+    ] {
+        let chosen = tables.select_scope(None, &groups, pool, container).unwrap();
+        assert_eq!(names(&chosen.gates), expected);
+    }
+    for (pool, container) in [("shared", "other"), ("foreign", "foreign"), ("", "missing")] {
+        assert!(tables.select_scope(None, &groups, pool, container).is_err());
+    }
+}
+
+#[test]
+fn direct_model_plan_never_inherits_default_pool_strategy_or_its_fallback_open() {
+    let mut default = definition();
+    default.default = true;
+    default.on_error = "missing-strategy".into();
+    let hooks = [("default".into(), default)].into_iter().collect();
+    let configured = [("default".into(), "image".into())].into_iter().collect();
+    let plan = WalkPlan::new(
+        Vec::new(),
+        Vec::new(),
+        vec![WalkBinding::DirectModel {
+            name: "model".into(),
+        }],
+    )
+    .unwrap();
+    assert!(plan
+        .implicit_strategies(&hooks, &configured, &BTreeMap::new())
+        .unwrap()
+        .is_empty());
+    let tables = plan
+        .bind(&hooks, &BTreeMap::new(), &BTreeMap::new())
+        .unwrap();
+    assert!(!tables.active());
+    assert!(!tables.enforcing());
+    assert!(tables
+        .select_scope(None, &BTreeMap::new(), "", "model")
+        .unwrap()
+        .policy
+        .is_none());
+}
+
+#[test]
+fn pool_only_enforcement_and_ports_stay_in_their_instance_generation() {
+    let hooks = [("guard".into(), definition())].into_iter().collect();
+    let plan = WalkPlan::new(
+        Vec::new(),
+        Vec::new(),
+        vec![WalkBinding::NamedPool {
+            name: "pool".into(),
+            config: crate::config::PoolCfg {
+                gates: vec!["guard".into()],
+                ..Default::default()
+            },
+        }],
+    )
+    .unwrap();
+    let mut first = [("guard".into(), opened(1 << POINT_ROUTE, 0, &[]))]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let old_port = first["guard"].port.clone();
+    let old = plan.bind(&hooks, &first, &BTreeMap::new()).unwrap();
+    first.insert("guard".into(), opened(1 << POINT_ROUTE, 0, &[]));
+    let replacement = plan.bind(&hooks, &first, &BTreeMap::new()).unwrap();
+    assert!(old.active() && old.enforcing());
+    assert!(old
+        .select_scope(None, &BTreeMap::new(), "", "")
+        .unwrap()
+        .gates
+        .is_empty());
+    let prior = old
+        .select_scope(None, &BTreeMap::new(), "pool", "pool")
+        .unwrap();
+    let next = replacement
+        .select_scope(None, &BTreeMap::new(), "pool", "pool")
+        .unwrap();
+    assert!(Arc::ptr_eq(&prior.gates[0].port, &old_port));
+    assert!(Arc::ptr_eq(&next.gates[0].port, &first["guard"].port));
+    assert!(!Arc::ptr_eq(&prior.gates[0].port, &next.gates[0].port));
+}
+
+#[test]
+fn typed_walk_plan_refuses_duplicate_or_empty_authority() {
+    for walks in [
+        vec![WalkBinding::DirectModel {
+            name: String::new(),
+        }],
+        vec![WalkBinding::NamedPool {
+            name: String::new(),
+            config: Default::default(),
+        }],
+        vec![WalkBinding::Registration {
+            pool: String::new(),
+            config: Default::default(),
+        }],
+        vec![
+            WalkBinding::DirectModel {
+                name: "model".into(),
+            },
+            WalkBinding::DirectModel {
+                name: "model".into(),
+            },
+        ],
+    ] {
+        assert!(WalkPlan::new(Vec::new(), Vec::new(), walks).is_err());
+    }
+}
