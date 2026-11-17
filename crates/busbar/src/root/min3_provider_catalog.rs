@@ -269,13 +269,17 @@ pub(crate) fn prepare(
             &allocation.upstream,
             &format!("providers.{}", target.provider),
             &entry,
-            &UpstreamCfg::default(),
+            &UpstreamCfg {
+                resource: target.resource.clone(),
+                ..UpstreamCfg::default()
+            },
             &busbar_kernel::plugin_config::upstream_anchor,
         )
         .map_err(|_| "configured provider destination or allocated upstream name is invalid")?;
         definition.auth = upstream_auth;
         let definition = Arc::new(definition);
         let member_target = MemberTarget {
+            resource: definition.resource.clone(),
             identity: TargetIdentity::Model {
                 dialect: target.dialect.as_str().into(),
                 model: target.wire_model.as_str().into(),
