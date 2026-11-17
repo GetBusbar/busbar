@@ -541,6 +541,51 @@ fn stop_cancels_a_pending_call_without_an_unbounded_join() {
 }
 
 #[test]
+fn stop_interrupts_a_long_retry_after_without_another_offer() {
+    struct Released(Sender<()>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let (port, calls) = Double::new(&[x::STREAM_LOGS]);
+    port.answer(Err(PortError::Failed {
+        code: 1,
+        text: "retry later".into(),
+        retry_after_s: Some(300),
+        backend_status: None,
+        error: None,
+    }));
+    let door = open(port, Arc::new(Disk::default()));
+    let (released, custody) = channel();
+    assert_eq!(
+        door.deliver(
+            x::STREAM_LOGS as u8,
+            b"held".to_vec(),
+            Box::new(Released(released))
+        ),
+        Queued::Queued
+    );
+    let first = next(&calls);
+    assert_eq!(first.attempt, 1);
+    let began = Instant::now();
+    let report = door.stop_until(began + Duration::from_millis(20));
+    assert!(
+        began.elapsed() < WAIT,
+        "Retry-After cannot extend the shutdown deadline"
+    );
+    assert!(!report.clean(), "the accepted line was not delivered");
+    custody
+        .recv_timeout(WAIT)
+        .expect("the interrupted retry releases its retained custody");
+    assert_eq!(door.delivered(), 0);
+    assert!(
+        calls.try_recv().is_err(),
+        "stopping cannot reoffer the failed delivery"
+    );
+}
+
+#[test]
 fn a_later_stop_request_cannot_extend_the_first_deadline() {
     let (mut port, calls) = Double::new(&[x::STREAM_LOGS]);
     Arc::get_mut(&mut port).unwrap().pending = true;
