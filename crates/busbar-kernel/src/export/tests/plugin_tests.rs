@@ -1162,7 +1162,8 @@ async fn failed_export_read_amendment_reports_integrity_without_line_loss() {
         )],
         completion: CaptureCompletion {
             sinks: vec![sink.clone()],
-            ..CaptureCompletion::default()
+            capture: None,
+            finished: false,
         },
         permits: Vec::new(),
     }

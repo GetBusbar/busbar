@@ -375,7 +375,7 @@ async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observati
     let other = governance().await;
     assert!(handle.wait(&other).await.is_err());
     let mut forged = (*accepted).clone();
-    forged.partitions.as_mut().unwrap().attempts[1].resource = "forged".into();
+    forged.partitions.as_mut().unwrap().attempts[1].resource = Some("forged".into());
     assert!(gov.selected_terminal_completion(&Arc::new(forged)).is_err());
     drop(handle);
     let mut handle = gov.selected_terminal_completion(&accepted).unwrap();

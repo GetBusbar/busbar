@@ -132,7 +132,7 @@ impl NativeBinding {
             let owned = OwnedUpstreamIn::copy(&input);
             Box::pin(async move { complete(owned.call(&*port, cx).await?, cap) })
         };
-        match self.cache.get(
+        let result = match self.cache.get(
             self.cache_key(input.scope),
             false,
             tokio::time::Instant::now().into_std(),
@@ -142,7 +142,8 @@ impl NativeBinding {
             CredGet::Ready(result) => result.map(NativeCredential::Shared),
             CredGet::Wait(wait) => wait.await.map(NativeCredential::Shared),
             CredGet::Direct(direct) => direct.await.map(NativeCredential::Direct),
-        }
+        };
+        result
     }
 }
 
