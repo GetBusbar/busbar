@@ -512,12 +512,12 @@ pub(crate) fn admin_key_principal(key: &crate::governance::VirtualKey) -> Princi
     }
 }
 
-/// The admin chain's `keys` position: a busbar-signed key credential carried as the bearer or in
-/// `x-admin-token`, verified as the data plane's `keys` verifier does, and admitted only when the
+/// The admin chain's `keys` position: a busbar-signed key credential carried as the bearer,
+/// verified as the data plane's `keys` verifier does, and admitted only when the
 /// key holds an `admin` grant. A key without one is a data-plane key and is refused here
 /// (`credential_invalid`), exactly as an admin key is refused by the data plane's Approve step.
 pub(crate) fn admin_keys_arm(app: &crate::state::App, headers: &HeaderMap, now: u64) -> KeysAdmin {
-    let Some(token) = carried_named([AUTHORIZATION.as_str(), "x-admin-token"], headers)
+    let Some(token) = carried_named([AUTHORIZATION.as_str()], headers)
         .filter(|t| t.starts_with(crate::governance::signing::TOKEN_PREFIX))
     else {
         return KeysAdmin::Absent;

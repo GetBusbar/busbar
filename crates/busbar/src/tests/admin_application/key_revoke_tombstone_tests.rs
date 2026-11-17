@@ -7,8 +7,6 @@ use std::sync::Arc;
 use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::audit_ring;
 
-const X_ADMIN_TOKEN: &str = "x-admin-token";
-
 #[tokio::test]
 async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_0FDEBCA26962";
@@ -91,7 +89,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     let create_resp = client
         .post(&url)
-        .header(X_ADMIN_TOKEN, "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "tombstone-then-revoke"}))
         .send()
         .await
@@ -107,7 +105,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     let del = client
         .delete(format!("{url}/{id}"))
-        .header(X_ADMIN_TOKEN, "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -121,7 +119,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     let revoked = client
         .post(format!("{url}/{id}/revoke"))
-        .header(X_ADMIN_TOKEN, "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -134,7 +132,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     let body = json::parse_value(
         &client
             .post(format!("{url}/{id}/revoke"))
-            .header(X_ADMIN_TOKEN, "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()

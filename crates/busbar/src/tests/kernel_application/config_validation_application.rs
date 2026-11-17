@@ -211,9 +211,21 @@ fn make_auth_chain(
         auth.signing_key = Some(
             crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"),
         );
-        auth.admin_auth = vec![];
+        auth.admin_auth = operator_mint_path();
     }
     auth
+}
+
+/// The usable mint path of a keys chain: the linked operator credential, bound, with its 1.6
+/// settings `{sha256: ..}` (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
+fn operator_mint_path() -> Vec<config::AuthChainEntry> {
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let mut operator = config::AuthChainEntry::bare(config::operator_provider());
+    operator.settings = serde_json::from_value(serde_json::json!({
+        "sha256": busbar_kernel::test_hooks::operator::SETTINGS_SHA256
+    }))
+    .expect("the operator settings object");
+    vec![operator]
 }
 
 fn make_breaker(
@@ -1269,7 +1281,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth.admin_auth = vec![];
+    auth.admin_auth = operator_mint_path();
     assert!(
         auth.signing_key.is_none(),
         "the RED case sets no signing_key"
@@ -1286,7 +1298,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
     auth_ok.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth_ok.admin_auth = vec![];
+    auth_ok.admin_auth = operator_mint_path();
     auth_ok.signing_key =
         Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth_ok);
@@ -3821,13 +3833,22 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
 
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
-    let yaml = r#"
+    // The mint path is the bound operator credential with its 1.6 settings, on the closed default
+    // admin chain (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1).
+    crate::dist_root_install::install();
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    let operator = format!(
+        "identity-providers:\n  {op}:\n    module: {op}\n    settings: {{ sha256: {sha} }}\n",
+        op = config::operator_provider(),
+        sha = busbar_kernel::test_hooks::operator::SETTINGS_SHA256,
+    );
+    let yaml = operator
+        + r#"
 listen: "0.0.0.0:8080"
 auth:
   chain:
     - keys
   signing_key: { env: BUSBAR_SIGNING_KEY }
-  admin_auth: []
   role_bindings:
     keys:
       platform:
@@ -3855,7 +3876,7 @@ store:
 advanced:
   rate_sweep_interval: 256
 "#;
-    let mut cfg = resolve_yaml(yaml).expect("the clean config must resolve");
+    let mut cfg = resolve_yaml(&yaml).expect("the clean config must resolve");
     cfg.rate_card = cfg.rate_card.map(rate_card_for_actual_plane);
     assert!(
         validate(&cfg).is_ok(),

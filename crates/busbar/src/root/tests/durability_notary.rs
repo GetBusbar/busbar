@@ -13,11 +13,91 @@ use busbar_kernel_audit::{
     LiveSigner, Notary as NotaryCap, Stamp, StampKind,
 };
 
-use crate::root::durability::notary::{spawn, NotaryConfig, NotaryTask};
+use crate::root::durability::notary::{NotaryConfig, NotaryTask};
 use crate::root::durability::tests::{audit_inputs, audit_pass, token, NativeFixture};
 use crate::root::durability::{signer, Durability};
 
 const SEED: [u8; 32] = [0x5f; 32];
+
+#[tokio::test]
+async fn generated_delegated_key_stamps_only_after_boot_certificate_confirmation() {
+    use crate::root::durability::boot_jobs::BootPreparation;
+    use crate::root::durability::notary::{spawn_with_boot, NotaryRuntime};
+    use busbar_contract::crypto::{verify, DelegatedSigner, Signer};
+    let fixture = NativeFixture::new(41).await;
+    let book = Arc::new(Mutex::new(fixture.book().await));
+    let delegated = DelegatedSigner::generate().unwrap();
+    let public = delegated.public_key().clone();
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::Delegated(Box::new(delegated)))
+        .unwrap();
+    let signers = signer::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let (journal, feed, start) = {
+        let held = book.lock().unwrap();
+        (held.journal.clone(), held.head.clone(), held.notary_start())
+    };
+    let node = journal.node();
+    let task = spawn_with_boot(
+        NotaryConfig {
+            node,
+            host: "delegated-test-host".into(),
+            every_ms: 1,
+            key_cert: 0,
+        },
+        start,
+        journal.clone(),
+        feed,
+        signers.live,
+        NotaryRuntime {
+            floor_hints: None,
+            drain_clock: None,
+            boot: Some(BootPreparation::new(
+                signers.boot,
+                book.clone(),
+                Vec::new(),
+                Some(public.clone()),
+            )),
+        },
+    );
+    stamped_through(&task, 1).await;
+    seal_n(&book, 2, 2).await;
+    stamped_through(&task, 3).await;
+    let end = task.stop().await.unwrap();
+    assert!(end.halted.is_none());
+    let rows = journal
+        .read_records(busbar_kernel::persistence::journal::BufferBudget {
+            records: 100,
+            bytes: 64 * 1024,
+        })
+        .await
+        .unwrap();
+    let certs: Vec<_> = rows
+        .iter()
+        .filter_map(|row| {
+            busbar_kernel_audit::notary_key::notary_key_from_journal_body(&row.body)
+                .unwrap()
+                .map(|cert| (row.node_seq, cert))
+        })
+        .collect();
+    assert_eq!(certs.len(), 1);
+    assert_eq!(certs[0].1.certificate.key_id, public.key_id.as_ref());
+    let mut page_count = 0;
+    for row in rows {
+        if let Some(page) = stamp_from_journal_body(&row.body).unwrap() {
+            assert!(row.node_seq > certs[0].0);
+            assert_eq!(page.key_cert, certs[0].0);
+            assert_eq!(page.key_id, public.key_id.as_ref());
+            verify(&public, &page.preimage(), &page.signature).unwrap();
+            page_count += 1;
+        }
+    }
+    assert!(page_count > 0);
+}
 
 fn verifying_key() -> AuditVerifyingKey {
     AuditVerifyingKey::from_hex(&AuditSigningKey::from_seed(&SEED).public_key_hex()).unwrap()
@@ -27,9 +107,30 @@ fn verifying_key() -> AuditVerifyingKey {
 async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, NotaryTask) {
     let fixture = NativeFixture::new(41).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
-    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
-        .into_grants(LiveSigner::SameAsBootstrap)
-        .unwrap();
+    let task = notary_over(&book, every_ms);
+    (fixture, book, task)
+}
+
+/// A running notary over `book` (`seal_every` = `every_ms`).
+fn notary_over(book: &Arc<Mutex<Durability>>, every_ms: u64) -> NotaryTask {
+    notary_over_clock(book, every_ms, None)
+}
+
+fn notary_over_clock(
+    book: &Arc<Mutex<Durability>>,
+    every_ms: u64,
+    clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
+) -> NotaryTask {
+    notary_over_signer(book, every_ms, clock, LiveSigner::SameAsBootstrap)
+}
+
+fn notary_over_signer(
+    book: &Arc<Mutex<Durability>>,
+    every_ms: u64,
+    clock: Option<Arc<busbar_kernel::governance::drain::DrainClock>>,
+    live: LiveSigner,
+) -> NotaryTask {
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED).into_grants(live).unwrap();
     let signers = signer::spawn(
         NotaryCap::new(notary),
         BootstrapSigner::new(bootstrap),
@@ -44,7 +145,7 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
             held.notary_start(),
         )
     };
-    let task = spawn(
+    crate::root::durability::notary::spawn_with_floor(
         NotaryConfig {
             node: journal.node(),
             host: "notary-test-host".into(),
@@ -56,8 +157,8 @@ async fn notarised(every_ms: u64) -> (NativeFixture, Arc<Mutex<Durability>>, Not
         feed,
         signers.live,
         None,
-    );
-    (fixture, book, task)
+        clock,
+    )
 }
 
 async fn seal_n(book: &Arc<Mutex<Durability>>, from: u64, n: u64) {
@@ -216,6 +317,7 @@ fn the_book_holds_no_signing_capability() {
     impl NoSigner for crate::root::durability::AuditRing {}
     impl NoSigner for crate::root::durability::HeadFeed {}
     impl NoSigner for busbar_kernel::governance::GovState {}
+    impl NoSigner for busbar_kernel_wal::JournalRecord {}
     impl<T: NoSigner> NoSigner for Arc<T> {}
     impl<T: NoSigner> NoSigner for std::sync::Weak<T> {}
     impl<T: NoSigner> NoSigner for Option<T> {}
@@ -258,6 +360,284 @@ fn the_book_holds_no_signing_capability() {
     }
 }
 
+/// Journal rows held past the base once the notary's cut has caught up (polled for up to 5 s):
+/// head − base, every row at or below the base being deleted by the cut that moved it.
+async fn rows_past_base(
+    journal: &busbar_kernel::persistence::journal::RuntimeJournal,
+    bound: u64,
+) -> u64 {
+    let mut held = u64::MAX;
+    for _ in 0..500 {
+        let head = journal.ordinal_of(journal.next_seq().saturating_sub(1));
+        held = head.saturating_sub(journal.base_count());
+        if held <= bound {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    held
+}
+
+/// Test 30 (a), root part, `ephemeral_journal_is_bounded_after_n_requests` (SEALING-FIX §3.9):
+/// N units sealed through `seal_unit` and confirmed, with the notary running (`seal_every: 1`) on
+/// a store that reports `Durability::Ephemeral`. At N/2 and N the journal holds at most
+/// `RETAIN_TAIL + 2 × CUT_BATCH` rows past a base that has moved, and the notary's stop reports
+/// the cut settled. RSS is not asserted (receipts, §3.9 "Receipts").
+#[tokio::test]
+async fn ephemeral_journal_is_bounded_after_n_requests() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    const N: u64 = 200_000;
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 43, budget).await.unwrap();
+    assert!(journal.is_cut_capable());
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            43,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
+    let task = notary_over(&book, 1);
+    let mut sealed = 0;
+    for sample in [N / 2, N] {
+        seal_n(&book, sealed + 1, sample - sealed).await;
+        sealed = sample;
+        stamped_through(&task, sample).await;
+        let bound = RETAIN_TAIL + 2 * CUT_BATCH;
+        let held = rows_past_base(&journal, bound).await;
+        assert!(
+            held <= bound,
+            "{held} journal rows held past the base after {sample} units"
+        );
+        assert!(journal.base_count() > 0, "the base moved");
+        assert!(journal.base_tail().is_some_and(|tail| tail.chain_seq > 0));
+        let chain = book.lock().unwrap().chain_at();
+        assert!(
+            chain.read().await.unwrap().is_ok(),
+            "the retained WAL is verified from its base, never as a new genesis"
+        );
+        let plan = book
+            .lock()
+            .unwrap()
+            .prepare_audit_page(1, sample, None)
+            .unwrap();
+        let page: busbar_contract::json::Value =
+            busbar_contract::json::from_slice(&plan.finish().await.unwrap()).unwrap();
+        let base_seq = page["truncated_below_base"]["base_seq"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(base_seq > 0);
+        assert_eq!(page["returned_from"], (base_seq + 1).to_string());
+        assert!(page["gaps"].as_array().unwrap().is_empty());
+    }
+    let end = task.stop().await.unwrap();
+    assert!(end.halted.is_none(), "{:?}", end.halted);
+}
+
+/// §3.9: stamp work continues during request drain, but the first broadcast admits no new cut.
+#[tokio::test]
+async fn first_shutdown_broadcast_stops_new_cuts_before_notary_stop() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 44, budget).await.unwrap();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            44,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
+    let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
+    let task = notary_over_clock(&book, 1, Some(clock.clone()));
+    clock.arm(tokio::time::Instant::now() + clock.budget());
+    let count = RETAIN_TAIL + 3 * CUT_BATCH;
+    seal_n(&book, 1, count).await;
+    stamped_through(&task, count).await;
+    assert_eq!(
+        journal.base_count(),
+        0,
+        "stamp confirmation after the first broadcast cannot start a cut"
+    );
+    task.stop().await.unwrap();
+    assert_eq!(
+        journal.base_count(),
+        0,
+        "stop settles existing work but starts no new cut"
+    );
+}
+
+/// A real signer with a forced 5 ms KMS round trip, on the detached signer thread.
+struct SlowNotary {
+    inner: busbar_contract::crypto::LocalSigner,
+    signs: Arc<std::sync::atomic::AtomicU64>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
+}
+impl busbar_contract::crypto::Signer for SlowNotary {
+    fn public_key(&self) -> &busbar_contract::crypto::PublicKey {
+        busbar_contract::crypto::Signer::public_key(&self.inner)
+    }
+    fn sign(
+        &self,
+        msg: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), busbar_contract::crypto::SignError> {
+        std::thread::sleep(Duration::from_millis(5));
+        while self.paused.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.signs
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        busbar_contract::crypto::Signer::sign(&self.inner, msg, out)
+    }
+}
+
+/// Release even when a fixture assertion unwinds, so no detached test signer remains blocked.
+struct SigningPause(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for SigningPause {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Test 30(g): non-audit originals make the WAL advance much faster than the audit chain.
+/// The live cut must follow the stamp's WAL position, without passing its audit target.
+#[tokio::test]
+async fn interleaved_non_audit_rows_do_not_stop_the_retention_floor() {
+    use busbar_kernel::persistence::journal::{RuntimeJournal, CUT_BATCH, RETAIN_TAIL};
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 45, budget).await.unwrap();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
+            45,
+            journal.clone(),
+            None,
+            budget,
+        )
+        .await
+        .unwrap(),
+    ));
+    let signs = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let pause = SigningPause(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let task = notary_over_signer(
+        &book,
+        1,
+        None,
+        LiveSigner::Delegated(Box::new(SlowNotary {
+            inner: busbar_contract::crypto::LocalSigner::from_seed(&SEED).unwrap(),
+            signs: signs.clone(),
+            paused: pause.0.clone(),
+        })),
+    );
+    let count = 3 * RETAIN_TAIL;
+    let mut observed_unstamped = false;
+    for unit in 1..=count {
+        let other = journal
+            .stage_run(&[
+                Entry::new(RecordClass::Checkpoint, vec![1]),
+                Entry::new(RecordClass::Checkpoint, vec![2]),
+                Entry::new(RecordClass::Reconciliation, vec![3]),
+            ])
+            .unwrap();
+        journal.confirm(&other).await.unwrap();
+        drop(other);
+        if unit % (CUT_BATCH / 4) == 0 {
+            pause.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+        seal_n(&book, unit, 1).await;
+        if unit % (CUT_BATCH / 4) == 0 {
+            let records = journal
+                .read_records(busbar_kernel::persistence::journal::BufferBudget {
+                    records: 65_536,
+                    bytes: 64 * 1024 * 1024,
+                })
+                .await
+                .unwrap();
+            let readable: std::collections::BTreeSet<_> = records
+                .iter()
+                .filter(|record| record.class == RecordClass::Transaction)
+                .filter_map(|record| {
+                    busbar_kernel_audit::from_journal_body(
+                        &record.body,
+                        &busbar_kernel::Registration::meter_class,
+                    )
+                    .unwrap()
+                })
+                .map(|audit| audit.seq)
+                .collect();
+            // Read the confirmed frontier after the snapshot: a page confirmed during the read
+            // may legitimately permit a later cut; every line still unstamped must be present.
+            let stamped = task
+                .progress()
+                .stamped_through
+                .load(std::sync::atomic::Ordering::Acquire);
+            for sequence in stamped + 1..=unit {
+                observed_unstamped = true;
+                assert!(
+                    readable.contains(&sequence),
+                    "unstamped line {sequence} remains readable"
+                );
+            }
+        }
+        pause.0.store(false, std::sync::atomic::Ordering::Release);
+        if unit > count / 3 && unit % (CUT_BATCH / 4) == 0 {
+            stamped_through(&task, unit).await;
+            let bound = RETAIN_TAIL + 2 * CUT_BATCH;
+            assert!(
+                rows_past_base(&journal, bound).await <= bound,
+                "retention stays bounded even after WAL and chain seq drift apart"
+            );
+            if let Some(base) = journal.base_tail() {
+                assert!(
+                    base.chain_seq
+                        <= task
+                            .progress()
+                            .stamped_through
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    "no cut passes the newest durable stamp's audit target"
+                );
+            }
+        }
+    }
+    assert!(
+        observed_unstamped,
+        "the delayed signer leaves a measurable unstamped tail"
+    );
+    stamped_through(&task, count).await;
+    let base = journal.base_tail().unwrap();
+    assert!(base.node_seq - base.chain_seq >= 3 * RETAIN_TAIL);
+    assert!(
+        base.node_seq
+            <= task
+                .progress()
+                .stamped_node_seq
+                .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(signs.load(std::sync::atomic::Ordering::Acquire) > 1);
+
+    task.stop().await.unwrap();
+}
+
 /// Test 6, `clean_shutdown_stamps_final_page` (notary half, §3.6.3 step 3): lines left unstamped at
 /// stop get one `final` page from `committed_through + 1` to the head, made by the notary task
 /// itself on the notary signer thread, staged before the journal's final flush; pages stay
@@ -282,7 +662,7 @@ async fn clean_stop_stamps_a_final_page() {
     };
     // Spawned and stopped before its first poll (current-thread runtime): no live page is ever
     // signed, so the whole tail is the final page.
-    let task = spawn(
+    let task = crate::root::durability::notary::spawn_with_floor(
         NotaryConfig {
             node: journal.node(),
             host: "notary-test-host".into(),
@@ -294,8 +674,10 @@ async fn clean_stop_stamps_a_final_page() {
         feed,
         signers.live,
         None,
+        None,
     );
     let end = task.stop().await.unwrap();
+    assert_eq!(end.final_staged, Some(true));
     assert_eq!(end.committed_through, 12);
     let pages = stamps(&book).await;
     assert_eq!(pages.len(), 1, "{pages:?}");
@@ -316,6 +698,7 @@ async fn clean_stop_stamps_a_final_page() {
     seal_n(&quiet, 1, 3).await;
     stamped_through(&task, 3).await;
     let end = task.stop().await.unwrap();
+    assert_eq!(end.final_staged, None);
     assert_eq!(end.committed_through, 3);
     assert!(stamps(&quiet)
         .await
@@ -346,11 +729,72 @@ async fn final_page_is_not_staged_after_the_seal_cut() {
     .unwrap();
     let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(20));
     clock.arm(tokio::time::Instant::now());
-    assert!(services.start_notary(1, clock));
+    assert!(services.start_notary(1, clock, None, Arc::clone(&book)));
     let end = services.take_notary().unwrap().stop().await.unwrap();
     assert_eq!(end.final_staged, Some(false));
     assert!(
         stamps(&book).await.is_empty(),
         "a detached notary cannot stage a page after C3"
     );
+}
+
+#[tokio::test]
+async fn certificate_only_prefix_is_the_retained_audit_tail() {
+    use busbar_contract::crypto::{LocalSigner, Signer};
+    use busbar_kernel::persistence::journal::{
+        CutProgress, RuntimeJournal, CUT_BATCH, RETAIN_TAIL,
+    };
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = crate::root::durability::tests::BUDGET;
+    let backend =
+        crate::root::real_store::EphemeralInfo(crate::root::real_store::native_backend().await);
+    let core = crate::root::real_store::core_over(Arc::new(backend)).await;
+    let journal = RuntimeJournal::open(core, 49, budget).await.unwrap();
+    let mut book = crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig::default(),
+        49,
+        journal.clone(),
+        None,
+        budget,
+    )
+    .await
+    .unwrap();
+    let (notary, bootstrap) = AuditSigningKey::from_seed(&SEED)
+        .into_grants(LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let signers = signer::spawn(
+        NotaryCap::new(notary),
+        BootstrapSigner::new(bootstrap),
+        Arc::new(OnceLock::new()),
+    )
+    .unwrap();
+    let key = LocalSigner::from_seed(&[0x73; 32]).unwrap();
+    let certificate = signers
+        .boot
+        .submit_certificate(49, 1, Fingerprint::ZERO, key.public_key().clone())
+        .await
+        .unwrap();
+    let prepared =
+        busbar_kernel_audit::AuditChain::prepare_notary_key(49, 1, Fingerprint::ZERO, certificate);
+    let (record, run) = book
+        .stage_notary_key(prepared, &audit_pass(), &token())
+        .unwrap();
+    journal.confirm(&run).await.unwrap();
+    let certificate_seq = run.records()[0].node_seq;
+    drop(run);
+    for _ in 0..(RETAIN_TAIL + 2 * CUT_BATCH) {
+        let run = journal
+            .stage_run(&[Entry::new(RecordClass::Load, vec![1])])
+            .unwrap();
+        journal.confirm(&run).await.unwrap();
+    }
+    let mut cut = journal.cutter().unwrap();
+    assert!(matches!(
+        cut.truncate_through(u64::MAX).await,
+        CutProgress::Cut { .. }
+    ));
+    let tail = journal.base_tail().unwrap();
+    assert_eq!(tail.chain_seq, record.seq);
+    assert_eq!(tail.node_seq, certificate_seq);
+    assert_eq!(tail.fp, record.fingerprint.0);
 }

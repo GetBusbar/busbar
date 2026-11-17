@@ -69,6 +69,28 @@ impl Default for HeadHistory {
 }
 
 impl HeadHistory {
+    /// Observe an unsigned certificate chain tip. A certificate is not itself a signed head;
+    /// authenticated page heads are published only after stamp confirmation.
+    pub(crate) fn observe_notary_key(&mut self, record: &crate::notary_key::NotaryKeyRecord) {
+        let wall = record.linked_ms / 1_000;
+        let sample_due = self
+            .series
+            .last()
+            .is_none_or(|last| wall.saturating_sub(last.wall) >= self.sample_seconds);
+        self.tip = Some(SignedHead {
+            seq: record.seq,
+            hash: record.fingerprint.to_string(),
+            signature: None,
+            key_id: None,
+            wall,
+        });
+        if sample_due {
+            if let Some(tip) = &self.tip {
+                self.series.push(tip.clone());
+            }
+        }
+    }
+
     /// A history sampling at [`HEAD_SAMPLE_SECONDS`].
     #[must_use]
     pub fn new() -> Self {

@@ -17,8 +17,8 @@ fn every_config_read_refuses_with_the_start_refusal() {
     }));
     for yaml in [
         "{}\n",
-        "auth:\n  chain: []\n  admin_auth: []\n",
-        "auth:\n  admin_auth: []\nidentity-providers:\n  idp: { module: some-idp }\n",
+        "auth:\n  chain: []\n",
+        "identity-providers:\n  idp: { module: some-idp }\n",
     ] {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             yaml,

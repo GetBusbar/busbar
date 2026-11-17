@@ -59,7 +59,7 @@ async fn probe(
         req = req.bearer_auth(b);
     }
     if let Some(h) = header {
-        req = req.header("x-admin-token", h);
+        req = req.header("authorization", format!("Bearer {}", h));
     }
     let resp = req.send().await.unwrap();
     let status = resp.status().as_u16();
@@ -801,7 +801,8 @@ impl crate::root::units_admin::AdminDispatch for Answers200 {
     }
 }
 
-const DOOR_401: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
+const DOOR_401: &str =
+    r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer)"}}"#;
 
 async fn through_the_loop(
     handle: &Arc<busbar_kernel::state::AppHandle>,
@@ -845,13 +846,15 @@ async fn through_the_loop(
 const INFO: (&str, &str) = ("GET", "/api/v1/admin/info");
 
 #[tokio::test]
-async fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
+async fn an_empty_admin_chain_admits_no_one_on_the_loop() {
+    // ADMIN-API-1.6-ONE-MODEL r3.1 §8.1: there is no anonymous admin posture; an empty chain
+    // identifies no one, so a read and a write without a credential are both refused.
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(
         app(&[], Vec::new()).await,
     ));
-    assert_eq!(through_the_loop(&handle, INFO, None, None).await.0, 200);
+    assert_eq!(through_the_loop(&handle, INFO, None, None).await.0, 401);
     let write = ("POST", "/api/v1/admin/keys");
-    assert_eq!(through_the_loop(&handle, write, None, None).await.0, 200);
+    assert_eq!(through_the_loop(&handle, write, None, None).await.0, 401);
 }
 
 #[tokio::test]
@@ -922,9 +925,9 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
             .await
             .expect("boot"),
     );
-    let mut open = (*closed).clone();
-    open.admin_chain = Vec::new();
-    let open = Arc::new(open);
+    let mut empty = (*closed).clone();
+    empty.admin_chain = Vec::new();
+    let empty = Arc::new(empty);
 
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&closed)));
     let units = crate::root::kernel::ProductionUnits::admin_only(
@@ -933,13 +936,17 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
     )
     .await;
     let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
-    async fn ask(node: &crate::root::units_admin::AdminNode) -> u16 {
+    async fn ask(node: &crate::root::units_admin::AdminNode, bearer: Option<&str>) -> u16 {
+        let headers: Vec<(String, String)> = bearer
+            .map(|token| ("authorization".to_string(), format!("Bearer {token}")))
+            .into_iter()
+            .collect();
         node.answer(crate::root::units_admin::AdminRequest::test_fixture(
             crate::root::units_admin::TestAdminRequest {
                 method: INFO.0.to_string(),
                 path: INFO.1.to_string(),
-                credential: None,
-                headers: Vec::new(),
+                credential: bearer.map(str::to_string),
+                headers,
                 body: Vec::new(),
                 at: 1_700_000_000,
                 unit: node.next_unit(),
@@ -948,15 +955,34 @@ async fn a_swapped_admin_chain_is_the_loops_next_door() {
         .await
         .status
     }
-    assert_eq!(ask(&node).await, 401, "the operator chain, no credential");
-    handle.swap(Arc::clone(&open)).await;
     assert_eq!(
-        ask(&node).await,
+        ask(&node, None).await,
+        401,
+        "the operator chain, no credential"
+    );
+    assert_eq!(
+        ask(&node, Some("tok-live")).await,
         200,
-        "the swapped-in empty chain opens the SAME node's door"
+        "the operator chain admits the operator token"
+    );
+    // ADMIN-API-1.6-ONE-MODEL r3.1 §8.1: an empty chain is no open posture; it admits no one.
+    handle.swap(Arc::clone(&empty)).await;
+    assert_eq!(
+        ask(&node, None).await,
+        401,
+        "the swapped-in empty chain is the SAME node's next door, and it opens to no one"
+    );
+    assert_eq!(
+        ask(&node, Some("tok-live")).await,
+        401,
+        "the swapped-in empty chain refuses the operator token the previous chain admitted"
     );
     handle.swap(closed).await;
-    assert_eq!(ask(&node).await, 401, "and swapping it back closes it");
+    assert_eq!(
+        ask(&node, Some("tok-live")).await,
+        200,
+        "and swapping it back admits the operator token again"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
