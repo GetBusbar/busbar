@@ -12,7 +12,7 @@ fn initialization_declares_the_registrar_epoch_required_by_register() {
     }));
     assert!(prepared.candidate().mutations.iter().any(|mutation| {
         matches!(mutation, Mutation::Put { address, value }
-            if *address == epoch && value.0 == control::EPOCH_VALUE)
+            if *address == epoch && value.expose(&crate::seal::lend()) == control::EPOCH_VALUE)
     }));
     assert!(control::initialization(&prepared, DatasetId([1; 16])));
     assert_eq!(control::admit(&prepared), Ok(()));
