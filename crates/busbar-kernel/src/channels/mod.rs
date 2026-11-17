@@ -22,6 +22,8 @@ mod carrier_tests;
 pub mod frame;
 #[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod guarded_link_tests;
 pub mod line_carriers;
 pub mod link;
 pub mod protected;
