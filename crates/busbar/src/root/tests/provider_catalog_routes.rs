@@ -45,6 +45,18 @@ fn actual_model_definition_and_target_retain_only_the_configured_resource() {
     }
 }
 
+#[test]
+fn staged_member_policy_keeps_the_resolved_catalog_values() {
+    let (cfg, plan) = configured();
+    let staged = stage(&cfg, &plan, &allocated(&plan)).unwrap();
+    for (key, row) in &staged.rows {
+        let target = plan.target(&key.0, &key.1).unwrap();
+        assert_eq!(row.attempt_timeout_ms, target.attempt_timeout_ms);
+        assert_eq!(row.context_max, target.context_max);
+        assert_eq!(row.credential_mode, target.credential_mode);
+    }
+}
+
 fn allocated(plan: &CatalogPlan) -> Allocations {
     plan.targets()
         .keys()
