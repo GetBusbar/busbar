@@ -3,7 +3,7 @@
 
 //! Native message-stream conformance (WS-NATIVE-SUBJECT r2).
 //! This is a bounded host target, not the production listener or a WebSocket implementation.
-//! Only the linked arm is available; signed drop-in admission has a separate owner/input gate.
+//! Signed packages use the production parser and admission boundary, with explicit trust and build identity.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
@@ -20,7 +20,12 @@ use busbar_plugin_abi::records::{tag, Reply, U32Rec, Writer};
 use busbar_plugin_abi::transport::{
     CONN_UPGRADED, CR_DRAIN, E_BODY, E_CLOSE, MSG_BINARY, MSG_FIN, MSG_TEXT, ROLE_SERVER,
 };
+use busbar_plugin_loader::admit::{self, Admitted};
 use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
+
+// Plain producer vocabulary: callers supply their authenticated trust facts. No test key is inferred.
+pub use busbar_plugin_loader::admit::TrustConfig;
+pub use busbar_plugin_loader::sign::{public_key_from_hex, FirstPartyKey, TrustInput};
 
 use crate::fake_needs::FakeNeeds;
 use crate::suites::harness::Harness;
@@ -28,6 +33,23 @@ use crate::suites::harness::Harness;
 const READ_BYTES: usize = 64 * 1024;
 const TIMER_TURN: usize = 64;
 const SHUTDOWN_TICK: Duration = Duration::from_millis(100);
+
+#[cfg(any(target_os = "linux", test))]
+fn build_digest(expected: &str) -> Result<[u8; 32], Failure> {
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(Failure::Admission);
+    }
+    let mut digest = [0; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&expected[index * 2..index * 2 + 2], 16)
+            .map_err(|_| Failure::Admission)?;
+    }
+    Ok(digest)
+}
 
 /// Failure categories never include client payload or credential text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +143,10 @@ impl StreamLimits {
 pub struct Report {
     pub subject: &'static str,
     pub image: &'static str,
+    pub canonical_name: String,
+    /// Exact library digest bound to the independently supplied build digest; absent for linked code.
+    pub library_sha256: Option<String>,
+    pub package_sha256: Option<String>,
     pub connections: u64,
     pub mutations: u64,
     pub first_failure: Option<Failure>,
@@ -197,11 +223,91 @@ impl MessageStreamSubject {
 
     /// Serve only the linked image on a numeric loopback listener. This cannot stand in for drop-in proof.
     pub fn serve_linked(self) -> Result<Served, Failure> {
+        let image = admit::admit_linked(self.plugin).map_err(|_| Failure::Admission)?;
+        self.start(image, None, None)
+    }
+
+    /// Serve the exact signed package produced by the native self-pack route. The expected digest must
+    /// come from the separate unseeded build artifact, never from hashing this package as its own expectation.
+    /// No listener is opened before signature, trust, image digest and canonical linked identity agree.
+    #[cfg(target_os = "linux")]
+    pub fn serve_signed_package(
+        self,
+        archive: &[u8],
+        expected_sha256: &str,
+        trust: &TrustConfig,
+    ) -> Result<Served, Failure> {
+        use busbar_plugin_loader::{sign, tarball};
+
+        let expected = build_digest(expected_sha256)?;
+        if trust.allow_untrusted || archive.len() as u64 > tarball::MAX_TARBALL_FILE_BYTES {
+            return Err(Failure::Admission);
+        }
+        let package = tarball::unpack(archive).map_err(|_| Failure::Admission)?;
+        if package.manifest.sha256 != expected_sha256
+            || sign::sha256_hex(&package.lib_bytes) != expected_sha256
+        {
+            return Err(Failure::Admission);
+        }
+        let linked = admit::admit_linked(self.plugin).map_err(|_| Failure::Admission)?;
+        let image = admit::admit_bytes(&package.lib_bytes, &package.manifest, trust)
+            .map_err(|_| Failure::Admission)?;
+        if image.sha256() != Some(&expected)
+            || image.identity() != linked.identity()
+            || image.kind() != linked.kind()
+        {
+            return Err(Failure::Admission);
+        }
+        self.start(
+            image,
+            Some(expected_sha256.to_owned()),
+            Some(sign::sha256_hex(archive)),
+        )
+    }
+
+    /// Read one bounded, regular package file once. Production unpacking also bounds expanded members.
+    #[cfg(target_os = "linux")]
+    pub fn serve_signed_file(
+        self,
+        path: &std::path::Path,
+        expected_sha256: &str,
+        trust: &TrustConfig,
+    ) -> Result<Served, Failure> {
+        let cap = busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES;
+        let file = std::fs::File::open(path).map_err(|_| Failure::Io)?;
+        let metadata = file.metadata().map_err(|_| Failure::Io)?;
+        if !metadata.is_file() || metadata.len() > cap {
+            return Err(Failure::Limit);
+        }
+        let mut bytes = Vec::new();
+        file.take(cap + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Failure::Io)?;
+        if bytes.len() as u64 > cap {
+            return Err(Failure::Limit);
+        }
+        self.serve_signed_package(&bytes, expected_sha256, trust)
+    }
+
+    fn start(
+        self,
+        image: Admitted,
+        library_sha256: Option<String>,
+        package_sha256: Option<String>,
+    ) -> Result<Served, Failure> {
+        let image_label = if library_sha256.is_some() {
+            "signed-drop-in"
+        } else {
+            "linked"
+        };
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             report: Mutex::new(Report {
                 subject: "host target; kernel not present",
-                image: "linked",
+                image: image_label,
+                canonical_name: image.identity().to_owned(),
+                library_sha256,
+                package_sha256,
                 connections: 0,
                 mutations: 0,
                 first_failure: None,
@@ -211,9 +317,9 @@ impl MessageStreamSubject {
         let owner_shared = Arc::clone(&shared);
         let require_mutation = self.mutant;
         let owner = std::thread::Builder::new()
-            .name("native-stream-linked".into())
+            .name(format!("native-stream-{image_label}"))
             .spawn(move || {
-                if let Err(failure) = self.serve(&owner_shared, &ready_tx) {
+                if let Err(failure) = self.serve(image, &owner_shared, &ready_tx) {
                     owner_shared.fail(failure);
                     let _ = ready_tx.try_send(Err(failure));
                 }
@@ -236,6 +342,7 @@ impl MessageStreamSubject {
 
     fn serve(
         self,
+        image: Admitted,
         shared: &Arc<Shared>,
         ready: &mpsc::SyncSender<Result<SocketAddr, Failure>>,
     ) -> Result<(), Failure> {
@@ -244,7 +351,7 @@ impl MessageStreamSubject {
             .ok_or(Failure::Limit)?;
         // Harness's subscriber guard and runtime are created and dropped on this owner thread.
         let harness =
-            Harness::admit_linked(self.plugin, FakeNeeds::new()).map_err(|_| Failure::Admission)?;
+            Harness::admit_admitted(image, FakeNeeds::new()).map_err(|_| Failure::Admission)?;
         let port = harness
             .open_transport("native-stream", &self.config)
             .map_err(|_| Failure::Admission)?;
@@ -809,7 +916,9 @@ fn invoke(
     limits: &StreamLimits,
 ) -> Result<Batch, Failure> {
     let mut batch = Batch::default();
-    let mut sink = |out| batch.capture(out, limits.output_records, limits.output_bytes);
+    let mut sink = |out: TransportOut<'_>| {
+        batch.capture(out, limits.output_records, limits.output_bytes);
+    };
     let result = match call {
         Call::Ingest => port.ingest(session, bytes, &mut sink),
         Call::Timer => port.timer(session, &mut sink),
