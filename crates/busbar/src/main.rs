@@ -1016,7 +1016,11 @@ async fn run(
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
 
-    let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
+    let resolved_export = config::resolve_export_in(
+        &deploy.export,
+        &mut Vec::new(),
+        config::ExportRead(deploy.grammar.read_context()),
+    );
     snapshot::configure_telemetry(
         &deploy.telemetry,
         resolved_export
