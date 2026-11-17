@@ -399,12 +399,38 @@ impl PortDriver {
     }
 
     /// Render a core refusal in this exact admitted route's dialect without opening a unit.
+    pub fn render_refusal_now(
+        &self,
+        route: u32,
+        http: HttpIn,
+        refusal: ClientRefusal,
+    ) -> Result<Vec<ToClient>, ServeError> {
+        let auth = self.refusal_auth(route)?;
+        Ok(render_native_refusal(
+            &*self.port,
+            route,
+            auth,
+            http,
+            refusal,
+        ))
+    }
+
     pub async fn render_refusal(
         &self,
         route: u32,
         http: HttpIn,
         refusal: ClientRefusal,
     ) -> Result<Vec<ToClient>, ServeError> {
+        let auth = self.refusal_auth(route)?;
+        let port = Arc::clone(&self.port);
+        tokio::task::spawn_blocking(move || {
+            render_native_refusal(&*port, route, auth, http, refusal)
+        })
+        .await
+        .map_err(|_| ServeError::Cancelled)
+    }
+
+    fn refusal_auth(&self, route: u32) -> Result<u32, ServeError> {
         let mounted = self
             .routes
             .data
@@ -413,39 +439,7 @@ impl PortDriver {
             .chain(&self.routes.admin)
             .find(|mounted| mounted.route == route)
             .ok_or(ServeError::NoRoute)?;
-        let auth = mounted.effective & mounted.effective.wrapping_neg();
-        let port = Arc::clone(&self.port);
-        tokio::task::spawn_blocking(move || {
-            struct RenderOnly;
-            impl Effects for RenderOnly {
-                fn emit(&self, _: u64, _: &[u8]) {}
-            }
-            let headers = http
-                .headers
-                .iter()
-                .map(|(name, value)| Pair {
-                    name: Str::new(name),
-                    value: Bytes::new(value),
-                })
-                .collect::<Vec<_>>();
-            let req = PlaneIn {
-                route,
-                flags: 0,
-                auth,
-                method: &http.method,
-                path: &http.path,
-                query: &http.query,
-                headers: &headers,
-                identity: &[],
-                request_id: http.request_id,
-                carrier: 0,
-                work: "",
-                ticket_record: &[],
-            };
-            refuse(&*port, &req, &refusal, &RenderOnly)
-        })
-        .await
-        .map_err(|_| ServeError::Cancelled)
+        Ok(mounted.effective & mounted.effective.wrapping_neg())
     }
 
     /// D_TICK_S: the period core calls [`tick`](Self::tick) at, if the plane declares one.
@@ -517,6 +511,42 @@ impl PortDriver {
             tracing::warn!(?error, carrier = carrier.get(), "plane carrier end failed");
         }
     }
+}
+
+fn render_native_refusal(
+    port: &dyn PlanePort,
+    route: u32,
+    auth: u32,
+    http: HttpIn,
+    refusal: ClientRefusal,
+) -> Vec<ToClient> {
+    struct RenderOnly;
+    impl Effects for RenderOnly {
+        fn emit(&self, _: u64, _: &[u8]) {}
+    }
+    let headers = http
+        .headers
+        .iter()
+        .map(|(name, value)| Pair {
+            name: Str::new(name),
+            value: Bytes::new(value),
+        })
+        .collect::<Vec<_>>();
+    let req = PlaneIn {
+        route,
+        flags: 0,
+        auth,
+        method: &http.method,
+        path: &http.path,
+        query: &http.query,
+        headers: &headers,
+        identity: &[],
+        request_id: http.request_id,
+        carrier: 0,
+        work: "",
+        ticket_record: &[],
+    };
+    refuse(port, &req, &refusal, &RenderOnly)
 }
 
 /// The carrier's own binding, as its lines see it: the principal its session was bound as, and whether that was a
