@@ -581,3 +581,89 @@ fn native_dynamic_physical_classes_survive_their_declaring_storage_and_reject_ne
         .iter()
         .any(|(class, amount)| class.as_ref() == "tokens.native_output_41" && amount.is_zero()));
 }
+
+#[tokio::test]
+async fn publication_clock_failure_keeps_original_app_policy_epoch_and_governor() {
+    use crate::config::transaction::{config_transaction, Outcome, TxnError};
+    use crate::governance::selected_policy::{
+        SelectedPolicy, SelectedTargetConfig, SelectedTargetKind,
+    };
+    let groups = |amount: u64| -> BTreeMap<String, crate::config::groups::GroupCfg> {
+        busbar_contract::yaml::from_str(&format!(
+            "team:\n  limits:\n    - {{id: rpm, upstream_resource: p/r, requests: {amount}, per: minute, per_key: true, enforcement: process}}"
+        )).unwrap()
+    };
+    let target = SelectedTargetConfig {
+        instance: "p",
+        kind: SelectedTargetKind::Model,
+        pool: "pool",
+        member: "p\u{1f}member",
+        resource: Some("r"),
+        attempt_accounting: true,
+    };
+    let mut app = crate::inbound::native::tests::app();
+    let owned = Arc::get_mut(&mut app).unwrap();
+    let initial = groups(2);
+    owned.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &initial));
+    owned.governance = Some(Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    ));
+    SelectedPolicy::compile(&initial, owned.cost.clone(), &[target], None)
+        .unwrap()
+        .install_initial(owned)
+        .unwrap();
+    let handle = Arc::new(crate::state::AppHandle::new(app));
+    let prior = handle.load();
+    let policy = prior.selected_policy.as_ref().unwrap().clone();
+    let governor = prior.governance.as_ref().unwrap().selected_rates().clone();
+    let epoch = prior.config_generation.load(Ordering::Acquire);
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let observed = callbacks.clone();
+    handle.on_apply(Box::new(move |_| {
+        observed.fetch_add(1, Ordering::AcqRel);
+    }));
+    let result: Result<(), TxnError> = config_transaction(&handle, |txn| {
+        let prior = txn.app().clone();
+        Ok(Outcome::asynchronous(async move {
+            let mut next = (*prior).clone();
+            next.publication_generation = crate::config::generation::reserve(Some(&prior))
+                .await
+                .map_err(TxnError::Validation)?;
+            next.selected_predecessor = prior.selected_policy.clone();
+            let changed = groups(7);
+            next.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &changed));
+            let pending = SelectedPolicy::compile(
+                &changed,
+                next.cost.clone(),
+                &[target],
+                next.selected_predecessor(),
+            )
+            .unwrap();
+            next.prepare_selected_policy(pending)
+                .map_err(TxnError::Validation)?;
+            next.governance
+                .as_ref()
+                .unwrap()
+                .selected_rates()
+                .unavailable
+                .store(true, Ordering::Release);
+            Ok(Outcome::commit_async(Arc::new(next), async { Ok(()) }, ()))
+        }))
+    })
+    .await;
+    assert!(result.is_err());
+    let current = handle.load();
+    assert!(Arc::ptr_eq(&prior, &current));
+    assert!(Arc::ptr_eq(
+        &policy,
+        current.selected_policy.as_ref().unwrap()
+    ));
+    assert_eq!(current.config_generation.load(Ordering::Acquire), epoch);
+    assert!(Arc::ptr_eq(
+        &governor,
+        current.governance.as_ref().unwrap().selected_rates()
+    ));
+    assert_eq!(callbacks.load(Ordering::Acquire), 0);
+}
