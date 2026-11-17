@@ -660,6 +660,11 @@ pub struct FeeCharge {
 }
 
 impl FeeCharge {
+    /// The exact fee lane charged by the original admission; `None` is the flat base.
+    pub(crate) fn fee_lane(&self) -> Option<&str> {
+        self.lane.as_deref()
+    }
+
     pub fn raw_era(&self) -> RawRateEra {
         self.era
     }

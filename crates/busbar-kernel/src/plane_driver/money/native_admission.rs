@@ -93,7 +93,7 @@ impl PlaneMoney {
         let key = request.unit();
         self.install_native_pending(key, pending, |money, grant, identity| {
             request
-                .admitted(money, grant, self.book.clone(), identity)
+                .admitted(money, grant, self.gov.clone(), self.book.clone(), identity)
                 .map_err(NativeAdmissionError::Phase)
         })
     }
@@ -128,6 +128,7 @@ impl PlaneMoney {
                         children: 0,
                         parent_refund: None,
                         child_incurred: false,
+                        completed: None,
                     }),
                 });
                 let open = Open::new(
