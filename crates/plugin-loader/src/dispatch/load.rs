@@ -287,7 +287,7 @@ pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
-#[cfg(any(test, feature = "test-support", feature = "pack"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn rendering_of_library(path: &std::path::Path) -> Result<Option<Vec<u8>>, LoadError> {
     crate::stage::allow_standalone_path_load().map_err(LoadError::Open)?;
     let lib = crate::stage::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
