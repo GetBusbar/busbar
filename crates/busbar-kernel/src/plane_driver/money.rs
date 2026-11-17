@@ -21,7 +21,9 @@ mod native_admission;
 pub(super) mod native_attempt;
 pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
+mod native_ordinary;
 mod native_terminal;
+pub use native_ordinary::NativeOrdinaryTerminalSlot;
 pub use native_terminal::SelectedTerminalReceipt;
 mod selected_view;
 pub use selected_view::UsageView;
@@ -371,6 +373,7 @@ impl Drop for FeeParticipation {
 }
 
 struct Open {
+    ordinary_terminal: Option<Arc<NativeOrdinaryTerminalSlot>>,
     native: Option<native_attempt::NativeMoney>,
     spend_ceiling_micros: Option<u64>,
     observation: Option<Arc<crate::persistence::observations::BoundScope>>,
@@ -412,6 +415,7 @@ impl Open {
     ) -> Self {
         Self {
             native: None,
+            ordinary_terminal: None,
             spend_ceiling_micros: None,
             observation: None,
             observation_started: false,
