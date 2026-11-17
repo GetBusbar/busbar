@@ -65,8 +65,21 @@ async fn current_route_preserves_original_domain_and_authorized_fallback_reach()
     let current =
         routes("  p: {members: [m], on_exhausted: {fallback_pool: q}}\n  q: {members: [m]}\n");
     let selected = current.catalog.as_ref().unwrap().select("q").unwrap();
+    let candidate = crate::plane_driver::port_upstream::Candidate {
+        pool: selected.into(),
+        qualified_member: "seat\u{1f}m".into(),
+        identity: crate::plane_driver::port_upstream::TargetIdentity::Registration,
+        resource: None,
+        upstream: "m".into(),
+        provider: "{}".into(),
+        base_path: "".into(),
+        flags: 0,
+        params: Vec::new(),
+    };
+    assert!(current.allows_current_candidate(&admitted, &candidate, admitted.key()));
     assert!(current.allows_current_pair(&admitted, admitted.key(), selected, "seat\u{1f}m"));
     let moved = routes("  p: {members: [m]}\n  q: {members: [m]}\n");
+    assert!(!moved.allows_current_candidate(&admitted, &candidate, admitted.key()));
     assert!(
         !moved.allows_current_pair(&admitted, admitted.key(), selected, "seat\u{1f}m"),
         "a removed fallback cannot be retained by name coincidence"
@@ -87,5 +100,6 @@ async fn current_route_preserves_original_domain_and_authorized_fallback_reach()
     assert!(!removed.allows_current_pair(&admitted, admitted.key(), selected, "seat\u{1f}m"));
     let mut narrowed = admitted.key().as_ref().clone();
     narrowed.allowed_scopes = Some(vec![busbar_contract::records::ScopeRef::pool("p")]);
+    assert!(!current.allows_current_candidate(&admitted, &candidate, &narrowed));
     assert!(!current.allows_current_pair(&admitted, &narrowed, selected, "seat\u{1f}m"));
 }
