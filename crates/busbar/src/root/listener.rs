@@ -530,6 +530,7 @@ struct BodyTimeoutService {
     /// The connection's socket peer, stamped on every request it serves (the login attempt
     /// limiter's and the admin door's client address).
     peer: Option<SocketAddr>,
+    tls_peer_cert: bytes::Bytes,
 }
 
 impl BodyTimeoutService {
@@ -538,12 +539,14 @@ impl BodyTimeoutService {
         timeout: Duration,
         scheme: busbar_kernel::plane_routes::ListenerScheme,
         peer: Option<SocketAddr>,
+        tls_peer_cert: bytes::Bytes,
     ) -> Self {
         Self {
             inner: TowerToHyperService::new(router),
             timeout,
             scheme,
             peer,
+            tls_peer_cert,
         }
     }
 }
@@ -562,6 +565,11 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
         if let Some(peer) = self.peer {
             req.extensions_mut()
                 .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+            req.extensions_mut()
+                .insert(super::ingress_context::RequestContext {
+                    peer: peer.to_string().into_boxed_str(),
+                    tls_peer_cert: self.tls_peer_cert.clone(),
+                });
         }
         Box::pin(inner.call(req))
     }
@@ -696,7 +704,9 @@ impl Served {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }
         if self.security.is_none() {
-            return self.io(stream, peer, watcher, drain).await;
+            return self
+                .io(stream, peer, bytes::Bytes::new(), watcher, drain)
+                .await;
         }
         let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(stream));
         self.raw(raw, peer, watcher, drain).await;
@@ -704,7 +714,7 @@ impl Served {
 
     async fn raw(self, raw: Box<dyn RawIo>, peer: SocketAddr, watcher: Watcher, drain: Drain) {
         let wrapped = match &self.security {
-            None => raw,
+            None => busbar_contract::transport::wire::SecuredIo::anonymous(raw),
             Some(security) => {
                 match tokio::time::timeout(handshake_timeout(), security.wrap(raw)).await {
                     Ok(Ok(s)) => s,
@@ -721,16 +731,23 @@ impl Served {
             }
         };
         self.io(
-            FuturesAsyncReadCompatExt::compat(wrapped),
+            FuturesAsyncReadCompatExt::compat(wrapped.io),
             peer,
+            bytes::Bytes::from(wrapped.peer_certificate.into_vec()),
             watcher,
             drain,
         )
         .await;
     }
 
-    async fn io<I>(self, io: I, peer: SocketAddr, watcher: Watcher, drain: Drain)
-    where
+    async fn io<I>(
+        self,
+        io: I,
+        peer: SocketAddr,
+        tls_peer_cert: bytes::Bytes,
+        watcher: Watcher,
+        drain: Drain,
+    ) where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         if let Some(framer) = self.framer {
@@ -743,6 +760,7 @@ impl Served {
                 body_read_timeout(),
                 drain.stop,
                 Some(peer),
+                tls_peer_cert,
             )
             .await;
             return;
@@ -752,6 +770,7 @@ impl Served {
             body_read_timeout(),
             listener_scheme(self.security.is_some()),
             Some(peer),
+            tls_peer_cert,
         );
         let conn = self
             .builder

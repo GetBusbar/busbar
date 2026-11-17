@@ -68,7 +68,7 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -287,7 +287,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
             "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
             "identity-providers": {},
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         document["identity-providers"][operator] =
             serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -506,7 +506,7 @@ async fn an_upload_cannot_replace_the_anchor_with_a_target_only_the_running_pin_
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});

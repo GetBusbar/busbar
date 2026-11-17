@@ -10,7 +10,7 @@ use crate::diagnostics::{
     PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-use crate::preflight::{build_secret_resolver, resolve_signing_key};
+use crate::preflight::resolve_signing_key;
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
 use crate::store::{HealthState, LaneData};
@@ -18,11 +18,6 @@ use crate::{admin, config, config_validate, governance, hooks, ratelimit, state,
 use busbar_kernel::plane_driver::route_input::{
     LaneInput, OnExhaustedInput, PoolInput, PoolMemberInput,
 };
-
-/// The registry's kernel sides, core's own secret references, and the one plan-and-walk entry.
-pub mod boot_registry;
-/// The MIN-3 boot: one generic walk over `Registry::boot_plan` (IF §11.2, §12.10 item 4).
-pub mod boot_walk;
 
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
@@ -358,8 +353,11 @@ impl RawDocuments<'_> {
     /// Phase 1 over this read's own block alone: its own directory, no pins, no fetch.
     pub fn own_grammar(&self) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn::of(&plugins))
-            .map_err(|refusal| format!("config.yaml: {refusal}"))
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn::of(&plugins),
+            self.inputs.rules,
+        )
+        .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
     /// Phase 1 over this read's own block with the Store's plugin version pins: the boot
@@ -369,12 +367,15 @@ impl RawDocuments<'_> {
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::Grammar, String> {
         let plugins = self.plugins_block()?;
-        config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-            plugins: &plugins,
-            dir: std::path::Path::new(&plugins.dir),
-            pins,
-            fetch: config::grammar::Fetch::None,
-        })
+        config::grammar::grammar_for(
+            &config::grammar::PhaseOneIn {
+                plugins: &plugins,
+                dir: std::path::Path::new(&plugins.dir),
+                pins,
+                fetch: config::grammar::Fetch::None,
+            },
+            self.inputs.rules,
+        )
         .map_err(|refusal| format!("config.yaml: {refusal}"))
     }
 
@@ -418,12 +419,13 @@ impl RawDocuments<'_> {
         } else {
             config::OperatorFileDefs::of(&deploy.identity_providers)
         };
+        let bound_grammar = deploy.grammar.get().map_err(String::from)?.clone();
         let (defs, providers_path) = typed_rest(
             inputs,
             &source_text,
             &mut deploy,
             &mut unset_env_vars,
-            grammar,
+            &bound_grammar,
         )?;
         let resolution = config::overlay::resolve_backend(&deploy.config);
         Ok(LoadedConfig {
@@ -987,6 +989,39 @@ pub(crate) fn plane_is_open_for_build(
 }
 
 pub trait RootRules: Send + Sync {
+    /// Phase one uses this reader's owned process and image admission context.
+    fn grammar(
+        &self,
+        input: &config::grammar::PhaseOneIn<'_>,
+    ) -> Result<config::Grammar, config::grammar::GrammarRefusal> {
+        if input.plugins.enabled {
+            Err(config::grammar::GrammarRefusal(
+                "no composition root supplied the config grammar".to_owned(),
+            ))
+        } else {
+            Ok(config::Grammar::empty())
+        }
+    }
+    /// Open the candidate secret plan using this roots complete bootstrap owners. The root
+    /// refuses protected boot changes before opening any candidate instance.
+    fn secret_resolver<'a>(
+        &'a self,
+        cfg: &'a config::RootCfg,
+        _plugins: &'a config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Arc<config::secret::SecretResolver>, String>,
+    > {
+        Box::pin(async move {
+            let sugars = generation_sugars(cfg);
+            if !cfg.secrets.is_empty() || sugars.iter().next().is_some() {
+                return Err("no composition root supplied the candidate secret plan".to_owned());
+            }
+            Ok(Arc::new(
+                config::secret::SecretResolver::builtins_only().with_sources(sugars),
+            ))
+        })
+    }
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
     /// The document this read runs in place of the file at `path`, held in memory by the
@@ -1002,7 +1037,9 @@ pub trait RootRules: Send + Sync {
         None
     }
 
-    fn check_built(&self, _app: &App) -> Result<(), String> {
+    /// Complete the exclusively owned candidate's root projections before publication.
+    /// Implementations may replace candidate fields; they must not alter shared prior state.
+    fn check_built(&self, _app: &mut App) -> Result<(), String> {
         Ok(())
     }
 
@@ -1040,24 +1077,15 @@ impl RootRules for AcceptAll {
     }
 }
 
-pub async fn bootstrap_config_store(
-    cfg: &config::RootCfg,
-    plugins: &config::PluginsCfg,
-    opener: &dyn crate::preflight::StoreOpener,
-) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    // Validation, fetch, admission and the bootstrap secrets run as before; the open itself is the registry's.
-    bootstrap_store_inputs(cfg, plugins).await?;
-    open_config_store(cfg, opener).await
-}
-
 /// Inspect a configured Store before ordinary OPEN can initialize or select its dataset.
 /// Historical transformation is supplied by the composition root, not this projection.
 pub async fn prepare_config_store(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
+    resolver: &config::secret::SecretResolver,
 ) -> Result<busbar_contract::persistence::lifecycle::axis::Prepared, String> {
-    let (registry, resolver) = bootstrap_store_inputs(cfg, plugins).await?;
-    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, &resolver)?;
+    let registry = bootstrap_store_inputs(cfg, plugins, resolver).await?;
+    let (door, label, settings) = config_store_inputs(cfg.store.as_ref(), &registry, resolver)?;
     let axis = crate::preflight::root_rows()
         .store_axis
         .ok_or("no Store axis is installed")?;
@@ -1067,16 +1095,11 @@ pub async fn prepare_config_store(
         .map_err(|_| format!("Store '{label}' native preparation refused"))
 }
 
-async fn bootstrap_store_inputs(
+pub async fn bootstrap_store_inputs(
     cfg: &config::RootCfg,
     plugins: &config::PluginsCfg,
-) -> Result<
-    (
-        Arc<dyn busbar_contract::plugin_rows::PluginRows>,
-        config::secret::SecretResolver,
-    ),
-    String,
-> {
+    resolver: &config::secret::SecretResolver,
+) -> Result<Arc<dyn busbar_contract::plugin_rows::PluginRows>, String> {
     // This is a Store-only bootstrap projection. Overlay definitions do not exist yet;
     // the composition root validates the complete effective configuration after recovery.
     config_validate::validate_bootstrap_security(cfg).map_err(|errors| errors.join("; "))?;
@@ -1094,33 +1117,14 @@ async fn bootstrap_store_inputs(
     )?;
     let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
     validate_bootstrap_artifacts(registry.as_ref(), &dependencies, plugins)?;
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&registry, plugins).await?;
-    }
     admitted_pin(cfg, registry.as_ref())?;
-    let bootstrap_secrets = cfg
-        .secrets
-        .iter()
-        .filter(|(module, _)| {
-            registry
-                .resolve(module)
-                .is_some_and(|row| row.kind == "secret" && dependencies.contains(&row.name))
-        })
-        .map(|(module, settings)| (module.clone(), settings.clone()))
-        .collect();
-    let resolver = build_secret_resolver(
-        registry.clone(),
-        &bootstrap_secrets,
-        &generation_sugars(cfg),
-    )?;
-
-    let signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
+    let signer = resolve_signing_key(cfg.auth.as_ref(), resolver)?;
     let at_rest = signer
         .as_ref()
         .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     publish_bootstrap_at_rest(Ok(at_rest.is_some()));
     publish_records_keys(RecordsKeys { at_rest, signer });
-    Ok((registry, resolver))
+    Ok(registry)
 }
 
 /// What core's records step (MIGRATE-ON-BOOT r42 §3 4a, §6 (2) and (4)) seals and verifies with: the
@@ -1222,7 +1226,14 @@ fn admitted_pin(
         return Ok(());
     };
     match admitted(rows).map_err(String::from)? {
-        Some(now) => config::grammar::pin(read, &now, used, config::grammar::Pin::Admission),
+        Some(now) => {
+            let now = if now.secret_binding_required() {
+                now.bind_secret_instances(&cfg.secrets)?
+            } else {
+                now
+            };
+            config::grammar::pin(read, &now, used, config::grammar::Pin::Admission)
+        }
         None => Ok(()),
     }
 }
@@ -1238,14 +1249,14 @@ pub fn pin_write_refusal(
     config_path: &std::path::Path,
     pins: &std::collections::BTreeMap<String, String>,
     used: &config::grammar::Used,
+    rules: &dyn RootRules,
 ) -> Result<(), String> {
-    let rules = AcceptAll;
     let raw = read_config_documents(
         config_path,
         None,
         false,
         config::EnvSubst::Strict,
-        &rules,
+        rules,
         DocumentPatchLoad {
             patch: None,
             providers_patch: None,
@@ -1254,12 +1265,15 @@ pub fn pin_write_refusal(
     )?;
     let plugins = raw.plugins_block()?;
     let next_start = raw.own_grammar()?;
-    let pinned = config::grammar::grammar_for(&config::grammar::PhaseOneIn {
-        plugins: &plugins,
-        dir: std::path::Path::new(&plugins.dir),
-        pins,
-        fetch: config::grammar::Fetch::None,
-    })
+    let pinned = config::grammar::grammar_for(
+        &config::grammar::PhaseOneIn {
+            plugins: &plugins,
+            dir: std::path::Path::new(&plugins.dir),
+            pins,
+            fetch: config::grammar::Fetch::None,
+        },
+        rules,
+    )
     .map_err(|refusal| format!("config.yaml: {refusal}"))?;
     config::grammar::pin(&next_start, &pinned, used, config::grammar::Pin::NextBoot)
 }
@@ -1385,36 +1399,6 @@ pub fn validate_bootstrap_archive(
     Ok(())
 }
 
-/// The configured store, opened through the MIN-3 registry (W2-SW-STORE; IF §11.2 `Registry::open_store`).
-/// The bag goes in operator form (secret references with their `module`): the registry's binder binds it, the
-/// store converts an older shape inside its own `open` and the registry keeps the settled bag for the boot's
-/// write-back (`Registry::take_settled`, step 5 / 5W). The instance name is the section key, `store`.
-async fn open_config_store(
-    cfg: &config::RootCfg,
-    opener: &dyn crate::preflight::StoreOpener,
-) -> Result<busbar_contract::persistence::axis::OpenedBackend, String> {
-    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
-    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
-    let config_json = store
-        .settings
-        .encode()
-        .map_err(|error| failed(error.to_string()))?
-        .into_exposed(&crate::seal::lend());
-    let spec = busbar_plugin_loader::instance::InstanceSpec {
-        identity: &store.module,
-        name: STORE_INSTANCE,
-        config_json: &config_json,
-        limits: instance_limits(cfg, STORE_INSTANCE, STORE_INSTANCE),
-        public_url: None,
-        caller_upstreams: &[],
-    };
-    opener
-        .open_store(&spec)
-        .await
-        .map(|handle| handle.backend)
-        .map_err(|error| failed(store_open_refusal(&error)))
-}
-
 /// The store's configured instance name: its config section key.
 pub const STORE_INSTANCE: &str = "store";
 
@@ -1433,19 +1417,6 @@ pub fn instance_limits(
         limits.accept = accepted.accept;
     }
     limits
-}
-
-/// Core's own words for a refused store open, with the code only (IF §12.16: the plugin's text is never
-/// interpolated into a core message).
-fn store_open_refusal(error: &busbar_plugin_loader::instance::OpenError) -> String {
-    use busbar_plugin_loader::instance::OpenError;
-    match error {
-        OpenError::Refused { refusal, .. } => format!("refused: {refusal}"),
-        OpenError::Config { code, .. } => format!("its settings were refused (code {code})"),
-        OpenError::Failed { code, .. } => format!("its open failed (code {code})"),
-        OpenError::Call(_) => "its open faulted".to_owned(),
-        OpenError::Unknown(what) => format!("unknown store open answer: {what}"),
-    }
 }
 
 fn config_store_inputs(
@@ -1585,7 +1556,7 @@ pub async fn build_app_from_config(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn build_app_from_config_with_store(
-    cfg: config::RootCfg,
+    mut cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
     overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     base_hook_names: std::collections::HashSet<String>,
@@ -1596,6 +1567,11 @@ pub async fn build_app_from_config_with_store(
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The live recorder's allocated budget belongs to the retained generation. A config
+    // candidate can request another declaration, but changing that allocation needs restart.
+    if let Some(limits) = prior.and_then(|app| app.limits.as_ref()) {
+        cfg.limits.key_gauge_limit = limits.key_gauge_limit;
+    }
     let limits = cfg.limits.clone();
     in_build_scope(
         limits,
@@ -1610,6 +1586,7 @@ pub async fn build_app_from_config_with_store(
             rules,
             boot_store,
             recover_usage_before_hydration,
+            None,
             None,
         )),
     )
@@ -1630,6 +1607,8 @@ pub struct BootBuild<'a> {
     pub config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     pub rules: &'a Arc<dyn RootRules>,
     pub boot_store: Arc<crate::persistence::facade::CoreStore>,
+    /// The fully opened S5 secret view; application construction never reopens it.
+    pub secret_resolver: Arc<config::secret::SecretResolver>,
 }
 
 pub async fn build_boot_app(
@@ -1650,6 +1629,7 @@ pub async fn build_boot_app(
             Some(boot.boot_store),
             true,
             boot.judged,
+            Some(boot.secret_resolver),
         )),
     )
     .await
@@ -1680,6 +1660,7 @@ async fn build_app_native(
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
     judged: Option<config_validate::Judged>,
+    opened_secrets: Option<Arc<config::secret::SecretResolver>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
@@ -1772,19 +1753,15 @@ async fn build_app_native(
         | config_validate::Refusal::Unresolved(e) => e,
     })?;
 
-    if let Some(admit) = crate::preflight::root_rows().secret_admit {
-        admit(&plugin_registry, &plugins_cfg).await?;
-    }
     admitted_pin(&cfg, plugin_registry.as_ref())?;
 
     let transition_requirements =
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
-    let secret_resolver = Arc::new(build_secret_resolver(
-        plugin_registry.clone(),
-        &cfg.secrets,
-        &generation_sugars(&cfg),
-    )?);
+    let secret_resolver = match opened_secrets {
+        Some(resolver) => resolver,
+        None => rules.secret_resolver(&cfg, &plugins_cfg).await?,
+    };
 
     let mut lanes_data = Vec::new();
 
@@ -2290,7 +2267,8 @@ async fn build_app_native(
         );
     }
 
-    let (mut route_decls, withheld_public_exports) = crate::export::route_projection(&cfg_export);
+    let (mut route_decls, withheld_public_exports) =
+        crate::export::route_projection(&cfg_export, prior.map(|app| app.exports.as_ref()));
     route_decls.extend(hook_route_decls);
     let plugin_routes = std::sync::Arc::new(
         crate::plugin_routes::build_route_table(route_decls)?
@@ -2429,9 +2407,6 @@ async fn build_app_native(
         (None, Some(g)) => Arc::clone(g.amendments()),
         (None, None) => Arc::new(crate::audit::amend::NodeAmendments::new()),
     };
-    if prior.is_none() {
-        crate::export::plugin::record_reads_on(&amendments);
-    }
 
     let limits = Some(limits_resolved.clone());
 
@@ -2576,6 +2551,10 @@ async fn build_app_native(
         crate::state::AppParts {
             limits,
             serve_tables,
+            port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
+            exports: prior
+                .map(|app| Arc::clone(&app.exports))
+                .unwrap_or_default(),
             root_rules,
             config_projection,
             plane_sections,
@@ -2644,7 +2623,7 @@ async fn build_app_native(
         login_methods,
         login_guard,
     );
-    rules.check_built(&app)?;
+    rules.check_built(&mut app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);
     }
@@ -2688,7 +2667,11 @@ async fn build_app_native(
             .cloned()
             .collect();
         for name in exports {
-            if crate::export::plugin::requires_restart(&name, app.export_defs.get(&name)) {
+            if crate::export::plugin::requires_restart(
+                &app.exports,
+                &name,
+                app.export_defs.get(&name),
+            ) {
                 app.config_pending_restart.push(format!("export.{name}"));
             }
         }
@@ -2750,7 +2733,3 @@ fn accepted_operator(auth: &config::AuthCfg, operator: &crate::auth::Operator) {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tests/boot_walk_tests.rs"]
-mod boot_walk_tests;

@@ -4362,3 +4362,11 @@ fn ticket_take_restores_nested_serving_unit_scopes() {
         .collect();
     assert_eq!(seen, ["None", "Some(7)", "Some(8)", "Some(7)", "None"]);
 }
+
+#[test]
+fn immutable_services_slot_always_borrows_its_constructor_provider() {
+    let provider = clock_provider();
+    let slot = super::ServicesSlot::of(Arc::clone(&provider));
+    assert!(Arc::ptr_eq(slot.get(), &provider));
+    assert!(Arc::ptr_eq(slot.get(), slot.get()));
+}

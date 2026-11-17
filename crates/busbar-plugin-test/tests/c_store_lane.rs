@@ -44,7 +44,12 @@ fn lane_commits_block_no_worker_and_pass_their_declared_ceiling() {
     let config = format!(r#"{{"id":"{id}","commit_sleep_ms":2000}}"#);
     let spec = h.spec("lane", config.as_bytes());
     let store = rt
-        .block_on(h.registry().open_store(&spec))
+        .block_on(h.registry().open_store(
+            &spec,
+            &h.needs_arc(),
+            &h.refs_arc(),
+            Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+        ))
         .unwrap_or_else(|e| panic!("open failed: {e:?}"));
     let backend = Arc::clone(&store.backend);
     let polled_on = std::thread::current().id();

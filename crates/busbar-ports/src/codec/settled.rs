@@ -135,6 +135,20 @@ fn settled_records(mut recs: Records<'_>) -> Result<Option<SettledOut<'_>>, RecE
     }))
 }
 
+pub fn for_purpose<'a>(
+    recs: Records<'a>,
+    converting: bool,
+) -> Result<Option<SettledOut<'a>>, RecErr> {
+    let out = settled_records(recs)?;
+    match (&out, converting) {
+        (None, true) => Err(RecErr::Truncated),
+        (Some(out), false) if !out.core_cfg.rest().is_empty() => {
+            Err(RecErr::Unknown(tag::CORE_CFG))
+        }
+        _ => Ok(out),
+    }
+}
+
 #[cfg(test)]
 #[path = "settled_tests.rs"]
 mod tests;

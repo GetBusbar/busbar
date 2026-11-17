@@ -458,6 +458,7 @@ pub(super) async fn serve<I>(
     timeout: std::time::Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
     peer: Option<std::net::SocketAddr>,
+    tls_peer_cert: Bytes,
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -494,6 +495,7 @@ pub(super) async fn serve<I>(
         established,
         timeout,
         peer,
+        tls_peer_cert,
         out: SecureVec::new(),
         read_done: false,
         ended: false,
@@ -535,6 +537,7 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     timeout: std::time::Duration,
     /// The connection's socket peer, stamped on every operator request it carries.
     peer: Option<std::net::SocketAddr>,
+    tls_peer_cert: Bytes,
 
     /// Reply bytes for the peer: one contiguous run whose written prefix is wiped (T7b).
     out: SecureVec,
@@ -1196,6 +1199,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 request
                     .extensions_mut()
                     .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+                request
+                    .extensions_mut()
+                    .insert(crate::root::ingress_context::RequestContext {
+                        peer: peer.to_string().into_boxed_str(),
+                        tls_peer_cert: self.tls_peer_cert.clone(),
+                    });
             }
             request.extensions_mut().insert(slot.clone());
             self.tasks.spawn(operator::serve(
@@ -1836,7 +1845,17 @@ pub(in crate::root) async fn serve_governed_test<I>(
 ) where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    serve(io, framer, Router::new(), secured, timeout, stop, None).await;
+    serve(
+        io,
+        framer,
+        Router::new(),
+        secured,
+        timeout,
+        stop,
+        None,
+        Bytes::new(),
+    )
+    .await;
 }
 
 /// One response op the admitted request actor sent, as the connection writer receives it.

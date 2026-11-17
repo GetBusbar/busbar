@@ -136,12 +136,67 @@ pub async fn walk<S: BootSteps>(
     plan: &BootPlan,
     steps: &S,
 ) -> Result<Booted<S::Opened>, BootRefused> {
+    bootstrap(plan, steps).await?.finish(steps).await
+}
+
+/// Completed S5/S6 owners and the validated remainder. Constructing this value has
+/// published and rechecked the deployment identity, but has opened no 2c instance.
+/// Root may retain it while reading overlays and constructing complete S7 services.
+pub struct Bootstrap<O> {
+    opened: Vec<(u32, BootPhase, O)>,
+    deployment: [u8; 16],
+    rest: Vec<u32>,
+}
+
+/// Open S5/S6 leases after the bootstrap plan's remainder has been discarded.
+/// A new effective serving plan retains these owners without reopening them.
+pub struct BootstrapLeases<O> {
+    pub opened: Vec<(u32, BootPhase, O)>,
+    pub deployment: [u8; 16],
+}
+
+impl<O: Send> Bootstrap<O> {
+    /// Discard the file plan's unopened remainder while retaining completed owners and identity.
+    pub fn into_leases(self) -> BootstrapLeases<O> {
+        BootstrapLeases {
+            opened: self.opened,
+            deployment: self.deployment,
+        }
+    }
+
+    /// Consume the stage exactly once after the caller has prepared serving dependencies.
+    pub async fn finish<S: BootSteps<Opened = O>>(
+        self,
+        steps: &S,
+    ) -> Result<Booted<O>, BootRefused> {
+        let Self {
+            mut opened,
+            deployment,
+            rest,
+        } = self;
+        for index in rest {
+            let port = steps.open(index).await.map_err(|error| BootRefused::Open {
+                index,
+                phase: BootPhase::Rest,
+                error: Box::new(error),
+            })?;
+            opened.push((index, BootPhase::Rest, port));
+        }
+        Ok(Booted { opened, deployment })
+    }
+}
+
+pub async fn bootstrap<S: BootSteps>(
+    plan: &BootPlan,
+    steps: &S,
+) -> Result<Bootstrap<S::Opened>, BootRefused> {
     in_phase_order(plan)?;
-    let mut opened: Vec<(u32, BootPhase, S::Opened)> = Vec::with_capacity(plan.steps.len());
-    let mut deployment = None;
+    let mut opened = Vec::new();
+    let mut rest = Vec::new();
     for &(index, phase) in &plan.steps {
-        if phase == BootPhase::Rest && deployment.is_none() {
-            deployment = Some(deployment_point(steps, &opened).await?);
+        if phase == BootPhase::Rest {
+            rest.push(index);
+            continue;
         }
         let port = steps.open(index).await.map_err(|error| BootRefused::Open {
             index,
@@ -150,11 +205,12 @@ pub async fn walk<S: BootSteps>(
         })?;
         opened.push((index, phase, port));
     }
-    let deployment = match deployment {
-        Some(id) => id,
-        None => deployment_point(steps, &opened).await?,
-    };
-    Ok(Booted { opened, deployment })
+    let deployment = deployment_point(steps, &opened).await?;
+    Ok(Bootstrap {
+        opened,
+        deployment,
+        rest,
+    })
 }
 
 /// Round 29: read the id through the store, publish it, then re-check every 2a/2b instance in plan order.
@@ -249,7 +305,10 @@ pub type DeploymentRead =
 /// slice `Registry::boot_plan` was given. The kind picks the registry's typed `open_<kind>`; this table is the
 /// only place the boot names a kind.
 pub struct RegistryBoot<'r, N: Needs> {
-    pub registry: &'r Registry<N>,
+    pub registry: &'r Registry,
+    pub needs: &'r std::sync::Arc<N>,
+    pub refs: &'r std::sync::Arc<dyn busbar_ports::binder::RefSource>,
+    pub store_seal: busbar_plugin_loader::instance::StoreSeal,
     pub instances: &'r [(KindCode, InstanceSpec<'r>)],
     /// Reads or writes the deployment row through the opened store (the root's `BootIdentity` over that store,
     /// then `deployment_bytes`).
@@ -287,13 +346,39 @@ impl<N: Needs> BootSteps for RegistryBoot<'_, N> {
         };
         let registry = self.registry;
         match kind {
-            KindCode::Store => wrap_open(registry.open_store(spec), OpenedPort::Store),
-            KindCode::Secret => wrap_open(registry.open_secret(spec), OpenedPort::Secret),
-            KindCode::Auth => wrap_open(registry.open_auth(spec), OpenedPort::Auth),
-            KindCode::Hook => wrap_open(registry.open_hook(spec), OpenedPort::Hook),
-            KindCode::Export => wrap_open(registry.open_export(spec), OpenedPort::Export),
-            KindCode::Plane => wrap_open(registry.open_plane(spec), OpenedPort::Plane),
-            KindCode::Transport => wrap_open(registry.open_transport(spec), OpenedPort::Transport),
+            KindCode::Store => wrap_open(
+                registry.open_store(
+                    spec,
+                    self.needs,
+                    self.refs,
+                    std::sync::Arc::clone(&self.store_seal),
+                ),
+                OpenedPort::Store,
+            ),
+            KindCode::Secret => wrap_open(
+                registry.open_secret(spec, self.needs, self.refs),
+                OpenedPort::Secret,
+            ),
+            KindCode::Auth => wrap_open(
+                registry.open_auth(spec, self.needs, self.refs),
+                OpenedPort::Auth,
+            ),
+            KindCode::Hook => wrap_open(
+                registry.open_hook(spec, self.needs, self.refs),
+                OpenedPort::Hook,
+            ),
+            KindCode::Export => wrap_open(
+                registry.open_export(spec, self.needs, self.refs),
+                OpenedPort::Export,
+            ),
+            KindCode::Plane => wrap_open(
+                registry.open_plane(spec, self.needs, self.refs),
+                OpenedPort::Plane,
+            ),
+            KindCode::Transport => wrap_open(
+                registry.open_transport(spec, self.needs, self.refs),
+                OpenedPort::Transport,
+            ),
         }
     }
 

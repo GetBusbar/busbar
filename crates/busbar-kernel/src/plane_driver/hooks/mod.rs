@@ -1952,11 +1952,19 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         S: super::DriverSteps,
     {
         let mut ran = ran_buffer();
-        let scope =
-            crate::hook_child::Scope::new(Arc::clone(&self.driver.services), self.lock().unit);
-        let stage = crate::hook_child::SCOPE
-            .scope(scope, self.run_request_stage(token, &mut ran))
-            .await;
+        let unit = self.lock().unit;
+        let context = self.steps.invocation(unit);
+        let stage = match context {
+            Some(context) => {
+                crate::hook_child::SCOPE
+                    .scope(
+                        crate::hook_child::Scope::new(context),
+                        self.run_request_stage(token, &mut ran),
+                    )
+                    .await
+            }
+            None => self.run_request_stage(token, &mut ran).await,
+        };
         self.report_hooks(ran);
         if stage.is_ok() {
             self.note_unprojected_end_user();

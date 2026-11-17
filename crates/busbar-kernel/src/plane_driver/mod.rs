@@ -87,7 +87,8 @@ pub use hooks::{
 };
 pub use host::{
     engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
-    standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
+    policy_standing, standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle,
+    LiveHostFactory, MeterPin,
 };
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
@@ -435,6 +436,11 @@ impl PlaneDriver {
         self
     }
 
+    /// The exact opened instance identity retained with its core service owner.
+    pub fn invocation_caller(&self) -> Option<&Caller> {
+        self.records.as_ref().map(|(_, caller)| caller)
+    }
+
     /// Host scheduler access to this exact opened instance's durable polling work.
     pub async fn recovery_work(
         &self,
@@ -545,6 +551,11 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 }
 
 pub trait DriverSteps {
+    /// Authority retained by this request. Health/open stages have no admitted unit context.
+    fn invocation(&self, _unit: u64) -> Option<crate::host_services::InvocationContext> {
+        None
+    }
+
     /// Read authoritative delayed-accounting liability before synchronous admission.
     fn prepare_admission<'a>(
         &'a self,

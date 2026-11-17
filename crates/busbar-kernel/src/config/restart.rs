@@ -33,7 +33,6 @@ fn same_store(a: &Option<StoreCfg>, b: &Option<StoreCfg>) -> bool {
         (Some(a), Some(b)) => {
             a.module == b.module
                 && a.settings == b.settings
-                && same_yaml(&a.limits, &b.limits)
                 && same_yaml(&a.insecure_transport, &b.insecure_transport)
         }
         (None, None) => true,
@@ -50,7 +49,6 @@ fn same_secrets(
             b.get(name).is_some_and(|b| {
                 a.module == b.module
                     && a.settings == b.settings
-                    && same_yaml(&a.limits, &b.limits)
                     && same_yaml(&a.insecure_transport, &b.insecure_transport)
             })
         })
@@ -120,16 +118,6 @@ impl Root {
             self.limits.upstream_h2_prior_knowledge,
             boot.limits.upstream_h2_prior_knowledge
         );
-        changed!(
-            "/advanced/shutdown/drain_timeout",
-            self.limits.drain_timeout,
-            boot.limits.drain_timeout
-        );
-        changed!(
-            "/advanced/governance/max_pending_checkpoints",
-            self.limits.max_pending_checkpoints,
-            boot.limits.max_pending_checkpoints
-        );
         paths
     }
 }
@@ -194,21 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn boot_listener_and_shutdown_changes_are_not_live_limits() {
+    fn boot_listener_changes_are_not_live_limits() {
         let boot = baseline();
         let mut next = boot.clone();
         next.listen = "127.0.0.1:9090".into();
-        next.limits.drain_timeout = Some("45s".into());
-        next.limits.max_pending_checkpoints = Some(77);
         next.limits.request_body_max_bytes += 1;
-        assert_eq!(
-            next.changed(&boot),
-            [
-                "/listen",
-                "/advanced/shutdown/drain_timeout",
-                "/advanced/governance/max_pending_checkpoints"
-            ]
-        );
+        // Removed advanced keys remain refused by config's
+        // removed_pre_release_limits_and_drain_keys_are_refused_as_unknown test;
+        // they cannot become restart state.
+        assert_eq!(next.changed(&boot), ["/listen"]);
         assert!(boot.changed(&boot).is_empty());
         // Rebuilding another generation cannot reset the immutable boot comparison.
         assert_eq!(next.clone().changed(&boot), next.changed(&boot));

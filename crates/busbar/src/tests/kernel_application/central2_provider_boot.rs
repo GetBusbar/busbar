@@ -52,7 +52,7 @@ async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
@@ -151,7 +151,7 @@ async fn boot_starts_a_keyless_lane_declared_none() {
         "models": {},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)

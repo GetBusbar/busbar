@@ -607,9 +607,6 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     )
     .expect("stage the actual store archive");
     let settings = crate::root::test_plugins::application_store_settings(&directory);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
 
     crate::register_protocols();
     crate::register_planes();
@@ -620,7 +617,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -628,10 +625,15 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(judge.clone(), &late, credentials);
+    let credentials = crate::root::credentials::AppCredentials::new(None);
+    let late = crate::root::serve::Services::serving(Arc::new(
+        crate::root::serve::kernel_services(judge.clone()).with_credentials(Arc::new(credentials)),
+    ));
+    let dispatcher = crate::root::dispatch::boot(1, &late);
+    crate::root::doors::install_dispatcher(dispatcher);
     crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
+        tokio::runtime::Handle::current(),
         crate::LINKED_TRANSPORT_DOORS,
         &crate::root::policy::client_settings(&config.limits),
         judge,

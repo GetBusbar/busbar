@@ -52,7 +52,10 @@ fn former_names_match_and_name_conflict_at_add() {
         let config = format!(r#"{{"tag":"{name}"}}"#);
         let spec = h.spec_for(word, &name, config.as_bytes());
         let port = h
-            .block_on(h.registry().open_secret(&spec))
+            .block_on(
+                h.registry()
+                    .open_secret(&spec, &h.needs_arc(), &h.refs_arc()),
+            )
             .unwrap_or_else(|e| panic!("module: {word} opens: {e:?}"));
         let answer = h
             .block_on(port.resolve(cx(at as u64 + 1), br#"{"name":"db"}"#))

@@ -60,6 +60,7 @@ pub(crate) mod neutral;
 #[path = "serve_observations.rs"]
 mod observations;
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
     KernelServices::new()
@@ -70,16 +71,39 @@ pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
 
 pub(crate) fn compose(
     dest: Arc<dyn DestJudge>,
-    late: &LateServices,
-    credentials: crate::root::credentials::AppCredentials,
-) {
-    let kernel = Arc::new(kernel_services(dest).with_credentials(Arc::new(credentials)));
-    if late
-        .install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
-        .is_err()
-    {
-        tracing::debug!("the kernel's host services were already installed");
-    }
+    app: &busbar_kernel::state::App,
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    planes: &[&PlaneDeclaration],
+) -> Arc<Services> {
+    let signer = app.governance.clone().map(|gov| gov as Arc<dyn SignKey>);
+    let tickets = app.governance.as_ref().map(|governance| {
+        Arc::new(GenerationTickets {
+            governance: Arc::clone(governance),
+            block_max_ttl_secs: app.mint_policy.block_max_ttl_secs,
+        }) as Arc<dyn busbar_kernel::host_services::TicketPress>
+    });
+    let kernel = KernelServices::from_inputs(busbar_kernel::host_services::CoreServicesInputs {
+        persistence: core,
+        pool: Arc::new(BlockingPool::new(
+            tokio::runtime::Handle::current(),
+            QUEUE_CAP,
+        )),
+        signer,
+        demotions: Arc::clone(&app.demotion_record),
+        demotion_owner: demotion_owner(planes).map(Arc::from),
+        tickets,
+        standing: busbar_kernel::plane_driver::policy_standing(
+            app.governance.clone(),
+            app.role_bindings.clone(),
+        ),
+        judge: dest,
+        credentials: Arc::new(crate::root::credentials::AppCredentials::new(
+            app.governance.clone(),
+        )),
+        disk: crate::root::linked::disk_lane(),
+    })
+    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns));
+    Services::serving(Arc::new(kernel))
 }
 
 /// The most unredeemed tickets one node holds in custody, across every key.
@@ -664,40 +688,10 @@ impl busbar_kernel::host_services::TicketPress for GenerationTickets {
     }
 }
 
-pub(crate) fn attach(
-    late: &LateServices,
-    records: Option<&busbar_kernel::governance::GovState>,
-    signer: Option<Arc<dyn SignKey>>,
-    demotions: &Arc<DemotionRecord>,
-    planes: &[&PlaneDeclaration],
-) {
-    let Some(kernel) = late.kernel() else {
-        return;
-    };
-    let pool = BlockingPool::new(tokio::runtime::Handle::current(), QUEUE_CAP);
-    if kernel.attach_pool(Arc::new(pool)) {
-        let cadence = Arc::clone(&kernel);
-        tokio::spawn(async move { cadence.flushes().await });
-    }
-    if let Some(signer) = signer {
-        kernel.attach_signer(signer);
-    }
-
-    if let Some(gov) = records {
-        let core = gov
-            .core_store_handle()
-            .expect("admitted governance persistence");
-        kernel.attach_persistence(core);
-    }
-    if let Some(owner) = demotion_owner(planes) {
-        kernel.attach_demotions(Arc::clone(demotions), owner);
-    }
-}
-
 pub(crate) const RECORD_DRAIN: std::time::Duration =
     std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
 
-pub(crate) async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
+pub(crate) async fn drain_records(late: &Services, deadline: std::time::Duration) -> bool {
     let Some(kernel) = late.kernel() else {
         return true;
     };
@@ -717,78 +711,70 @@ pub(crate) fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static st
     }
 }
 
-pub(crate) struct LateServices {
+/// Complete services for a phase. Bootstrap owns a permanently restricted provider;
+/// a serving generation owns its fully constructed kernel.
+pub(crate) struct Services {
     pub(crate) slot: Arc<ServicesSlot>,
-
-    pub(crate) kernel: OnceLock<Arc<KernelServices>>,
+    kernel: Option<Arc<KernelServices>>,
 }
 
-/// Why [`LateServices::install`] would not take a second set of services.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AlreadyInstalled;
+pub(crate) const NOT_INSTALLED: &str = "bootstrap services do not have serving authority";
 
-pub(crate) const NOT_INSTALLED: &str = "the kernel's host services are not installed yet";
-
-impl LateServices {
-    #[must_use]
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(LateServices {
-            slot: ServicesSlot::late(Arc::new(NotInstalled(
-                KernelServices::new()
-                    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns)),
-            ))),
-            kernel: OnceLock::new(),
+impl Services {
+    pub(crate) fn bootstrap() -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(Arc::new(BootstrapServices)),
+            kernel: None,
         })
     }
 
-    #[must_use]
+    pub(crate) fn serving(kernel: Arc<KernelServices>) -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(kernel.clone()),
+            kernel: Some(kernel),
+        })
+    }
+
     pub(crate) fn slot(&self) -> Arc<ServicesSlot> {
         Arc::clone(&self.slot)
     }
+    pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
+        self.kernel.clone()
+    }
 
-    pub(crate) fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
-        if self.slot.install(services) {
-            Ok(())
-        } else {
-            Err(AlreadyInstalled)
+    /// Prepare the flush loop under the same lifecycle owner as the generation's other workers.
+    pub(crate) fn prepare_workers(&self, workers: &mut super::boot::workers::PreparedWorkers) {
+        if let Some(kernel) = self.kernel() {
+            workers.push(async move { kernel.flushes().await });
         }
     }
 
-    pub(crate) fn install_kernel(
-        &self,
-        kernel: Arc<KernelServices>,
-        services: Arc<dyn HostServices>,
-    ) -> Result<(), AlreadyInstalled> {
-        self.install(services)?;
-        self.kernel.set(kernel).map_err(|_| AlreadyInstalled)
-    }
-
-    #[must_use]
-    pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
-        self.kernel.get().cloned()
-    }
-
     #[cfg(test)]
-    #[must_use]
-    pub(crate) fn is_installed(&self) -> bool {
-        self.slot.is_installed()
+    pub(crate) fn fixture(provider: Arc<dyn HostServices>) -> Arc<Self> {
+        Arc::new(Self {
+            slot: ServicesSlot::of(provider),
+            kernel: None,
+        })
     }
 
     #[cfg(test)]
     pub(crate) fn served(&self) -> Arc<dyn HostServices> {
-        Arc::clone(self.slot.get().expect("a late slot always serves"))
+        Arc::clone(self.slot.get())
     }
 }
 
-pub(crate) struct NotInstalled(KernelServices);
+pub(crate) struct BootstrapServices;
 
 fn not_installed() -> Stored {
     Stored::refused(NOT_INSTALLED)
 }
 
-impl HostServices for NotInstalled {
+impl HostServices for BootstrapServices {
     fn now(&self) -> Reading {
-        self.0.now()
+        Reading {
+            wall_ns: busbar_kernel::store::now_ns(),
+            mono_ns: crate::root::loader::dispatch::now_ns(),
+        }
     }
 
     fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
@@ -1237,6 +1223,8 @@ pub(crate) struct Served {
     pub(crate) planes: Vec<ServedPlane>,
     /// The MIN-3 plane instances served through their ports (`PortDriver`), in the order they were opened.
     pub(crate) ports: Vec<busbar_kernel::plane_driver::port::PortSeat>,
+    /// Complete native instance ownership of this serving generation.
+    pub(crate) native: Option<Arc<crate::root::min3_boot::Booted>>,
     /// What bills the requests those ports serve (their unit admission and settlement); `None` = no governance
     /// book, so a port request is not a billed unit (audit rows only).
     pub(crate) billing: Option<busbar_kernel::plane_driver::port_billing::PortBilling>,
@@ -1394,12 +1382,82 @@ fn keep_arrival_field(name: &[u8]) -> bool {
 }
 
 pub(crate) struct DataRoutes {
+    pub(crate) snapshot: Arc<DispatchSnapshot>,
+    pub(crate) generation: Option<Arc<busbar_kernel::host_services::ServingGeneration>>,
+}
+
+impl std::ops::Deref for DataRoutes {
+    type Target = DispatchSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
+}
+
+impl DataRoutes {
+    pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
+        let snapshot = Arc::new(snapshot);
+        let generation = match snapshot.served.planes.first() {
+            Some(plane) => {
+                if snapshot
+                    .served
+                    .planes
+                    .iter()
+                    .any(|other| !Arc::ptr_eq(&plane.kernel, &other.kernel))
+                {
+                    return Err("listener planes do not share the same core services".into());
+                }
+                if snapshot
+                    .served
+                    .planes
+                    .iter()
+                    .any(|plane| plane.driver.invocation_caller().is_none())
+                {
+                    return Err("listener plane has no admitted invocation owner".into());
+                }
+                let runtime =
+                    tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
+                Some(Arc::new(
+                    busbar_kernel::host_services::ServingGeneration::new(
+                        Arc::clone(&plane.kernel),
+                        Arc::new(DoorNests {
+                            routes: Arc::clone(&snapshot),
+                            runtime,
+                            detached: busbar_kernel::detached::worker_detached(),
+                        }),
+                    ),
+                ))
+            }
+            None => None,
+        };
+        Ok(Arc::new(Self {
+            snapshot,
+            generation,
+        }))
+    }
+
+    fn invocation_owner(
+        &self,
+        plane: usize,
+    ) -> Option<(Arc<busbar_kernel::host_services::ServingGeneration>, Caller)> {
+        Some((
+            Arc::clone(self.generation.as_ref()?),
+            self.served
+                .planes
+                .get(plane)?
+                .driver
+                .invocation_caller()?
+                .clone(),
+        ))
+    }
+}
+
+pub(crate) struct DispatchSnapshot {
     /// The plane configuration sealed with this listener dispatcher.
     pub(crate) live: Vec<Arc<DoorLive>>,
     pub(crate) entries: Vec<Arc<EntrySpans>>,
     pub(crate) served: Served,
 
-    pub(crate) claim_doors: Option<Arc<OnceLock<serve_datagram::ClaimDoors>>>,
+    pub(crate) claim_doors: Option<Arc<serve_datagram::ClaimDoors>>,
     pub(crate) post: Arc<crate::root::plane_node::NodeEndPost>,
 
     pub(crate) pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -1430,7 +1488,7 @@ pub(crate) const NEST_PARENT_GONE: &str = "the nested unit's parent is not in fl
 pub(crate) const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 
 pub(crate) struct DoorNests {
-    pub(crate) routes: NestRoutes,
+    pub(crate) routes: Arc<DispatchSnapshot>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
@@ -1440,18 +1498,15 @@ pub(crate) type NestRoutes = Arc<Mutex<Vec<std::sync::Weak<DataRoutes>>>>;
 impl busbar_kernel::host_services::NestRoute for DoorNests {
     fn nest(
         &self,
+        context: busbar_kernel::host_services::InvocationContext,
         nest: busbar_kernel::host_services::Nest,
         done: busbar_kernel::host_services::NestDone,
     ) {
-        // The listener generations are searched under their lock, never copied out.
-        let found = self
-            .routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter_map(std::sync::Weak::upgrade)
-            .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)));
-        let Some((routes, bound)) = found else {
+        let routes = Arc::new(DataRoutes {
+            snapshot: Arc::clone(&self.routes),
+            generation: Some(Arc::clone(context.generation())),
+        });
+        let Some(bound) = routes.parent_of(&nest) else {
             done(busbar_kernel::host_services::NestReply::Unserved(
                 NEST_PARENT_GONE,
             ));
@@ -1459,6 +1514,7 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         };
 
         let child = async move {
+            let _parent_context = context;
             let limits = nest.constraints.clone();
             let run = routes.nested(nest, bound);
             let answer = if let Some(limits) = limits {
@@ -1548,20 +1604,20 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
 pub(crate) struct ListenerPlan {
     pub(crate) root_claim: Result<String, String>,
     pub(crate) initial: crate::root::boot::ListenerNeeds,
-    pub(crate) served: std::sync::OnceLock<Served>,
-    pub(crate) upgrades: std::sync::OnceLock<Vec<String>>,
-    pub(crate) claim_doors: Arc<OnceLock<serve_datagram::ClaimDoors>>,
-    pub(crate) planes: std::sync::OnceLock<Vec<ListenerPlaneLine>>,
-    pub(crate) plane_sections: std::sync::OnceLock<foldhash::HashMap<String, (&'static str, bool)>>,
-    pub(crate) plane_keys: std::sync::OnceLock<foldhash::HashMap<String, String>>,
+    pub(crate) served: Option<Served>,
+    pub(crate) upgrades: Option<Vec<String>>,
+    pub(crate) claim_doors: Arc<serve_datagram::ClaimDoors>,
+    pub(crate) planes: Option<Vec<ListenerPlaneLine>>,
+    pub(crate) plane_sections: Option<foldhash::HashMap<String, (&'static str, bool)>>,
+    pub(crate) plane_keys: Option<foldhash::HashMap<String, String>>,
     pub(crate) offers: Vec<TransportOffer>,
     pub(crate) framers: foldhash::HashMap<String, (u64, bool)>,
     pub(crate) refusals: Mutex<foldhash::HashMap<String, Vec<PlaneRefusalSpec>>>,
     pub(crate) nests: NestRoutes,
-    pub(crate) plugin_mounts: std::sync::OnceLock<Vec<(String, RouteMethod, bool)>>,
+    pub(crate) plugin_mounts: Option<Vec<(String, RouteMethod, bool)>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ListenerPlaneLine {
     pub(crate) line: busbar_kernel::guest::Line,
     pub(crate) transport: String,
@@ -1769,6 +1825,7 @@ impl DataRoutes {
                 ticket: door.ticket,
             },
         )
+        .with_invocation_owner(self.invocation_owner(door.plane))
         .with_ticket_admission(
             door.host_ticket_admission,
             Arc::clone(&node.ticket_custody.nonce),
@@ -1916,7 +1973,7 @@ impl DataRoutes {
         let doors = self
             .claim_doors
             .as_ref()
-            .and_then(|doors| doors.get())
+            .map(Arc::as_ref)
             .unwrap_or(&self.served.claim_doors);
         let Some(claim_door) = doors.get(carrier) else {
             let live = &self.served.planes[door.plane].live;
@@ -2396,6 +2453,7 @@ impl DataRoutes {
                 ticket,
             },
         )
+        .with_invocation_owner(self.invocation_owner(plane))
         .with_ticket_admission(
             host_ticket_admission,
             Arc::clone(&node.ticket_custody.nonce),

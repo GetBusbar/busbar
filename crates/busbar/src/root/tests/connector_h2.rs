@@ -1210,7 +1210,6 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     let (port, far) = h1_far_end().await;
     let guard = Guard::from_config(&Destinations {
         block_private_addresses: true,
-        allow: vec![PUNYCODE.to_owned()],
         ..Destinations::default()
     })
     .expect("the deployment's guard");
@@ -1220,7 +1219,7 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     let dial = process::judge(Arc::clone(&dest) as _, &[]);
-    let at_once = dial.judge_dial(
+    let at_once = dial.judge_dial_reaching(
         &format!("b\u{fc}cher.example:{port}"),
         DEFAULT_CLASS,
         Box::new(move |v| {
@@ -1231,7 +1230,7 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
         Some(v) => v,
         None => rx.recv_timeout(Duration::from_secs(10)).expect("answered"),
     };
-    let pinned = judged.expect("the allowlisted IDN destination is admitted");
+    let pinned = judged.expect("the selected IDN route is admitted");
     let at = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
     assert_eq!(pinned, at);
     assert_eq!(
@@ -1244,7 +1243,35 @@ async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
     let host = busbar_contract::net::url_host_to_ascii("b\u{fc}cher.example")
         .expect("an IDN name maps")
         .into_owned();
-    let (status, body) = ask(&c, &format!("http://{host}:{port}/v1/chat/completions")).await;
+    let url = format!("http://{host}:{port}/v1/chat/completions");
+    c.anchor(
+        OWNER,
+        NEED,
+        "idn",
+        &url,
+        &busbar_contract::transport::trust::Anchors {
+            private_reach: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let conn = c
+        .open(
+            OWNER,
+            NEED,
+            &OpenDesc {
+                target: &url,
+                member: "idn",
+                fields: &[("content-type", b"application/json")],
+                body: busbar_contract::conn::Bytes::from_static(b"{\"model\":\"m\"}"),
+                timeout_ms: 5_000,
+                method: b"POST",
+                head_target: b"/v1/chat/completions",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    let (status, body) = finish(&c, conn).await;
     assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "served");
     assert_eq!(

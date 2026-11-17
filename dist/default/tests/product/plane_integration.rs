@@ -793,7 +793,7 @@ mod metrics_scrape {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let exports = cfg.export.clone();
-        busbar_kernel::export::plugin::open(&exports).expect("the configured exporter opens");
+        let judge = crate::root::connector::dest_judge(&cfg);
         let (app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             plugin_config,
@@ -806,7 +806,50 @@ mod metrics_scrape {
         )
         .await
         .expect("the actual product builds the door deployment");
-        crate::dist_root_install::attach_services(&app);
+        let declarations: Vec<_> = linked::planes()
+            .iter()
+            .map(|decl| &decl.declaration)
+            .collect();
+        let core = app
+            .governance
+            .as_ref()
+            .expect("actual governance book")
+            .core_store_handle()
+            .expect("actual metrics Store custody");
+        let services = crate::root::serve::compose(judge, &app, core, &declarations);
+        let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
+        let rows = busbar_plugin_loader::export_axis::ExportRows::new(
+            crate::root::linked::dropped().expect("actual linked export registry"),
+            dispatcher,
+        )
+        .with_disk(
+            busbar_contract::services::disk_admission::DiskAuthority::issue(
+                &busbar_kernel::seal::acquire(),
+            ),
+        )
+        .with_logs(crate::root::linked::logs())
+        .with_conns(crate::root::connector::admit(
+            crate::root::connector::the().clone(),
+        ));
+        let opened = exports
+            .plugins
+            .iter()
+            .map(|plugin| {
+                let settings =
+                    busbar_contract::export_calls::ExportOpening::new(plugin.def.settings.clone())
+                        .prepare();
+                let calls = rows
+                    .open(
+                        plugin.def.module.trim(),
+                        &format!("export.{}", plugin.name),
+                        &settings,
+                    )
+                    .expect("the configured exporter opens with complete services");
+                (plugin.name.clone(), calls)
+            })
+            .collect();
+        busbar_kernel::export::plugin::open_prepared(&exports, &opened)
+            .expect("the configured export projection retains its real exporter");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
             .await
@@ -1431,23 +1474,23 @@ async fn plane_router(
 ) -> axum::Router {
     use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
     let cfg = resolved(sections);
-    let late = crate::root::serve::LateServices::new();
-    let dispatcher = Arc::new(crate::root::dispatch::build(1, &late));
-    let (credentials, live) = crate::root::credentials::AppCredentials::late();
-    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
     let declarations: Vec<_> = linked::planes()
         .iter()
         .map(|decl| &decl.declaration)
         .collect();
-    crate::root::serve::attach(
-        &late,
-        app.governance.as_deref(),
-        app.governance
-            .clone()
-            .map(|gov| gov as Arc<dyn busbar_kernel::host_services::SignKey>),
-        &app.demotion_record,
+    let core = app
+        .governance
+        .as_ref()
+        .expect("actual governance book")
+        .core_store_handle()
+        .expect("actual plane Store custody");
+    let services = crate::root::serve::compose(
+        crate::root::connector::dest_judge(&cfg),
+        &app,
+        core,
         &declarations,
     );
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &services));
     let doors: Vec<_> = crate::LINKED
         .plane_door_declares
         .iter()
@@ -1489,7 +1532,7 @@ async fn plane_router(
     let served = crate::root::serve::compose_planes(
         &doors,
         &dispatcher,
-        &late,
+        &services,
         &configured,
         Some("https://busbar.example"),
         &|| {
@@ -1550,6 +1593,5 @@ async fn plane_router(
     if let Some(refuser) = refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
-    live.set(handle);
     router
 }

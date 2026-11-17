@@ -423,15 +423,10 @@ impl Keys {
         })
     }
 
-    /// Moved out of the kernel's bootstrap (once per boot); none when no bootstrap resolved any.
-    /// On a MIN-3 boot the store opened through the registry walk, so no old-ABI bootstrap ran: the keys are the
-    /// walk's resolved core secrets (an unparsable key is treated as absent here; the boot's own preflight
-    /// refuses it with its text).
+    /// Legacy bootstrap keys only. The MIN-3 caller passes its owned core keys explicitly
+    /// through `from_core` before any serving generation exists.
     pub(crate) fn from_bootstrap() -> Self {
-        let keys = busbar_kernel::appbuild::take_bootstrap_records_keys().or_else(|| {
-            let core = &crate::root::min3_boot::booted()?.core;
-            busbar_kernel::appbuild::records_keys_from(core.signing_key.as_deref()).ok()
-        });
+        let keys = busbar_kernel::appbuild::take_bootstrap_records_keys();
         Self {
             seed: keys
                 .as_ref()

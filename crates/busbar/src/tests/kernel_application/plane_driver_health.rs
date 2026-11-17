@@ -41,7 +41,7 @@ async fn lane_less_app(opening: Option<bool>) -> Arc<kernel::state::App> {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )

@@ -233,6 +233,7 @@ fn fixture() -> Fixture {
 
 fn upstream(idle_s: u64) -> UpstreamDef {
     UpstreamDef {
+        allow_private: false,
         name: "member".into(),
         url: None,
         command: Some(StdioCommand {

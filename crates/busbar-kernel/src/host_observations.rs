@@ -280,7 +280,7 @@ impl KernelServices {
         if ticket.is_none() {
             return None;
         }
-        self.pool.get()?;
+        self.pool.as_ref()?;
         let context = self.observation_context(caller, unit)?;
         let mut result = extensions::encode(&[(wire::CAPABILITY, b"1")]);
         if let Some(scope) = context.money.observation_scope(context.unit) {
@@ -360,7 +360,7 @@ impl KernelServices {
         observation: Observation,
         done: Done,
     ) -> Result<(), &'static str> {
-        let pool = self.pool.get().ok_or(REFUSED)?;
+        let pool = self.pool.as_ref().ok_or(REFUSED)?;
         let intent = observation.extension().map_err(|_| REFUSED)?;
         let Some(completion) = self.begin_observation(caller, ticket, unit, intent, done)? else {
             return Ok(());
@@ -389,7 +389,7 @@ impl KernelServices {
         request: ScopeRequest,
         done: Done,
     ) -> Result<(), &'static str> {
-        let pool = self.pool.get().ok_or(REFUSED)?;
+        let pool = self.pool.as_ref().ok_or(REFUSED)?;
         let intent = request.extension().map_err(|_| REFUSED)?;
         let Some(completion) = self.begin_observation(caller, ticket, unit, intent, done)? else {
             return Ok(());

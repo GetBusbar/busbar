@@ -100,7 +100,7 @@ async fn collect(
         if let Err(error) = crate::snapshot::refresh_scrape_gauges(app).await {
             return Err(ScrapeRefusal::Failed(error));
         }
-        super::plugin::status_if_stale();
+        super::plugin::status_if_stale(&app.exports);
     }
     if installed {
         metrics::gauge!(crate::snapshot::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION"))

@@ -330,7 +330,7 @@ pub(super) async fn apply(
                 for name in exports {
                     let def = next.export_defs.get(&name);
                     if def != snapshot.export_defs.get(&name)
-                        && busbar_kernel::export::plugin::requires_restart(&name, def)
+                        && busbar_kernel::export::plugin::requires_restart(&next.exports, &name, def)
                     {
                         own.push(format!("export.{name}"));
                     }
@@ -345,7 +345,7 @@ pub(super) async fn apply(
             let exports: std::collections::BTreeSet<_> = next.export_defs.keys()
                 .chain(snapshot.export_defs.keys()).cloned().collect();
             for name in exports {
-                if busbar_kernel::export::plugin::requires_restart(&name, next.export_defs.get(&name)) {
+                if busbar_kernel::export::plugin::requires_restart(&next.exports, &name, next.export_defs.get(&name)) {
                     next.config_pending_restart.push(format!("export.{name}"));
                 }
             }
@@ -578,8 +578,6 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/worker_threads",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
-        "/advanced/shutdown/drain_timeout",
-        "/advanced/governance/max_pending_checkpoints",
     ];
     paths
         .iter()
@@ -806,15 +804,22 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_and_admission_caps_require_durable_restart_edits() {
+    fn retired_shutdown_and_admission_caps_never_enter_restart_state() {
         for path in [
             "/advanced/shutdown/drain_timeout",
             "/advanced/governance/max_pending_checkpoints",
             "/advanced/shutdown",
             "/advanced/governance",
         ] {
-            assert_eq!(restart_paths(&[path.to_owned()]), [path]);
+            assert!(
+                restart_paths(&[path.to_owned()]).is_empty(),
+                "retired configuration cannot become restart state: {path}"
+            );
         }
+        assert_eq!(
+            restart_paths(&["/advanced/worker_threads".to_owned()]),
+            ["/advanced/worker_threads"]
+        );
         assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 

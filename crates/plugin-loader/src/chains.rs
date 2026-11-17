@@ -32,6 +32,18 @@ use busbar_plugin_abi::host_side::needs::{
 
 /// DRY_RUN never receives a serving capability or performs I/O.
 pub(crate) struct DeniedNeeds;
+pub(crate) struct DeniedRefs;
+impl busbar_ports::binder::RefSource for DeniedRefs {
+    fn resolve<'a>(
+        &'a self,
+        _: u64,
+        _: u32,
+        _: u32,
+        _: &'a busbar_contract::secret_ref::SecretRef,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Option<SecureVec>> {
+        Box::pin(async { None })
+    }
+}
 impl Needs for DeniedNeeds {
     async fn open(
         &self,
@@ -114,12 +126,12 @@ use busbar_plugin_abi::types::{KindCode, Status};
 
 use crate::answer::{open_error, port_error};
 use crate::instance::{
-    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, Registry,
-    Settled, SlotLease, SlotRecord,
+    BootPhase, CoreCfg, Described, ErrorBook, InstanceSpec, MetricInfo, OpenError, OpenPurpose,
+    Registry, Settled, SlotLease,
 };
 use crate::refusal::{Refusal, RefusalCode};
-use busbar_ports::binder::{BindError, ConfigBinder};
-use busbar_ports::codec::settled::{decode_settled, settled_limits};
+use busbar_ports::binder::{BindError, ConfigBinder, RefSource};
+use busbar_ports::codec::settled::{for_purpose, settled_limits};
 
 /// An `open` chain may run this long end to end (its NEEDs included): the first poll is bounded by the §10.6
 /// ceiling, the rest by the Need handlers' own timeouts and the step cap.
@@ -419,9 +431,10 @@ pub(crate) fn plan_order(
 /// An `InstanceSpec` the future owns: the open methods return `BoxFut<'_>` tied to the registry only, so the
 /// borrowed spec is copied once, synchronously, before the future is built.
 pub(crate) struct OwnedSpec {
+    purpose: OpenPurpose,
     identity: String,
     name: String,
-    config_json: Vec<u8>,
+    config_json: SecureVec,
     limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
     public_url: Option<String>,
     caller_upstreams: Vec<Box<str>>,
@@ -436,9 +449,10 @@ impl OwnedSpec {
     }
     pub(crate) fn new(s: &InstanceSpec<'_>) -> Self {
         OwnedSpec {
+            purpose: s.purpose,
             identity: s.identity.to_owned(),
             name: s.name.to_owned(),
-            config_json: s.config_json.to_vec(),
+            config_json: SecureVec::from(s.config_json),
             limits: s.limits,
             public_url: s.public_url.map(str::to_owned),
             caller_upstreams: s.caller_upstreams.to_vec(),
@@ -447,6 +461,7 @@ impl OwnedSpec {
 
     pub(crate) fn spec(&self) -> InstanceSpec<'_> {
         InstanceSpec {
+            purpose: self.purpose,
             identity: &self.identity,
             name: &self.name,
             config_json: &self.config_json,
@@ -564,19 +579,13 @@ impl Registry {
     /// Cold: the admitted image `s.identity` names, the config bound and its references resolved (§11.2 `open`:
     /// `bind`, `resolve_refs`, the core values at D_PUBLIC_URL_PATH and D_CALLER_UPSTREAMS_PATH). The D_SCHEMA
     /// check is the plugin's own `open`/`check` (the engine graph carries no JSON Schema validator).
-    pub(crate) async fn prepare(
-        &self,
-        s: &InstanceSpec<'_>,
-        kind: KindCode,
-    ) -> Result<Prepared, OpenError> {
-        self.prepare_with_id(s, kind, self.ids.next()?).await
-    }
-
     async fn prepare_with_id(
         &self,
         s: &InstanceSpec<'_>,
         kind: KindCode,
         id: u64,
+        slot: u32,
+        refs: &dyn RefSource,
     ) -> Result<Prepared, OpenError> {
         let entry = self.entry_of(s.identity).ok_or_else(|| {
             OpenError::Unknown(format!(
@@ -605,24 +614,27 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
-        let bound = self
-            .binder
-            .bind(
-                id,
-                s.config_json,
-                &paths(tag::D_SECRET_PATH),
-                &paths(tag::D_TRUST_PATH),
-                &paths(tag::D_DEST_PATH),
-                &paths(tag::D_REF_PATH),
-            )
-            .map_err(|e| bind_error(s.name, e))?;
+        let bind = match s.purpose {
+            OpenPurpose::Canonical => ConfigBinder::bind,
+            OpenPurpose::ConvertUnstamped => ConfigBinder::bind_any,
+        };
+        let bound = bind(
+            &*self.binder,
+            id,
+            s.config_json,
+            &paths(tag::D_SECRET_PATH),
+            &paths(tag::D_TRUST_PATH),
+            &paths(tag::D_DEST_PATH),
+            &paths(tag::D_REF_PATH),
+        )
+        .map_err(|e| bind_error(s.name, e))?;
         let unbind = Unbind {
             binder: Arc::clone(&self.binder),
             id,
         };
         let resolved = self
             .binder
-            .resolve_refs(id, bound)
+            .resolve_refs(id, slot, bound, refs)
             .await
             .map_err(|e| bind_error(s.name, e))?;
         let (urls, ups) = (
@@ -736,19 +748,6 @@ impl Registry {
         .map_err(OpenError::Call)
     }
 
-    fn lease_for(&self, s: &InstanceSpec<'_>, p: &Prepared, kind: KindCode) -> SlotLease {
-        self.slots.alloc(
-            SlotRecord {
-                kind,
-                name: Arc::from(s.name),
-                scrub: Arc::new(Scrub::new()),
-                errors: p.errors,
-                undeclared_warned: AtomicBool::new(false),
-            },
-            &p.ceilings,
-        )
-    }
-
     /// The generic open (§11.2): prepare, run the `open` chain under a leased slot, and on OK + INSTANCE build the
     /// `Instance` in the same poll (§10.4), keep the settled answer for the write-back (round 31) and tether the
     /// binding and the lease to the instance. A REFUSED or FAILED answer is the open's error.
@@ -756,6 +755,7 @@ impl Registry {
         &self,
         reserved: crate::instance::PreparedInstance,
         needs: &Arc<N>,
+        refs: &dyn RefSource,
     ) -> Result<Opened, OpenError> {
         let crate::instance::PreparedInstance {
             owner,
@@ -774,7 +774,9 @@ impl Registry {
                 "reserved instance belongs to another process".into(),
             ));
         }
-        let p = self.prepare_with_id(s, kind, id).await?;
+        let p = self
+            .prepare_with_id(s, kind, id, lease.slot(), refs)
+            .await?;
         let finished = self.run_open::<K, N>(s, &p, &lease, 0, &**needs).await?;
         let Finished { answer, instance } = finished;
         let (status, scrub, errors) = (
@@ -838,27 +840,26 @@ impl Registry {
     }
 
     /// Round 31: CONFIG and CORE_CFG* of an OK open answer mapped back through the binder's reference map and
-    /// kept for `take_settled`. A value the map refuses skips the whole write-back (logged); the instance serves.
+    /// kept for `take_settled`. A refused inverse mapping is CONFIG and the instance never serves.
     fn settle(&self, s: &InstanceSpec<'_>, id: u64, answer: &Answer<'_>) -> Result<(), OpenError> {
         let fault = |e: RecErr| OpenError::Call(CallError::Fault(FaultReason::BadRecords(e)));
-        let Some(out) = decode_settled(answer).map_err(fault)? else {
+        let Some(out) = for_purpose(answer.records(), s.purpose == OpenPurpose::ConvertUnstamped)
+            .map_err(|_| {
+            plan_error(format!(
+                "{}: open CONFIG or CORE_CFG violates its purpose",
+                s.name
+            ))
+        })?
+        else {
             return Ok(());
         };
-        let skip = |what: &str, e: BindError| {
-            tracing::warn!(
-                instance = s.name,
-                what,
-                error = ?e,
-                "a settled value does not map back through the reference map; the write-back is skipped"
-            );
-        };
-        let config_json = match self.binder.unbind_refs(id, out.config) {
-            Ok(c) => c,
-            Err(e) => {
-                skip("config", e);
-                return Ok(());
-            }
-        };
+        let config_json = SecureVec::from(
+            self.binder
+                .unbind_refs(id, out.config)
+                .map_err(|e| bind_error(s.name, e))?,
+        );
+        json::parse_value(config_json.as_slice())
+            .map_err(|_| plan_error(format!("{}: open CONFIG is not valid JSON", s.name)))?;
         let mut core_cfg = Vec::new();
         for rec in out.core_cfg {
             let rec = rec.map_err(fault)?;
@@ -871,11 +872,10 @@ impl Registry {
                 Ok(value_json) => core_cfg.push(CoreCfg {
                     section: head.section,
                     name: String::from_utf8_lossy(name).into(),
-                    value_json,
+                    value_json: SecureVec::from(value_json),
                 }),
                 Err(e) => {
-                    skip("core_cfg", e);
-                    return Ok(());
+                    return Err(bind_error(s.name, e));
                 }
             }
         }
@@ -894,10 +894,14 @@ impl Registry {
     pub(crate) async fn dry_run<K: Kind>(
         &self,
         s: &InstanceSpec<'_>,
+        refs: &dyn RefSource,
     ) -> Result<Vec<crate::instance::DeclaredEndpoint>, OpenError> {
         let kind = K::CODE;
-        let p = self.prepare(s, kind).await?;
-        let lease = self.lease_for(s, &p, kind);
+        let reserved = self.reserve(s)?;
+        let lease = reserved.lease;
+        let p = self
+            .prepare_with_id(s, kind, reserved.id, lease.slot(), refs)
+            .await?;
         let finished = self
             .run_open::<K, DeniedNeeds>(
                 s,

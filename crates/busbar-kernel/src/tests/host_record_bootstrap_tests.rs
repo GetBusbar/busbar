@@ -91,8 +91,8 @@ impl Fixture {
     }
 
     fn host(&self) -> KernelServices {
-        let host = KernelServices::new();
-        assert!(host.attach_persistence(Arc::clone(&self.store)));
+        let mut host = KernelServices::new();
+        host = host.with_persistence(Arc::clone(&self.store));
         host
     }
     fn arm_receipt(

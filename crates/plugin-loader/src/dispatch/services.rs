@@ -421,47 +421,21 @@ impl Completer {
     }
 }
 
-/// THE HOST SERVICES A DISPATCHER SERVES, TAKEN LATE: a host may build its dispatcher before the
-/// services it serves exist (busbar: before the configuration loads), so the dispatcher reads them
-/// from this slot, which the host installs them into once they exist. Once: a second install is
-/// refused and changes nothing, so a reload can never swap the services a running instance
-/// reaches. Until then `pre` answers; with none, every service answers REFUSED. Read lock-free on
-/// every call, which reaches the installed services themselves.
-#[derive(Default)]
+/// Complete host services owned by a dispatcher for its entire lifetime.
+/// Bootstrap dispatchers have no provider; serving dispatchers receive one at construction.
 pub struct ServicesSlot {
-    installed: std::sync::OnceLock<Arc<dyn HostServices>>,
-    pre: Option<Arc<dyn HostServices>>,
+    services: Arc<dyn HostServices>,
 }
 
 impl ServicesSlot {
     #[must_use]
-    pub fn late(pre: Arc<dyn HostServices>) -> Arc<Self> {
-        Arc::new(Self {
-            installed: std::sync::OnceLock::new(),
-            pre: Some(pre),
-        })
-    }
-
-    #[must_use]
     pub fn of(services: Arc<dyn HostServices>) -> Arc<Self> {
-        Arc::new(Self {
-            installed: std::sync::OnceLock::from(services),
-            pre: None,
-        })
-    }
-
-    pub fn install(&self, services: Arc<dyn HostServices>) -> bool {
-        self.installed.set(services).is_ok()
+        Arc::new(Self { services })
     }
 
     #[must_use]
-    pub fn is_installed(&self) -> bool {
-        self.installed.get().is_some()
-    }
-
-    #[must_use]
-    pub fn get(&self) -> Option<&Arc<dyn HostServices>> {
-        self.installed.get().or(self.pre.as_ref())
+    pub fn get(&self) -> &Arc<dyn HostServices> {
+        &self.services
     }
 }
 

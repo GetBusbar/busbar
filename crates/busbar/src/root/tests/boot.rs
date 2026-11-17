@@ -690,7 +690,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         serde_json::json!({
             "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
             "store": {"module": module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -698,16 +698,13 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &Default::default(),
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &Default::default(), rules.clone())
         .await
-        .expect("the configured native target opens"),
-    )
-    .await;
+        .expect("the configured native target opens");
+    let core = crate::root::real_store::core_over(core).await;
     crate::root::boot::bind_plugin_floor(core.clone())
         .await
         .expect("the catalog uses the configured native plugin-floor owner");
@@ -1004,7 +1001,7 @@ async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
 }
 
 pub(super) fn constructor_child(validate: bool) -> ! {
-    let late = crate::root::serve::LateServices::new();
+    let late = crate::root::serve::Services::bootstrap();
     crate::root::boot::install_native_load_guard().unwrap();
     crate::root::loader::dispatch::handle::arm().unwrap();
     let dispatcher = crate::root::dispatch::boot(1, &late);

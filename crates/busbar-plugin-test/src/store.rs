@@ -57,7 +57,7 @@ impl StoreHarness {
     pub fn admit_admitted(image: Admitted, needs: FakeNeeds) -> Result<Self, Refusal> {
         Self::from_harness(Harness::admit_admitted(image, needs)?)
     }
-    /// Installs the test factory if none is present; a factory already set on the registry is retained.
+    /// Verify the image kind; the harness supplies its private test factory at each open.
     pub fn from_harness(inner: Harness) -> Result<Self, Refusal> {
         if inner.kind() != KindCode::Store {
             return Err(Refusal::new(
@@ -67,9 +67,6 @@ impl StoreHarness {
                 "store image",
             ));
         }
-        inner
-            .registry()
-            .set_store_seal(Box::new(|| Box::new(TestKernelSeal)));
         Ok(Self { inner })
     }
     pub fn harness(&self) -> &Harness {

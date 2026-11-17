@@ -595,9 +595,6 @@ pub fn booted(
     h.needs().attach_scrubs(Arc::new(move |slot| {
         weak.upgrade()?.registry().scrub_of(slot)
     }));
-    h.registry().set_store_seal(Box::new(|| {
-        Box::new(busbar_contract::plugin::TestKernelSeal)
-    }));
     h
 }
 

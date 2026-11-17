@@ -158,14 +158,19 @@ fn cx() -> CallCx {
 
 /// Opens instance `name` with `config`; the fixture's `open` makes no NEED, so the first poll is Ready.
 fn open(
-    registry: &Registry<YieldNeeds>,
+    registry: &Registry,
+    needs: &Arc<YieldNeeds>,
     identity: &str,
     name: &str,
     config: &[u8],
 ) -> Arc<dyn ExportPort> {
     let (waker, _) = counting_waker();
     let spec = spec(identity, name, config);
-    let mut fut = registry.open_export(&spec);
+    let mut fut = registry.open_export(
+        &spec,
+        needs,
+        &busbar_plugin_test::suites::harness::no_refs(),
+    );
     match poll_once(&mut fut, &waker) {
         Poll::Ready(Ok(port)) => port,
         Poll::Ready(Err(e)) => panic!("{name}: the open answered {e:?}"),
@@ -176,7 +181,7 @@ fn open(
 #[test]
 fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-    let (registry, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
+    let (registry, needs, identity) = rig(fixture::PLUGIN.plugin(), fixture::released);
     let (waker, _) = counting_waker();
     let lines: [&[u8]; 1] = [b"one line"];
     let base = (
@@ -187,7 +192,7 @@ fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
 
     // Cancel: the deliver chain parks on its FETCH; dropping the port future cancels it, and the plugin future's
     // Drop panics inside the plugin's `cancel` entry. The process goes on.
-    let port = open(&registry, &identity, "fuse", b"{}");
+    let port = open(&registry, &needs, &identity, "fuse", b"{}");
     let mut fut = port.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 1, 1, &lines);
     assert!(
         poll_once(&mut fut, &waker).is_pending(),
@@ -206,7 +211,13 @@ fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
     );
 
     // Close: the plugin value's Drop panics inside the plugin's `close` entry. The process goes on.
-    let closer = open(&registry, &identity, "closer", br#"{"close":"panic"}"#);
+    let closer = open(
+        &registry,
+        &needs,
+        &identity,
+        "closer",
+        br#"{"close":"panic"}"#,
+    );
     drop(closer);
     assert_eq!(
         fixture::CLOSE_PANICS.load(Ordering::SeqCst) - base.1,
@@ -216,7 +227,7 @@ fn a_panicking_drop_in_cancel_or_close_does_not_abort() {
     drop(port);
 
     // No abort: the same image opens a fresh instance and serves a whole deliver chain.
-    let fresh = open(&registry, &identity, "fresh", b"{}");
+    let fresh = open(&registry, &needs, &identity, "fresh", b"{}");
     let mut fut = fresh.deliver(cx(), busbar_plugin_abi::export::STREAM_LOGS, 2, 1, &lines);
     assert!(
         poll_once(&mut fut, &waker).is_pending(),

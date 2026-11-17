@@ -61,11 +61,20 @@ pub trait HookOpener: Send + Sync + 'static {
 pub struct BoundRegistry<N: Needs> {
     registry: Arc<Registry>,
     needs: Arc<N>,
+    refs: Arc<dyn busbar_ports::binder::RefSource>,
 }
 
 impl<N: Needs> BoundRegistry<N> {
-    pub fn new(registry: Arc<Registry>, needs: Arc<N>) -> Self {
-        Self { registry, needs }
+    pub fn new(
+        registry: Arc<Registry>,
+        needs: Arc<N>,
+        refs: Arc<dyn busbar_ports::binder::RefSource>,
+    ) -> Self {
+        Self {
+            registry,
+            needs,
+            refs,
+        }
     }
 }
 
@@ -78,6 +87,7 @@ impl<N: Needs> HookOpener for BoundRegistry<N> {
     ) -> BoxFut<'a, Result<Arc<dyn HookPort>, OpenError>> {
         Box::pin(async move {
             let spec = InstanceSpec {
+                purpose: crate::instance::OpenPurpose::Canonical,
                 identity: module,
                 name,
                 config_json,
@@ -85,7 +95,9 @@ impl<N: Needs> HookOpener for BoundRegistry<N> {
                 public_url: None,
                 caller_upstreams: &[],
             };
-            self.registry.open_hook(&spec, &self.needs).await
+            self.registry
+                .open_hook(&spec, &self.needs, &self.refs)
+                .await
         })
     }
 

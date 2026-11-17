@@ -119,8 +119,8 @@ fn me() -> Caller {
 }
 
 async fn services_over(store: &Arc<CoreStore>, framing: u32, flags: u32) -> KernelServices {
-    let s = KernelServices::new().with_pool(Arc::new(Inline));
-    assert!(s.attach_persistence(store.clone()));
+    let mut s = KernelServices::new().with_pool(Arc::new(Inline));
+    s = s.with_persistence(store.clone());
     s.admit(
         INST,
         InstanceFacts {
@@ -564,8 +564,8 @@ async fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained
 }
 
 async fn services_with_plain_kind(store: &Arc<CoreStore>) -> KernelServices {
-    let s = KernelServices::new().with_pool(Arc::new(Inline));
-    assert!(s.attach_persistence(store.clone()));
+    let mut s = KernelServices::new().with_pool(Arc::new(Inline));
+    s = s.with_persistence(store.clone());
     s.admit(
         INST,
         InstanceFacts {

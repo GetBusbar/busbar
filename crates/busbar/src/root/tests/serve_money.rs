@@ -142,22 +142,23 @@ async fn governed_full(
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,
         };
-        let late = super::LateServices::new();
-        let dispatcher = crate::root::dispatch::boot(1, &late);
-        crate::root::doors::install_dispatcher(dispatcher);
 
         crate::register_protocols();
         crate::register_planes();
         crate::register_diagnostics();
         let initial = busbar_kernel::config::deploy_from_yaml_str(
-            "providers: {}\nmodels: {}\nadvanced:\n  allow_destinations: [127.0.0.1]\n",
+            "providers: {}\nmodels: {}\n",
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the loopback deployment parses");
         let initial = busbar_kernel::config::resolve(&initial, &Default::default()).unwrap();
         let judge = crate::root::connector::dest_judge(&initial);
-        let (credentials, _handle) = crate::root::credentials::AppCredentials::late();
-        super::compose(judge.clone(), &late, credentials);
+        let credentials = crate::root::credentials::AppCredentials::new(None);
+        let late = super::Services::serving(Arc::new(
+            super::kernel_services(judge.clone()).with_credentials(Arc::new(credentials)),
+        ));
+        let dispatcher = crate::root::dispatch::boot(1, &late);
+        crate::root::doors::install_dispatcher(dispatcher);
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         if crate::root::connector::installed().is_none() {
             let on = crate::root::dispatch::dispatcher();
@@ -271,7 +272,7 @@ async fn governed_full(
             "auth": {"chain": if keys_chain { vec!["keys"] } else { vec![] }, "admin_auth": [],
                 "signing_key": {"file": signing_file}},
             "store": {"module": store_module, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -907,6 +908,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     );
     let doors = [(instance.to_string(), plane)];
     let served = compose_served_checked(
+        None,
         Some(Arc::clone(&gov)),
         &doors,
         &dispatcher,
@@ -1119,6 +1121,31 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
     assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
 }
 
+#[tokio::test]
+async fn serving_generation_retains_its_exact_dispatch_snapshot_without_a_route_slot() {
+    let mut g = governed("generation-owned-routes", false).await;
+    let routes = session_custody_routes(&mut g, false);
+    let snapshot = Arc::downgrade(&routes.snapshot);
+    let generation = routes
+        .generation
+        .clone()
+        .expect("a served plane owns a generation");
+    assert!(Arc::ptr_eq(
+        generation.core(),
+        &routes.served.planes[0].kernel
+    ));
+    drop(routes);
+    assert!(
+        snapshot.upgrade().is_some(),
+        "retained invocation generation owns dispatch"
+    );
+    drop(generation);
+    assert!(
+        snapshot.upgrade().is_none(),
+        "no weak route registry keeps a retired snapshot alive"
+    );
+}
+
 fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
     g.router = axum::Router::new();
     let served = std::mem::take(&mut g.served);
@@ -1140,7 +1167,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
             lines.push(line);
         }
     }
-    Arc::new(super::DataRoutes {
+    super::DataRoutes::new(super::DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -1155,6 +1182,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         of_line,
         frames: Default::default(),
     })
+    .expect("complete fixture dispatch generation")
 }
 
 fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
