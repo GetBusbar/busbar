@@ -551,12 +551,19 @@
           "algorithm": {
             "type": "string"
           },
-          "keys": {
-            "description": "Every public key this node signs records under; empty when it signs none.",
+          "items": {
+            "description": "This page of public keys, in key-id order; empty when the node signs none.",
             "items": {
               "$ref": "#/components/schemas/AuditChainKeyView"
             },
             "type": "array"
+          },
+          "next_cursor": {
+            "description": "The shared cursor for the next page, or null after the final key.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "recipe": {
             "type": "string"
@@ -569,7 +576,7 @@
           "recipe",
           "signature_domain",
           "algorithm",
-          "keys"
+          "items"
         ],
         "type": "object"
       },
@@ -10796,6 +10803,28 @@
       "get": {
         "description": "A pull, never a push: the node answers and opens no connection. A read: it mutates nothing and is never posture-gated.",
         "operationId": "GetAuditKeys",
+        "parameters": [
+          {
+            "description": "Opaque continuation cursor from `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, max 1000).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10806,6 +10835,25 @@
               }
             },
             "description": "The published verifying keys (empty when the node signs nothing)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed pagination `cursor`",
             "headers": {
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",

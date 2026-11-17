@@ -150,6 +150,107 @@ async fn selected_activation_unwind_removes_unpublished_entry() {
         .is_ok());
 }
 
+async fn prepared_selected(gov: &GovState) -> Arc<UnitCheckpoint> {
+    let initial = gov
+        .activate_selected_checkpoint(initial_selected(), Ok::<_, ()>)
+        .unwrap();
+    let mut value = json::to_value(initial.as_ref()).unwrap();
+    let mut prepared = attempt(1, None, "A", source_facts(None, None, None));
+    prepared["transport"] = json::json!("prepared");
+    prepared["finality"] = json::json!("live");
+    value["partitions"]["attempts"] = json::json!([prepared]);
+    gov.stage_selected_checkpoint(decode(&value), Some(initial.revision))
+        .unwrap()
+}
+
+fn committed_selected(prepared: &UnitCheckpoint) -> UnitCheckpoint {
+    use crate::governance::unit_checkpoint::partitions::Transport;
+    let mut snapshot = prepared.clone();
+    let attempt = snapshot
+        .partitions
+        .as_mut()
+        .unwrap()
+        .attempts
+        .last_mut()
+        .unwrap();
+    attempt.transport = Transport::Committed;
+    attempt.dispatch = Some(1);
+    snapshot
+}
+
+#[tokio::test]
+async fn selected_dispatch_commit_refusal_retains_predecessor_and_retry_commits_once() {
+    use crate::governance::unit_checkpoint::SelectedCommitError;
+    let gov = governance().await;
+    let prepared = prepared_selected(&gov).await;
+    let next = committed_selected(&prepared);
+    let mut token = Some("original reservation");
+    let refused = gov.commit_selected_checkpoint(next.clone(), prepared.revision, || {
+        Err::<(), _>(token.take().unwrap())
+    });
+    match refused {
+        Err(SelectedCommitError::Commit(original)) => token = Some(original),
+        other => panic!("expected rate refusal with original token: {other:?}"),
+    }
+    let unchanged = gov
+        .stage_selected_checkpoint((*prepared).clone(), Some(prepared.revision))
+        .unwrap();
+    assert_eq!(unchanged, prepared);
+    let (accepted, committed) = gov
+        .commit_selected_checkpoint(next, prepared.revision, || {
+            Ok::<_, ()>(token.take().unwrap())
+        })
+        .unwrap();
+    assert_eq!(committed, "original reservation");
+    assert!(token.is_none());
+    assert_eq!(accepted.revision, prepared.revision + 1);
+    assert_eq!(
+        accepted.partitions.as_ref().unwrap().attempts[0].dispatch,
+        Some(1)
+    );
+    let duplicate: Result<(Arc<UnitCheckpoint>, ()), SelectedCommitError<()>> = gov
+        .commit_selected_checkpoint((*accepted).clone(), accepted.revision, || {
+            panic!("duplicate committed attempt")
+        });
+    assert!(matches!(duplicate, Err(SelectedCommitError::Custody(_))));
+    let current = gov
+        .stage_selected_checkpoint((*accepted).clone(), Some(accepted.revision))
+        .unwrap();
+    assert_eq!(current, accepted);
+}
+
+#[tokio::test]
+async fn selected_dispatch_commit_preflights_exact_transition_before_consuming_token() {
+    use crate::governance::unit_checkpoint::SelectedCommitError;
+    let gov = governance().await;
+    let prepared = prepared_selected(&gov).await;
+    let next = committed_selected(&prepared);
+    let mut candidates = vec![(next.clone(), prepared.revision - 1)];
+    let mut changed_source = next.clone();
+    changed_source.partitions.as_mut().unwrap().attempts[0]
+        .usage
+        .classes
+        .get_mut("work")
+        .unwrap()
+        .reported = Some(Count::ZERO);
+    candidates.push((changed_source, prepared.revision));
+    let mut wrong_dispatch = next;
+    wrong_dispatch.partitions.as_mut().unwrap().attempts[0].dispatch = Some(2);
+    candidates.push((wrong_dispatch, prepared.revision));
+    let mut token = Some("unconsumed reservation");
+    for (candidate, revision) in candidates {
+        let result = gov
+            .commit_selected_checkpoint(candidate, revision, || Ok::<_, ()>(token.take().unwrap()));
+        assert!(matches!(result, Err(SelectedCommitError::Custody(_))));
+        assert_eq!(token, Some("unconsumed reservation"));
+    }
+    assert_eq!(
+        gov.stage_selected_checkpoint((*prepared).clone(), Some(prepared.revision))
+            .unwrap(),
+        prepared
+    );
+}
+
 fn meter_events(
     gov: &GovState,
     snapshot: &UnitCheckpoint,

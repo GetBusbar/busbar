@@ -17,6 +17,7 @@ use crate::plane_driver::port_upstream::Candidate;
 #[derive(Debug)]
 pub(super) struct FrozenUsage {
     route: Option<u32>,
+    origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
     classes: Vec<UsageClass>,
     attempt_classes: Vec<Box<str>>,
@@ -26,12 +27,14 @@ impl FrozenUsage {
     pub(super) fn of(
         calls: &(impl Calls + ?Sized),
         route: Option<u32>,
+        origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     ) -> Result<Arc<Self>, SessionError> {
         let (facts, classes, attempt_classes) = calls.usage_metadata();
         Declaration::new(facts, classes, attempt_classes)
             .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
         Ok(Arc::new(Self {
             route,
+            origin,
             facts,
             classes: classes.to_vec(),
             attempt_classes: attempt_classes.to_vec(),
@@ -182,6 +185,11 @@ pub struct RequestDeclaration {
 }
 
 impl RequestDeclaration {
+    pub fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self.declaration.origin.as_ref()
+    }
     pub fn route(&self) -> u32 {
         self.declaration
             .route
@@ -205,6 +213,11 @@ impl RequestDeclaration {
 }
 
 impl PreparedExchange {
+    pub(crate) fn original_route(
+        &self,
+    ) -> Option<&crate::plane_driver::route_identity::OriginalPlaneRoute> {
+        self.declaration.origin.as_ref()
+    }
     pub(crate) fn route(&self) -> u32 {
         self.declaration
             .route

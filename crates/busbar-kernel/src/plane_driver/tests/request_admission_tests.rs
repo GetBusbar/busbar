@@ -42,7 +42,7 @@ fn context_with_key(
             depth: 0,
         }
     ));
-    let generation = Arc::new(ServingGeneration::new(core, Arc::new(NoChildren)));
+    let generation = Arc::new(ServingGeneration::try_new(core, Arc::new(NoChildren)).unwrap());
     (
         InvocationContext::new(generation, caller, unit).unwrap(),
         lease,

@@ -5,7 +5,6 @@ use super::*;
 use crate::config::groups::{ExhaustionMode, GroupCfg};
 use crate::plane_driver::money::{EndPost, FeeRefund, PlaneMoney, UsageView};
 use crate::plane_driver::port_session::{Calls, Effects, RequestDeclaration, Task};
-use crate::registry::Generation;
 use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn, UsageClass};
 use busbar_ports::PortError;
 use std::num::NonZeroU32;
@@ -165,7 +164,7 @@ async fn same_task_declaration_is_installed_before_effects_open() {
         .admit_existing_selected(
             request,
             descriptor,
-            Generation::FIRST,
+            context.generation().routing_generation().unwrap(),
             NonZeroU32::new(1).unwrap(),
             FeeRefund::CallerStatus,
             ExhaustionMode::FinishUnit,
@@ -196,7 +195,7 @@ async fn another_tasks_context_cannot_open_selected_money() {
         .admit_existing_selected(
             request,
             declaration(&other),
-            Generation::FIRST,
+            context.generation().routing_generation().unwrap(),
             NonZeroU32::new(1).unwrap(),
             FeeRefund::CallerStatus,
             ExhaustionMode::FinishUnit
@@ -215,7 +214,7 @@ async fn missing_initial_audit_custody_refunds_admission_before_return() {
         .admit_existing_selected(
             request,
             declaration(&context),
-            Generation::FIRST,
+            context.generation().routing_generation().unwrap(),
             NonZeroU32::new(1).unwrap(),
             FeeRefund::CallerStatus,
             ExhaustionMode::FinishUnit
@@ -229,4 +228,61 @@ async fn missing_initial_audit_custody_refunds_admission_before_return() {
         .unwrap();
     assert_eq!(usage.requests, 0);
     assert_eq!(usage.spend_cents, 0);
+}
+
+#[tokio::test]
+async fn another_snapshots_generation_cannot_label_selected_custody() {
+    let (money, _, context, _lease, request) = selected_fixture(75, true).await;
+    let (other, _other_lease) = context_with_key(76, context.principal().unwrap().clone());
+    assert!(money
+        .admit_existing_selected(
+            request,
+            declaration(&context),
+            other.generation().routing_generation().unwrap(),
+            NonZeroU32::new(1).unwrap(),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit
+        )
+        .is_err());
+    assert!(!context.effects_allowed());
+    assert_eq!(money.open_units(), 0);
+}
+
+#[tokio::test]
+async fn retired_receipt_settles_only_its_original_money_open_once() {
+    let (money, gov, context, _lease, request) = selected_fixture(77, true).await;
+    let cost = request.cost().clone();
+    let key = request.key().clone();
+    let admitted = money
+        .admit_existing(
+            request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let (other, _, _, _other_lease, other_request) = selected_fixture(77, true).await;
+    let _other_admitted = other
+        .admit_existing(
+            other_request,
+            Arc::from([]),
+            FeeRefund::CallerStatus,
+            ExhaustionMode::FinishUnit,
+        )
+        .unwrap();
+    let end = crate::plane_driver::UnitEnd {
+        caller_status: 500,
+        cut: false,
+        refused_unspent: true,
+    };
+    context.retire();
+    assert!(other.settle_admitted(&admitted, end).is_err());
+    assert_eq!(other.open_units(), 1);
+    assert!(money.settle_admitted(&admitted, end).unwrap());
+    assert!(!money.settle_admitted(&admitted, end).unwrap());
+    let usage = gov
+        .derived_bucket_usage_async(&cost, &key.id, crate::governance::WINDOW_TOTAL, true, 100)
+        .await
+        .unwrap();
+    assert_eq!((usage.requests, usage.spend_cents), (0, 0));
 }

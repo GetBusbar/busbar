@@ -9,7 +9,12 @@ use std::sync::{Arc, RwLock};
 
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
+pub mod current_credential;
 pub mod drain;
+
+#[cfg(test)]
+#[path = "tests/current_credential_tests.rs"]
+mod current_credential_tests;
 pub(crate) mod exact_debt;
 pub mod persistence;
 pub mod principal_transition;
@@ -17,6 +22,7 @@ pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 pub(crate) mod raw_recovery;
+pub mod selected_policy;
 pub(crate) mod selected_resource;
 pub mod unit_checkpoint;
 mod unit_checkpoint_counts;

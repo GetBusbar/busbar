@@ -372,6 +372,11 @@ impl CommittingRequest {
     pub fn is_live(&self) -> bool {
         self.context().is_live() && self.context().admission_phase().at(COMMITTING)
     }
+    pub(in crate::plane_driver) fn accepts_governance(&self, governance: &GovState) -> bool {
+        self.context().signed_authority().is_none_or(|proof| {
+            proof.belongs_to(governance) && Arc::ptr_eq(proof.original_key(), self.key())
+        })
+    }
     pub(in crate::plane_driver) fn admitted(
         self,
         money: Arc<UnitMoney>,
@@ -426,6 +431,9 @@ impl CommittingRequest {
         book: Arc<()>,
         open: Arc<()>,
     ) -> Result<AdmittedRequest, AdmissionError> {
+        if !self.accepts_governance(&governance) {
+            return Err(AdmissionError::Principal);
+        }
         self.context()
             .admission_phase()
             .change(COMMITTING, ADMITTED)?;
@@ -467,6 +475,15 @@ pub struct AdmittedRequest {
     open: Arc<()>,
 }
 impl AdmittedRequest {
+    /// The original signed verification of this exact registered request, never a key lookup.
+    pub fn signed_authority(
+        &self,
+    ) -> Option<&crate::governance::current_credential::VerifiedKeyAuthority> {
+        self.is_live()
+            .then(|| self.context.signed_authority())
+            .flatten()
+            .map(Arc::as_ref)
+    }
     pub fn context(&self) -> &InvocationContext {
         &self.context
     }
@@ -523,8 +540,16 @@ impl AdmittedRequest {
         open: &Arc<()>,
         grant: &Arc<AdmitGrant>,
     ) -> bool {
-        self.is_live()
-            && Arc::ptr_eq(&self.book, book)
+        self.is_live() && self.matches_money_identity(book, open, grant)
+    }
+    /// Terminal cleanup only: retirement closes effects but does not erase the original Open.
+    pub(in crate::plane_driver) fn matches_money_identity(
+        &self,
+        book: &Arc<()>,
+        open: &Arc<()>,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.book, book)
             && Arc::ptr_eq(&self.open, open)
             && Arc::ptr_eq(&self.grant, grant)
     }
@@ -533,3 +558,7 @@ impl AdmittedRequest {
 #[cfg(test)]
 #[path = "tests/request_admission_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/request_credential_tests.rs"]
+mod credential_tests;

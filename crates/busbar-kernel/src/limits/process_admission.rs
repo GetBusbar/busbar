@@ -337,18 +337,18 @@ impl StorageAccount for LeaseInner {
 pub struct RequestLease(Arc<LeaseInner>);
 
 impl RequestLease {
-    /// Whether two owners retain the same original process admission.
-    /// Equal class or budget does not make independently admitted requests interchangeable.
-    #[must_use]
-    pub fn same_request(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-
     /// Share the exact admitted count owner with output/storage credits, without allocating.
     /// Repeated calls preserve origin identity; a different request cannot merge its credits.
     #[must_use]
     pub fn storage(&self) -> StorageSource {
         StorageSource::new(self.0.clone())
+    }
+
+    /// Whether two owners retain the same original process admission.
+    /// Equal class or budget does not make independently admitted requests interchangeable.
+    #[must_use]
+    pub fn same_request(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     #[must_use]

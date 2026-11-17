@@ -1036,11 +1036,6 @@ impl PlaneMoney {
     }
 
     pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
-        let UnitEnd {
-            caller_status,
-            refused_unspent,
-            ..
-        } = end;
         let removed = {
             busbar_contract::stage_probe::tick(
                 busbar_contract::stage_probe::Derive::MoneyShardLock,
@@ -1048,9 +1043,49 @@ impl PlaneMoney {
             let mut all = self.shard(key);
             all.remove(&key)
         };
-        let Some(mut open) = removed else {
+        let Some(open) = removed else {
             return;
         };
+        self.settle_removed(key, open, end);
+    }
+
+    /// Terminal cleanup checks and removes the exact admitted Open in the same critical section.
+    /// Retiring its invocation cannot prevent cleanup, and reusing a numeric unit cannot redirect it.
+    pub fn settle_admitted(
+        &self,
+        request: &super::request_admission::AdmittedRequest,
+        end: UnitEnd,
+    ) -> Result<bool, NativeAdmissionError> {
+        let removed = {
+            let mut all = self.shard(request.unit());
+            let Some(open) = all.get(&request.unit()) else {
+                return Ok(false);
+            };
+            let Some(grant) = &open.grant else {
+                return Err(NativeAdmissionError::NotLive);
+            };
+            if !request.matches_money_identity(&self.book, &open.identity, grant)
+                || !request.matches_governance(&self.gov)
+            {
+                return Err(NativeAdmissionError::NotLive);
+            }
+            if open.native.is_some() {
+                return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            all.remove(&request.unit())
+        };
+        if let Some(open) = removed {
+            self.settle_removed(request.unit(), open, end);
+        }
+        Ok(true)
+    }
+
+    fn settle_removed(&self, key: UnitKey, mut open: Open, end: UnitEnd) {
+        let UnitEnd {
+            caller_status,
+            refused_unspent,
+            ..
+        } = end;
         // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
         if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
             self.gov.release_request(&open.money.charge);

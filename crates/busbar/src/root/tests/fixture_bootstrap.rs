@@ -47,6 +47,7 @@ pub(crate) fn described(
 }
 
 struct Owners {
+    admitted_images: Arc<crate::root::boot::images::FileImages>,
     channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
@@ -296,6 +297,7 @@ impl ServingFixture {
         let hook_inputs = hooks::Environment::new(hook_plan, app)?;
         hook_inputs.check_pools(&instances)?;
         let steps = Steps {
+            images: &self.owners.admitted_images,
             registry: &built.registry,
             instances: &specs,
             services: Some(services),
@@ -373,7 +375,10 @@ pub(crate) async fn open(
     policy: Arc<dyn RootRules>,
 ) -> Result<Fixture, String> {
     let process = process()?;
-    let images = super::super::boot::images::fixture(&process.resources, plugins)?;
+    let images = Arc::new(super::super::boot::images::fixture(
+        &process.resources,
+        plugins,
+    )?);
     let protected = images.protect(cfg)?;
     let planes = images
         .aliases
@@ -393,7 +398,7 @@ pub(crate) async fn open(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
         cfg,
-        images.images,
+        images.images.clone(),
     )?;
     let configured = configured(cfg, &[])?;
     let specs = specifications(&configured, cfg.public_url.as_deref(), false);
@@ -442,6 +447,7 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
+        admitted_images: images,
         channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
