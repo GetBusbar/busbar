@@ -21,6 +21,8 @@ mod native_admission;
 pub(super) mod native_attempt;
 pub use native_admission::NativeAdmissionError;
 mod native_fee;
+mod selected_view;
+pub use selected_view::UsageView;
 mod observations;
 pub(crate) use observations::budget_id as observation_budget_id;
 pub use observations::{ObservationPolicy, ObservationRuntimeError};
@@ -1065,19 +1067,24 @@ impl PlaneMoney {
     }
 
     #[must_use]
-    pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {
-        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get(&key)
-            .map(|o| o.last.clone())
-            .unwrap_or_default()
+    pub fn last_counts(&self, key: UnitKey) -> Option<Vec<(u32, Count)>> {
+        self.usage_fold(key)?
+            .by_class()
+            .map(|(class, count)| count.map(|count| (class, count)))
+            .collect()
     }
 
     /// The unit's last reported usage, folded once per revision (SP-M1): the meter gate's input.
     #[must_use]
     pub fn usage_fold(&self, key: UnitKey) -> Option<Arc<UsageFold>> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(Open::usage_fold)
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                UsageFold::selected(native.checkpoint(), &open.money.classes).map(Arc::new)
+            } else {
+                Some(open.usage_fold())
+            }
+        })
     }
 
     /// The unit's serving lane with its usage fold, under one shard lock: the late accrual's
@@ -1085,9 +1092,13 @@ impl PlaneMoney {
     #[must_use]
     pub fn usage(&self, key: UnitKey) -> Option<(String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key)
-            .get_mut(&key)
-            .map(|open| (open.money.lane.clone(), open.usage_fold()))
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                None
+            } else {
+                Some((open.money.lane.clone(), open.usage_fold()))
+            }
+        })
     }
 
     /// [`PlaneMoney::usage`] with the unit's sealed attribution (ADMIN-API-1.6 §3.2): its key's
@@ -1096,7 +1107,10 @@ impl PlaneMoney {
     #[must_use]
     pub fn attributed_usage(&self, key: UnitKey) -> Option<(String, String, Arc<UsageFold>)> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get_mut(&key).map(|open| {
+        self.shard(key).get_mut(&key).and_then(|open| {
+            if open.native.is_some() {
+                return None;
+            }
             let m = &open.money;
             let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
             let attribution = busbar_kernel_audit::attribution(
@@ -1104,14 +1118,25 @@ impl PlaneMoney {
                 pool,
                 open.provider.as_deref().unwrap_or_default(),
             );
-            (m.lane.clone(), attribution, open.usage_fold())
+            Some((m.lane.clone(), attribution, open.usage_fold()))
         })
     }
 
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
-        self.shard(key).get(&key).map(|o| o.money.lane.clone())
+        self.shard(key).get(&key).and_then(|open| {
+            if let Some(native) = &open.native {
+                let parts = native.checkpoint().partitions.as_ref()?;
+                let target = parts.final_target?;
+                return parts
+                    .attempts
+                    .iter()
+                    .find(|attempt| attempt.preparation == target)
+                    .map(|attempt| attempt.usage.lane.clone());
+            }
+            Some(open.money.lane.clone())
+        })
     }
 
     #[must_use]
@@ -1130,6 +1155,9 @@ impl PlaneMoney {
         counts: &[(u32, busbar_contract::Count)],
         metered: bool,
     ) -> Option<crate::governance::unit_checkpoint::UnitCheckpoint> {
+        if open.native.is_some() {
+            return None;
+        }
         use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitTarget};
         let m = &open.money;
         let mut units = BTreeMap::<String, busbar_contract::Count>::new();

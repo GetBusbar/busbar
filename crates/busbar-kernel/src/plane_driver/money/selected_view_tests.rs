@@ -84,7 +84,7 @@ async fn selected_quantity_fold_retains_both_attempts_without_legacy_attribution
         .get_mut(&UnitKey::new(1))
         .unwrap()
         .native = Some(super::super::native_attempt::NativeMoney::from_accepted(
-        accepted,
+        accepted.clone(),
     ));
     let folded = r.money.usage_fold(UnitKey::new(1)).unwrap();
     assert_eq!(
@@ -94,7 +94,36 @@ async fn selected_quantity_fold_retains_both_attempts_without_legacy_attribution
     assert!(r.money.usage(UnitKey::new(1)).is_none());
     assert!(r.money.attributed_usage(UnitKey::new(1)).is_none());
     assert_eq!(
+        r.money.last_counts(UnitKey::new(1)),
+        Some(vec![(INPUT, Count::from(20u64))])
+    );
+    assert_eq!(
         r.money.serving(UnitKey::new(1)).as_deref(),
         Some("plane\u{1f}B")
     );
+    let view = r.money.usage_view(UnitKey::new(1)).unwrap();
+    assert!(
+        matches!(view.as_ref(), UsageView::Partitioned(snapshot) if Arc::ptr_eq(snapshot, &accepted))
+    );
+}
+
+#[tokio::test]
+async fn selected_initial_builder_refuses_missing_admitted_chain_without_fallback() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let mut all = r.money.shard(UnitKey::new(1));
+    let open = all.get_mut(&UnitKey::new(1)).unwrap();
+    let original = Arc::make_mut(&mut open.money);
+    original.lane = "plane\u{1f}".into();
+    original.pool = "plane\u{1f}original".into();
+    open.checkpoint_audit = Some(b"{}".to_vec());
+    let mut parts = checkpoint().partitions.unwrap();
+    parts.attempts.clear();
+    parts.final_target = None;
+    parts.far_end_answered = false;
+    parts.caller_bytes_committed = false;
+    assert!(r
+        .money
+        .selected_checkpoint_snapshot(UnitKey::new(1), open, parts)
+        .is_err());
+    assert!(open.native.is_none());
 }
