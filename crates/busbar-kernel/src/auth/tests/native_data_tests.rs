@@ -210,7 +210,7 @@ fn fixture(allowed: bool) -> Fixture {
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let core = Arc::new(KernelServices::new());
     let native = core.admit_native_invocation(&caller).unwrap();
-    let generation = Arc::new(ServingGeneration::new(core, Arc::new(NoChildren)));
+    let generation = Arc::new(ServingGeneration::try_new(core, Arc::new(NoChildren)).unwrap());
     let mut app = (*app()).clone();
     app.config_generation.store(7, Ordering::Release);
     app.role_bindings = BTreeMap::from([(
@@ -579,6 +579,57 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     assert!(!money.settle_admitted(&receipt, ended).unwrap());
     assert_eq!(money.open_units(), 0);
     drop(owner);
+}
+
+#[tokio::test]
+async fn native_data_billing_books_keep_registered_key_and_generation_without_reminting() {
+    let f = fixture(true);
+    let (request, selected, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare(request, selected, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let allocation = NativeDataAllocation::register(authorized).unwrap();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(Post)));
+    let keys = Arc::new(crate::door::UnitKeyMint::default());
+    let billing = crate::plane_driver::port_billing::PortBilling::new(
+        money.clone(),
+        gov,
+        keys.clone(),
+        Arc::new(crate::plane_driver::CoreAudit),
+    );
+    let unit = billing
+        .allocated_data(&allocation, Arc::from(Vec::<String>::new()))
+        .unwrap();
+    assert_eq!(unit.ctx.key.get(), allocation.context().unit());
+    assert_eq!(
+        Some(unit.ctx.generation),
+        allocation.context().generation().routing_generation()
+    );
+    assert_eq!(
+        keys.mint().get(),
+        1,
+        "attaching books must not consume another unit identity"
+    );
+    assert_eq!(
+        money.open_units(),
+        0,
+        "book attachment is not monetary admission"
+    );
+    assert!(!allocation.context().effects_allowed());
+    allocation.context().retire();
+    assert!(billing
+        .allocated_data(&allocation, Arc::from(Vec::<String>::new()))
+        .is_err());
 }
 
 #[tokio::test]
