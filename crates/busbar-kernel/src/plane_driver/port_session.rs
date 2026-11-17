@@ -1085,6 +1085,11 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        // Factual scope selection is not completed execution admission. Until the root
+        // supplies that opaque receipt, every session entrypoint refuses before request.
+        if calls.resource_scoped(req.route) {
+            return Err(SessionError::NotDriven);
+        }
         let buffered = Buffered::new(effects);
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
