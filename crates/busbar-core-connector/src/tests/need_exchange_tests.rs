@@ -101,13 +101,17 @@ impl Admission for Fixed {
         &'a self,
         host: &'a str,
         port: u16,
-    ) -> BoxFut<'a, Result<Vec<SocketAddr>, NeedErr>> {
+        _secured: bool,
+    ) -> BoxFut<'a, Result<super::super::judge::Route, NeedErr>> {
         Box::pin(async move {
             self.asked.lock().unwrap().push((host.to_owned(), port));
             if self.deny {
                 Err(NeedErr::Denied)
             } else {
-                Ok(self.addrs.clone())
+                Ok(super::super::judge::Route {
+                    addrs: self.addrs.clone(),
+                    tunnel: None,
+                })
             }
         })
     }
@@ -157,7 +161,7 @@ fn req<'a>(method: &'a str, url: &'a str, body: &'a [u8]) -> FetchReq<'a> {
 }
 
 async fn run(r: FetchReq<'_>, judge: &Fixed, got: &mut Got) -> Result<(), NeedErr> {
-    fetch(&ConnectorIo::new(), r, judge, got).await
+    fetch(&super::super::net::test_io(), r, judge, got).await
 }
 
 #[tokio::test]
