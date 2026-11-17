@@ -1109,6 +1109,12 @@ async fn run(
     let max_inbound = cfg.limits.max_inbound_concurrent;
     let request_admission =
         busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    // STORAGE-JOIN-r2: the Node's terminal book is funded from this boot admission before any
+    // plane, book, listener or recovery exists. No fallback account: refusal fails the boot.
+    if let Err(why) = root::plane_node::node().bind_terminal_storage(&request_admission) {
+        tracing::error!(error = why, "terminal custody storage binding failed");
+        die(format!("terminal custody storage binding failed: {why}"));
+    }
     use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
