@@ -73,7 +73,7 @@ fn missing_manifest_or_lib_is_refused() {
     assert!(err.contains("no manifest.json"), "got {err}");
 
     let m = manifest();
-    let json = serde_json::to_vec(&m).unwrap();
+    let json = busbar_contract::json::to_vec(&m).unwrap();
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
     let mut h = tar::Header::new_gnu();
@@ -92,7 +92,7 @@ fn a_nested_member_name_flattens_to_its_basename_as_in_1_5_5() {
     let m = manifest();
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
-    let json = serde_json::to_vec(&m).unwrap();
+    let json = busbar_contract::json::to_vec(&m).unwrap();
     for (name, data) in [
         ("pkg/manifest.json", json.as_slice()),
         ("pkg/lib/libgamma.so", &b"abc"[..]),
@@ -117,7 +117,7 @@ fn extra_members_and_traversal_are_refused() {
 
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
-    let json = serde_json::to_vec(&m).unwrap();
+    let json = busbar_contract::json::to_vec(&m).unwrap();
     for (name, data) in [
         (MANIFEST_FILE, json.as_slice()),
         ("lib.so", &b"abc"[..]),
@@ -223,10 +223,10 @@ fn read_entry_bounded_refuses_a_member_one_byte_over_the_cap() {
 #[test]
 fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
     let mut m_padded = manifest();
-    let base_len = serde_json::to_vec(&m_padded).unwrap().len() as u64;
+    let base_len = busbar_contract::json::to_vec(&m_padded).unwrap().len() as u64;
     let pad_needed = (MAX_MANIFEST_BYTES - base_len) as usize;
     m_padded.description = "x".repeat(pad_needed);
-    let mut exact = serde_json::to_vec(&m_padded).unwrap();
+    let mut exact = busbar_contract::json::to_vec(&m_padded).unwrap();
 
     assert_eq!(exact.len() as u64, MAX_MANIFEST_BYTES);
 
