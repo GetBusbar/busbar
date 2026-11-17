@@ -138,22 +138,28 @@ pub fn writer(
         Some(value) => Some(value.encode().ok_or(InvalidFence::Transition)?),
         None => None,
     };
-    let next = next.encode().ok_or(InvalidFence::Transition)?;
+    let encoded_next = next.encode().ok_or(InvalidFence::Transition)?;
     control::replacement(
         control::Key::Writer(target),
         id.dataset,
         previous.as_ref().map(|v| v.as_slice()),
-        &next,
+        &encoded_next,
     )
     .map_err(|_| InvalidFence::Transition)?;
-    prepare(
+    PreparedCandidate::new(Candidate {
         id,
-        vec![(
-            address(control::writer_key(target).to_vec()),
-            previous.map(|v| v.to_vec()),
-            Secret::new(next.to_vec()),
-        )],
-    )
+        codec: CANDIDATE_VERSION,
+        predicates: vec![Predicate {
+            address: address(control::writer_key(target).to_vec()),
+            expected: previous.map_or(ExpectedValue::Absent, |value| {
+                ExpectedValue::Exact(Secret::new(value.to_vec()))
+            }),
+        }],
+        mutations: control::writer_put(target, current, next).ok_or(InvalidFence::Transition)?,
+        time: None,
+        result: Secret::new(Vec::new()),
+    })
+    .map_err(InvalidFence::Candidate)
 }
 
 /// Prepare a dataset generation advance. Publication waits for its Applied receipt.
