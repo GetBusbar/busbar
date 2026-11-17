@@ -39,6 +39,7 @@ use super::link::{Claim, Link};
 use super::protected::GuardedWrite;
 use super::respawn::{Respawn, Spawn};
 use super::{Attachment, ChannelMsg, ChannelReq, SessionSignals, UpstreamChannels};
+use crate::limits::output::OutputBuffer;
 use crate::plane_driver::port_channels::Demuxed;
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::{UpstreamDef, DEFAULT_IDLE_S};
@@ -318,6 +319,11 @@ impl ChannelDriver {
             }
         }
         self.check_command(req, upstream)?;
+        let source = req.budget.storage();
+        let framer =
+            Framer::new(framing, source.clone()).map_err(|_| RecordsDenied::Unavailable)?;
+        let read_buffer = OutputBuffer::with_source(&source, 16 * 1024)
+            .map_err(|_| RecordsDenied::Unavailable)?;
         let wire = match self.wires.open(upstream, req).await {
             Ok(wire) => wire,
             Err(denied) => {
@@ -367,7 +373,7 @@ impl ChannelDriver {
             stdio,
             idle,
         };
-        tokio::spawn(run.run(wire, queue));
+        tokio::spawn(run.run(wire, queue, framer, read_buffer));
         Ok(generation)
     }
 
@@ -408,7 +414,7 @@ impl ChannelDriver {
                     return Err(denied);
                 }
                 match generation.link.claim_greet(slot) {
-                    Claim::Greeter => break (true, Box::<[u8]>::default()),
+                    Claim::Greeter => break (true, bytes::Bytes::new()),
                     Claim::Ready(tail) => {
                         generation.link.pass_on();
                         break (false, tail);
@@ -530,33 +536,45 @@ struct Run {
 }
 
 impl Run {
-    async fn run(self, wire: Wire, queue: mpsc::Receiver<GuardedWrite>) {
+    async fn run(
+        self,
+        wire: Wire,
+        queue: mpsc::Receiver<GuardedWrite>,
+        mut framer: Framer,
+        mut buf: OutputBuffer,
+    ) {
         let Wire {
             mut read,
             write,
             hold,
         } = wire;
         let writer = tokio::spawn(write_loop(Arc::clone(&self.generation), write, queue));
-        let mut framer = Framer::new(self.generation.framing);
-        let mut buf = vec![0u8; 16 * 1024];
         let poll = self.idle.map_or(Duration::from_secs(3600), |idle| {
             (idle / 4).clamp(Duration::from_millis(10), Duration::from_secs(5))
         });
         let mut check = tokio::time::Instant::now() + poll;
-        let end = loop {
+        let mut discard_tail = false;
+        let end = 'reads: loop {
             if self.generation.stopping.load(Ordering::Acquire) {
                 break End::Wire;
             }
+            let loan = match buf.read_loan() {
+                Ok(loan) => loan,
+                Err(_) => break End::Wire,
+            };
             tokio::select! {
-                got = read.read(&mut buf) => match got {
+                got = read.read(loan) => match got {
                     Ok(0) | Err(_) => break End::Wire,
-                    Ok(n) => match framer.push(&buf[..n]) {
-                        Ok(messages) => {
-                            for message in messages {
-                                self.deliver(message).await;
+                    Ok(n) => {
+                        buf.truncate(n);
+                        let mut bytes = buf.as_ref();
+                        loop {
+                            match framer.feed(&mut bytes) {
+                                Ok(Some(message)) => self.deliver(message).await,
+                                Ok(None) => break,
+                                Err(_) => { discard_tail = true; break 'reads End::Wire; }
                             }
                         }
-                        Err(_) => break End::Wire,
                     },
                 },
                 () = self.generation.stop.notified() => break End::Wire,
@@ -568,8 +586,8 @@ impl Run {
                 }
             }
         };
-        if end == End::Wire {
-            if let Some(last) = framer.finish() {
+        if end == End::Wire && !discard_tail {
+            if let Ok(Some(last)) = framer.finish() {
                 self.deliver(last).await;
             }
         }
@@ -600,7 +618,7 @@ impl Run {
     }
 
     /// One framed inbound message: asks the plane where it goes and routes it.
-    async fn deliver(&self, message: Box<[u8]>) {
+    async fn deliver(&self, message: bytes::Bytes) {
         let generation = &self.generation;
         if generation.stopping.load(Ordering::Acquire) {
             return;
@@ -692,7 +710,7 @@ impl Run {
         }
     }
 
-    fn to_slot(&self, slot: u64, message: Box<[u8]>) {
+    fn to_slot(&self, slot: u64, message: bytes::Bytes) {
         let tx = self.generation.slots().get(&slot).cloned();
         match tx {
             Some(tx) => {

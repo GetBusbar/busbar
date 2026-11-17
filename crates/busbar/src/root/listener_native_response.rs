@@ -40,7 +40,7 @@ fn quote_records(status: Option<u16>, fields: &HeaderMap) -> Result<usize, Input
     Ok(extent)
 }
 
-fn encode_records(
+pub(super) fn encode_records(
     source: &StorageSource,
     status: Option<u16>,
     fields: &HeaderMap,

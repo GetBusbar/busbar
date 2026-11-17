@@ -17,6 +17,35 @@ use super::{InputError, NativeListener, OpenedConnection, ReadyInput, LIVE_RESPO
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
 
+pub(super) enum HeldRequest {
+    Preunit(busbar_kernel::audit::auditlog::NativeRefusalAudit),
+    Physical(busbar_kernel::inbound::native::PhysicalRefusal),
+}
+enum ResponseFinished {
+    Delivered(super::delivery::CompletedResponse),
+    InputRetired(Arc<StreamOwner>),
+}
+
+async fn retire_held(held: HeldRequest, receipt: NativeCarrierRetired) -> ResponseFinished {
+    match held {
+        HeldRequest::Preunit(audit) => {
+            // Existing native audit queue progress confirms this exact queued original.
+            // Cancellation of output is not confirmation and does not discard this owner.
+            audit.wait_original_confirmation().await;
+            debug_assert!(audit.is_confirmed());
+            drop(audit);
+        }
+        HeldRequest::Physical(refusal) => {
+            // No queued audit original exists, and output retirement does not resolve the
+            // failed transfer. Keep the actual decision/owner in this supervised request.
+            // A future typed NoEffect retry must move this owner, never reconstruct a guard.
+            std::future::pending::<()>().await;
+            drop(refusal);
+        }
+    }
+    ResponseFinished::InputRetired(receipt.owner)
+}
+
 /// Observation of this original carrier's completed driver and retired actual writer.
 /// Only the supervisor below constructs this; a dropped waiter or stream number cannot.
 pub(crate) struct NativeCarrierRetired {
@@ -205,6 +234,26 @@ async fn supervise(
     let mut responses = JoinSet::new();
     let mut failure = None;
     loop {
+        if driver_done {
+            for slot in &mut ingress.slots {
+                if !slot.carrier_reported {
+                    if let Some(handle) = &slot.node {
+                        if let Err(error) = handle.carrier_retired(NativeCarrierRetired {
+                            owner: slot.owner.clone(),
+                        }) {
+                            failure.get_or_insert(error);
+                        }
+                        slot.carrier_reported = true;
+                    }
+                }
+                if let Some(held) = slot.held.take() {
+                    let receipt = NativeCarrierRetired {
+                        owner: slot.owner.clone(),
+                    };
+                    responses.spawn(retire_held(held, receipt));
+                }
+            }
+        }
         if let Some(ready) = preparing
             .is_empty()
             .then(|| next_ready(&mut waiting))
@@ -226,7 +275,11 @@ async fn supervise(
         if driver_done && preparing.is_empty() && responses.is_empty() {
             break;
         }
-        let request_deadline = ingress.slots.iter().filter_map(|slot| slot.deadline).min();
+        let request_deadline = ingress
+            .slots
+            .iter()
+            .filter_map(super::InputSlot::next_deadline)
+            .min();
         tokio::select! {
             biased;
             () = async {
@@ -255,26 +308,30 @@ async fn supervise(
                     failure.get_or_insert(InputError::Invalid);
                 }
                 outcome.retire();
-                for slot in &ingress.slots {
-                    node.native_carrier_retired(NativeCarrierRetired { owner: slot.owner.clone() });
-                }
             },
             prepared = preparing.join_next(), if !preparing.is_empty() => {
                 match prepared {
-                    Some(Ok((_owner, Ok(prepared)))) => {
+                    Some(Ok((owner, Ok(prepared)))) => {
+                        if let Some(slot) = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner)) {
+                            slot.node = prepared.native_node_handle();
+                        }
                         let (feeds, node) = (feeds.clone(), node.clone());
                         responses.spawn(async move {
-                            prepared.send(&feeds, &node).await
+                            ResponseFinished::Delivered(prepared.send(&feeds, &node).await)
                         });
                     },
                     Some(Ok((owner, Err(error)))) => {
                         ingress.connection.cancel(&owner);
-                        // Before driver retirement keep this original slot available for the
-                        // actual writer-retired observation, including failed registration.
-                        if driver_done {
-                            node.native_carrier_retired(NativeCarrierRetired { owner: owner.clone() });
-                            if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
-                        }
+                        let (error, handle, held) = match error {
+                            super::data::DataPrepareError::Input(error) => (error, None, None),
+                            super::data::DataPrepareError::HeldNode { error, handle } => (error, Some(handle), None),
+                            super::data::DataPrepareError::HeldPreunit { error, audit } => (error, None, Some(HeldRequest::Preunit(audit))),
+                            super::data::DataPrepareError::HeldPhysical { error, refusal } => (error, None, Some(HeldRequest::Physical(refusal))),
+                        };
+                        let slot = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner))
+                            .expect("preparing request retains its original input slot");
+                        slot.node = handle;
+                        slot.held = held;
                         failure.get_or_insert(error);
                         input_open = false;
                         stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
@@ -289,13 +346,16 @@ async fn supervise(
             },
             completed = responses.join_next(), if !responses.is_empty() => {
                 match completed {
-                    Some(Ok(completed)) => {
+                    Some(Ok(ResponseFinished::Delivered(completed))) => {
                         if let Err(error) = ingress.retire(&completed.owner) {
                             failure.get_or_insert(error);
                             input_open = false;
                             stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                         }
                         if let Err(error) = completed.result { failure.get_or_insert(error); }
+                    },
+                    Some(Ok(ResponseFinished::InputRetired(owner))) => {
+                        if let Err(error) = ingress.retire(&owner) { failure.get_or_insert(error); }
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));

@@ -6,7 +6,7 @@
 //! Reservations here never record metrics: projection may hold recorder registry read guards.
 
 use super::process_admission::{ByteCredit, RequestLease};
-use busbar_contract::secure::SecureVec;
+use busbar_contract::secure::{SecureVec, Tail};
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use std::io;
 
@@ -144,6 +144,31 @@ pub struct OutputBuffer {
 }
 
 impl OutputBuffer {
+    /// Lend the existing charged backing to an asynchronous reader. This never grows. The caller
+    /// truncates to the actual completed read; cancellation drops/wipes the owner before its credit.
+    pub fn read_loan(&mut self) -> Result<&mut [u8], OutputError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        self.bytes.clear();
+        let capacity = self.bytes.capacity();
+        self.bytes
+            .read_into(capacity, Tail::Wipe, |_| Ok(capacity))
+            .map_err(|_| OutputError::Allocation)?
+            .map_err(|_| OutputError::Allocation)?;
+        Ok(&mut self.bytes)
+    }
+
+    /// Wipe the discarded suffix while retaining credit for the complete backing allocation.
+    pub fn truncate(&mut self, len: usize) {
+        self.bytes.truncate(len);
+    }
+
+    /// Wipe live bytes without releasing spare capacity or clearing a previous failure.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
     pub fn with_capacity(request: &RequestLease, capacity: usize) -> Result<Self, OutputError> {
         Self::with_source(&request.storage(), capacity)
     }

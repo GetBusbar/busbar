@@ -12,9 +12,9 @@ use busbar_ports::auth::{
     VerifyAnswer, VerifyOk,
 };
 use busbar_ports::PortError;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-struct Owners(AtomicUsize);
+struct Owners(AtomicUsize, AtomicBool);
 impl IssuedCredentials for Owners {
     fn lookup<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> BoxFut<'a, SecureVec> {
         panic!("an identity answer must not perform issued lookup");
@@ -28,9 +28,14 @@ impl ReplayGuard for Owners {
         _: u64,
     ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        let unknown = self.1.load(Ordering::SeqCst);
         Box::pin(async move {
             tokio::task::yield_now().await;
-            Ok(first)
+            if unknown {
+                Err(RecordsDenied::Unavailable)
+            } else {
+                Ok(first)
+            }
         })
     }
     fn claim<'a>(
@@ -178,7 +183,7 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
         not_mine: false,
         native: false,
     });
-    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let chain = NativeChain::operator(
         vec![
             instance(41, Arc::clone(&first)),
@@ -229,7 +234,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         not_mine: false,
         native: false,
     });
-    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let chain = Arc::new(NativeChain::operator(
         vec![instance(42, port.clone())],
         ChainPolicy::new(7, Vec::new()),
@@ -304,7 +309,7 @@ async fn admin_fixture() -> (
             },
         )]),
     )]);
-    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let port = Arc::new(Port {
         calls: AtomicUsize::new(0),
         not_mine: false,
@@ -739,7 +744,7 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
         not_mine: false,
         native: false,
     });
-    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let chain = Arc::new(KernelChain::operator(
         vec![instance(42, port.clone())],
         ChainPolicy::new(7, Vec::new()),
@@ -808,7 +813,7 @@ fn native_data_chain_rejects_empty_and_repeated_real_reservations() {
         not_mine: false,
         native: false,
     });
-    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
     let owners = Arc::new(AuthOwners {
         issued: owners.clone(),
         replay: owners,
@@ -854,6 +859,15 @@ async fn admin_physical_fixture_with_headers(
     native: bool,
     path: &str,
     fields: Vec<(String, Vec<u8>)>,
+) -> AdminPhysicalFixture {
+    admin_physical_fixture_with_body(native, path, fields, b"admin-body").await
+}
+
+async fn admin_physical_fixture_with_body(
+    native: bool,
+    path: &str,
+    fields: Vec<(String, Vec<u8>)>,
+    input_body: &[u8],
 ) -> AdminPhysicalFixture {
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
@@ -932,9 +946,9 @@ async fn admin_physical_fixture_with_headers(
         .unwrap(),
     );
     let lease = budget.try_enter(AdmissionClass::Operator).unwrap();
-    let credit = lease.try_reserve(b"admin-body".len()).unwrap();
+    let credit = lease.try_reserve(input_body.len()).unwrap();
     let mut body = SecureVec::with_capacity(credit.len()).unwrap();
-    body.extend(b"admin-body").unwrap();
+    body.extend(input_body).unwrap();
     let (request, stream) = connection
         .head(
             1,
@@ -1127,6 +1141,119 @@ fn physical_admin_http(
             .into_request(axum::body::Body::from(snapshot.body_bytes()));
     request.extensions_mut().insert(carrier.clone());
     (request, carrier)
+}
+
+#[tokio::test]
+async fn physical_admin_denied_walk_returns_one_sealed_refusal_owner() {
+    use busbar_kernel::inbound::native::{PhysicalAdminExecution, PhysicalRefusalCarrier};
+    use futures::FutureExt;
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture_with_body(
+        true,
+        "/api/v1/admin/info",
+        Vec::new(),
+        b"wrong credential",
+    )
+    .await;
+    let router = physical_admin_router(&f).await;
+    let (request, pending_carrier) = physical_admin_http(&mut f);
+    let mut response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 401);
+    assert!(pending_carrier.take().is_err());
+    assert!(response
+        .extensions()
+        .get::<Arc<PhysicalAdminExecution>>()
+        .is_none());
+    let carrier = response
+        .extensions_mut()
+        .remove::<PhysicalRefusalCarrier>()
+        .expect("the actual denied walk must finish its original audit before output authority");
+    let duplicate = carrier.clone();
+    let refusal = carrier.take().expect("one original output right");
+    assert!(duplicate.take().is_err());
+    assert!(Arc::ptr_eq(refusal.binding(), &f.binding));
+    assert!(f.binding.check_live().is_err());
+    assert!(f.binding.check_executing().is_err());
+    assert!(f.binding.cancelled().now_or_never().is_none());
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.owners.0.load(Ordering::SeqCst),
+        0,
+        "denied credentials never claim replay"
+    );
+    drop(refusal);
+    assert!(f.binding.cancelled().now_or_never().is_some());
+}
+
+#[tokio::test]
+async fn physical_admin_reset_during_denied_walk_cannot_mint_refusal_output() {
+    use busbar_kernel::inbound::native::PhysicalRefusalCarrier;
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture_with_body(
+        true,
+        "/api/v1/admin/info",
+        Vec::new(),
+        b"wrong credential",
+    )
+    .await;
+    let router = physical_admin_router(&f).await;
+    let (request, _) = physical_admin_http(&mut f);
+    let mut operation = Box::pin(router.oneshot(request));
+    assert!(futures::poll!(operation.as_mut()).is_pending());
+    assert!(f.connection.cancel(&f.stream));
+    let response = operation.await.unwrap();
+    assert!(response
+        .extensions()
+        .get::<PhysicalRefusalCarrier>()
+        .is_none());
+    assert!(f.binding.check_executing().is_err());
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn physical_admin_replay_duplicate_and_unknown_have_distinct_output_authority() {
+    use busbar_kernel::inbound::native::PhysicalRefusalCarrier;
+    use tower::ServiceExt;
+    for unknown in [false, true] {
+        let mut f = admin_physical_fixture_at(true, "/api/v1/admin/info").await;
+        if unknown {
+            f.owners.1.store(true, Ordering::SeqCst);
+        } else {
+            let first = admin_invocation(&f.handle, &f.app, busbar_kernel::store::now());
+            let verdict =
+                busbar_kernel::auth::admin_verdict_for(first, &axum::http::HeaderMap::new()).await;
+            verdict.claim.unwrap().complete_admin().await.unwrap();
+        }
+        let before = f.owners.0.load(Ordering::SeqCst);
+        let router = physical_admin_router(&f).await;
+        let (request, _) = physical_admin_http(&mut f);
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(
+            f.owners.0.load(Ordering::SeqCst),
+            before + 1,
+            "one original replay operation"
+        );
+        assert!(f.binding.check_executing().is_err());
+        if unknown {
+            assert_eq!(response.status(), 503);
+            assert!(
+                response
+                    .extensions()
+                    .get::<PhysicalRefusalCarrier>()
+                    .is_none(),
+                "unknown is not a duplicate refusal"
+            );
+        } else {
+            assert_eq!(response.status(), 401);
+            let refusal = response
+                .extensions()
+                .get::<PhysicalRefusalCarrier>()
+                .unwrap()
+                .take()
+                .unwrap();
+            assert!(Arc::ptr_eq(refusal.binding(), &f.binding));
+        }
+    }
 }
 
 #[tokio::test]

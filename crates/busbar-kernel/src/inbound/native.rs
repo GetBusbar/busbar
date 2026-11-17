@@ -283,6 +283,8 @@ pub struct AcceptedConnection {
     peer: Box<str>,
     local: Box<str>,
     alpn: Box<str>,
+    sni: Box<str>,
+    tls_present: bool,
     peer_certificate: SecureVec,
     // Backing fields drop first. The same facts Arc may outlive both socket and connection task.
     _credit: StorageCredit,
@@ -297,16 +299,58 @@ impl AcceptedConnection {
         alpn: &str,
         peer_certificate: &[u8],
     ) -> Result<Self, StorageDenied> {
+        Self::capture_metadata(source, peer, local, alpn, peer_certificate, None)
+    }
+
+    /// Preserve security facts from the actual socket wrapper, including TLS without SNI
+    /// or a client certificate. Request fields never supply these facts.
+    pub fn capture_secured(
+        io: &busbar_contract::transport::wire::SecuredIo,
+        peer: &str,
+        local: &str,
+    ) -> Result<Self, StorageDenied> {
+        let alpn = io
+            .tls_handshake
+            .as_ref()
+            .and_then(|info| info.alpn())
+            .map(std::str::from_utf8)
+            .transpose()
+            .map_err(|_| StorageDenied)?;
+        let sni = io
+            .tls_handshake
+            .as_ref()
+            .map(|info| info.server_name().unwrap_or(""));
+        Self::capture_metadata(
+            &io.storage,
+            peer,
+            local,
+            alpn.unwrap_or(""),
+            &io.peer_certificate,
+            sni,
+        )
+    }
+
+    fn capture_metadata(
+        source: &StorageSource,
+        peer: &str,
+        local: &str,
+        alpn: &str,
+        peer_certificate: &[u8],
+        tls_sni: Option<&str>,
+    ) -> Result<Self, StorageDenied> {
+        let sni = tls_sni.unwrap_or("");
         let bytes = peer
             .len()
             .checked_add(local.len())
             .and_then(|n| n.checked_add(alpn.len()))
+            .and_then(|n| n.checked_add(sni.len()))
             .and_then(|n| n.checked_add(peer_certificate.len()))
             .ok_or(StorageDenied)?;
         let credit = source.try_reserve(bytes)?;
         let peer = accepted_text(peer)?;
         let local = accepted_text(local)?;
         let alpn = accepted_text(alpn)?;
+        let sni = accepted_text(sni)?;
         let mut certificate =
             SecureVec::with_capacity(peer_certificate.len()).map_err(|_| StorageDenied)?;
         if certificate.capacity() > peer_certificate.len() {
@@ -319,6 +363,8 @@ impl AcceptedConnection {
             peer,
             local,
             alpn,
+            sni,
+            tls_present: tls_sni.is_some(),
             peer_certificate: certificate,
             _credit: credit,
         })
@@ -331,6 +377,12 @@ impl AcceptedConnection {
     }
     pub fn alpn(&self) -> &str {
         &self.alpn
+    }
+    pub fn sni(&self) -> &str {
+        &self.sni
+    }
+    pub fn tls_present(&self) -> bool {
+        self.tls_present
     }
     pub fn peer_certificate(&self) -> &[u8] {
         self.peer_certificate.as_slice()
@@ -1065,6 +1117,9 @@ pub struct AuthorizedPhysicalData {
     physical: PhysicalExecutionOwner,
 }
 impl AuthorizedPhysicalData {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        self.physical.binding()
+    }
     pub(crate) fn into_parts(self) -> (DataAuthorization, PhysicalExecutionOwner) {
         (self.authorization, self.physical)
     }

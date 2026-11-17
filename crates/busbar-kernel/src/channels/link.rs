@@ -34,7 +34,7 @@ pub enum Claim {
     /// This attach runs the greeting (its `ChanAttach.greet` is 1).
     Greeter,
     /// The greeting is done: the CH_READY tail the greeting session published.
-    Ready(Box<[u8]>),
+    Ready(bytes::Bytes),
     /// Another attach is greeting: wait for [`Link::greet_released`].
     Wait,
 }
@@ -49,7 +49,7 @@ pub struct Link {
     budget: LinkBudget,
     framing: Framing,
     alive: Arc<AtomicBool>,
-    ready: watch::Sender<Option<Box<[u8]>>>,
+    ready: watch::Sender<Option<bytes::Bytes>>,
     greet_free: Notify,
     greet: Mutex<Greet>,
     attached: AtomicUsize,
@@ -137,21 +137,26 @@ impl Link {
     }
 
     /// CH_READY from the greeting session: published once.
-    pub(super) fn ready(&self, tail: &[u8]) {
+    pub(super) fn ready(&self, slot: u64, tail: bytes::Bytes) -> Result<(), ChannelGone> {
+        let state = self.lock();
+        if state.ended || !state.slots.contains_key(&slot) {
+            return Err(ChannelGone);
+        }
         self.ready.send_if_modified(|cur| {
             if cur.is_some() {
                 return false;
             }
-            *cur = Some(tail.into());
+            *cur = Some(tail.clone());
             true
         });
         *self.greeting() = Greet::Done;
         self.greet_free.notify_one();
+        Ok(())
     }
 
     /// The published CH_READY tail, if the greeting session has sent it.
     #[must_use]
-    pub fn ready_tail(&self) -> Option<Box<[u8]>> {
+    pub fn ready_tail(&self) -> Option<bytes::Bytes> {
         self.ready.borrow().clone()
     }
 

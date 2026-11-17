@@ -26,6 +26,70 @@ use crate::root::durability::response_intent::{
 };
 use crate::root::plane_node::Node;
 
+/// The core's governed upgrade decision, retaining exactly the records submitted to HTTP.
+/// Construction requires the original authorized physical owner and original raw request.
+pub(crate) struct ApprovedUpgradeHead {
+    binding: Arc<RequestBinding>,
+    owner: Arc<StreamOwner>,
+    retained: Payload,
+    pending: Option<Payload>,
+}
+impl ApprovedUpgradeHead {
+    pub(super) fn prepare(
+        authorized: &busbar_kernel::inbound::native::AuthorizedPhysicalData,
+        request: &super::RetainedNativeHead,
+    ) -> Result<Self, InputError> {
+        let binding = authorized.binding();
+        if !Arc::ptr_eq(binding, request.binding())
+            || !binding.owns_stream(request.owner())
+            || binding
+                .route()
+                .line()
+                .upgrade
+                .as_deref()
+                .is_none_or(str::is_empty)
+        {
+            return Err(InputError::Delivery(ResponseStop::Integrity));
+        }
+        binding.check_live()?;
+        let source = binding.request().storage();
+        let retained =
+            super::response::encode_records(&source, Some(101), &axum::http::HeaderMap::new())?;
+        let pending =
+            Payload::copy(&source, retained.as_slice()).map_err(|_| InputError::Capacity)?;
+        Ok(Self {
+            binding: binding.clone(),
+            owner: request.owner().clone(),
+            retained,
+            pending: Some(pending),
+        })
+    }
+    pub(crate) fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+    pub(crate) fn owner(&self) -> &Arc<StreamOwner> {
+        &self.owner
+    }
+    pub(crate) fn protocol(&self) -> &str {
+        self.binding
+            .route()
+            .line()
+            .upgrade
+            .as_deref()
+            .expect("checked governed upgrade")
+    }
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.retained.as_slice()
+    }
+    pub(super) fn take_piece(&mut self) -> Option<Piece> {
+        self.pending.take().map(|bytes| Piece {
+            piece: E_HEAD,
+            arg: 0,
+            bytes,
+        })
+    }
+}
+
 /// Root chooses the explicit response class; a missing DATA execution can never become None-unit.
 pub(super) enum ResponseAuthority {
     Data(Arc<NativeDataPending>),
