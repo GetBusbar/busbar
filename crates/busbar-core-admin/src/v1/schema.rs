@@ -255,8 +255,6 @@ pub struct ConfigReloadView {
 #[derive(Serialize, JsonSchema)]
 pub struct RestartView {
     pub restarting: bool,
-    /// Whether a process supervisor was detected. False means the caller confirmed explicitly.
-    pub supervisor_detected: bool,
     pub note: String,
 }
 

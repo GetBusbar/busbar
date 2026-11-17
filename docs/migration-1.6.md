@@ -373,6 +373,8 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+`POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
+
 Instance names must be unique across configuration sections and must not collide with core
 instance IDs. Resolve a reported collision and update clients that select by instance name.
 

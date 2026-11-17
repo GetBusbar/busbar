@@ -2355,11 +2355,11 @@ pub(crate) async fn restart(
         // Keep the task-local UnitDrain identity: moving this into store_write loses it.
         audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
         crate::restart::begin_drain();
-        Ok(Outcome::Value(Ok(supervised)))
+        Ok(Outcome::Value(Ok(())))
     })
     .await;
-    let supervised = match out {
-        Ok(Ok(supervised)) => supervised,
+    match out {
+        Ok(Ok(())) => {}
         Ok(Err(condition)) => {
             audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
             let message = match condition {
@@ -2369,13 +2369,12 @@ pub(crate) async fn restart(
             return err_json_cond(&AdminError::Conflict(message.into()), condition);
         }
         Err(error) => return reject("admin.restart", "process", &actor, &error),
-    };
+    }
 
     ok_json(
         StatusCode::ACCEPTED,
         &json!({
             "restarting": true,
-            "supervisor_detected": supervised,
             "note": "draining now; in-flight requests finish first. The process exits when the \
                      drain completes and the supervisor restarts it."
         }),
@@ -3982,7 +3981,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_require_mtls, store). Drains first; the supervisor brings it back",
                 "security": [{"adminToken": []}],
                 RESPONSES_KEY: {
-                    "202": {"description": "`{restarting, supervisor_detected, note}`: draining; in-flight requests finish first"},
+                    "202": {"description": "`{restarting, note}`: draining; in-flight requests finish first"},
                 }
             }
         }),
