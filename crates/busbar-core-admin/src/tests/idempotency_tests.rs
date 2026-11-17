@@ -205,3 +205,77 @@ fn exact_request_binding_precedes_secret_replay_and_inflight() {
         Ok(Probe::Reserved(_))
     ));
 }
+
+/// #359 SEC-L6 (DES-359 r3): the key replay cache holds the once-shown answer (a live token)
+/// only in wiped custody, so the stored copy is wiped when the window evicts it and when the
+/// cache itself drops. Driven on the test thread, where `wipe_counts` observes the drop wipes.
+#[test]
+fn the_key_replay_cache_wipes_a_held_answer_on_eviction_and_drop() {
+    use busbar_contract::secure::wipe_counts;
+    let answer = br#"{"id":"vk_1","token":"bb_live_once_shown"}"#.to_vec();
+
+    let cache = crate::keys::KeyReplayCache::new();
+    match cache.probe(key("alice", "create:evicted"), 1_000) {
+        Probe::Reserved(r) => r.commit(answer.clone().into(), 1_000),
+        _ => panic!("first sighting must reserve"),
+    }
+    let (_, before) = wipe_counts();
+    assert!(matches!(
+        cache.probe(key("alice", "create:other"), 1_000 + IDEMPOTENCY_TTL_SECS),
+        Probe::Reserved(_)
+    ));
+    let (_, evicted) = wipe_counts();
+    assert!(
+        evicted > before,
+        "an answer the replay window evicts is wiped, not freed in the clear"
+    );
+
+    match cache.probe(key("alice", "create:dropped"), 5_000) {
+        Probe::Reserved(r) => r.commit(answer.into(), 5_000),
+        _ => panic!("first sighting must reserve"),
+    }
+    let (_, before) = wipe_counts();
+    drop(cache);
+    let (_, dropped) = wipe_counts();
+    assert!(
+        dropped > before,
+        "an answer still held when the cache drops is wiped"
+    );
+}
+
+/// #359 SEC-L6: a replay writes the held answer verbatim, so the retry receives exactly the bytes
+/// the first caller received, as `application/json`, with no re-parse.
+#[tokio::test]
+async fn a_key_replay_answers_the_first_answers_exact_bytes() {
+    use http_body_util::BodyExt as _;
+    let body = serde_json::json!({"id": "vk_1", "token": "bb_live_once_shown", "expires_at": 7});
+    let cache = crate::keys::KeyReplayCache::new();
+    let k = key("alice", "create:verbatim");
+    let reservation = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    let first =
+        crate::keys::commit_key_answer(Some(reservation), axum::http::StatusCode::CREATED, &body);
+    let held = match cache.probe(k, 1_001) {
+        Probe::Replay(held) => held,
+        _ => panic!("a committed answer replays"),
+    };
+    let replay = crate::keys::answer_response(axum::http::StatusCode::CREATED, &held);
+    assert_eq!(replay.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(
+        replay.headers()[axum::http::header::CONTENT_TYPE],
+        busbar_contract::protocol::APPLICATION_JSON
+    );
+    let first = first.into_body().collect().await.unwrap().to_bytes();
+    let replay = replay.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        first, replay,
+        "the replay is the first answer, byte for byte"
+    );
+    assert_eq!(&first[..], held.as_slice());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&first).unwrap(),
+        body
+    );
+}
