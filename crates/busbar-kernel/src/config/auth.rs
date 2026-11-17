@@ -77,6 +77,15 @@ pub struct IdentityProviderCfg {
     /// Core-owned provisioning policy (IF §12.29), never passed as plugin settings.
     #[serde(default, deserialize_with = "provisioning_policy")]
     pub provisioning: Option<busbar_contract::yaml::Value>,
+    /// Explicit core-issued credential kinds this instance may read; declarations never grant access.
+    #[serde(default, deserialize_with = "issued_kind_grants")]
+    pub issued_kinds: Option<Vec<Box<str>>>,
+}
+
+fn issued_kind_grants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Box<str>>>, D::Error> {
+    Vec::<Box<str>>::deserialize(deserializer).map(Some)
 }
 
 // Preserve explicit null so policy parsing refuses it instead of silently disabling the mount.
@@ -103,6 +112,8 @@ impl IdentityProviderCfg {
             insecure_transport: Option<&'a busbar_contract::yaml::Value>,
             #[serde(skip_serializing_if = "Option::is_none")]
             provisioning: Option<&'a busbar_contract::yaml::Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            issued_kinds: Option<&'a Vec<Box<str>>>,
         }
         View {
             module: &self.module,
@@ -115,6 +126,7 @@ impl IdentityProviderCfg {
             settings: self.settings.authoring(seal),
             insecure_transport: self.insecure_transport.as_ref(),
             provisioning: self.provisioning.as_ref(),
+            issued_kinds: self.issued_kinds.as_ref(),
         }
     }
 }

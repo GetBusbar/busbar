@@ -9,7 +9,7 @@
 //! There is no per-instance `limits` key and no `routes` section: an instance
 //! runs at its kind's defaults, and the plugin's settled LIMITS answer is applied in memory at its open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::json::{
@@ -25,6 +25,8 @@ use super::DeployCfg;
 /// for a config that writes none of them.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Min3Config {
+    /// Explicit issued-kind grants keyed by configured auth instance, never image name.
+    pub issued_kinds: BTreeMap<Box<str>, BTreeSet<Box<str>>>,
     /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
     pub verdict_cache: crate::auth::verdicts::VerdictPolicy,
     /// `identity-providers.<name>.provisioning`, by configured auth instance name (IF §12.29).
@@ -124,6 +126,7 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
+    let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
     let verdict_cache = kept(
         deploy
             .auth
@@ -137,10 +140,37 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         return Err(refused);
     }
     Ok(Min3Config {
+        issued_kinds,
         verdict_cache,
         provisioning,
         insecure_transport,
     })
+}
+
+fn parse_issued_kinds(
+    deploy: &DeployCfg,
+) -> Result<BTreeMap<Box<str>, BTreeSet<Box<str>>>, Vec<String>> {
+    let mut grants = BTreeMap::new();
+    let mut refused = Vec::new();
+    for (name, provider) in &deploy.identity_providers {
+        let Some(kinds) = &provider.issued_kinds else {
+            continue;
+        };
+        let mut unique = BTreeSet::new();
+        for kind in kinds {
+            if kind.trim().is_empty() || !unique.insert(kind.clone()) {
+                refused.push(format!(
+                    "identity-providers.{name}.issued_kinds: expected distinct nonblank kind names"
+                ));
+            }
+        }
+        grants.insert(name.as_str().into(), unique);
+    }
+    if refused.is_empty() {
+        Ok(grants)
+    } else {
+        Err(refused)
+    }
 }
 
 /// The parsed value, or its default with its refusals appended to `refused`.
