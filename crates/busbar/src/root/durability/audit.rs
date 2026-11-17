@@ -32,8 +32,9 @@ impl FrozenNativeAudit {
 #[derive(Clone)]
 pub(crate) struct NativeStagedAudit {
     journal: Arc<RuntimeJournal>,
-    run: Arc<StagedRun>,
-    line: LineAt,
+    pub(super) run: Arc<StagedRun>,
+    pub(super) line: LineAt,
+    pub(super) original: Option<super::notary::original::OriginalLineWitness>,
 }
 
 impl NativeStagedAudit {
@@ -71,8 +72,13 @@ impl Durability {
             return Err(DurabilityLost::observed(token, StepName::Audit));
         }
         let journal = held.journal.clone();
-        held.stage_prepared_custody(prepared, pass, token, |line, run| {
-            *slot = Some(NativeStagedAudit { journal, run, line });
+        held.stage_prepared_custody(prepared, pass, token, |line, run, original| {
+            *slot = Some(NativeStagedAudit {
+                journal,
+                run,
+                line,
+                original,
+            });
         })
     }
 
@@ -149,7 +155,7 @@ impl Durability {
         pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
     ) -> Result<(LineAt, Arc<StagedRun>), DurabilityLost> {
-        self.stage_prepared_custody(prepared, pass, token, |line, run| (line, run))
+        self.stage_prepared_custody(prepared, pass, token, |line, run, _| (line, run))
     }
 
     /// The private install callback is only an infallible move into already-owned storage.
@@ -159,10 +165,28 @@ impl Durability {
         prepared: Prepared,
         pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
-        install: impl FnOnce(LineAt, Arc<StagedRun>) -> T,
+        install: impl FnOnce(
+            LineAt,
+            Arc<StagedRun>,
+            Option<super::notary::original::OriginalLineWitness>,
+        ) -> T,
     ) -> Result<T, DurabilityLost> {
         let linked_ms = busbar_kernel::store::now_ms();
         let linked: Linked = self.record.link(prepared, linked_ms, pass);
+        let previous = linked
+            .record()
+            .seq
+            .checked_sub(1)
+            .ok_or_else(|| DurabilityLost::observed(token, StepName::Audit))?;
+        let previous_fp = if previous == 0 && linked.record().prev_hash.is_empty() {
+            Fingerprint::ZERO
+        } else {
+            Fingerprint::from_hex(&linked.record().prev_hash)
+                .ok_or_else(|| DurabilityLost::observed(token, StepName::Audit))?
+        };
+        if !self.head.original.check_link(previous, previous_fp) {
+            return Err(DurabilityLost::observed(token, StepName::Audit));
+        }
         let entry = audit_entry(linked.record())
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
         let run = self
@@ -174,14 +198,16 @@ impl Durability {
             node_seq: run.records().first().map_or(0, |r| r.node_seq),
             fp: linked.fingerprint(),
         };
-        let installed = install(line, run);
-        self.record.advance(&linked);
-        self.head.publish(&Head {
+        let head = Head {
             seq: line.chain_seq,
             node_seq: line.node_seq,
             fp: line.fp.0,
             wall_ms: linked_ms,
-        });
+        };
+        let original = self.head.original.witness(head, &run, &self.journal);
+        let installed = install(line, run, original.clone());
+        self.record.advance(&linked);
+        self.head.publish_original(head, original.as_ref());
         let record = linked.into_record();
         if record.key_id.is_some() && self.audit_signed_from.is_none() {
             self.audit_signed_from = Some(record.seq);
