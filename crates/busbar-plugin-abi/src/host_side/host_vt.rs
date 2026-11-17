@@ -162,7 +162,7 @@ fn status_of(error: Error) -> u32 {
         Error::Mismatch => status::BAD,
         Error::Invalid(_) => status::INVALID,
         Error::Unsupported(_) => status::UNAVAILABLE,
-        Error::Rng(_) => status::RNG,
+        Error::Rng(_) | Error::ProviderUnavailable => status::RNG,
         Error::SelfTest(_) => {
             HOST_FAULTS[SELF_TEST].fetch_add(1, Relaxed);
             status::RNG
@@ -735,6 +735,9 @@ mod tests {
         assert_eq!(status_of(Error::SelfTest("pct")), status::RNG);
         assert_eq!(faults(SELF_TEST), before + 1);
         assert_eq!(status_of(Error::Rng(crypto::RngError)), status::RNG);
+        let faults_before = HOST_FAULTS[SELF_TEST].load(Relaxed);
+        assert_eq!(status_of(Error::ProviderUnavailable), status::RNG);
+        assert_eq!(HOST_FAULTS[SELF_TEST].load(Relaxed), faults_before);
         assert_eq!(status_of(Error::Mismatch), status::BAD);
         assert_eq!(status_of(Error::Invalid("x")), status::INVALID);
         let refused = crypto::Unsupported {

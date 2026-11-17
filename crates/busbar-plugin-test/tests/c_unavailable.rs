@@ -212,6 +212,7 @@ path = '{lib}'
 
 [features]
 api1 = []
+api2 = []
 silent = []
 "#,
                 lib = crates

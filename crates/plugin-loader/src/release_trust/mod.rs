@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub mod wire;
+use crate::verification::{VerificationError, Verifier};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -179,6 +180,8 @@ pub struct Verified {
 /// [`Display`](std::fmt::Display) says what failed and what to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealRefusal {
+    /// Verification authority or the selected provider became unavailable.
+    Unavailable(busbar_contract::crypto::verification::Failure),
     /// A document is not one well-formed document of its kind.
     Malformed { doc: &'static str, why: String },
     /// No compiled-in root key's signature on the keys document verifies.
@@ -236,6 +239,7 @@ impl SealRefusal {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
+            SealRefusal::Unavailable(_) => "verification-unavailable",
             SealRefusal::Malformed { .. } => "release-seal-malformed",
             SealRefusal::KeysSignature { .. } => "keys-signature",
             SealRefusal::RetiredRoot { .. } => "retired-root",
@@ -258,6 +262,7 @@ impl std::fmt::Display for SealRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let t = wire::format_time;
         match self {
+            SealRefusal::Unavailable(error) => error.fmt(f),
             SealRefusal::Malformed { doc, why } => write!(
                 f,
                 "the {doc} this plugin carries cannot be read ({why}); reinstall the plugin from \
@@ -367,8 +372,12 @@ impl std::fmt::Display for SealRefusal {
 
 pub fn check_fresh(seal: Seal<'_>, now: u64) -> Result<(), SealRefusal> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
-    let keys = wire::read_keys(seal.keys)
-        .map_err(malformed("keys document"))?
+    let keys = Verifier::unrestricted()
+        .read_keys(seal.keys)
+        .map_err(|error| match error {
+            VerificationError::Refused(why) => malformed("keys document")(why),
+            VerificationError::Unavailable(error) => SealRefusal::Unavailable(error),
+        })?
         .doc;
     if keys.expires <= now {
         return Err(SealRefusal::KeysExpired {
@@ -396,14 +405,45 @@ pub fn verify_release(
     subject: Subject<'_>,
     checks: Checks,
 ) -> Result<Verified, SealRefusal> {
+    Verifier::unrestricted()
+        .verify_release(roots, seal, subject, checks)
+        .map_err(|error| match error {
+            VerificationError::Refused(refusal) => refusal,
+            VerificationError::Unavailable(error) => SealRefusal::Unavailable(error),
+        })
+}
+
+pub(crate) fn verify_release_guarded(
+    verifier: &Verifier<'_>,
+    roots: &[crate::sign::FirstPartyKey],
+    seal: Seal<'_>,
+    subject: Subject<'_>,
+    checks: Checks,
+) -> crate::verification::Result<Verified, SealRefusal> {
     let malformed = |doc: &'static str| move |why: String| SealRefusal::Malformed { doc, why };
 
-    let keys = wire::read_keys(seal.keys).map_err(malformed("keys document"))?;
+    let keys = verifier
+        .read_keys(seal.keys)
+        .map_err(|error| error.map_refused(malformed("keys document")))?;
     let mut vouching: Vec<&str> = Vec::new();
     let mut retired = None;
     for (keyid, sig) in &keys.signatures {
-        if let Some(root) = roots.iter().find(|root| wire::key_id(&root.key) == *keyid) {
-            if wire::verify(&root.key, &keys.signed_bytes, sig) {
+        let mut matched_root = None;
+        for root in roots {
+            if verifier
+                .key_id(&root.key)
+                .map_err(|error| error.map_refused(malformed("root key")))?
+                == *keyid
+            {
+                matched_root = Some(root);
+                break;
+            }
+        }
+        if let Some(root) = matched_root {
+            if verifier
+                .verify(&root.key, &keys.signed_bytes, sig)
+                .map_err(VerificationError::Unavailable)?
+            {
                 if let Some(why) = root.retired_reason() {
                     retired.get_or_insert_with(|| SealRefusal::RetiredRoot {
                         id: root.id.clone(),
@@ -416,9 +456,11 @@ pub fn verify_release(
         }
     }
     if vouching.len() < ROOT_THRESHOLD {
-        return Err(retired.unwrap_or_else(|| SealRefusal::KeysSignature {
-            roots: roots.iter().map(|r| r.id.clone()).collect(),
-        }));
+        return Err(retired
+            .unwrap_or_else(|| SealRefusal::KeysSignature {
+                roots: roots.iter().map(|r| r.id.clone()).collect(),
+            })
+            .into());
     }
     let kd = &keys.doc;
     if checks.enforce_expiry && kd.expires <= checks.now {
@@ -426,20 +468,23 @@ pub fn verify_release(
             version: kd.version,
             expires: kd.expires,
             now: checks.now,
-        });
+        }
+        .into());
     }
     if kd.version < checks.keys_floor {
         return Err(SealRefusal::KeysRollback {
             version: kd.version,
             floor: checks.keys_floor,
-        });
+        }
+        .into());
     }
     let role = match kd.roles.get(PLUGINS_ROLE) {
         Some(r) if r.threshold > 0 && !r.keyids.is_empty() => r,
         _ => {
             return Err(SealRefusal::NoRole {
                 role: PLUGINS_ROLE.to_string(),
-            });
+            }
+            .into());
         }
     };
 
@@ -448,7 +493,8 @@ pub fn verify_release(
         return Err(SealRefusal::Malformed {
             doc: "release manifest",
             why: format!("it names role '{}', not '{PLUGINS_ROLE}'", targets.doc.role),
-        });
+        }
+        .into());
     }
     let (mut signers, mut revoked): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     let mut retired_signer = None;
@@ -459,7 +505,10 @@ pub fn verify_release(
         let Some(key) = kd.keys.get(keyid) else {
             continue;
         };
-        if wire::verify(key, &targets.signed_bytes, sig) {
+        if verifier
+            .verify(key, &targets.signed_bytes, sig)
+            .map_err(VerificationError::Unavailable)?
+        {
             if let Some(why) = key.retired_reason() {
                 retired_signer.get_or_insert_with(|| SealRefusal::RetiredSigner {
                     id: keyid.clone(),
@@ -474,7 +523,7 @@ pub fn verify_release(
     }
     if (signers.len() as u64) < role.threshold {
         if let Some(retired) = retired_signer {
-            return Err(retired);
+            return Err(retired.into());
         }
         return Err(if revoked.is_empty() {
             SealRefusal::TargetsSignature {
@@ -484,7 +533,8 @@ pub fn verify_release(
             }
         } else {
             SealRefusal::SignerRevoked { keyids: revoked }
-        });
+        }
+        .into());
     }
     let td = &targets.doc;
     if checks.enforce_expiry && td.expires <= checks.now {
@@ -492,7 +542,8 @@ pub fn verify_release(
             version: td.version,
             expires: td.expires,
             now: checks.now,
-        });
+        }
+        .into());
     }
 
     for digest in [subject.sha256, subject.lib_sha256] {
@@ -500,7 +551,8 @@ pub fn verify_release(
             return Err(SealRefusal::DigestRevoked {
                 digest: digest.to_ascii_lowercase(),
                 why: why.clone(),
-            });
+            }
+            .into());
         }
     }
     let same_release: Vec<&Target> = td
@@ -512,7 +564,8 @@ pub fn verify_release(
         return Err(SealRefusal::Unlisted {
             name: subject.name.to_string(),
             version: subject.version.to_string(),
-        });
+        }
+        .into());
     }
     let Some(entry) = same_release.iter().find(|t| t.target == subject.target) else {
         return Err(SealRefusal::WrongTarget {
@@ -520,7 +573,8 @@ pub fn verify_release(
             version: subject.version.to_string(),
             target: subject.target.to_string(),
             listed: same_release.iter().map(|t| t.target.clone()).collect(),
-        });
+        }
+        .into());
     };
     if entry.sha256 != subject.sha256.to_ascii_lowercase() {
         return Err(SealRefusal::HashMismatch {
@@ -529,7 +583,8 @@ pub fn verify_release(
             target: subject.target.to_string(),
             listed: entry.sha256.clone(),
             actual: subject.sha256.to_ascii_lowercase(),
-        });
+        }
+        .into());
     }
     Ok(Verified {
         root: vouching[0].to_string(),
