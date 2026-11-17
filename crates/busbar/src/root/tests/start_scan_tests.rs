@@ -312,3 +312,84 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A plane with a manifest alias parses under the alias, at start and at a reload after its
+/// archive is gone: the running registry's recorded instance name is kept, never the identity.
+#[test]
+fn a_plane_with_a_manifest_alias_parses_under_the_alias_at_start_and_at_reload() {
+    use busbar_kernel::config::grammar::{ItemKind, Standing};
+    use busbar_kernel::config::{deploy_from_yaml_str, Grammar};
+    use std::collections::BTreeMap;
+    const FILE: &str = "aliased-plane.tar.gz";
+    const MODULE: &str = "aliased-plane-module";
+    const ALIAS: &str = "fx";
+    let dir = test_plugins::scratch("grammar-plane-alias");
+    let mut manifest = test_plugins::manifest("plane", MODULE, "busbar");
+    manifest.alias = ALIAS.into();
+    std::fs::write(
+        dir.join(FILE),
+        test_plugins::signed(&test_plugins::key(0x5b), manifest, b"the running image"),
+    )
+    .unwrap();
+    let start = scanned(&dir);
+    assert_eq!(start.loadable().len(), 1, "{:?}", start.skipped());
+    let registered = crate::root::boot::Registered {
+        planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
+        linked_styles: Vec::new(),
+        start: Some(&start),
+    };
+    let read = |registry: &crate::root::loader::PluginRegistry, admitted: bool| {
+        let by_identity: BTreeMap<String, String> = admitted
+            .then(|| (MODULE.to_owned(), ALIAS.to_owned()))
+            .into_iter()
+            .collect();
+        crate::root::boot::images::name_sections(
+            Grammar::empty().with_items(crate::root::boot::classify_against(
+                &registered,
+                registry,
+                None,
+            )),
+            &by_identity,
+            |_| None,
+        )
+    };
+    let parse = |grammar: &Grammar, key: &str| {
+        deploy_from_yaml_str(
+            &format!("{key}:\n  a: 1\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n"),
+            grammar,
+        )
+    };
+
+    let at_start = read(&start, true);
+    let item = at_start
+        .items
+        .iter()
+        .find(|item| item.kind == ItemKind::Section)
+        .expect("the plane's section is listed");
+    assert_eq!(
+        (item.name.as_str(), &item.standing),
+        (ALIAS, &Standing::Counts)
+    );
+    parse(&at_start, ALIAS).expect("the alias parses at start");
+    assert!(
+        parse(&at_start, MODULE).is_err(),
+        "the bare identity is not its name"
+    );
+
+    std::fs::remove_file(dir.join(FILE)).unwrap();
+    let removed = scanned(&dir);
+    let at_reload = read(&removed, false);
+    let item = at_reload
+        .items
+        .iter()
+        .find(|item| item.kind == ItemKind::Section)
+        .expect("the running plane is still listed");
+    assert_eq!(item.name, ALIAS, "the recorded instance name is kept");
+    parse(&at_reload, ALIAS).expect("the alias still parses at reload");
+    assert!(parse(&at_reload, MODULE).is_err());
+    assert!(
+        at_reload.item_refusal(ItemKind::Section, ALIAS).is_some(),
+        "its archive is gone, so using it is refused with the cause"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

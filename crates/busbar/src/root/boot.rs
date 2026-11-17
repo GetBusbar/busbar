@@ -1443,15 +1443,30 @@ pub(crate) fn classify_against(
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        // Named by identity here; the read's recognizer renames it to its instance name
-        // (`images::with_http_instances`, from the loader's `plane_sections`).
-        push(
-            ItemKind::Section,
-            vec![name.clone()],
-            name,
-            &image,
-            &standing,
-        );
+        // The instance name this plane was bound under at its admission: the running registry's
+        // recorded manifest alias, else its identity (r34 section 12.23 rule 1). It is never
+        // guessed: a plane the running registry does not record is judged NotAdmitted, naming the
+        // missing field.
+        let recorded = registered.start.and_then(|start| {
+            start
+                .loadable()
+                .iter()
+                .find(|row| row.manifest.kind == "plane" && row.is_module(name))
+                .map(|row| match row.manifest.alias.as_str() {
+                    "" => name.clone(),
+                    alias => alias.to_owned(),
+                })
+        });
+        let (instance, standing) = match recorded {
+            Some(instance) => (instance, standing),
+            None => (
+                name.clone(),
+                Standing::NotAdmitted(format!(
+                    "the running registry records no instance name (manifest `alias`) for plane `{name}`"
+                )),
+            ),
+        };
+        push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1494,9 +1509,13 @@ pub(crate) fn classify_against(
                 &Standing::Unregistered,
             );
         } else if let Ok(Some(_)) = row.candidate() {
+            let instance = match row.manifest.alias.as_str() {
+                "" => row.manifest.name.clone(),
+                alias => alias.to_owned(),
+            };
             push(
                 ItemKind::Section,
-                vec![row.manifest.name.clone()],
+                vec![instance],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,

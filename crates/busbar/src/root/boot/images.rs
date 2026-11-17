@@ -278,10 +278,6 @@ fn with_http_instances(
         })
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    // The recognizer's strict-parse Section items are the planes' instance names. The start-time
-    // judgement named each plane by identity; rename it, and list any admitted plane the start
-    // judgement did not (a read before start registered its planes).
-    use busbar_kernel::config::grammar::{Item, ItemKind, Standing};
     let by_identity: BTreeMap<String, String> = sections
         .names()
         .filter_map(|name| {
@@ -290,7 +286,22 @@ fn with_http_instances(
                 .map(|identity| (identity.to_owned(), name.to_owned()))
         })
         .collect();
-    let mut grammar = grammar;
+    let grammar = name_sections(grammar, &by_identity, |identity| {
+        proofs.get(identity).and_then(|proof| proof.digest)
+    });
+    Ok(grammar.with_http_instances(serving))
+}
+
+/// The recognizer's strict-parse Section items are the planes' instance names. A plane the
+/// running registry recorded keeps the instance name it was bound under, even when its archive is
+/// gone; an admitted plane is renamed to the loader's instance name, and listed when the start
+/// judgement did not list it (a read before start registered its planes).
+pub(crate) fn name_sections(
+    mut grammar: Grammar,
+    by_identity: &BTreeMap<String, String>,
+    digest_of: impl Fn(&str) -> Option<[u8; 32]>,
+) -> Grammar {
+    use busbar_kernel::config::grammar::{Item, ItemKind, Standing};
     for item in &mut grammar.items {
         if item.kind == ItemKind::Section {
             if let Some(name) = by_identity.get(&item.module) {
@@ -298,7 +309,7 @@ fn with_http_instances(
             }
         }
     }
-    for (identity, name) in &by_identity {
+    for (identity, name) in by_identity {
         if grammar
             .items
             .iter()
@@ -306,13 +317,10 @@ fn with_http_instances(
         {
             continue;
         }
-        let image = proofs
-            .get(identity)
-            .and_then(|proof| proof.digest)
-            .map_or_else(
-                || "linked".to_owned(),
-                |digest| digest.iter().map(|byte| format!("{byte:02x}")).collect(),
-            );
+        let image = digest_of(identity).map_or_else(
+            || "linked".to_owned(),
+            |digest| digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+        );
         grammar.items.push(Item {
             kind: ItemKind::Section,
             name: name.clone(),
@@ -321,5 +329,5 @@ fn with_http_instances(
             standing: Standing::Counts,
         });
     }
-    Ok(grammar.with_http_instances(serving))
+    grammar
 }
