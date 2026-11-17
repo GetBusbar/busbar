@@ -839,6 +839,14 @@ async fn admin_physical_fixture_with_native(native: bool) -> AdminPhysicalFixtur
 }
 
 async fn admin_physical_fixture_at(native: bool, path: &str) -> AdminPhysicalFixture {
+    admin_physical_fixture_with_headers(native, path, Vec::new()).await
+}
+
+async fn admin_physical_fixture_with_headers(
+    native: bool,
+    path: &str,
+    fields: Vec<(String, Vec<u8>)>,
+) -> AdminPhysicalFixture {
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -925,6 +933,7 @@ async fn admin_physical_fixture_at(native: bool, path: &str) -> AdminPhysicalFix
             busbar_kernel::inbound::Head {
                 method: "GET".into(),
                 target: path.into(),
+                fields,
                 ..Default::default()
             },
             lease,
@@ -1058,12 +1067,33 @@ async fn physical_admin_join_refuses_reset_or_expired_completed_proof() {
 }
 
 async fn physical_admin_router(f: &AdminPhysicalFixture) -> axum::Router {
+    physical_admin_router_observing(f, None).await
+}
+
+async fn physical_admin_router_observing(
+    f: &AdminPhysicalFixture,
+    header_pointer: Option<Arc<AtomicUsize>>,
+) -> axum::Router {
     use crate::root::units_admin::{AdminBinding, RefusingDispatch};
     let door = crate::root::units_admin::bound::live_admin_door(f.handle.clone());
     let mut units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), door.clone())
             .await;
-    let inner = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+    let mut inner = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
+    if let Some(observed) = header_pointer {
+        inner = inner.layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let observed = observed.clone();
+                async move {
+                    observed.store(
+                        request.headers()["x-native-custody"].as_bytes().as_ptr() as usize,
+                        Ordering::SeqCst,
+                    );
+                    next.run(request).await
+                }
+            },
+        ));
+    }
     crate::root::units_admin::mount(
         inner,
         crate::root::kernel::new_kernel(),
@@ -1083,7 +1113,7 @@ fn physical_admin_http(
 ) {
     let carrier = f.pending.take().unwrap().into_admin().unwrap();
     let snapshot = f.binding.snapshot().unwrap();
-    let request = axum::http::Request::builder()
+    let mut request = axum::http::Request::builder()
         .method(snapshot.method())
         .uri(snapshot.target())
         .extension(carrier.clone())
@@ -1091,7 +1121,37 @@ fn physical_admin_http(
         .extension(snapshot.clone())
         .body(axum::body::Body::from(snapshot.body_bytes()))
         .unwrap();
+    for (name, value) in snapshot.header_values() {
+        request.headers_mut().append(
+            axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            axum::http::HeaderValue::from_maybe_shared(value).unwrap(),
+        );
+    }
     (request, carrier)
+}
+
+#[tokio::test]
+async fn physical_admin_root_dispatch_moves_original_http_header_backing() {
+    use tower::ServiceExt;
+    let mut f = admin_physical_fixture_with_headers(
+        true,
+        "/api/v1/admin/info",
+        vec![("x-native-custody".into(), vec![b'x'; 128])],
+    )
+    .await;
+    let observed = Arc::new(AtomicUsize::new(0));
+    let router = physical_admin_router_observing(&f, Some(observed.clone())).await;
+    let (request, _) = physical_admin_http(&mut f);
+    let original = request.headers()["x-native-custody"].as_bytes().as_ptr() as usize;
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        observed.load(Ordering::SeqCst),
+        original,
+        "root live door and dispatch must borrow/transfer the original HTTP projection"
+    );
+    assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
