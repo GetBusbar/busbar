@@ -168,7 +168,7 @@ fn answer(
     answers: &mut Answers,
     called: Called,
     outs: Vec<TransportOut<'_>>,
-) -> Result<Vec<Act>, FaultReason> {
+) -> Result<Actions, FaultReason> {
     answers.start(called, Instant::now());
     for out in outs {
         answers.take(out);
@@ -446,7 +446,7 @@ impl AsyncWrite for PartialWriteThenPending {
 #[tokio::test]
 async fn partial_native_write_wipes_only_the_accepted_prefix() {
     use futures::FutureExt;
-    let mut bytes = SecureVec::from(b"abcdef".as_slice());
+    let mut bytes = Payload::from(b"abcdef".as_slice());
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
     assert!(
         write_bounded(&mut PartialWriteThenPending(false), &mut bytes, deadline)
@@ -1119,6 +1119,38 @@ fn the_listener_offers_the_server_list_and_the_dial_the_client_list() {
 
 // ---- the session task over a connection ----
 
+async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
+    conn: TransportConn,
+    first: Vec<Act>,
+    io: S,
+    wiring: Wiring,
+) -> Outcome<S> {
+    let mut answer = Actions::new(&conn.answers.source).expect("test answer owner");
+    for act in first {
+        answer.push(act).expect("test action capacity");
+    }
+    super::drive(conn, answer, io, wiring).await
+}
+
+#[test]
+fn storage_refusal_discards_complete_callback_without_charging_the_plugin() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let account = ProcessAdmission::with_limits(1, 16, 4);
+    let source = account.connection_storage(AdmissionClass::Data);
+    let mut scripted = scripted(Box::new(|_| vec![Out::Write(b"private")]), None, false);
+    scripted.conn.answers =
+        Answers::with_source(None, Instant::now(), source).expect("empty owner");
+    assert!(matches!(
+        scripted.conn.ingest(b"input", Instant::now()),
+        Err(Ended::Capacity)
+    ));
+    assert!(
+        scripted.charges.lock().unwrap().is_empty(),
+        "host allocation refusal is not plugin fault"
+    );
+    assert_eq!(account.used(), (0, 0), "no retained answer prefix escaped");
+}
+
 struct Rig {
     feeds: mpsc::Sender<Feed>,
     inbound: mpsc::Receiver<Inbound>,
@@ -1170,7 +1202,7 @@ fn head(stream: u64) -> Inbound {
     Inbound::Head {
         stream,
         end_stream: false,
-        head: SecureVec::new(),
+        head: b"".as_slice().into(),
     }
 }
 
