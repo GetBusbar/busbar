@@ -127,6 +127,30 @@ pub struct Request {
     pub mutations: Vec<Mutation>,
 }
 
+/// Non-submittable rows authorized by one trusted host-private scope. The
+/// eventual submit owner must use the original attachment and writer authority.
+/// No Record maintenance domain owns or collects these rows.
+pub struct PreparedRows {
+    store: Arc<CoreStore>,
+    authority: super::facade::WriterAuthority,
+    predicates: Vec<NativePredicate>,
+    mutations: Vec<NativeMutation>,
+}
+
+impl PreparedRows {
+    pub(crate) fn into_parts(
+        self,
+        store: &CoreStore,
+    ) -> Result<(Vec<NativePredicate>, Vec<NativeMutation>), Error> {
+        // The same attachment fixes dataset, atomic domain and native backend,
+        // in addition to the independently checked current writer authority.
+        if !std::ptr::eq(self.store.as_ref(), store) || self.authority != store.authority()? {
+            return Err(Error::Unauthorized);
+        }
+        Ok((self.predicates, self.mutations))
+    }
+}
+
 /// Continuations are bound to their original schema, prefix and generation.
 #[derive(Debug, Clone)]
 pub struct Cursor {
@@ -319,13 +343,68 @@ impl ScopedStore {
         request: &Request,
         time: Option<busbar_contract::persistence::TimeGuard>,
     ) -> Result<Outcome, Error> {
+        let (predicates, mutations) = self.native_rows(request, None)?;
+        self.owner()?
+            .conditional_native_timed(request.op_id, predicates, mutations, time)
+            .await
+    }
+
+    /// Validate addresses without claiming or submitting an operation. The
+    /// composition owner supplies its own exact attempt and durable receipt.
+    /// `request.op_id` is not an idempotency promise for this participant.
+    /// `max_bytes` bounds retained row structs/keys/values incrementally; it is
+    /// caller-owned memory backpressure, not a native permanent capacity verdict.
+    pub fn prepare_participant(
+        &self,
+        request: &Request,
+        max_bytes: usize,
+    ) -> Result<PreparedRows, Error> {
+        if !self.private || self.domain.is_some() {
+            return Err(Error::Unauthorized);
+        }
+        let authority = self.store.authority()?;
+        let (predicates, mutations) = self.native_rows(request, Some(max_bytes))?;
+        Ok(PreparedRows {
+            store: self.store.clone(),
+            authority,
+            predicates,
+            mutations,
+        })
+    }
+
+    fn native_rows(
+        &self,
+        request: &Request,
+        max_bytes: Option<usize>,
+    ) -> Result<(Vec<NativePredicate>, Vec<NativeMutation>), Error> {
         let owner = self.owner()?;
+        let mut remaining = max_bytes.unwrap_or(usize::MAX);
+        let mut charge = |bytes: usize| {
+            remaining = remaining
+                .checked_sub(bytes)
+                .ok_or(Error::Access(super::facade::AccessError::Overloaded))?;
+            Ok::<(), Error>(())
+        };
+        let seal = crate::seal::lend();
         let predicates = request
             .predicates
             .iter()
             .map(|p| {
+                charge(std::mem::size_of::<NativePredicate>())?;
+                charge(p.key.len())?;
+                if let Expected::Exact(value) = &p.expected {
+                    charge(value.expose(&seal).len())?;
+                }
+                let address = owner.address(&p.schema, &self.key(&p.key))?;
+                charge(
+                    address
+                        .key
+                        .len()
+                        .checked_sub(p.key.len())
+                        .ok_or(Error::Invalid)?,
+                )?;
                 Ok(NativePredicate {
-                    address: owner.address(&p.schema, &self.key(&p.key))?,
+                    address,
                     expected: match &p.expected {
                         Expected::Absent => ExpectedValue::Absent,
                         Expected::Exact(v) => ExpectedValue::Exact(v.clone()),
@@ -337,25 +416,49 @@ impl ScopedStore {
             .mutations
             .iter()
             .map(|m| {
+                charge(std::mem::size_of::<NativeMutation>())?;
                 Ok(match m {
-                    Mutation::Put { schema, key, value } => NativeMutation::Put {
-                        address: owner.address(schema, &self.key(key))?,
-                        value: value.clone(),
-                    },
+                    Mutation::Put { schema, key, value } => {
+                        charge(key.len())?;
+                        charge(value.expose(&seal).len())?;
+                        let address = owner.address(schema, &self.key(key))?;
+                        charge(
+                            address
+                                .key
+                                .len()
+                                .checked_sub(key.len())
+                                .ok_or(Error::Invalid)?,
+                        )?;
+                        NativeMutation::Put {
+                            address,
+                            value: value.clone(),
+                        }
+                    }
                     Mutation::Delete { schema, key } => {
-                        NativeMutation::Delete(owner.address(schema, &self.key(key))?)
+                        charge(key.len())?;
+                        let address = owner.address(schema, &self.key(key))?;
+                        charge(
+                            address
+                                .key
+                                .len()
+                                .checked_sub(key.len())
+                                .ok_or(Error::Invalid)?,
+                        )?;
+                        NativeMutation::Delete(address)
                     }
                     Mutation::DeleteRange {
                         schema,
                         prefix,
                         exact_key_length,
                     } => {
+                        charge(prefix.len())?;
                         let address = owner.address(schema, &self.key(prefix))?;
                         let overhead = address
                             .key
                             .len()
                             .checked_sub(prefix.len())
                             .ok_or(Error::Invalid)?;
+                        charge(overhead)?;
                         NativeMutation::DeleteRange {
                             namespace: NamespaceId(address.namespace),
                             prefix: address.key,
@@ -367,9 +470,7 @@ impl ScopedStore {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        owner
-            .conditional_native_timed(request.op_id, predicates, mutations, time)
-            .await
+        Ok((predicates, mutations))
     }
     /// Register this host scope with the attachment's shared maintenance owner.
     pub fn register_claims(&self, kind: &str) -> Result<(), ClaimError> {

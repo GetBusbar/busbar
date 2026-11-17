@@ -407,6 +407,30 @@ impl<'a> StoreJournal<'a> {
             }
             LogicalClaim::Busy => return Ok(WriteResult::Busy),
         };
+        let candidate = self.prepare_append(previous, runs, None)?;
+        Ok(WriteResult::Submitted(permit.submit(candidate).await?))
+    }
+
+    /// The single native append builder. Conditional owners add only sealed,
+    /// scope-authorized rows; they retain the resulting exact candidate before
+    /// submitting it and do not expose provisional originals to ordinary runs.
+    fn prepare_append(
+        &self,
+        previous: &VerifiedHead,
+        runs: &[&[Record]],
+        participant: Option<super::scoped::PreparedRows>,
+    ) -> Result<PreparedCandidate> {
+        if previous.dataset != self.store.info().dataset || previous.node != self.node {
+            return Err(Error::Authority);
+        }
+        let owner = owner_bytes(self.store.authority()?);
+        if previous.owner.as_ref().is_some_and(|old| old != &owner) {
+            return Err(Error::Authority);
+        }
+        let count = runs.iter().map(|run| run.len()).sum::<usize>();
+        if count == 0 || count > self.store.limits().scan_items {
+            return Err(Error::Budget);
+        }
         let expected = |value: &Option<Secret<Vec<u8>>>| {
             value
                 .as_ref()
@@ -456,7 +480,19 @@ impl<'a> StoreJournal<'a> {
             address: self.address(b'H', 0),
             value: head.encode(),
         });
-        let candidate = PreparedCandidate::new(Candidate {
+        if let Some(participant) = participant {
+            let (extra_predicates, extra_mutations) =
+                participant
+                    .into_parts(self.store)
+                    .map_err(|error| match error {
+                        super::scoped::Error::Unauthorized => Error::Authority,
+                        super::scoped::Error::Access(error) => Error::Access(error),
+                        _ => Error::Invalid,
+                    })?;
+            predicates.extend(extra_predicates);
+            mutations.extend(extra_mutations);
+        }
+        PreparedCandidate::new(Candidate {
             id: self.store.next_id()?,
             codec: CANDIDATE_VERSION,
             predicates,
@@ -464,8 +500,7 @@ impl<'a> StoreJournal<'a> {
             time: None,
             result: Secret::default(),
         })
-        .map_err(|_| Error::Invalid)?;
-        Ok(WriteResult::Submitted(permit.submit(candidate).await?))
+        .map_err(|_| Error::Invalid)
     }
 }
 
