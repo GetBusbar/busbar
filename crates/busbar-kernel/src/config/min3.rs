@@ -23,8 +23,10 @@ use super::DeployCfg;
 
 /// Every MIN-3 key of one config load, carried on [`RootCfg::min3`](super::RootCfg::min3). Empty (the default)
 /// for a config that writes none of them.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Min3Config {
+    /// Checked host refresh interval (IF §8.3), never a plugin setting.
+    pub unknown_key_refresh_s: u64,
     /// Explicit issued-kind grants keyed by configured auth instance, never image name.
     pub issued_kinds: BTreeMap<Box<str>, BTreeSet<Box<str>>>,
     /// The checked core-owned `auth.verdict_cache` policy (IF §12.28).
@@ -34,6 +36,18 @@ pub struct Min3Config {
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
+}
+
+impl Default for Min3Config {
+    fn default() -> Self {
+        Self {
+            unknown_key_refresh_s: 30,
+            issued_kinds: BTreeMap::new(),
+            verdict_cache: Default::default(),
+            provisioning: BTreeMap::new(),
+            insecure_transport: BTreeMap::new(),
+        }
+    }
 }
 
 /// Per-instance `insecure_transport`, by (kind section, configured instance name).
@@ -140,6 +154,11 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         return Err(refused);
     }
     Ok(Min3Config {
+        unknown_key_refresh_s: deploy
+            .auth
+            .as_ref()
+            .map_or(30, |auth| auth.unknown_key_refresh_s)
+            .max(5),
         issued_kinds,
         verdict_cache,
         provisioning,

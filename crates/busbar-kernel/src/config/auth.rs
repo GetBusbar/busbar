@@ -512,6 +512,8 @@ pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthDeployCfg {
+    /// Unknown-key refresh interval; the host enforces the adopted five-second minimum.
+    pub unknown_key_refresh_s: u64,
     /// ADMIN-API-1.6 6.2: when true, a guarded config mutation without `If-Match` is refused
     /// with 428 (`invalid_request` / `if_match_required`). Absent or false accepts its absence.
     pub require_if_match: Option<bool>,
@@ -639,6 +641,7 @@ pub struct GlobalLimitCfg {
 impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
+            unknown_key_refresh_s: 30,
             require_if_match: None,
             signing_key: None,
             chain: Vec::new(),
@@ -657,6 +660,7 @@ impl Default for AuthDeployCfg {
 /// constructed by `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub struct AuthCfg {
+    pub unknown_key_refresh_s: u64,
     /// The authored native verifier cache policy, retained for config round trips.
     pub verdict_cache: VerdictCacheCfg,
     /// Whether guarded admin mutations require `If-Match`; copied from the direct `auth` key.
@@ -698,6 +702,7 @@ impl AuthCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            unknown_key_refresh_s: u64,
             verdict_cache: &'a VerdictCacheCfg,
             require_if_match: &'a Option<bool>,
             signing_key: F0,
@@ -709,6 +714,7 @@ impl AuthCfg {
             policy: &'a AuthPolicyCfg,
         }
         View {
+            unknown_key_refresh_s: self.unknown_key_refresh_s,
             verdict_cache: &self.verdict_cache,
             require_if_match: &self.require_if_match,
             signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
@@ -737,6 +743,7 @@ impl AuthCfg {
 impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
+            unknown_key_refresh_s: 30,
             verdict_cache: VerdictCacheCfg::default(),
             require_if_match: None,
             signing_key: None,
