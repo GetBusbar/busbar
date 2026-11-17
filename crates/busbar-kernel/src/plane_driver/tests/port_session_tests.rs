@@ -25,6 +25,7 @@ use crate::plane_driver::{CallerEnd, HeadFields};
 /// One scripted sink item.
 #[derive(Clone)]
 enum It {
+    ResourceEcho,
     Respond(u16),
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
@@ -47,6 +48,15 @@ enum It {
 fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     for it in items {
         sink(match it {
+            It::ResourceEcho => {
+                PlaneOut::ResourceEcho(busbar_plugin_abi::resource_admission::DescriptorEcho {
+                    invocation: 7,
+                    generation: 8,
+                    route: 9,
+                    descriptor: 10,
+                    instance: "seat",
+                })
+            }
             It::Respond(status) => PlaneOut::Respond { status: *status },
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
@@ -93,6 +103,17 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             },
         });
     }
+}
+
+#[test]
+fn an_unadmitted_resource_echo_cannot_be_ignored_in_request() {
+    let script = Script {
+        request: vec![It::ResourceEcho],
+        ..Script::default()
+    };
+    let fx = Emitted::default();
+    assert!(Task::begin(&script, &req(), b"", &fx).is_err());
+    assert!(fx.0.lock().unwrap().is_empty());
 }
 
 /// A session handle that says when it was dropped (a drop without `end` is a cancel).
