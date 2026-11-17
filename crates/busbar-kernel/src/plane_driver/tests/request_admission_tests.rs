@@ -202,7 +202,13 @@ fn named_pool_and_direct_model_have_distinct_admitted_scope() {
             .unwrap();
         assert_eq!(receipt.domain(), &domain);
         assert_eq!(receipt.pool(), pool);
-        assert_eq!(receipt.member_grants().get(receipt.walk_key().unwrap()).unwrap(), &["seat\u{1f}m"]);
+        assert_eq!(
+            receipt
+                .member_grants()
+                .get(receipt.walk_key().unwrap())
+                .unwrap(),
+            &["seat\u{1f}m"]
+        );
         assert_ne!(
             receipt.walk_key(),
             Some(pool),
@@ -235,7 +241,11 @@ fn pool_grant_cannot_be_used_for_direct_model_or_another_pool() {
         let resolved = allocation(ctx).forward(&routes, &walk, Some(selector));
         assert_eq!(resolved.is_ok(), allowed);
         if let Ok(receipt) = resolved {
-            assert_eq!(receipt.member_grants().len(), 1, "a pool-only grant cannot leak another fallback or direct route");
+            assert_eq!(
+                receipt.member_grants().len(),
+                1,
+                "a pool-only grant cannot leak another fallback or direct route"
+            );
         }
     }
 }
