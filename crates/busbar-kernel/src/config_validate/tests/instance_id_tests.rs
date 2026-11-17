@@ -42,14 +42,6 @@ impl busbar_contract::export_calls::ExportAxis for AcceptsEveryExporter {
     ) -> Option<Vec<String>> {
         Some(Vec::new())
     }
-    fn open(
-        &self,
-        module: &str,
-        _: &str,
-        _: &busbar_contract::export_calls::PreparedExport,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls>, String> {
-        Err(format!("{module} opens nothing here"))
-    }
     fn linked(&self, _: &str) -> bool {
         true
     }

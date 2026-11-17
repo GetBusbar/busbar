@@ -14,12 +14,6 @@ pub(crate) fn first_queued(depths: &mut HashMap<String, i64>, pool: &str, depth:
     depths.insert(pool.to_owned(), depth);
 }
 
-/// `exports`: no linked or loaded export plugin answers to `module`.
-#[cold]
-pub(crate) fn no_export_plugin(module: &str) -> String {
-    format!("no `kind: export` plugin answers to '{module}'")
-}
-
 /// `observe`: a plugin's observation owner and its name, made and shared once, on its first
 /// observation.
 #[cold]
