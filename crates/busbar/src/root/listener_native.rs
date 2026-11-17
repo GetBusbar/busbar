@@ -23,8 +23,11 @@ use busbar_plugin_abi::records::{tag, Records};
 use busbar_ports::transport::{ConnIn, TransportPort};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[path = "listener_native_delivery.rs"]
+mod delivery;
 #[path = "listener_native_response.rs"]
 mod response;
+pub(crate) use delivery::RegisteredDelivery;
 
 pub(crate) type SelectNativeSlot = Arc<
     dyn Fn(&busbar_kernel::state::App, &str) -> Option<Arc<super::min3_physical::NativeSlot>>
@@ -238,6 +241,8 @@ pub(crate) enum InputError {
     Io(std::io::Error),
     Transport(busbar_core_connector::framed_stream::session::Ended),
     Body(axum::Error),
+    FinalIntent(super::durability::response_intent::FinalIntentError),
+    Delivery(busbar_contract::response_delivery::ResponseStop),
 }
 
 impl std::fmt::Display for InputError {
@@ -250,6 +255,8 @@ impl std::fmt::Display for InputError {
             Self::Io(error) => write!(f, "native carrier failed: {error}"),
             Self::Transport(reason) => write!(f, "native transport ended: {reason:?}"),
             Self::Body(error) => write!(f, "native response body failed: {error}"),
+            Self::FinalIntent(error) => write!(f, "native response intent failed: {error}"),
+            Self::Delivery(reason) => write!(f, "native response delivery stopped: {reason:?}"),
         }
     }
 }
