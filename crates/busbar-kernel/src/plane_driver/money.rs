@@ -17,6 +17,9 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
+mod native_admission;
+pub(super) mod native_attempt;
+pub use native_admission::NativeAdmissionError;
 mod observations;
 pub(crate) use observations::budget_id as observation_budget_id;
 pub use observations::{ObservationPolicy, ObservationRuntimeError};
