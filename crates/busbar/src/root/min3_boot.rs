@@ -1660,6 +1660,25 @@ pub(super) async fn finish_with_store(
     if ready.converting && startup.is_none() {
         return Err("configuration conversion requires the original admitted startup owner".into());
     }
+    // Runtime completion must use the durable reservation attached by the actual
+    // configuration transaction, before any native OPEN. Initial completion runs
+    // only after root boot has installed its confirmed NodeBook generation.
+    let generation = match (startup.is_some(), environment.as_ref()) {
+        (false, Some(environment)) => Some(
+            environment
+                .app
+                .prepared_generation()
+                .ok_or("native candidate has no reserved publication generation")?,
+        ),
+        (false, None) => return Err("serving composition has no candidate authority".into()),
+        (true, Some(environment)) => Some(
+            environment
+                .app
+                .config_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+        ),
+        (true, None) => None,
+    };
     let ServingReady {
         candidate_secrets,
         images,
@@ -1968,6 +1987,7 @@ pub(super) async fn finish_with_store(
     )
     .await?;
     let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let generation = generation.ok_or("serving composition has no generation authority")?;
     let selected_policy =
         selected_policy.ok_or("serving composition lost its captured selected policy")?;
     let owners = super::min3_admin_auth::owners(
@@ -2041,10 +2061,7 @@ pub(super) async fn finish_with_store(
         &auth_policy,
         &auth,
         environment.app,
-        environment
-            .app
-            .config_generation
-            .load(std::sync::atomic::Ordering::Acquire),
+        generation,
         request_body_cap,
         crate::root::dispatch::dispatcher().budgets().call,
         Arc::clone(&environment.app.request_id_counter),
@@ -2058,10 +2075,7 @@ pub(super) async fn finish_with_store(
         .unwrap_or_else(PoisonError::into_inner);
     let inventories = Arc::new(super::min3_physical::build_inventories(
         &seats,
-        environment
-            .app
-            .config_generation
-            .load(std::sync::atomic::Ordering::Acquire),
+        generation,
         &steps
             .inventory_inputs
             .into_inner()
