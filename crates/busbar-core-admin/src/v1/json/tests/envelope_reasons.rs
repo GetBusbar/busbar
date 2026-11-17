@@ -476,3 +476,21 @@ fn unit_reasons_cover_failures() {
         "only timed_out beside them"
     );
 }
+
+/// #307: every production error the admin surface raises is the one envelope. The provisioning
+/// guard's errors were `{"error":{"message":...}}` alone.
+#[tokio::test]
+async fn provisioning_guard_errors_carry_the_envelope() {
+    use crate::provision::GuardAdminError;
+    use axum::response::IntoResponse;
+    for (error, status, code) in [
+        (GuardAdminError::UnknownInstance, 404, "not_found"),
+        (GuardAdminError::Invalid, 400, "invalid_request"),
+        (GuardAdminError::Unavailable, 503, "unavailable"),
+    ] {
+        let (got, headers, body) = parts(error.into_response()).await;
+        assert_eq!(got.as_u16(), status, "{code}");
+        assert_envelope(got, &headers, &body, code);
+        assert_eq!(body["error"]["code"], code);
+    }
+}
