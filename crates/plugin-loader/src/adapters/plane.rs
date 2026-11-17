@@ -1709,6 +1709,9 @@ mod tests {
     #[test]
     fn resource_echo_is_unique_upstream_only_and_checked_before_delivery() {
         use busbar_plugin_abi::resource_admission::{write_echo, DescriptorEcho};
+        let describe = PlaneDescribe::default();
+        let declaration =
+            Declaration::new(0, &describe.usage_classes, &describe.attempt_classes).unwrap();
         let mut out = Reply::new();
         let echo = DescriptorEcho {
             invocation: 1,
@@ -1725,6 +1728,9 @@ mod tests {
         decode_answer(
             Call::Upstream,
             false,
+            declaration,
+            None,
+            None,
             Records::new(out.as_bytes()),
             &mut |item| {
                 if let PlaneOut::ResourceEcho(got) = item {
@@ -1738,6 +1744,9 @@ mod tests {
         assert!(decode_answer(
             Call::Request,
             false,
+            declaration,
+            None,
+            None,
             Records::new(out.as_bytes()),
             &mut |_| panic!("partial delivery")
         )
@@ -1746,6 +1755,9 @@ mod tests {
         assert!(decode_answer(
             Call::Upstream,
             false,
+            declaration,
+            None,
+            None,
             Records::new(out.as_bytes()),
             &mut |_| panic!("partial delivery")
         )
@@ -2102,21 +2114,24 @@ mod tests {
 
     #[test]
     fn emit_is_for_session_answers_and_the_tick() {
+        let describe = PlaneDescribe::default();
+        let declaration =
+            Declaration::new(0, &describe.usage_classes, &describe.attempt_classes).unwrap();
         let mut r = Reply::new();
         emit(&mut r);
         assert_eq!(run(Call::Request, &r).unwrap(), ["emit 7 line"]);
         assert!(run(Call::End, &r).is_ok());
-        assert!(admin_answer(p::ADMIN_TICK, Records::new(r.as_bytes())).is_ok());
+        assert!(admin_answer(p::ADMIN_TICK, declaration, Records::new(r.as_bytes())).is_ok());
         assert_eq!(run(Call::Rewrite, &r), Err(bad(t::EMIT)));
         assert_eq!(run(Call::Render, &r), Err(bad(t::EMIT)));
         assert_eq!(
-            admin_answer(p::ADMIN_CATALOG, Records::new(r.as_bytes())),
+            admin_answer(p::ADMIN_CATALOG, declaration, Records::new(r.as_bytes())),
             Err(bad(t::EMIT))
         );
         let mut r = Reply::new();
         r.put_fact(p::F_MODEL, 1).unwrap();
         assert_eq!(
-            admin_answer(p::ADMIN_TICK, Records::new(r.as_bytes())),
+            admin_answer(p::ADMIN_TICK, declaration, Records::new(r.as_bytes())),
             Err(bad(g::FACT))
         );
     }
