@@ -10,12 +10,16 @@ use axum::http::StatusCode;
 #[cfg(test)]
 use axum::response::Response;
 
+use busbar_contract::caps::CallId;
 #[cfg(test)]
 use busbar_contract::caps::Route;
 use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
+use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
+#[path = "plane_node/terminal_book.rs"]
+mod terminal_book;
 #[cfg(test)]
 use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, Units};
@@ -27,6 +31,10 @@ use busbar_kernel_audit::{
     OpClassId as RecordOpClass, OutcomeFacts, Subject, Usage as RecordUsage,
     UsageLine as RecordLine, What, ATTEMPT_SLOTS,
 };
+use terminal_book::TerminalBook;
+#[path = "plane_node/native.rs"]
+mod native;
+pub(crate) use native::NativeNodeHandle;
 
 #[cfg(test)]
 use crate::root::linked::node::Handed;
@@ -36,6 +44,11 @@ struct LaneNames {
     interner: Arc<Mutex<Registration>>,
     resolved: HashMap<String, LaneId>,
     consulted: u64,
+}
+
+struct ResponseIntentOwner {
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
 }
 
 /// WHEN ONE UNIT ARRIVED — one reading of the wall clock, spelled in both the units this loop asks
@@ -124,7 +137,7 @@ pub(crate) struct Node {
 
     marked: AtomicU64,
 
-    lost: Mutex<HashMap<UnitKey, Lost>>,
+    lost: Mutex<Option<TerminalBook>>,
 
     mono: AtomicU64,
 
@@ -135,6 +148,7 @@ pub(crate) struct Node {
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
+    response_intent: std::sync::OnceLock<ResponseIntentOwner>,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
@@ -168,6 +182,7 @@ impl Node {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            response_intent: std::sync::OnceLock::new(),
             sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
@@ -184,7 +199,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(HashMap::default()),
+            lost: Mutex::new(Self::fixture_terminal_book()),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
 
@@ -192,6 +207,88 @@ impl Node {
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
         }
+    }
+
+    /// Bind the actual process accounts once, before any terminal owner enters.
+    pub(crate) fn bind_terminal_storage(
+        &self,
+        process: &Arc<ProcessAdmission>,
+    ) -> Result<(), &'static str> {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if book.is_some() {
+            return Err("terminal storage already bound");
+        }
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
+        Ok(())
+    }
+
+    /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
+    #[cfg(not(test))]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        None
+    }
+
+    /// Unit fixtures use a real ProcessAdmission, as production does. A fixture asserting on
+    /// its own boot budget rebinds through `rebind_terminal_storage` before any unit enters.
+    #[cfg(test)]
+    fn fixture_terminal_book() -> Option<TerminalBook> {
+        let process = ProcessAdmission::new(0);
+        Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ))
+    }
+
+    /// Replace an empty fixture book with the fixture's own boot-bound process storage.
+    #[cfg(test)]
+    pub(crate) fn rebind_terminal_storage(&self, process: &Arc<ProcessAdmission>) {
+        let mut book = self
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            book.as_ref().is_none_or(|book| book.len() == 0),
+            "terminal storage is rebound only before any unit enters"
+        );
+        *book = Some(TerminalBook::new(
+            process.connection_storage(AdmissionClass::Data),
+            process.connection_storage(AdmissionClass::Operator),
+        ));
+    }
+
+    pub(crate) fn terminal_pending(&self) -> usize {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, TerminalBook::len)
+    }
+
+    fn reserve_terminal(
+        &self,
+        class: AdmissionClass,
+        key: UnitKey,
+        call: CallId,
+    ) -> Option<TerminalReservation<'_>> {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()?
+            .insert(class, key, RetainedUnit::reserved(call))
+            .ok()?;
+        Some(TerminalReservation {
+            node: self,
+            class,
+            key,
+            call,
+            active: true,
+        })
     }
 
     /// A node whose arrivals are read from `clock`.
@@ -231,7 +328,20 @@ impl Node {
     }
 
     pub(crate) fn arrived(&self) -> Arrived {
-        Arrived::at(self.clock.now(), self.mono.fetch_add(1, Ordering::AcqRel))
+        self.checked_arrived()
+            .expect("node monotonic clock exhausted")
+    }
+
+    /// Response finalization can refuse exhausted identity before publishing any output.
+    /// All node stamps share this allocator, so an ordinary arrival cannot wrap it first.
+    pub(crate) fn checked_arrived(&self) -> Result<Arrived, &'static str> {
+        let mono = self
+            .mono
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| "node monotonic clock exhausted")?;
+        Ok(Arrived::at(self.clock.now(), mono))
     }
 
     #[cfg(test)]
@@ -258,6 +368,65 @@ impl Node {
         let _ = self.lane.set(journal);
         let _ = self.sealing.set(sealing);
         let _ = self.book.set(book);
+    }
+
+    pub(crate) fn bind_response_intents(
+        &self,
+        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
+    ) -> Result<(), &'static str> {
+        let book = self
+            .book
+            .get()
+            .ok_or("response intent node book unavailable")?
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self
+            .lane
+            .get()
+            .is_some_and(|journal| Arc::ptr_eq(journal, service.journal()))
+            || !service.journal().is_bound_to(&store)
+            || book.incarnation != service.incarnation()
+            || book.record.node() != service.journal().node()
+        {
+            return Err("response intent owner differs from the admitted node journal");
+        }
+        self.response_intent
+            .set(ResponseIntentOwner { store, service })
+            .map_err(|_| "response intent owner already installed")
+    }
+
+    pub(crate) fn response_intents(
+        &self,
+    ) -> Option<Arc<crate::root::durability::response_intent::ResponseIntentService>> {
+        self.response_intent
+            .get()
+            .map(|owner| Arc::clone(&owner.service))
+    }
+
+    pub(crate) fn response_intent_stamp(
+        &self,
+        journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    ) -> Result<busbar_kernel_audit::response_intent::ResponseIntentStamp, String> {
+        let owner = self
+            .response_intent
+            .get()
+            .ok_or("response intent owner unavailable")?;
+        if !Arc::ptr_eq(journal, owner.service.journal()) || !journal.is_bound_to(&owner.store) {
+            return Err("response intent journal differs from the retained attachment".into());
+        }
+        let authority = owner
+            .store
+            .authority()
+            .map_err(|error| format!("response intent writer: {error:?}"))?;
+        let history = crate::root::kernel::ROOT_CARD.pin();
+        let captured = self.checked_arrived()?;
+        Ok(busbar_kernel_audit::response_intent::ResponseIntentStamp {
+            lease_epoch: authority.writer_epoch,
+            policy_epoch: policy_in_force(history.as_ref(), captured.ms()),
+            wall: captured.secs(),
+            mono: captured.mono(),
+        })
     }
 
     /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
@@ -383,6 +552,87 @@ impl Node {
         )
     }
 
+    /// Freeze a funded copy while the original native entry still owns its facts and pass.
+    /// This performs no journal stage, chain advance, receipt transfer or source removal.
+    pub(super) fn freeze_native_inputs(
+        &self,
+        terminal: &busbar_kernel::teller::native_data_audit::NativeAuditTerminal,
+        open: &OpenUnit,
+        // The original money owner's transferred report, never a re-derived bill.
+        report: Option<&Report>,
+    ) -> Result<AuditInputs, &'static str> {
+        let context = terminal.context();
+        let outcome = terminal.outcome();
+        let facts = terminal.facts();
+        if terminal.admission().is_some() && report.is_none() {
+            return Err("native terminal has no original monetary report");
+        }
+        let ran = &open.sealing.ran;
+        let (attempts, attempts_total) = ran.attempts(outcome);
+        let refused = matches!(outcome, Outcome::Refused(..));
+        let card = open.history.as_ref();
+        let served = report.map(|report| report.lane.as_str());
+        Ok(AuditInputs {
+            subject: Subject::PrincipalId(open.principal.as_str().to_owned()),
+            what: What {
+                unit_key: context.key,
+                incarnation: 0,
+                op_class: RecordOpClass::new(facts.op_class.as_str()),
+                destination: ran.destination(served).map(str::to_owned),
+                parent: match context.origin {
+                    OriginKind::Nested { parent } => Some(parent),
+                    _ => None,
+                },
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: open.arrived.secs(),
+            mono: open.arrived.mono(),
+            origin: self.kernel.origin(context.origin),
+            outcome: OutcomeFacts {
+                unit_end: outcome,
+                step: outcome.step(),
+                finish: audit_finish(facts.finish),
+                hook_failed: ran.hooks.iter().any(|hook| hook.failed),
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: if refused {
+                    Vec::new()
+                } else {
+                    report.map(report_lines).unwrap_or_default()
+                },
+                tier_bp: 10_000,
+                fee_count: if refused {
+                    0
+                } else {
+                    report.map_or(0, |report| report.fee_count)
+                },
+                rate_card_version: card_in_force(card, open.arrived.ms()),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card, open.arrived.ms()),
+                hooks_applied: ran.hooks.clone(),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                billing: None,
+                wall_ms: open.arrived.ms(),
+                attribution: report.map_or_else(String::new, |report| report.attribution.clone()),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                status: ran.measured.status,
+                ttft_us: ran.measured.ttft_us,
+                total_us: ran.measured.total_us,
+                attempts,
+                attempts_total,
+                records: ran.records.clone(),
+            },
+        })
+    }
+
     pub(crate) fn sweep(&self, now: Arrived) -> usize {
         if self.marked.swap(0, Ordering::AcqRel) == 0 {
             return 0;
@@ -401,13 +651,29 @@ impl Node {
             return false;
         }
 
-        let Some(lost) = self
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&slot.key())
-        else {
-            return false;
+        let lost = {
+            let mut book = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(book) = book.as_mut() else {
+                return false;
+            };
+            let class = [AdmissionClass::Data, AdmissionClass::Operator].into_iter().find(|class| {
+                book.get(*class, slot.key()).is_some_and(|entry| {
+                    matches!(&entry.state, RetainedState::Abandoned(lost) if Arc::ptr_eq(&lost.slot, slot))
+                })
+            });
+            let Some(class) = class else {
+                return false;
+            };
+            let Some(entry) = book.remove(class, slot.key()) else {
+                return false;
+            };
+            let RetainedState::Abandoned(lost) = entry.state else {
+                unreachable!("validated original abandoned owner")
+            };
+            lost
         };
         let verdict = busbar_kernel::tick::sweep(
             slot,
@@ -563,6 +829,7 @@ impl Node {
         audit_kind: OpClassId,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
         timing: Option<Timing<'_>>,
+        request: &RequestLease,
     ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
@@ -574,6 +841,8 @@ impl Node {
             }
             return None;
         }
+        let call = self.kernel.next_call();
+        let reservation = self.reserve_terminal(request.class(), key, call)?;
         if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
@@ -585,7 +854,6 @@ impl Node {
         );
         let meter = Arc::new(AccrualMeter::new());
         let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
-        let call = self.kernel.next_call();
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -609,6 +877,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            reservation,
             post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
@@ -705,6 +974,7 @@ impl Node {
         history: Option<crate::root::kernel::PinnedHistory>,
         audit_kind: OpClassId,
         admission: Option<&busbar_kernel::inbound::RequestAdmission>,
+        request: &RequestLease,
     ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'n>)> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
@@ -716,13 +986,14 @@ impl Node {
             }
             return None;
         }
+        let call = self.kernel.next_call();
+        let reservation = self.reserve_terminal(request.class(), key, call)?;
         if admission.is_some_and(|admission| !admission.begin_execution()) {
             return None;
         }
         post.open(key, principal.clone(), arrived, history);
         post.checkpoint_identity(key, audit_kind, OriginKind::Client);
         let meter = Arc::new(AccrualMeter::new());
-        let call = self.kernel.next_call();
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -746,6 +1017,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            reservation,
             post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
@@ -918,6 +1190,9 @@ impl Node {
         let (units, route, finish) = build((self.resolver(), arrived.secs()));
 
         let call = self.kernel.next_call();
+        let Some(reservation) = self.reserve_terminal(AdmissionClass::Data, key, call) else {
+            return unavailable(proto);
+        };
         let hold = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.door,
@@ -940,6 +1215,7 @@ impl Node {
             Ok(slot) => {
                 let mut occupied = Occupied {
                     node: self,
+                    reservation,
                     post: None,
                     slot: Arc::clone(&slot),
                     arrived,
@@ -1091,7 +1367,7 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    fn of((usage, fee_count, lane, attribution): Reported) -> Self {
+    fn of((usage, fee_count, lane, attribution): crate::root::linked::node::LegacyReport) -> Self {
         Report {
             usage,
             fee_count,
@@ -1147,7 +1423,11 @@ impl LateAccrual {
 
         let completed = outcome.is_some_and(Outcome::is_completed);
         // A report that bills nothing is not sealed as usage, but its attribution still is.
-        let (report, attribution) = match late().map(Report::of) {
+        let reported = late();
+        if matches!(reported, Some(Reported::Partitioned)) {
+            return preview_confirmation(custody, outcome, seal);
+        }
+        let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
             Some(report)
                 if completed
                     || report.fee_count > 0
@@ -1321,6 +1601,7 @@ impl Drop for LateBody {
 
 struct Occupied<'n> {
     node: &'n Node,
+    reservation: TerminalReservation<'n>,
 
     post: Option<&'n NodeEndPost>,
     slot: Arc<busbar_kernel::inflight::UnitSlot>,
@@ -1348,7 +1629,53 @@ impl<R: RouteAwait> Drop for ConfirmingUnit<'_, R> {
     }
 }
 
+pub(super) struct RetainedUnit {
+    call: CallId,
+    state: RetainedState,
+}
+impl RetainedUnit {
+    fn reserved(call: CallId) -> Self {
+        Self {
+            call,
+            state: RetainedState::Reserved,
+        }
+    }
+}
+enum RetainedState {
+    Reserved,
+    Abandoned(Lost),
+    Native(native::NativeUnit),
+}
+struct TerminalReservation<'n> {
+    node: &'n Node,
+    class: AdmissionClass,
+    key: UnitKey,
+    call: CallId,
+    active: bool,
+}
+impl Drop for TerminalReservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut book = self
+            .node
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(book) = book.as_mut() else {
+            return;
+        };
+        if book.get(self.class, self.key).is_some_and(|unit| {
+            unit.call == self.call && matches!(unit.state, RetainedState::Reserved)
+        }) {
+            book.remove(self.class, self.key);
+        }
+    }
+}
+
 struct Lost {
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
     arrived: Arrived,
 
     op_class: OpClassId,
@@ -1421,7 +1748,10 @@ impl SessionSlot<'_> {
         let mut open = post.take(self.key);
         if let Some(open) = open.as_mut() {
             if open.sealing.report.is_none() {
-                open.sealing.report = self.money_report().map(Report::of);
+                open.sealing.report = self
+                    .money_report()
+                    .and_then(Reported::legacy)
+                    .map(Report::of);
             }
         }
         let outcome = override_outcome
@@ -1480,6 +1810,7 @@ impl Drop for SessionSlot<'_> {
             if let Some(post) = self.occupied.post {
                 let evidence = self
                     .money_report()
+                    .and_then(Reported::legacy)
                     .map(|(_, fee_units, _, _)| Evidence {
                         fee_units,
                         ..Evidence::default()
@@ -1509,19 +1840,27 @@ impl Drop for Occupied<'_> {
         if self.reached_end {
             self.node.inflight.remove(self.slot.key());
         } else {
-            let open = self.post.and_then(|post| post.take(self.slot.key()));
-            self.node
+            let mut book = self
+                .node
                 .lost
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    self.slot.key(),
-                    Lost {
-                        arrived: self.arrived,
-                        op_class: self.op_class,
-                        open,
-                    },
-                );
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = book
+                .as_mut()
+                .and_then(|book| book.get_mut(self.reservation.class, self.reservation.key))
+                .expect("effects require an installed terminal reservation");
+            assert!(
+                entry.call == self.reservation.call
+                    && matches!(entry.state, RetainedState::Reserved)
+            );
+            let open = self.post.and_then(|post| post.take(self.slot.key()));
+            entry.state = RetainedState::Abandoned(Lost {
+                slot: Arc::clone(&self.slot),
+                arrived: self.arrived,
+                op_class: self.op_class,
+                open,
+            });
+            self.reservation.active = false;
             self.slot.mark();
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
@@ -1647,7 +1986,7 @@ pub(in crate::root) struct OpenUnit {
 }
 
 pub(crate) struct NodeEndPost {
-    pub(in crate::root) node: Arc<Node>,
+    pub(in crate::root) node: std::sync::Weak<Node>,
     pub(in crate::root) open: Vec<Mutex<OpenUnits>>,
 }
 
@@ -1679,8 +2018,8 @@ impl NodeEndPost {
     }
 
     #[must_use]
-    pub(crate) fn node(&self) -> &Arc<Node> {
-        &self.node
+    pub(crate) fn node(&self) -> Option<Arc<Node>> {
+        self.node.upgrade()
     }
 
     pub(crate) fn open(
@@ -1761,7 +2100,7 @@ impl NodeEndPost {
 
     pub(crate) fn reported(&self, key: UnitKey, report: Option<Reported>) {
         if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.report = report.map(Report::of);
+            open.sealing.report = report.and_then(Reported::legacy).map(Report::of);
         }
     }
 
@@ -1849,6 +2188,8 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 /// very bytes that record reads back.
 #[derive(serde::Serialize)]
 struct RunningAuditFacts<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_identity: Option<crate::root::durability::SelectedAuditIdentity>,
     incarnation: u64,
     principal: &'a str,
     op_class: &'a str,
@@ -1885,13 +2226,22 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     fn checkpoint_facts(&self, key: UnitKey) -> Option<Vec<u8>> {
         let all = self.lock(key);
         let open = all.get(&key)?;
-        let book = self
-            .node
-            .book
-            .get()?
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let node = self.node()?;
+        let book = node.book.get()?.lock().unwrap_or_else(|p| p.into_inner());
         let captured = RunningAuditFacts {
+            selected_identity: Some(crate::root::durability::SelectedAuditIdentity {
+                node: book.record.node(),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                user: open.sealing.ran.records.user.clone(),
+                labels: open
+                    .sealing
+                    .ran
+                    .records
+                    .labels
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.clone()))
+                    .collect(),
+            }),
             incarnation: book.incarnation,
             principal: open.principal.as_str(),
             op_class: open.checkpoint_class?.as_str(),
@@ -1913,6 +2263,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     }
 
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
+        // Failed upgrade is permanent forced destruction of the original Node, not a
+        // retry against a replacement Node and never a successful terminal acknowledgement.
+        let Some(node) = self.node() else {
+            return;
+        };
         let facts = self.lock(ctx.key).remove(&ctx.key);
         if let Some(open) = facts {
             let parent = match ctx.origin {
@@ -1921,8 +2276,8 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
             };
             let seal = open
                 .sealing
-                .into_seal(ctx.key, self.node.kernel.origin(ctx.origin), parent);
-            self.node.seal_end(
+                .into_seal(ctx.key, node.kernel.origin(ctx.origin), parent);
+            node.seal_end(
                 &open.principal,
                 open.arrived,
                 open.history.as_ref(),
@@ -2138,8 +2493,41 @@ impl Accruing {
 // task runs the confirmation itself; a confirmation dropped unfinished (never
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
+fn preview_confirmation(
+    custody: Arc<crate::root::serve::TicketCustody>,
+    outcome: Option<Outcome>,
+    seal: Option<Sealing>,
+) -> Option<TerminalConfirmation> {
+    let (Some(seal), Some(_)) = (seal, outcome) else {
+        return None;
+    };
+    // A partitioned usage preview is never terminal custody: refuse the seal and fail the ticket.
+    custody.terminal(seal.seal.key, false);
+    Some(TerminalConfirmation {
+        inner: Err("selected audit requires final reader custody, not a usage preview".into()),
+    })
+}
+
 struct TerminalConfirmation {
-    inner: Result<Option<Confirm>, String>,
+    inner: Result<Option<TerminalTask>, String>,
+}
+
+enum TerminalTask {
+    Staged(Confirm),
+}
+
+impl TerminalTask {
+    async fn run(&mut self) -> Result<(), String> {
+        match self {
+            Self::Staged(confirm) => confirm.run().await,
+        }
+    }
+
+    fn failed(&self) {
+        match self {
+            Self::Staged(confirm) => confirm.custody.terminal(confirm.key, false),
+        }
+    }
 }
 
 struct Confirm {
@@ -2150,7 +2538,7 @@ struct Confirm {
 }
 
 impl Confirm {
-    async fn run(self) -> Result<(), String> {
+    async fn run(&mut self) -> Result<(), String> {
         let confirmed = self.audit.journal.confirm(&self.audit.run).await;
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
@@ -2169,31 +2557,30 @@ impl TerminalConfirmation {
     }
 
     async fn wait(mut self) -> Result<(), String> {
-        let Some(inner) = self.inner.as_ref().map_err(Clone::clone)? else {
+        let Some(inner) = self.inner.as_mut().map_err(|error| error.clone())? else {
             return Ok(());
         };
-        let confirmed = inner.audit.journal.confirm(&inner.audit.run).await;
-        if confirmed.is_ok() {
-            crate::root::durability::records_pulse().notify_waiters();
+        let confirmed = inner.run().await;
+        if confirmed.is_err() {
+            inner.failed();
         }
-        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
-            return Ok(());
-        };
-        inner
-            .custody
-            .terminal(inner.key, inner.completed && confirmed.is_ok());
-        confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
+        self.inner = Ok(None);
+        confirmed
     }
 }
 
 impl Drop for TerminalConfirmation {
     fn drop(&mut self) {
-        let Ok(Some(inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
+        let Ok(Some(mut inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(inner.run())),
-            Err(_) => inner.custody.terminal(inner.key, false),
+            Ok(runtime) => drop(runtime.spawn(async move {
+                if inner.run().await.is_err() {
+                    inner.failed();
+                }
+            })),
+            Err(_) => inner.failed(),
         }
     }
 }
@@ -2221,12 +2608,12 @@ impl StagedAudit {
             return None;
         }
         Some(TerminalConfirmation {
-            inner: Ok(Some(Confirm {
+            inner: Ok(Some(TerminalTask::Staged(Confirm {
                 audit: self,
                 custody,
                 key,
                 completed,
-            })),
+            }))),
         })
     }
 }
@@ -2352,7 +2739,7 @@ fn attempts_recorded_on_failover() {
 impl Sealing {
     #[expect(
         clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
+        reason = "the legacy call retains its established unit ownership"
     )]
     fn seal(
         self,
@@ -2367,6 +2754,41 @@ impl Sealing {
         fee_count: u32,
         served: Option<&str>,
         attribution: String,
+    ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
+        self.seal_billing(
+            book,
+            line,
+            token,
+            principal,
+            arrived,
+            card,
+            outcome,
+            lines,
+            fee_count,
+            served,
+            attribution,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the unit's parts are handed down unbundled from its one owner"
+    )]
+    fn seal_billing(
+        self,
+        book: &Arc<Mutex<crate::root::durability::Durability>>,
+        line: Option<crate::root::durability::LineIdentity>,
+        token: &Grant<busbar_contract::caps::DurableWrite>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
+        outcome: Outcome,
+        lines: Vec<RecordLine>,
+        fee_count: u32,
+        served: Option<&str>,
+        attribution: String,
+        billing: Option<busbar_kernel_audit::record::billing::PartitionedBillingV1>,
     ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let (attempts, attempts_total) = ran.attempts(outcome);
@@ -2403,9 +2825,17 @@ impl Sealing {
                 stale_policy: false,
             },
             usage: RecordUsage {
-                lines: if refused { Vec::new() } else { lines },
+                lines: if refused || billing.is_some() {
+                    Vec::new()
+                } else {
+                    lines
+                },
                 tier_bp: 10_000,
-                fee_count: if refused { 0 } else { fee_count },
+                fee_count: billing
+                    .as_ref()
+                    .map_or(if refused { 0 } else { fee_count }, |billing| {
+                        billing.fee_count()
+                    }),
                 rate_card_version: card_in_force(card, arrived.ms()),
                 bucket_chain_ref: String::new(),
             },
@@ -2414,6 +2844,7 @@ impl Sealing {
             // Recipe v7 (ADMIN-API-1.6 §3.2): copies of what the unit already holds, and the one
             // attribution text its report built.
             unit: busbar_kernel_audit::UnitFacts {
+                billing,
                 wall_ms: arrived.ms(),
                 attribution,
                 boot_nonce: busbar_kernel::snapshot::boot_nonce(),
@@ -2576,6 +3007,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         },
     ];
     let borrowed = RunningAuditFacts {
+        selected_identity: None,
         incarnation: 7,
         principal: "key-1",
         op_class: "chat",
@@ -2589,6 +3021,7 @@ fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
         hooks: HookFacts(&hooks),
     };
     let owned = crate::root::durability::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "key-1".to_owned(),
         op_class: "chat".to_owned(),

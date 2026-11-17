@@ -16,6 +16,9 @@ impl NodeEndPost {
         let open = (0..busbar_kernel::inflight::SHARDS)
             .map(|_| Mutex::new(HashMap::default()))
             .collect();
-        NodeEndPost { node, open }
+        NodeEndPost {
+            node: Arc::downgrade(&node),
+            open,
+        }
     }
 }

@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json;
+use busbar_contract::json::JsonValueMutTrait as _;
 
 fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -84,7 +86,7 @@ fn hook_needs_is_signed_and_defaults_to_none() {
     assert!(!n.prompt.wants_read());
 
     let json = r#"{"prompt":"rw","user":"ro"}"#;
-    let parsed: HookNeeds = serde_json::from_str(json).unwrap();
+    let parsed: HookNeeds = json::parse_str(json).unwrap();
     assert!(parsed.declares_any());
     assert!(parsed.prompt.wants_read() && parsed.prompt.wants_rewrite());
     assert!(parsed.user.wants_read() && !parsed.user.wants_rewrite());
@@ -113,10 +115,22 @@ fn hook_needs_is_signed_and_defaults_to_none() {
     let mut tampered = signed.clone();
     tampered.needs = parsed;
     assert!(
-        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            b"lib",
+            &key.verifying_key()
+        )
+        .is_err(),
         "altering the declared intent after signing must fail verification"
     );
-    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert!(signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        b"lib",
+        &key.verifying_key()
+    )
+    .is_ok());
 }
 
 fn abi(_kind: &str) -> Option<u32> {
@@ -278,8 +292,8 @@ fn first_party_signed_is_trusted_with_zero_config() {
         artifact,
     );
 
-    let j = serde_json::to_string(&m).unwrap();
-    assert_eq!(serde_json::from_str::<Manifest>(&j).unwrap(), m);
+    let j = json::to_string(&m).unwrap();
+    assert_eq!(json::parse_str::<Manifest>(&j).unwrap(), m);
 
     let pol = policy(Some(&release), &[], false);
     assert_eq!(
@@ -703,11 +717,11 @@ fn structural_validation_names_each_failure() {
 fn unknown_manifest_field_fails_parse() {
     let key = test_key(1);
     let m = sign(&key, manifest("acme-p", "p", "acme"), b"bytes");
-    let mut v = serde_json::to_value(&m).unwrap();
+    let mut v = json::to_value(&m).unwrap();
     v.as_object_mut()
         .unwrap()
-        .insert("surprise".into(), serde_json::json!(true));
-    assert!(serde_json::from_value::<Manifest>(v).is_err());
+        .insert("surprise", json::json!(true));
+    assert!(json::from_value::<Manifest>(&v).is_err());
 }
 
 #[test]
@@ -804,18 +818,6 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
 }
 
 #[test]
-fn rejected_display_carries_the_reason() {
-    let r = Rejected::new(
-        RejectKind::Unsigned,
-        "manifest carries no signature".to_string(),
-    );
-    assert_eq!(
-        r.to_string(),
-        "plugin rejected: manifest carries no signature"
-    );
-}
-
-#[test]
 fn validate_structure_accepts_only_the_one_abi_version_of_the_kind() {
     // LINT-RULES R21: a binary loads exactly one version per kind, never a range.
     fn abi_2(_kind: &str) -> Option<u32> {
@@ -869,78 +871,6 @@ fn kind_restart_default_matches_binding_lifecycle() {
     assert!(kind_restart_default("widget"));
 }
 
-fn trusted_first_party() -> Verdict {
-    Verdict::Trusted {
-        publisher: FIRST_PARTY_PUBLISHER.to_string(),
-        first_party: true,
-    }
-}
-
-fn trusted_third_party() -> Verdict {
-    Verdict::Trusted {
-        publisher: "acme".to_string(),
-        first_party: false,
-    }
-}
-
-fn allowed_unsigned() -> Verdict {
-    Verdict::Allowed {
-        reason: "dev opt-in".to_string(),
-        allow: AllowReason::Untrusted,
-    }
-}
-
-#[test]
-fn restart_override_to_true_is_always_honored() {
-    for verdict in [
-        trusted_first_party(),
-        trusted_third_party(),
-        allowed_unsigned(),
-    ] {
-        assert!(effective_restart_required("hook", Some(true), &verdict));
-        assert!(effective_restart_required("auth", Some(true), &verdict));
-    }
-}
-
-#[test]
-fn restart_override_to_false_requires_trusted_first_party() {
-    assert!(
-        !effective_restart_required("store", Some(false), &trusted_first_party()),
-        "trusted first-party clears the gate: the false override is honored"
-    );
-    assert!(
-        effective_restart_required("store", Some(false), &trusted_third_party()),
-        "trusted THIRD-PARTY does not clear the gate: kind default (true) is enforced"
-    );
-    assert!(
-        effective_restart_required("secret", Some(false), &allowed_unsigned()),
-        "an unsigned/allowed artifact does not clear the gate: kind default enforced"
-    );
-}
-
-#[test]
-fn restart_no_override_uses_kind_default_regardless_of_trust() {
-    assert!(effective_restart_required(
-        "store",
-        None,
-        &allowed_unsigned()
-    ));
-    assert!(!effective_restart_required(
-        "hook",
-        None,
-        &allowed_unsigned()
-    ));
-}
-
-#[test]
-fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditionally() {
-    assert!(!effective_restart_required(
-        "hook",
-        Some(false),
-        &allowed_unsigned()
-    ));
-}
-
 #[test]
 fn manifest_with_no_host_field_parses_and_loads() {
     let key = test_key(1);
@@ -958,7 +888,8 @@ fn manifest_with_no_host_field_parses_and_loads() {
             "homepage": "",
             "license": ""
         }"#;
-    let m: Manifest = serde_json::from_str(json).expect("manifest with no host field parses");
+    let m: Manifest =
+        busbar_contract::json::parse_str(json).expect("manifest with no host field parses");
     assert_eq!(m.host, None, "absent host deserializes to None");
     let m = sign(&key, m, artifact);
     validate_structure(&m, artifact, &abi, HOST_IDENTITY)
@@ -1110,7 +1041,7 @@ fn signature_does_not_verify_under_a_weak_key() {
     forged[0] = 1;
     m.signature = hex::encode(forged);
     assert!(
-        signature_ok(&m, artifact, &key).is_err(),
+        signature_ok_guarded(&Verifier::unrestricted(), &m, artifact, &key).is_err(),
         "a weak-key universal forgery must not verify"
     );
 }
@@ -1121,13 +1052,13 @@ fn a_contract_abi_range_is_never_carried_and_a_signed_manifest_stating_one_is_re
         .expect("a declares file's stale range is read and dropped");
     assert_eq!(d, Declares::default());
     assert!(d.is_empty());
-    assert_eq!(serde_json::to_value(&d).unwrap(), serde_json::json!({}));
+    assert_eq!(json::to_value(&d).unwrap(), json::json!({}));
 
     let m = manifest("busbar-store-ranged", "ranged", FIRST_PARTY_PUBLISHER);
-    let mut wire = serde_json::to_value(&m).expect("encodes");
-    wire["declares"] = serde_json::json!({ "contract_abi": { "min": 3, "max": 4 } });
+    let mut wire = json::to_value(&m).expect("encodes");
+    wire["declares"] = json::json!({ "contract_abi": { "min": 3, "max": 4 } });
     assert!(
-        serde_json::from_value::<Manifest>(wire).is_err(),
+        json::from_value::<Manifest>(&wire).is_err(),
         "a signed manifest stating a contract-ABI range is refused"
     );
 }
@@ -1138,16 +1069,16 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
     quiet.kind = "plane".to_string();
     let quiet = sign(&key, quiet, b"door");
-    let wire = serde_json::to_vec(&quiet).expect("encodes");
+    let wire = json::to_vec(&quiet).expect("encodes");
     assert!(
         !String::from_utf8_lossy(&wire).contains("breaker"),
         "an absent fact is left off the wire"
     );
     assert!(!String::from_utf8_lossy(&canonical_manifest_bytes(&quiet)).contains("breaker"));
-    let read: Manifest = serde_json::from_slice(&wire).expect("reads");
+    let read: Manifest = json::parse(&wire).expect("reads");
     assert_eq!(read.declares.breaker, None);
     assert_eq!(
-        serde_json::to_vec(&read).expect("encodes"),
+        json::to_vec(&read).expect("encodes"),
         wire,
         "a manifest that states no breaker fact keeps its exact bytes"
     );
@@ -1167,7 +1098,7 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
         })
     );
     assert!(!d.is_empty(), "a stated fact is a declaration");
-    assert_eq!(serde_json::to_string(&d).expect("encodes"), stated);
+    assert_eq!(json::to_string(&d).expect("encodes"), stated);
     assert!(Declares::from_declares_json(
         br#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
     )
@@ -1177,8 +1108,7 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     let mut m = quiet.clone();
     m.declares.breaker = d.breaker;
     let m = sign(&key, m, b"door");
-    let back: Manifest =
-        serde_json::from_slice(&serde_json::to_vec(&m).expect("encodes")).expect("reads");
+    let back: Manifest = json::parse(&json::to_vec(&m).expect("encodes")).expect("reads");
     assert_eq!(back, m, "a stated fact round-trips whole");
     let mut flipped = m.clone();
     flipped.declares.breaker = Some(BreakerDecl {
@@ -1207,7 +1137,13 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     let mut m = manifest("busbar-store-x", "x", "busbar");
     m.statement = Some(hex::encode(&rendering));
     let signed = sign(&key, m, b"lib");
-    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert!(signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        b"lib",
+        &key.verifying_key()
+    )
+    .is_ok());
     assert_eq!(signed.stated_rendering().unwrap(), Some(rendering.clone()));
     assert_eq!(signed.stated().unwrap().unwrap().name, "busbar-store-x");
     assert!(validate_identity(&signed, HOST_IDENTITY).is_ok());
@@ -1218,7 +1154,13 @@ fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
     other[last] ^= 1;
     tampered.statement = Some(hex::encode(&other));
     assert!(
-        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            b"lib",
+            &key.verifying_key()
+        )
+        .is_err(),
         "a statement changed after signing fails verification"
     );
 
@@ -1263,7 +1205,7 @@ fn statement_schema_is_authoritative_and_malformed_material_is_rejected() {
     let original = canonical_manifest_bytes(&good);
     let schema = good.settings_schema_text().unwrap().unwrap();
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&schema).unwrap()["required"][0],
+        json::parse_str::<json::Value>(&schema).unwrap()["required"][0],
         "url"
     );
     assert!(validate_identity(&good, HOST_IDENTITY).is_ok());
@@ -1367,7 +1309,13 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
         m.abi_version = crate::dispatch_test_plugin::KIND.abi_version();
         m.statement = Some(hex::encode(&own));
         let signed = sign(&key, m, ARTIFACT);
-        assert!(signature_ok(&signed, ARTIFACT, &key.verifying_key()).is_ok());
+        assert!(signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &signed,
+            ARTIFACT,
+            &key.verifying_key()
+        )
+        .is_ok());
         let control = LinkedRow {
             statement: signed.stated_rendering().unwrap().unwrap(),
             door: actual,
@@ -1397,9 +1345,21 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
             assert_ne!(changed, own);
             let mut tampered = signed.clone();
             tampered.statement = Some(hex::encode(&changed));
-            assert!(signature_ok(&tampered, ARTIFACT, &key.verifying_key()).is_err());
+            assert!(signature_ok_guarded(
+                &Verifier::unrestricted(),
+                &tampered,
+                ARTIFACT,
+                &key.verifying_key()
+            )
+            .is_err());
             let restated = sign(&key, tampered, ARTIFACT);
-            assert!(signature_ok(&restated, ARTIFACT, &key.verifying_key()).is_ok());
+            assert!(signature_ok_guarded(
+                &Verifier::unrestricted(),
+                &restated,
+                ARTIFACT,
+                &key.verifying_key()
+            )
+            .is_ok());
             let row = LinkedRow {
                 statement: restated.stated_rendering().unwrap().unwrap(),
                 door: actual,
@@ -1581,15 +1541,21 @@ fn an_empty_former_name_list_preserves_neutral_signed_manifest_bytes() {
         manifest("busbar-hook-fixture", "fixture", "busbar"),
         b"fixture library",
     );
-    let text = serde_json::to_string(&signed).unwrap();
-    let parsed: Manifest = serde_json::from_str(&text).unwrap();
+    let text = json::to_string(&signed).unwrap();
+    let parsed: Manifest = json::parse_str(&text).unwrap();
     assert!(parsed.former_names.is_empty());
     let canonical = canonical_manifest_bytes(&parsed);
     assert!(!String::from_utf8_lossy(&canonical).contains("former_names"));
-    signature_ok(&parsed, b"fixture library", &key.verifying_key()).unwrap();
+    signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &parsed,
+        b"fixture library",
+        &key.verifying_key(),
+    )
+    .unwrap();
     assert_eq!(
-        serde_json::to_value(&parsed).unwrap(),
-        serde_json::to_value(&signed).unwrap()
+        json::to_value(&parsed).unwrap(),
+        json::to_value(&signed).unwrap()
     );
 }
 
@@ -1602,7 +1568,13 @@ fn former_names_are_covered_by_the_signature() {
     let signed = sign(&key, m, lib);
     assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
         .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
-    signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
+    signature_ok_guarded(
+        &Verifier::unrestricted(),
+        &signed,
+        lib,
+        &key.verifying_key(),
+    )
+    .expect("the signed list verifies");
     for tamper in [
         vec![],
         vec![
@@ -1614,7 +1586,7 @@ fn former_names_are_covered_by_the_signature() {
         let mut t = signed.clone();
         t.former_names = tamper.clone();
         assert!(
-            signature_ok(&t, lib, &key.verifying_key()).is_err(),
+            signature_ok_guarded(&Verifier::unrestricted(), &t, lib, &key.verifying_key()).is_err(),
             "a tampered former-name list {tamper:?} must not verify"
         );
     }
@@ -1659,8 +1631,8 @@ fn only_a_secret_source_may_declare_a_disk_need() {
     validate_identity(&secret, HOST_IDENTITY).expect("a secret source may read the disk");
 
     assert_eq!(
-        serde_json::to_value(Declares::default()).expect("encode"),
-        serde_json::json!({}),
+        json::to_value(&Declares::default()).expect("encode"),
+        json::json!({}),
         "no disk need is left off the wire"
     );
     assert_eq!(
@@ -1764,7 +1736,7 @@ fn release_root_lists_are_complete_unique_and_never_restore_retired_keys() {
 
 #[test]
 fn nested_manifest_canonical_bytes_match_original_oidc_signer() {
-    let manifest: Manifest = serde_json::from_slice(include_bytes!(
+    let manifest: Manifest = json::parse(include_bytes!(
         "fixtures/oidc-original-signed-manifest.json"
     ))
     .unwrap();
@@ -1803,8 +1775,20 @@ fn nested_manifest_canonical_bytes_match_original_oidc_signer() {
         );
         let unpacked = crate::tarball::unpack(&archive).unwrap();
         assert_eq!(unpacked.manifest, manifest);
-        signature_ok(&unpacked.manifest, &unpacked.lib_bytes, &public).unwrap();
-        assert!(signature_ok(&tampered, &unpacked.lib_bytes, &public).is_err());
+        signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &unpacked.manifest,
+            &unpacked.lib_bytes,
+            &public,
+        )
+        .unwrap();
+        assert!(signature_ok_guarded(
+            &Verifier::unrestricted(),
+            &tampered,
+            &unpacked.lib_bytes,
+            &public
+        )
+        .is_err());
         println!("original_oidc_archive_verified: unchanged signer, archive and library");
     }
 }
@@ -1896,4 +1880,126 @@ fn a_first_party_rc_build_clears_an_rc_floor_but_not_its_release_floor() {
         evaluate(artifact, &rc, &pol).unwrap_err().kind,
         RejectKind::AntiDowngrade
     );
+}
+
+#[test]
+fn every_verification_checkpoint_refuses_revocation_even_with_untrusted_opt_in() {
+    use crate::verification::{VerificationError, Verifier};
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    use std::cell::Cell;
+    struct Admission {
+        calls: Cell<usize>,
+        deny: usize,
+    }
+    impl Authority for Admission {
+        fn check(&self, _: Operation, _: Phase) -> Result<(), Unavailable> {
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            if call == self.deny {
+                Err(Unavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let root = test_key(51);
+    let bytes = b"authority-bound artifact";
+    let sealed = seal_test_artifact(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    let publisher = sign(&root, manifest("acme-store", "acme", "acme"), bytes);
+    for (manifest, policy) in [
+        (sealed, policy(Some(&root), &[], true)),
+        (
+            publisher,
+            policy(
+                None,
+                &[("acme", &root.verifying_key(), &["acme-store"])],
+                true,
+            ),
+        ),
+    ] {
+        let baseline = Admission {
+            calls: Cell::new(0),
+            deny: usize::MAX,
+        };
+        Verifier::new(&baseline)
+            .evaluate(bytes, &manifest, &policy)
+            .unwrap();
+        let checkpoints = baseline.calls.get();
+        assert!(
+            checkpoints > 2,
+            "verification must cross multiple primitives"
+        );
+        for deny in 1..=checkpoints {
+            let authority = Admission {
+                calls: Cell::new(0),
+                deny,
+            };
+            assert!(
+                matches!(
+                    Verifier::new(&authority).evaluate(bytes, &manifest, &policy),
+                    Err(VerificationError::Unavailable(_))
+                ),
+                "checkpoint {deny}"
+            );
+            assert_eq!(
+                authority.calls.get(),
+                deny,
+                "refusal must stop the workflow"
+            );
+        }
+    }
+}
+
+#[test]
+fn root_import_preserves_authority_loss_as_unavailable() {
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    struct Revoked;
+    impl Authority for Revoked {
+        fn check(&self, _: Operation, _: Phase) -> Result<(), Unavailable> {
+            Err(Unavailable)
+        }
+    }
+    let root = test_key(52);
+    let spec = format!(
+        "root:ed25519:{}",
+        hex::encode(root.verifying_key().as_bytes())
+    );
+    assert!(matches!(
+        crate::verification::Verifier::new(&Revoked).parse_release_keys(&spec),
+        Err(crate::verification::VerificationError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn expired_seal_probe_cannot_hide_lost_signature_authority() {
+    use busbar_contract::crypto::verification::{Authority, Operation, Phase, Unavailable};
+    struct RefuseSignatures;
+    impl Authority for RefuseSignatures {
+        fn check(&self, operation: Operation, _: Phase) -> Result<(), Unavailable> {
+            if operation == Operation::Ed25519Verify {
+                Err(Unavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let root = test_key(53);
+    let bytes = b"expired verification probe";
+    let manifest = seal_test_artifact(
+        &root,
+        manifest("busbar-store-test", "test", FIRST_PARTY_PUBLISHER),
+        bytes,
+    );
+    let mut policy = policy(Some(&root), &[], true);
+    policy.release_enforce_expiry = true;
+    policy.release_clock =
+        Some(crate::release_trust::wire::parse_time("2100-01-01T00:00:00Z").unwrap());
+    assert!(matches!(
+        crate::verification::Verifier::new(&RefuseSignatures).evaluate(bytes, &manifest, &policy),
+        Err(crate::verification::VerificationError::Unavailable(_))
+    ));
 }

@@ -3,19 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-/// Read the public schema from the canonical Statement, without opening a plugin.
-/// Absence is allowed; a present but malformed schema is an admission error.
-pub fn statement_schema(
-    schema: &busbar_contract::abi::mechanism::rendering::ReadBlob,
-) -> Result<Option<String>, String> {
-    if schema.bytes.is_empty() {
-        return Ok(None);
-    }
-    if schema.fmt != busbar_contract::abi::mechanism::call::BLOB_JSON || schema.flags != 0 {
-        return Err("Statement settings_schema must be public JSON".into());
-    }
-    authoritative_schema(&schema.bytes, "Statement settings_schema").map(Some)
-}
+pub use busbar_artifact_metadata::settings_schema::statement_schema;
 
 /// The rules an authoritative settings schema meets, whatever carries it (a Statement's settings_schema, a
 /// MIN-3 describe's D_SCHEMA: IF r29 l.2764, core's D_SCHEMA validator): at most 262144 bytes of UTF-8 JSON

@@ -878,12 +878,12 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 ### Retired operational environment overrides
 
-**Breaking:** serving no longer applies `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` or
-`BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Boot and `--validate` refuse them with `BUSBAR-3029`, naming
-each replacement (`advanced.worker_threads`, `advanced.upstream_http1_only`,
+**Breaking:** serving no longer applies `BUSBAR_PROVIDERS`, `BUSBAR_WORKER_THREADS`,
+`BUSBAR_UPSTREAM_HTTP1_ONLY` or `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Boot and `--validate` refuse
+them with `BUSBAR-3029` (an empty `BUSBAR_PROVIDERS` counts as unset), naming each replacement
+(`providers_file:`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
 `advanced.upstream_h2_prior_knowledge`); write the value into configuration and remove the variable
-from the launcher. A nonempty `BUSBAR_PROVIDERS` is captured into `providers_file:` on the one
-unstamped upgrade boot; serving uses `providers_file:` or `--providers`. **Breaking:** the old
+from the launcher. **Breaking:** the old
 `config.overlay` selector is retired. The first 1.6.0 boot folds the old file overlay into
 `config.yaml` (selected as 1.5.5 selected it, including `BUSBAR_CONFIG_OVERLAY`); a stamped boot
 never reads a file overlay or that variable. `config.locked` is preserved, and runtime

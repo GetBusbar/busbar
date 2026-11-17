@@ -121,7 +121,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         models: Vec::new(),
     };
     Some(match seat.driver.serve(input).await {
-        Ok(Served::Refused(items)) => joined(items),
+        Ok(Served::Refused(refused)) => joined(refused.items),
         Ok(Served::Ran(ran)) => joined(ran.client),
         Err(error) => {
             tracing::warn!(instance = %seat.instance, route, ?error, "a plane admin request failed");

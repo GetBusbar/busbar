@@ -58,7 +58,11 @@ fn upstream(
 }
 
 fn req(carrier: u32, framing: u32, head: &[u8]) -> ChannelReq<'_> {
+    static UNIT: std::sync::LazyLock<super::budget::UnitBudget> =
+        std::sync::LazyLock::new(|| super::budget::ChannelBudget::new().instance().unit());
     ChannelReq {
+        budget: &UNIT,
+        command: None,
         exchange: 1,
         carrier,
         flags: 0,
@@ -74,11 +78,60 @@ async fn open(
     up: &UpstreamDef,
     req: ChannelReq<'_>,
 ) -> Result<Wire, RecordsDenied> {
-    wires.open(up, &req).await
+    if req.carrier == CARRIER_STDIO && up.command.is_some() && up.url.is_none() {
+        let admitted = crate::plane_driver::request_admission::CommandAdmissionFixture::new(
+            Arc::new(up.clone()),
+        )
+        .await;
+        let authority = super::authority::ChannelAuthority::new(admitted.request.clone()).unwrap();
+        let req = ChannelReq {
+            command: Some(&authority),
+            ..req
+        };
+        let wire = wires.open(&admitted.definition, &req).await?;
+        Ok(Wire {
+            read: wire.read,
+            write: wire.write,
+            hold: Box::new((wire.hold, admitted)),
+        })
+    } else {
+        wires.open(up, &req).await
+    }
 }
 
 fn local() -> ProcessWires {
     ProcessWires::new(Arc::new(Fixed(Some("secret"))), None)
+}
+
+#[tokio::test]
+async fn command_admission_is_rechecked_after_async_environment_resolution() {
+    struct Retire(crate::host_services::InvocationContext);
+    impl SpawnSecrets for Retire {
+        fn resolve<'a>(&'a self, _: &'a SecretRef) -> BoxFut<'a, Option<String>> {
+            Box::pin(async move {
+                self.0.retire();
+                Some("resolved".into())
+            })
+        }
+    }
+    let up = Arc::new(upstream(
+        &["/usr/bin/env"],
+        vec![("K".into(), SecretRef::None)],
+        None,
+        ProgramPin::Unpinned,
+    ));
+    let admitted =
+        crate::plane_driver::request_admission::CommandAdmissionFixture::new(up.clone()).await;
+    let authority = super::authority::ChannelAuthority::new(admitted.request.clone()).unwrap();
+    let wires = ProcessWires::new(Arc::new(Retire(admitted.request.context().clone())), None);
+    let req = ChannelReq {
+        command: Some(&authority),
+        ..req(CARRIER_STDIO, CH_FRAME_NDJSON, &[])
+    };
+    assert!(matches!(
+        wires.open(&up, &req).await,
+        Err(RecordsDenied::Invalid)
+    ));
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@
 //! request leads, verifies and settles); an ineligible one verifies unshared. The first identity admits,
 //! NOT_MINE moves on, a rejection or a port error ends the walk, and all NOT_MINE is "no identity".
 
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::issued::IssuedCredentials;
 use crate::plane_grants::{KeyRefresh, ReplayGuard};
 use busbar_contract::crypto::Sha256;
@@ -207,12 +208,57 @@ pub async fn prepare_owned(
     cx: CallCx,
     req: &Request,
 ) -> Result<Verdict, PortError> {
+    prepare_request(services, cache, instance, cx, req).await
+}
+
+/// Native preparation retains the original charged snapshot and uses the same verification/cache core.
+/// A failed view reservation refuses before calling the port; it creates no replay or route authority.
+pub async fn prepare_snapshot(
+    services: &AuthServices<'_>,
+    cache: &dyn VerdictCache,
+    instance: ChainInstance<'_>,
+    cx: CallCx,
+    req: &ChargedRequestSnapshot,
+) -> Result<Verdict, PortError> {
+    prepare_request(services, cache, instance, cx, req).await
+}
+
+trait RequestView: Sync {
+    fn now_s(&self) -> u64;
+    fn with_view<R>(&self, f: impl FnOnce(&AuthIn<'_>) -> R) -> Result<R, PortError>;
+}
+
+impl RequestView for Request {
+    fn now_s(&self) -> u64 {
+        self.now_s
+    }
+    fn with_view<R>(&self, f: impl FnOnce(&AuthIn<'_>) -> R) -> Result<R, PortError> {
+        Ok(self.view(f))
+    }
+}
+
+impl RequestView for ChargedRequestSnapshot {
+    fn now_s(&self) -> u64 {
+        self.now_s()
+    }
+    fn with_view<R>(&self, f: impl FnOnce(&AuthIn<'_>) -> R) -> Result<R, PortError> {
+        self.with_auth_input(f).map_err(Into::into)
+    }
+}
+
+async fn prepare_request(
+    services: &AuthServices<'_>,
+    cache: &dyn VerdictCache,
+    instance: ChainInstance<'_>,
+    cx: CallCx,
+    req: &impl RequestView,
+) -> Result<Verdict, PortError> {
     let verdict = cached_raw(services, cache, instance, cx, req).await?;
     if let Verdict::Identity(id) = &verdict {
         if crate::holds::held_by(Some(instance.holds), id.subject()).is_some() {
             return Ok(Verdict::Held);
         }
-        if id.subject().is_empty() || id.expires_at_s().is_some_and(|until| req.now_s >= until) {
+        if id.subject().is_empty() || id.expires_at_s().is_some_and(|until| req.now_s() >= until) {
             return Ok(rejected(BAD_CREDENTIAL));
         }
     }
@@ -224,7 +270,7 @@ async fn cached_raw(
     cache: &dyn VerdictCache,
     instance: ChainInstance<'_>,
     cx: CallCx,
-    req: &Request,
+    req: &impl RequestView,
 ) -> Result<Verdict, PortError> {
     let port = instance.port;
     if !eligible(port.cred_headers().len(), port.facts()) {
@@ -234,10 +280,10 @@ async fn cached_raw(
         auth_instance: instance.id,
         policy_epoch: services.policy.epoch(),
         credential: CredentialHash(
-            req.view(|req| credential_hash(port.cred_headers(), req.headers)),
+            req.with_view(|req| credential_hash(port.cred_headers(), req.headers))?,
         ),
     };
-    let lead = match cache.begin(key, req.now_s) {
+    let lead = match cache.begin(key, req.now_s()) {
         VerdictGet::Hit(identity) => return Ok(Verdict::Identity(identity)),
         VerdictGet::Bypass => return settle(services, cache, instance, cx, req).await,
         VerdictGet::Lead(lead) => lead,
@@ -247,7 +293,7 @@ async fn cached_raw(
         },
     };
     let outcome = settle(services, cache, instance, cx, req).await;
-    lead.settle(&outcome, req.now_s);
+    lead.settle(&outcome, req.now_s());
     outcome
 }
 
@@ -265,10 +311,10 @@ pub fn refreshed(
 async fn verify(
     port: &dyn AuthPort,
     cx: CallCx,
-    req: &Request,
+    req: &impl RequestView,
     issued: Option<&[u8]>,
 ) -> Result<VerifyAnswer, PortError> {
-    match req.view(|req| port.verify(cx, req, issued)) {
+    match req.with_view(|req| port.verify(cx, req, issued))? {
         Verify::Done(done) => done,
         Verify::Io(io) => io.await,
     }
@@ -286,7 +332,7 @@ async fn settle(
     cache: &dyn VerdictCache,
     instance: ChainInstance<'_>,
     cx: CallCx,
-    req: &Request,
+    req: &impl RequestView,
 ) -> Result<Verdict, PortError> {
     let mut issued = None;
     let mut refreshed_once = false;

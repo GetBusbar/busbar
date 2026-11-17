@@ -18,6 +18,9 @@ pub const DIGEST_RECIPE_V7: &str = "busbar.audit.digest.v7";
 /// signature; a page stamp vouches for it ([`crate::stamp`]).
 pub const LINK_RECIPE: &str = busbar_contract::crypto::link::RECIPE;
 
+/// Complete selected billing content, linked and authenticated by page stamps.
+pub const LINK_RECIPE_V2: &str = "busbar.audit.link.v2";
+
 /// The unchanged legacy recipe with a chain-local rate-card ordinal.
 pub const DIGEST_RECIPE_V4: &str = "busbar.audit.digest.v4";
 
@@ -58,6 +61,8 @@ pub enum Recipe {
     /// then [`crate::record::AuditRecord::linked_ms`], `seq` and the predecessor's 32 raw bytes.
     /// Signed by no line; covered by a page stamp.
     V8,
+    /// Complete bounded billing partitions and mandatory records facts, linked by v2.
+    V9,
 }
 
 impl Recipe {
@@ -71,19 +76,20 @@ impl Recipe {
             Recipe::V6 => DIGEST_RECIPE_V6,
             Recipe::V7 => DIGEST_RECIPE_V7,
             Recipe::V8 => LINK_RECIPE,
+            Recipe::V9 => LINK_RECIPE_V2,
         }
     }
 
     /// Whether the record carries [`crate::record::UnitFacts`] (`v7` on).
     #[must_use]
     pub fn carries_unit_facts(&self) -> bool {
-        matches!(self, Recipe::V7 | Recipe::V8)
+        matches!(self, Recipe::V7 | Recipe::V8 | Recipe::V9)
     }
 
     /// Whether this is the link-only line: no per-line signature, a stamp vouches for it.
     #[must_use]
     pub fn is_link(&self) -> bool {
-        matches!(self, Recipe::V8)
+        matches!(self, Recipe::V8 | Recipe::V9)
     }
 
     /// Whether the recipe frames the incarnation, the node and the hook heads (`v4` on).
@@ -95,7 +101,7 @@ impl Recipe {
     /// Whether the recipe frames each quantity as exact decimal text (`v6` on).
     #[must_use]
     pub(crate) fn exact_quantities(&self) -> bool {
-        matches!(self, Recipe::V6 | Recipe::V7 | Recipe::V8)
+        matches!(self, Recipe::V6 | Recipe::V7 | Recipe::V8 | Recipe::V9)
     }
 }
 
@@ -182,6 +188,9 @@ pub fn visit_fields(record: &crate::record::AuditRecord, f: &mut impl FieldSink)
 /// Every field of one record's digest after its position, in order: what [`crate::link`] hashes
 /// before the chain is read.
 pub(crate) fn visit_content(record: &crate::record::AuditRecord, f: &mut impl FieldSink) {
+    if record.recipe == Recipe::V9 {
+        f.text("link_recipe", LINK_RECIPE_V2);
+    }
     use crate::record::{
         finish_tag, subject_tag, HexBytes, OutcomeTag, QuantitySourceTag, Subject,
     };
@@ -268,7 +277,7 @@ pub(crate) fn visit_content(record: &crate::record::AuditRecord, f: &mut impl Fi
         } => {
             f.num("rate_card_version", legacy_rate_card_version);
         }
-        Recipe::V5 | Recipe::V6 | Recipe::V7 | Recipe::V8 => {
+        Recipe::V5 | Recipe::V6 | Recipe::V7 | Recipe::V8 | Recipe::V9 => {
             f.num(
                 "rate_card_key_present",
                 u64::from(record.usage.rate_card_version.is_some()),
@@ -317,12 +326,12 @@ pub(crate) fn visit_content(record: &crate::record::AuditRecord, f: &mut impl Fi
         record.correlation_hash.as_deref().unwrap_or(""),
     );
     if record.recipe.carries_unit_facts() {
-        visit_unit_facts(&record.unit, f);
+        visit_unit_facts(&record.unit, record.recipe == Recipe::V9, f);
     }
 }
 
 /// The fields recipe `v7` appends, in order (`docs/audit-chain-digest-v7.md`, positions 46 on).
-fn visit_unit_facts(unit: &crate::record::UnitFacts, f: &mut impl FieldSink) {
+fn visit_unit_facts(unit: &crate::record::UnitFacts, billing: bool, f: &mut impl FieldSink) {
     use crate::record::HexBytes;
     f.num("wall_ms", unit.wall_ms);
     f.text("attribution", &unit.attribution);
@@ -338,15 +347,24 @@ fn visit_unit_facts(unit: &crate::record::UnitFacts, f: &mut impl FieldSink) {
         f.num("attempts[].us", attempt.us);
     }
     f.num("attempts_total", u64::from(unit.attempts_total));
-    visit_records_tail(&unit.records, f);
+    visit_records_tail(&unit.records, billing, f);
+    if billing {
+        if let Some(billing) = &unit.billing {
+            billing.visit(f);
+        }
+    }
 }
 
 /// THE RECORDS TAIL (ADMIN-API-1.6 §3.5; `docs/audit-chain-digest-v7.md`, positions 58 to 62):
 /// `records.user` and `records.labels`, framed ONLY when the record keeps either. A record that
 /// keeps neither ends at `attempts_total`, so every `v7` record sealed before the tail existed
 /// keeps its digest. An empty tail is never framed, so each record has one framing.
-fn visit_records_tail(records: &crate::record::RecordFacts, f: &mut impl FieldSink) {
-    if records.is_empty() {
+fn visit_records_tail(
+    records: &crate::record::RecordFacts,
+    mandatory: bool,
+    f: &mut impl FieldSink,
+) {
+    if records.is_empty() && !mandatory {
         return;
     }
     f.num("user_present", u64::from(records.user.is_some()));
