@@ -47,7 +47,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
         "groups": {"team": {}},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();
@@ -62,13 +62,12 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let backend = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("configured native backend");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: backend,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("configured native backend");
     let delay = Duration::from_millis(400);
     let probe_store = SlowStore::new(backend, delay);
     let core = crate::root::real_store::core_over(probe_store.clone()).await;
@@ -175,7 +174,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
         "groups": {"team": {}},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();
@@ -352,7 +351,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             "groups": {"team": {}},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let signing_path = directory.join("transaction-signing.key");
         std::fs::write(&signing_path, [7_u8; 32]).unwrap();
@@ -447,7 +446,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             "groups": {"team": {}},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let signing_path = directory.join("transaction-signing.key");
         std::fs::write(&signing_path, [7_u8; 32]).unwrap();
@@ -589,7 +588,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
         "groups": {"team": {}, "other": {}},
         "auth": { "chain": [], "admin_auth": [] },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     let signing_path = directory.join("transaction-signing.key");
     std::fs::write(&signing_path, [7_u8; 32]).unwrap();

@@ -32,7 +32,7 @@ pub(super) async fn serve(
         "providers": {}, "models": {},
         "oauth_as": oauth.authoring(&busbar_kernel::seal::acquire()),
         "auth": {"chain":[],"admin_auth":[]},
-        "advanced": {"allow_destinations":["127.0.0.1"]},
+        "advanced": {},
     });
     if guarded {
         crate::dist_root_install::install();

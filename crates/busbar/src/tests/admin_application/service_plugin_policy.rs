@@ -48,7 +48,7 @@ async fn inspect_bounds_pathological_schema_nesting_depth() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -191,7 +191,7 @@ async fn install_rejects_bad_filenames() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -304,7 +304,7 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});

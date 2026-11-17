@@ -218,25 +218,33 @@ impl Served {
     ) -> tokio::task::JoinHandle<()> {
         let routes = self.nests.clone();
         let kernels: Vec<_> = self.planes.iter().map(|p| p.kernel.clone()).collect();
-        struct Ready(Vec<Arc<KernelServices>>);
+        struct Ready(
+            Vec<Arc<KernelServices>>,
+            Option<Arc<crate::root::min3_boot::Booted>>,
+        );
         impl Drop for Ready {
             fn drop(&mut self) {
                 for kernel in &self.0 {
                     kernel.set_recovery_scheduler_ready(false);
                 }
-                crate::root::min3_boot::set_recovery_ready(false);
+                if let Some(native) = &self.1 {
+                    crate::root::min3_boot::set_recovery_ready(native, false);
+                }
             }
         }
-        let ready = Ready(kernels);
+        let ready = Ready(kernels, self.native.clone());
         if routes.is_some() {
             for kernel in &ready.0 {
                 kernel.set_recovery_scheduler_ready(true);
             }
         }
         // The MIN-3 plane seats' durable WORK is recovered by this same scheduler (IF §12.24 step 3).
-        let ports = crate::root::min3_boot::booted().is_some_and(|booted| !booted.seats.is_empty());
-        if ports {
-            crate::root::min3_boot::set_recovery_ready(true);
+        let native = self.native.clone();
+        let ports = native
+            .as_ref()
+            .is_some_and(|booted| !booted.seats.is_empty());
+        if let Some(native) = &native {
+            crate::root::min3_boot::set_recovery_ready(native, ports);
         }
         tokio::spawn(async move {
             let _ready = ready;
@@ -264,8 +272,8 @@ impl Served {
                     for routes in live {
                         routes.recover_work(app.load()).await;
                     }
-                    if ports {
-                        crate::root::min3_boot::recover_ports(app.load()).await;
+                    if let Some(native) = &native {
+                        crate::root::min3_boot::recover_ports(native, app.load()).await;
                     }
                 };
                 tokio::select! {
@@ -417,10 +425,11 @@ impl LeaseTick {
     reason = "composition takes every boot part it wires together"
 )]
 pub(crate) async fn compose_served_checked(
+    native: Option<Arc<crate::root::min3_boot::Booted>>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
+    late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
@@ -433,7 +442,11 @@ pub(crate) async fn compose_served_checked(
             tracing::warn!("door planes stay unopened: no governance book to settle on");
         }
         let served = Served {
-            ports: crate::root::min3_boot::seats(),
+            ports: native
+                .as_ref()
+                .map(|native| native.seats.clone())
+                .unwrap_or_default(),
+            native,
             ..Served::default()
         };
         check(&served)?;
@@ -487,6 +500,11 @@ pub(crate) async fn compose_served_checked(
             .migrate_caller_references(&caller_migration)
             .await?;
     }
+    served.ports = native
+        .as_ref()
+        .map(|native| native.seats.clone())
+        .unwrap_or_default();
+    served.native = native;
     served.post = Some(post);
     served.billing = Some(port_billing);
     let binds = check(&served)?;
@@ -789,7 +807,7 @@ pub(crate) struct DoorEgress<'a> {
 pub(crate) async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
+    late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
@@ -826,7 +844,7 @@ pub(crate) async fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
+    late: &Services,
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
@@ -838,7 +856,6 @@ pub(crate) async fn compose_planes_over(
 ) -> Result<Served, String> {
     let mut served = Served {
         tables: tables.clone(),
-        ports: crate::root::min3_boot::seats(),
         ..Served::default()
     };
     let Some(kernel) = late.kernel() else {
@@ -1735,17 +1752,17 @@ impl ListenerPlan {
         Self {
             root_claim,
             initial,
-            served: std::sync::OnceLock::new(),
-            upgrades: std::sync::OnceLock::new(),
+            served: None,
+            upgrades: None,
             claim_doors: Arc::default(),
-            planes: std::sync::OnceLock::new(),
-            plane_sections: std::sync::OnceLock::new(),
-            plane_keys: std::sync::OnceLock::new(),
+            planes: None,
+            plane_sections: None,
+            plane_keys: None,
             offers,
             framers,
             refusals: Mutex::default(),
             nests: Arc::default(),
-            plugin_mounts: std::sync::OnceLock::new(),
+            plugin_mounts: None,
         }
     }
 
@@ -1771,7 +1788,7 @@ impl ListenerPlan {
         Ok(claim)
     }
 
-    pub(crate) fn share_claim_doors(&self, served: &mut Served) -> Result<(), String> {
+    pub(crate) fn share_claim_doors(&mut self, served: &mut Served) -> Result<(), String> {
         served.nests = Some(Arc::clone(&self.nests));
         for need in &self.initial.needs {
             if !self
@@ -1792,9 +1809,9 @@ impl ListenerPlan {
                 }
             }
         }
-        self.claim_doors
-            .set(served.claim_doors.clone())
-            .map_err(|_| "physical claim doors were already installed".to_string())
+        self.claim_doors = Arc::new(served.claim_doors.clone());
+        self.served = Some(served.clone());
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1829,9 +1846,29 @@ impl ListenerPlan {
         served: &Served,
         app: &busbar_kernel::state::App,
         upgrades: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<Self, String> {
         use busbar_contract::abi::transport::route::PATH_EXACT;
         use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+        let mut mounted = Self {
+            root_claim: self.root_claim.clone(),
+            initial: self.initial.clone(),
+            served: Some(served.clone()),
+            upgrades: Some(
+                upgrades
+                    .iter()
+                    .map(|scheme| (*scheme).to_string())
+                    .collect(),
+            ),
+            claim_doors: Arc::new(served.claim_doors.clone()),
+            planes: None,
+            plane_sections: None,
+            plane_keys: None,
+            offers: self.offers.clone(),
+            framers: self.framers.clone(),
+            refusals: Mutex::default(),
+            nests: Arc::clone(&self.nests),
+            plugin_mounts: None,
+        };
         let cfg = self.config(app)?;
         let chain: Vec<_> = cfg
             .data_chain
@@ -1889,67 +1926,48 @@ impl ListenerPlan {
                 });
             }
         }
-        self.plane_keys
-            .set(
-                served
-                    .planes
-                    .iter()
-                    .map(|plane| (plane.instance.clone(), plane.live.plugin.name().to_string()))
-                    .collect(),
-            )
-            .map_err(|_| "plane listener keys were already mounted")?;
-        self.plane_sections
-            .set(
-                served
-                    .planes
-                    .iter()
-                    .map(|plane| {
+        mounted.plane_keys = Some(
+            served
+                .planes
+                .iter()
+                .map(|plane| (plane.instance.clone(), plane.live.plugin.name().to_string()))
+                .collect(),
+        );
+        mounted.plane_sections = Some(
+            served
+                .planes
+                .iter()
+                .map(|plane| {
+                    (
+                        plane.instance.clone(),
                         (
-                            plane.instance.clone(),
-                            (
-                                plane.live.served_facts.section,
-                                plane.live.served_facts.fallback,
-                            ),
-                        )
-                    })
-                    .collect(),
-            )
-            .map_err(|_| "plane listener sections were already mounted")?;
-        self.planes
-            .set(lines)
-            .map_err(|_| "plane listener routes were already mounted")?;
-        self.served
-            .set(served.clone())
-            .map_err(|_| "plane listener handlers were already mounted")?;
-        self.upgrades
-            .set(
-                upgrades
-                    .iter()
-                    .map(|scheme| (*scheme).to_string())
-                    .collect(),
-            )
-            .map_err(|_| "plane listener upgrades were already mounted")?;
-        self.check(app)?;
-        self.freeze_mounts(app)
+                            plane.live.served_facts.section,
+                            plane.live.served_facts.fallback,
+                        ),
+                    )
+                })
+                .collect(),
+        );
+        mounted.planes = Some(lines);
+        mounted.freeze_mounts(app);
+        mounted.check_topology(app)?;
+        Ok(mounted)
     }
 
-    pub(crate) fn freeze_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        self.plugin_mounts
-            .set(
-                app.plugin_routes
-                    .descriptors()
-                    .into_iter()
-                    .map(|route| {
-                        (
-                            route.path.to_string(),
-                            route.method,
-                            route.auth == RouteAuth::Admin,
-                        )
-                    })
-                    .collect(),
-            )
-            .map_err(|_| "plugin mounts were already frozen")?;
-        Ok(())
+    fn freeze_mounts(&mut self, app: &busbar_kernel::state::App) {
+        self.plugin_mounts = Some(
+            app.plugin_routes
+                .descriptors()
+                .into_iter()
+                .map(|route| {
+                    (
+                        route.path.to_string(),
+                        route.method,
+                        route.auth == RouteAuth::Admin,
+                    )
+                })
+                .collect(),
+        );
     }
 
     pub(crate) fn data_guests(
@@ -1989,23 +2007,38 @@ impl ListenerPlan {
     }
 
     pub(crate) fn check(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        self.check_topology(app)?;
+        self.prepare_routes(app).map(|_| ())
+    }
+
+    fn check_topology(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
         let lists = self.lists(app)?;
         self.check_mounts(app)?;
         for (_, guests) in lists {
             self.auths(app, &guests)?;
         }
-        self.prepare(app)?;
         Ok(())
     }
 
-    pub(crate) fn prepare(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        let Some(served) = self.served.get() else {
+    pub(crate) fn prepare(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
+        self.check_topology(app)?;
+        let Some(prepared) = self.prepare_routes(app)? else {
             return Ok(());
         };
+        let mut cfg = self.config(app)?.clone();
+        cfg.listener_routes = Some(prepared);
+        app.config_projection = Some(Arc::new(cfg));
+        Ok(())
+    }
+
+    fn prepare_routes(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Result<Option<PreparedListeners>, String> {
+        let Some(served) = self.served.as_ref() else {
+            return Ok(None);
+        };
         let cfg = self.config(app)?;
-        if cfg.listener_routes.get().is_some() {
-            return Ok(());
-        }
         let chain: Vec<_> = cfg
             .data_chain
             .iter()
@@ -2013,7 +2046,7 @@ impl ListenerPlan {
             .collect();
         let upgrades: Vec<_> = self
             .upgrades
-            .get()
+            .as_ref()
             .into_iter()
             .flatten()
             .map(String::as_str)
@@ -2050,8 +2083,7 @@ impl ListenerPlan {
             prepared.insert(at, Arc::new(router));
         }
 
-        let _ = cfg.listener_routes.set(prepared);
-        Ok(())
+        Ok(Some(prepared))
     }
 
     pub(crate) fn prepared(
@@ -2062,7 +2094,7 @@ impl ListenerPlan {
         self.config(app)
             .ok()?
             .listener_routes
-            .get()?
+            .as_ref()?
             .get(at)
             .cloned()
     }
@@ -2071,10 +2103,10 @@ impl ListenerPlan {
         &self,
         app: &busbar_kernel::state::App,
     ) -> Option<MountedPaths> {
-        self.config(app).ok()?.listener_routes.get()?;
+        self.config(app).ok()?.listener_routes.as_ref()?;
         let mut paths: MountedPaths = self
             .plugin_mounts
-            .get()?
+            .as_ref()?
             .iter()
             .filter(|(_, _, admin)| *admin)
             .map(|(path, _, _)| path.clone())
@@ -2112,7 +2144,7 @@ impl ListenerPlan {
             if !route.dispatch_available
                 && self
                     .plugin_mounts
-                    .get()
+                    .as_ref()
                     .is_none_or(|mounted| mounted.iter().any(|(path, _, _)| path == route.path))
             {
                 return Err(format!(
@@ -2121,7 +2153,7 @@ impl ListenerPlan {
                 ));
             }
         }
-        if let Some(mounted) = self.plugin_mounts.get() {
+        if let Some(mounted) = self.plugin_mounts.as_ref() {
             for route in app.plugin_routes.descriptors() {
                 if mounted.iter().any(|(path, _, _)| path == route.path)
                     && !mounted.iter().any(|(path, method, admin)| {
@@ -2278,7 +2310,7 @@ impl ListenerPlan {
         }
         let mut datagram_claims = foldhash::HashMap::default();
         for need in &next.needs {
-            if need.kind == KindCode::Plane && self.planes.get().is_some_and(|lines|
+            if need.kind == KindCode::Plane && self.planes.as_ref().is_some_and(|lines|
                 !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
                     && !route.root_only && route.transport == need.transport)) {
                 return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
@@ -2313,7 +2345,7 @@ impl ListenerPlan {
                 let scheme = &bind.transport;
                 let physical = self.framers.get(scheme);
 
-                let upgrade_claims_match = match (self.planes.get(), self.upgrades.get()) {
+                let upgrade_claims_match = match (self.planes.as_ref(), self.upgrades.as_ref()) {
                     (None, None) => true,
                     (Some(lines), Some(upgrades)) => upgrades.contains(&need.transport)
                         && lines.iter().any(|route| {
@@ -2434,7 +2466,7 @@ impl ListenerPlan {
                 })
                 .collect::<Vec<_>>()
         };
-        for route in self.planes.get().into_iter().flatten() {
+        for route in self.planes.as_ref().into_iter().flatten() {
             let mut line = route.line.clone();
             if matches!(line.auth, LineAuth::Chain(..)) {
                 line.auth = chain_auth(&chain);
@@ -2445,7 +2477,7 @@ impl ListenerPlan {
             };
             let allow_operator_open = self
                 .served
-                .get()
+                .as_ref()
                 .and_then(|served| served.planes.iter().find(|plane| plane.instance == *owner))
                 .and_then(|plane| {
                     plane
@@ -2463,7 +2495,7 @@ impl ListenerPlan {
                 .unwrap_or(false);
             if self
                 .plane_sections
-                .get()
+                .as_ref()
                 .and_then(|sections| sections.get(owner))
                 .is_some_and(|(section, fallback)| {
                     !fallback
@@ -2641,7 +2673,7 @@ impl ListenerPlan {
                 .ok_or_else(|| format!("listener {at} is unavailable"))?;
             let auths = plan.auths(&source.app, &guests)?;
             let owned_guests = guests.clone();
-            let keys = plan.plane_keys.get().cloned().unwrap_or_default();
+            let keys = plan.plane_keys.as_ref().cloned().unwrap_or_default();
             let legacy_fallback = at == "listen";
             let neutral_refuse: Option<busbar_kernel::inbound::NeutralRefuse> = plan.prepared(&source.app, &at)
                 .and_then(|prepared| prepared.data())
@@ -3059,9 +3091,6 @@ pub(crate) fn door_mounts_planned(
         Vec::new()
     };
     let physical = if let Some((plan, app, at)) = plan {
-        if plan.planes.get().is_none() {
-            plan.mount_planes(&served, app, upgrades)?;
-        }
         Some(
             plan.lists(app)?
                 .into_iter()
@@ -3197,8 +3226,7 @@ pub(crate) fn door_mounts_planned(
             }
         }
     }
-    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
-    let routes = Arc::new(DataRoutes {
+    let routes = DataRoutes::new(DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -3215,8 +3243,8 @@ pub(crate) fn door_mounts_planned(
             .map(|(line, (_, door))| (line, door))
             .collect(),
         frames: Mutex::default(),
-    });
-    if let Some((plan, _, at)) = plan {
+    })?;
+    if let Some((plan, _, _)) = plan {
         {
             let mut nests = plan
                 .nests
@@ -3225,11 +3253,6 @@ pub(crate) fn door_mounts_planned(
             nests.retain(|routes| routes.strong_count() != 0);
             nests.push(Arc::downgrade(&routes));
         }
-        if at == "listen" {
-            attach_nest_routes(kernel, Arc::clone(&plan.nests));
-        }
-    } else {
-        attach_nests(kernel, &routes);
     }
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
@@ -3465,8 +3488,7 @@ pub(crate) fn line_routes(
             crate::root::plane_node::node(),
         ))
     });
-    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
-    let routes = Arc::new(DataRoutes {
+    let routes = DataRoutes::new(DispatchSnapshot {
         live: served
             .planes
             .iter()
@@ -3480,32 +3502,14 @@ pub(crate) fn line_routes(
         guests,
         of_line,
         frames: Mutex::default(),
-    });
+    })?;
     if let Some(nests) = &routes.served.nests {
         nests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Arc::downgrade(&routes));
-        attach_nest_routes(kernel, Arc::clone(nests));
-    } else {
-        attach_nests(kernel, &routes);
     }
     Ok(routes)
-}
-
-pub(crate) fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
-    attach_nest_routes(kernel, Arc::new(Mutex::new(vec![Arc::downgrade(routes)])));
-}
-
-pub(crate) fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: NestRoutes) {
-    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let detached = busbar_kernel::detached::worker_detached();
-        let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes,
-            runtime,
-            detached,
-        }));
-    }
 }
 
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
@@ -3550,7 +3554,10 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
     tail.extend(crate::root::port_mount::routes(
         &served.ports,
-        crate::root::min3_boot::signed_ingress(),
+        served
+            .native
+            .as_deref()
+            .map(crate::root::min3_boot::signed_ingress),
         served.billing.as_ref(),
     ));
     tail

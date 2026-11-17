@@ -672,7 +672,7 @@ impl<'a> History<'a> {
                 journal.confirm_original(&proof, *ordinal, record).await?;
                 record.clone()
             }
-            None => journal.record(&proof, at.sequence).await?,
+            None => Arc::new(journal.record(&proof, at.sequence).await?),
         };
         let (candidate, hash) = Self::decode_candidate(&record)?;
         if local {

@@ -156,7 +156,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -175,13 +175,12 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {
@@ -297,7 +296,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing_key} },
         "identity-providers": {},
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     });
     document["identity-providers"][operator] =
         serde_json::json!({"module": operator, "token": {"file": operator_token}});
@@ -316,13 +315,12 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let actual = busbar_kernel::appbuild::bootstrap_config_store(
-        &config,
-        &plugin_config,
-        &busbar_kernel::preflight::Unopened,
-    )
-    .await
-    .expect("the configured native backend opens");
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: actual,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+        .await
+        .expect("the configured native backend opens");
     let started = Arc::new(tokio::sync::Notify::new());
     let heard = Arc::new(AtomicBool::new(false));
     let store = Arc::new(RecordReads {

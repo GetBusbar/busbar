@@ -38,7 +38,7 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
             "models": {},
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -48,16 +48,13 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("actual native Store opens"),
-    )
-    .await;
+        .expect("actual native Store opens");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -135,7 +132,7 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing_key } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -145,16 +142,13 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let anchor = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: anchor,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("actual native Store opens"),
-    )
-    .await;
+        .expect("actual native Store opens");
+    let anchor = crate::root::real_store::core_over(anchor).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

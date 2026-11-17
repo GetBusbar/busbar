@@ -1462,6 +1462,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             settings: serde_json::Map::new().into(),
             limits: None,
             insecure_transport: None,
+            provisioning: None,
         },
     );
     deploy.tls = Some(TlsCfg {

@@ -57,13 +57,16 @@ async fn admin_plugin_full_binding_allows_mutation() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -72,8 +75,6 @@ async fn admin_plugin_full_binding_allows_mutation() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -184,13 +185,16 @@ async fn admin_max_admin_scope_caps_binding() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -199,8 +203,6 @@ async fn admin_max_admin_scope_caps_binding() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -306,13 +308,16 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -321,8 +326,6 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -464,13 +467,16 @@ async fn roleless_external_admin_principal_denied() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -479,8 +485,6 @@ async fn roleless_external_admin_principal_denied() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -579,13 +583,16 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -594,8 +601,6 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -717,13 +722,16 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -732,8 +740,6 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -908,17 +914,18 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
                 },
                 "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
                 "store": { "module": module, "settings": settings },
-                "advanced": { "allow_destinations": ["127.0.0.1"] },
+                "advanced": {  },
             }), &crate::root::boot::axis_test_grammar())
             .expect("the product deployment parses");
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = crate::root::real_store::core_over(busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config, &busbar_kernel::preflight::Unopened).await.expect("the actual Store bootstraps its config authority")).await;
-            let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
-            .expect("the actual Store supports conditional config records");
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
+            let crate::root::min3_boot::fixture::Fixture { backend: anchor, rules } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules).await.expect("the actual Store bootstraps its config authority");
+            let anchor = crate::root::real_store::core_over(anchor).await;
+            let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+            .expect("the actual Store supports conditional config records");
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 config,
                 plugin_config,
@@ -1163,7 +1170,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             },
             "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }), &crate::root::boot::axis_test_grammar())
         .expect("the product deployment parses");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1175,7 +1182,10 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             let config = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the product deployment resolves");
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-            let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+            let crate::root::min3_boot::fixture::Admitted {
+                core: anchor,
+                rules,
+            } = crate::root::test_plugins::bootstrap_fresh_application_store(
                 &config,
                 &plugin_config,
                 &directory,
@@ -1184,8 +1194,6 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             .expect("the actual Store bootstraps its config authority");
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional config records");
-            let rules = Arc::new(crate::root::door_steps::Rules::default())
-                as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
                 config,
                 plugin_config,
@@ -1357,13 +1365,16 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -1372,8 +1383,6 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -1538,13 +1547,16 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         },
         "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
         "store": { "module": module, "settings": settings },
-        "advanced": { "allow_destinations": ["127.0.0.1"] },
+        "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
     .expect("the product deployment parses");
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
+        rules,
+    } = crate::root::test_plugins::bootstrap_fresh_application_store(
         &config,
         &plugin_config,
         &directory,
@@ -1553,8 +1565,6 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     .expect("the actual Store bootstraps its config authority");
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,

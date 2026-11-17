@@ -787,8 +787,8 @@ async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_re
     let store = admitted(&mut startup(&backend, true)).await;
     let proof = store.first_start().unwrap();
     proof.freeze(vec![initial_binding("one", 1)]).await.unwrap();
-    let host = KernelServices::new();
-    assert!(host.attach_persistence(store));
+    let mut host = KernelServices::new();
+    host = host.with_persistence(store);
     host.admit("one", InstanceFacts::default()).await.unwrap();
     let caller = Caller::for_test(Arc::from("one"), KindCode::Plane);
     host.bind_native_record_bootstrap(&caller).await.unwrap();

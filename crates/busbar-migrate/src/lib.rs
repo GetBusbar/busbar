@@ -26,7 +26,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 mod absent_store;
-pub mod allow_dest;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
@@ -39,6 +38,7 @@ mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod secret_instances;
 mod settle;
 mod steps;
 mod styles;
@@ -46,8 +46,8 @@ mod templates;
 
 pub use overlay::{Selected, SelectedBy};
 pub use settle::{
-    apply_settled, section as core_cfg_section, write_secrets, Applied, CoreCfg, SecretFile,
-    Settled,
+    apply_settled, section as core_cfg_section, write_secrets, Applied, BagPlacement, CoreCfg,
+    SecretFile, Settled,
 };
 
 /// Count one entry of `$field` in a test build (§9 C1 (sz2)); nothing in a shipped one.
@@ -207,8 +207,6 @@ pub struct Facts {
     /// fact (IF §12.10 item 1): `Some` and the document names no store module, exactly one is named, zero or several
     /// refuse CONFIG. `None` on today's ABI, where the 1.5.5-shape constant stands (1d).
     pub ephemeral_stores: Option<Vec<String>>,
-    /// How `allow_dest` resolves a provider host name (once, at migrate time).
-    pub resolve: allow_dest::Resolve,
 }
 
 impl Facts {
@@ -224,7 +222,6 @@ impl Facts {
             env,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             ephemeral_stores: None,
-            resolve: allow_dest::system_resolve,
         }
     }
 }

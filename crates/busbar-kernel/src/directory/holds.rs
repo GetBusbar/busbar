@@ -118,20 +118,7 @@ async fn generation(scope: &ScopedStore) -> Result<u64, ()> {
         .map_err(|_| ())
 }
 
-/// One refresh task per HoldSet. It ends when the set is dropped (its generation was replaced).
-pub(super) fn spawn_refresh(
-    set: &Arc<HoldSet>,
-    scope: ScopedStore,
-    every_ms: u32,
-    instance: Box<str>,
-    events: Arc<dyn DirectoryEvents>,
-) {
-    let weak = Arc::downgrade(set);
-    let every = Duration::from_millis(u64::from(every_ms.max(1)));
-    tokio::spawn(refresh(weak, scope, every, instance, events));
-}
-
-async fn refresh(
+pub(super) async fn refresh(
     weak: Weak<HoldSet>,
     scope: ScopedStore,
     every: Duration,

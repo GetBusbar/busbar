@@ -815,11 +815,11 @@ async fn native_host_callbacks_write_and_read_without_legacy_rows_or_blocking_po
     };
     let backend = Arc::new(Backend::default());
     let store = Arc::new(attach(backend).await);
-    let kernel = KernelServices::new().with_pool(Arc::new(BlockingPool::new(
+    let mut kernel = KernelServices::new().with_pool(Arc::new(BlockingPool::new(
         tokio::runtime::Handle::current(),
         4,
     )));
-    assert!(kernel.attach_persistence(store));
+    kernel = kernel.with_persistence(store);
     kernel
         .admit(
             "instance",

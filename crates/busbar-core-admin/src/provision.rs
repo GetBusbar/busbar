@@ -75,7 +75,7 @@ pub trait ProvisionInstance: Send + Sync {
     /// The instance's D_CRED_HEADER headers (stripped with `Authorization` and `Cookie`).
     fn cred_headers(&self) -> &[HeaderName];
     /// This instance's own verify over the request head, exactly as an inbound request.
-    fn verify(&self, head: &HeaderMap, path: &str) -> impl Future<Output = Verified> + Send;
+    fn verify(&self, request: &Request<Bytes>) -> impl Future<Output = Verified> + Send;
     /// `serve` with Q_CLIENT = `client` (an entry of `provisioning.clients`), the stripped head and the body.
     fn serve(&self, client: &str, req: Request<Bytes>) -> impl Future<Output = Response> + Send;
     /// A refusal of the mount, audited `provision_refused{instance, status}` (no credential text).
@@ -120,12 +120,13 @@ pub async fn mount<I: ProvisionInstance>(
     clients: &[Box<str>],
     req: Request<Body>,
 ) -> Response {
-    let (mut head, body) = req.into_parts();
+    let (head, body) = req.into_parts();
     let body = match axum::body::to_bytes(body, inst.body_cap()).await {
         Ok(b) => b,
         Err(_) => return refuse(inst, StatusCode::PAYLOAD_TOO_LARGE),
     };
-    let client = match inst.verify(&head.headers, head.uri.path()).await {
+    let mut request = Request::from_parts(head, body);
+    let client = match inst.verify(&request).await {
         Verified::NoCredential | Verified::Refused => {
             return refuse(inst, StatusCode::UNAUTHORIZED)
         }
@@ -135,8 +136,8 @@ pub async fn mount<I: ProvisionInstance>(
             None => return refuse(inst, StatusCode::FORBIDDEN),
         },
     };
-    strip_credentials(&mut head.headers, inst.cred_headers());
-    inst.serve(client, Request::from_parts(head, body)).await
+    strip_credentials(request.headers_mut(), inst.cred_headers());
+    inst.serve(client, request).await
 }
 
 /// `GET /admin/provisioning/{instance}/guard`, the body.

@@ -214,8 +214,6 @@ fn judge_with_plugins(
 
     errors.extend(instance_ids::instance_id_collisions(cfg));
 
-    refused_provider_destinations(cfg, advisories);
-
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
 
     let mut model_protocols: HashMap<&str, &str> = HashMap::new();
@@ -2042,93 +2040,6 @@ pub fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
         return None;
     }
     unmappable_metadata_entry(entry).map(|(why, _)| why)
-}
-
-fn refused_provider_destinations(cfg: &RootCfg, advisories: &mut Advisories) {
-    if !cfg.guard.block_private_addresses {
-        return;
-    }
-    let mut providers: Vec<(&String, &crate::config::ResolvedProvider)> =
-        cfg.providers.iter().collect();
-    providers.sort_by(|a, b| a.0.cmp(b.0));
-    for (name, p) in providers {
-        let urls = [
-            ("base_url", Some(p.base_url.as_str())),
-            ("token_url", p.token_url.as_deref()),
-        ];
-        for (key, url) in urls {
-            let Some(host) = url.and_then(refused_private_host) else {
-                continue;
-            };
-            if destination_allowed(&cfg.guard.allow, &host) {
-                continue;
-            }
-            let name = name.to_string();
-            advisories.raise(move || {
-                diag_warn!(
-                    crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
-                    "provider '{name}' {key} names the private or loopback host '{host}': with \
-                     advanced.block_private_addresses on (the default) the destination guard \
-                     refuses every request to it. Add '{host}' to advanced.allow_destinations, or \
-                     set advanced.block_private_addresses: false to admit every private address"
-                )
-            });
-        }
-    }
-}
-
-fn refused_private_host(url: &str) -> Option<String> {
-    let host = busbar_contract::net::url_host(url)?;
-    let host = busbar_contract::net::judged_host(&host).ok()?;
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    (busbar_contract::net::host_is_private_or_loopback(&host)
-        && !busbar_contract::net::host_is_cloud_metadata(&host))
-    .then_some(host)
-}
-
-fn destination_allowed(allow: &[String], host: &str) -> bool {
-    let ip = busbar_contract::net::host_ip(host);
-    allow.iter().any(|entry| {
-        let entry = entry.trim().trim_start_matches('[').trim_end_matches(']');
-        let entry = entry
-            .strip_suffix('.')
-            .unwrap_or(entry)
-            .to_ascii_lowercase();
-        if entry.eq_ignore_ascii_case(host) {
-            return true;
-        }
-        if let Some(domain) = entry.strip_prefix("*.") {
-            let lower = host.to_ascii_lowercase();
-            return lower.ends_with(&format!(".{}", domain.to_ascii_lowercase()));
-        }
-        let Some(ip) = ip else { return false };
-        match entry.split_once('/') {
-            None => busbar_contract::net::host_ip(&entry) == Some(ip),
-            Some((net, bits)) => match (
-                busbar_contract::net::host_ip(net.trim_end_matches(']')),
-                bits.parse::<u32>(),
-            ) {
-                (Some(std::net::IpAddr::V4(n)), Ok(b)) if b <= 32 => match ip {
-                    std::net::IpAddr::V4(a) => {
-                        let mask = u32::MAX.checked_shl(32 - b).unwrap_or(0);
-                        u32::from(a) & mask == u32::from(n) & mask
-                    }
-                    std::net::IpAddr::V6(_) => false,
-                },
-                (Some(std::net::IpAddr::V6(n)), Ok(b)) if b <= 128 => match ip {
-                    std::net::IpAddr::V6(a) => {
-                        let mask = u128::MAX.checked_shl(128 - b).unwrap_or(0);
-                        u128::from(a) & mask == u128::from(n) & mask
-                    }
-                    std::net::IpAddr::V4(_) => false,
-                },
-                _ => false,
-            },
-        }
-    })
 }
 
 pub fn metadata_denylist_entries() -> Vec<String> {

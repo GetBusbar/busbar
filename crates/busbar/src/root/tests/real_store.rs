@@ -97,25 +97,24 @@ pub(crate) async fn build_app(
     ),
     String,
 > {
-    let core = if let Some(prior) = prior {
-        prior
-            .governance
-            .as_ref()
-            .ok_or("test reload has no admitted governance")?
-            .core_store_handle()
-            .map_err(|error| error.to_string())?
-    } else if let Some(overlay) = &overlay {
-        overlay.core_store_handle()?
-    } else {
-        core_over(
-            busbar_kernel::appbuild::bootstrap_config_store(
-                &cfg,
-                &plugins,
-                &busbar_kernel::preflight::Unopened,
-            )
-            .await?,
+    let (core, rules) = if let Some(prior) = prior {
+        (
+            prior
+                .governance
+                .as_ref()
+                .ok_or("test reload has no admitted governance")?
+                .core_store_handle()
+                .map_err(|error| error.to_string())?,
+            crate::root::min3_boot::fixture::carry(prior.root_rules.clone(), rules.clone()),
         )
-        .await
+    } else if let Some(overlay) = &overlay {
+        (overlay.core_store_handle()?, rules.clone())
+    } else {
+        let opened = crate::root::min3_boot::fixture::open(&cfg, &plugins, rules.clone())
+            .await?
+            .admit()
+            .await;
+        (opened.core, opened.rules)
     };
     busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
@@ -125,7 +124,7 @@ pub(crate) async fn build_app(
         base_groups,
         paths,
         prior,
-        rules,
+        &rules,
         Some(core),
         false,
     )

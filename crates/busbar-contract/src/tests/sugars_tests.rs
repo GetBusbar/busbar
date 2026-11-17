@@ -118,3 +118,50 @@ fn every_refusal_names_what_it_refuses() {
         "a refused declaration adds nothing"
     );
 }
+
+#[test]
+fn shorthand_selects_one_configured_instance_or_its_implicit_word() {
+    let mut sugars = Sugars::default();
+    sugars
+        .declare("fixture-source", &[rw(REWRITE_SUGAR, "probe", "key")])
+        .unwrap();
+    let implicit = sugars.bind_instances(&[]).unwrap();
+    assert_eq!(
+        implicit
+            .get("probe")
+            .unwrap()
+            .reference("v")
+            .source_module(),
+        Some("probe")
+    );
+    let explicit = sugars
+        .bind_instances(&[("primary", "fixture-source")])
+        .unwrap();
+    assert_eq!(
+        explicit
+            .get("probe")
+            .unwrap()
+            .reference("v")
+            .source_module(),
+        Some("primary")
+    );
+    assert_eq!(explicit.get("probe").unwrap().plugin, "fixture-source");
+    let multiple = sugars
+        .bind_instances(&[("primary", "fixture-source"), ("backup", "fixture-source")])
+        .unwrap();
+    let error = multiple
+        .get("probe")
+        .unwrap()
+        .checked_reference("v")
+        .unwrap_err();
+    let parsed: SecretRef =
+        crate::yaml::with_deserializer("module: backup\nsettings: {key: v}\n", |de| {
+            context::deserialize(de, &multiple)
+        })
+        .unwrap();
+    assert_eq!(parsed.source_module(), Some("backup"));
+    assert!(error.contains("ambiguous"));
+    assert!(error.contains("probe"));
+    assert!(error.contains("module:"));
+    assert!(sugars.bind_instances(&[("probe", "other-source")]).is_err());
+}

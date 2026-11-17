@@ -188,7 +188,7 @@ pub(crate) struct Env {
 
     pub(crate) services: Arc<ServiceStore>,
 
-    pub(crate) provider: Arc<ServicesSlot>,
+    pub(crate) provider: Option<Arc<ServicesSlot>>,
 
     pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
 
@@ -1158,7 +1158,7 @@ impl WakeRoute for Pool {
     fn services(&self) -> Option<Served<'_>> {
         Some(Served {
             store: &self.env.services,
-            provider: self.env.provider.get()?.as_ref(),
+            provider: self.env.provider.as_ref()?.get().as_ref(),
         })
     }
 
@@ -2524,13 +2524,21 @@ impl Dispatcher {
         self.pool.env.runtime.get()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_services(
         config: DispatchConfig,
         provider: Arc<dyn HostServices>,
         callers: Arc<dyn busbar_contract::services::CallerBinding>,
     ) -> Self {
-        Self::with_slot(config, ServicesSlot::of(provider), callers)
+        Self::try_with_services(config, provider, callers).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Construct a dispatcher over its complete immutable serving provider.
+    pub fn try_with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    ) -> Result<Self, super::LoadError> {
+        Self::try_with_slot(config, ServicesSlot::of(provider), callers)
     }
 
     pub fn with_slot(
@@ -2590,7 +2598,7 @@ impl Dispatcher {
             stats: Arc::default(),
             inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
             services,
-            provider: provider.unwrap_or_default(),
+            provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             auth: std::sync::OnceLock::new(),
@@ -2648,7 +2656,11 @@ impl Dispatcher {
     }
 
     pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
-        self.pool.env.provider.get()
+        self.pool
+            .env
+            .provider
+            .as_ref()
+            .map(|provider| provider.get())
     }
 
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {

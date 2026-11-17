@@ -47,7 +47,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
             "models": {},
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -80,16 +80,13 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let native_config = config;
     let native_plugins = plugin_config;
-    let native_core = crate::root::real_store::core_over(
-        busbar_kernel::appbuild::bootstrap_config_store(
-            &native_config,
-            &native_plugins,
-            &busbar_kernel::preflight::Unopened,
-        )
+    let crate::root::min3_boot::fixture::Fixture {
+        backend: native_core,
+        rules,
+    } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup"),
-    )
-    .await;
+        .expect("actual Store opens for native startup");
+    let native_core = crate::root::real_store::core_over(native_core).await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         native_config,
         native_plugins,

@@ -88,7 +88,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
             "identity-providers": {(operator): {"module": operator, "token": {"file": token_path}}},
             "auth": {"chain": [], "admin_auth": [operator], "signing_key": {"file": signing_path}},
             "store": {"module": store, "settings": settings},
-            "advanced": {"allow_destinations": ["127.0.0.1"]}
+            "advanced": {}
         }),
         &crate::root::boot::axis_test_grammar(),
     )
@@ -99,23 +99,23 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     let build = async |prior: Option<&busbar_kernel::state::App>| {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .map_err(|errors| errors.join("; "))?;
-        let anchor = if let Some(prior) = prior {
-            prior
-                .governance
-                .as_ref()
-                .ok_or("prior governance missing")?
-                .core_store_handle()
-                .map_err(|error| error.to_string())?
-        } else {
-            crate::root::real_store::core_over(
-                busbar_kernel::appbuild::bootstrap_config_store(
-                    &config,
-                    &plugin_config,
-                    &busbar_kernel::preflight::Unopened,
-                )
-                .await?,
+        let (anchor, rules) = if let Some(prior) = prior {
+            (
+                prior
+                    .governance
+                    .as_ref()
+                    .ok_or("prior governance missing")?
+                    .core_store_handle()
+                    .map_err(|error| error.to_string())?,
+                crate::root::min3_boot::fixture::carry(prior.root_rules.clone(), rules.clone()),
             )
-            .await
+        } else {
+            let opened =
+                crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+                    .await?
+                    .admit()
+                    .await;
+            (opened.core, opened.rules)
         };
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())?;
         busbar_kernel::appbuild::build_app_from_config_with_store(

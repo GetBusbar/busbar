@@ -74,10 +74,13 @@ pub(crate) fn build_request_log(
     rec.finish()
 }
 
-pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
-    plugin::deliver(ExportStream::Logs, facts.ingress_protocol, |projection| {
-        build_request_log(projection, facts)
-    });
+pub(crate) fn deliver_request_log(exports: &plugin::Exports, facts: &RequestLogFacts<'_>) {
+    plugin::deliver_on(
+        exports,
+        ExportStream::Logs,
+        facts.ingress_protocol,
+        |projection| build_request_log(projection, facts),
+    );
 }
 
 #[cfg(test)]

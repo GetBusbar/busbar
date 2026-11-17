@@ -73,7 +73,7 @@ impl Fixture {
             "auth": { "chain": [], "admin_auth": [] },
             "store": { "module": module, "settings": settings },
             "rate_card": { (LANE): {"input_utok":0.0,"output_utok":0.0,"cache_read_utok":0.0,"cache_write_utok":0.0} },
-            "advanced": { "allow_destinations": ["127.0.0.1"] },
+            "advanced": {  },
         });
         let provider_defs = super::admin_usage_history::complete_usage_fixture(
             &mut document,
@@ -90,13 +90,12 @@ impl Fixture {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let backend = busbar_kernel::appbuild::bootstrap_config_store(
-            &config,
-            &plugin_config,
-            &busbar_kernel::preflight::Unopened,
-        )
-        .await
-        .expect("the configured actual Store opens");
+        let crate::root::min3_boot::fixture::Fixture {
+            backend: backend,
+            rules,
+        } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
+            .await
+            .expect("the configured actual Store opens");
         let core = crate::root::real_store::core_over(backend).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,

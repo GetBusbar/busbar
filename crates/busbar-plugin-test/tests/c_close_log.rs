@@ -50,7 +50,11 @@ fn a_close_log_line_is_attributed_and_scrubbed_and_the_slot_waits() {
             go_rx.recv_timeout(Duration::from_secs(10)).ok()?;
             let bag = config("close-b");
             let spec = harness.spec("close-b", &bag);
-            let port = harness.block_on(harness.registry().open_secret(&spec));
+            let port = harness.block_on(harness.registry().open_secret(
+                &spec,
+                &harness.needs_arc(),
+                &harness.refs_arc(),
+            ));
             let _ = opened_tx.send(());
             Some(port)
         });

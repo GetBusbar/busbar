@@ -488,7 +488,7 @@ impl SeatPool {
                             .unwrap_or_default(),
                         key_pin,
                         client_identity: None,
-                        private_reach: false,
+                        private_reach: def.allow_private,
                     },
                     ride_anchors: Vec::new(),
                     spelled: Vec::new(),

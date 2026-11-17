@@ -3922,8 +3922,7 @@ mod transport_pin {
             let port = far.rsplit_once(':').expect("host:port").1;
             let target = format!("judged.test:{port}");
             let destinations = busbar_kernel::config::Destinations {
-                block_private_addresses: true,
-                allow: vec!["127.0.0.0/8".to_owned()],
+                block_private_addresses: false,
                 ..busbar_kernel::config::Destinations::default()
             };
             let guard = crate::guard::Guard::from_config(&destinations).unwrap();
@@ -4043,17 +4042,47 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
                 },
             )
         };
+        c.declare_need_to(OWNER, NeedId(2), "bytes", crate::DEFAULT_CLASS, &far)
+            .expect("configured need declares");
+        assert_eq!(
+            open_as(2, &far, "inside"),
+            Err(ConnError::Refused),
+            "a registration never gains infrastructure policy from a configured target"
+        );
         assert_eq!(
             open_as(0, &far, "inside"),
             Err(ConnError::Refused),
             "no reach yet"
         );
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
-            .expect("sealed");
-        c.seal_reach(OWNER, NeedId(0), "outside", &far, false)
-            .expect("nothing to seal");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "outside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: false,
+                ..Default::default()
+            },
+        )
+        .expect("nothing to seal");
         let id = open_as(0, &far, "inside").expect("the registration's own open reaches");
         c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_as(0, "127.0.0.1:1", "inside"),
+            Err(ConnError::Refused),
+            "a member's grant never follows another origin on the same host"
+        );
         assert_eq!(
             open_as(0, &far, "outside"),
             Err(ConnError::Refused),
@@ -4070,17 +4099,44 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
             "the reach is the need's alone"
         );
         let metadata = "169.254.169.254:80";
-        c.seal_reach(OWNER, NeedId(0), "inside", metadata, true)
-            .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            metadata,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
         assert_eq!(
             open_as(0, metadata, "inside"),
             Err(ConnError::Refused),
             "a reach never admits cloud metadata"
         );
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
-            .expect("sealed");
-        c.seal_reach(OWNER, NeedId(0), "inside", &far, false)
-            .expect("dropped");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: true,
+                ..Default::default()
+            },
+        )
+        .expect("sealed");
+        c.anchor(
+            OWNER,
+            NeedId(0),
+            "inside",
+            &far,
+            &busbar_contract::transport::trust::Anchors {
+                private_reach: false,
+                ..Default::default()
+            },
+        )
+        .expect("dropped");
         assert_eq!(
             open_as(0, &far, "inside"),
             Err(ConnError::Refused),

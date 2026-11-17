@@ -271,8 +271,12 @@ async fn plane_serve_or_not_found(
 ) -> Response {
     let (parts, body) = req.into_parts();
     // A MIN-3 plane instance's ROUTE_ADMIN route: the operator chain admitted this request already.
-    if port_admin::serves(parts.method.as_str(), parts.uri.path()) {
-        return port_admin_response(parts, body).await;
+    let app = handle.load();
+    if port_admin::serves(&app.port_seats, parts.method.as_str(), parts.uri.path()) {
+        let request_id = app
+            .request_id_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return port_admin_response(&app.port_seats, request_id, parts, body).await;
     }
     let req = axum::extract::Request::from_parts(parts, body);
     let tables = handle.load().serve_tables.clone();
@@ -287,6 +291,8 @@ const PLANE_ADMIN_BODY_MAX: usize = 1 << 20;
 
 /// The answer of the MIN-3 plane instance whose admin route the request names (see `port_admin`).
 async fn port_admin_response(
+    seats: &[busbar_kernel::plane_driver::port::PortSeat],
+    request_id: u64,
     parts: axum::http::request::Parts,
     body: axum::body::Body,
 ) -> Response {
@@ -295,7 +301,6 @@ async fn port_admin_response(
             "the request body is over the plane admin limit".to_owned(),
         ));
     };
-    static REQUEST_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let request = port_admin::AdminRequest {
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
@@ -306,10 +311,10 @@ async fn port_admin_response(
             .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect(),
         body: body.to_vec(),
-        request_id: REQUEST_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        request_id,
         now_s: busbar_kernel::store::now(),
     };
-    let Some((status, fields, body)) = port_admin::answer(request).await else {
+    let Some((status, fields, body)) = port_admin::answer(seats, request).await else {
         return err_json(&AdminError::not_found("resource"));
     };
     let mut response = Response::new(axum::body::Body::from(body));

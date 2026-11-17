@@ -21,6 +21,7 @@ pub(crate) trait Reopener: Send + Sync {
 
 pub(crate) struct BoundNeeds<N: Needs> {
     pub needs: Arc<N>,
+    pub refs: Arc<dyn busbar_ports::binder::RefSource>,
     pub seal: Option<StoreSeal>,
 }
 
@@ -39,6 +40,7 @@ impl<N: Needs> Reopener for BoundNeeds<N> {
                         .open_store(
                             &spec,
                             &self.needs,
+                            &self.refs,
                             self.seal.clone().ok_or_else(|| {
                                 OpenError::Unknown("store reopen missing seal".into())
                             })?,
@@ -46,19 +48,25 @@ impl<N: Needs> Reopener for BoundNeeds<N> {
                         .await?,
                 ),
                 KindCode::Secret => {
-                    OpenedPort::Secret(registry.open_secret(&spec, &self.needs).await?)
+                    OpenedPort::Secret(registry.open_secret(&spec, &self.needs, &self.refs).await?)
                 }
-                KindCode::Auth => OpenedPort::Auth(registry.open_auth(&spec, &self.needs).await?),
-                KindCode::Hook => OpenedPort::Hook(registry.open_hook(&spec, &self.needs).await?),
+                KindCode::Auth => {
+                    OpenedPort::Auth(registry.open_auth(&spec, &self.needs, &self.refs).await?)
+                }
+                KindCode::Hook => {
+                    OpenedPort::Hook(registry.open_hook(&spec, &self.needs, &self.refs).await?)
+                }
                 KindCode::Export => {
-                    OpenedPort::Export(registry.open_export(&spec, &self.needs).await?)
+                    OpenedPort::Export(registry.open_export(&spec, &self.needs, &self.refs).await?)
                 }
                 KindCode::Plane => {
-                    OpenedPort::Plane(registry.open_plane(&spec, &self.needs).await?)
+                    OpenedPort::Plane(registry.open_plane(&spec, &self.needs, &self.refs).await?)
                 }
-                KindCode::Transport => {
-                    OpenedPort::Transport(registry.open_transport(&spec, &self.needs).await?)
-                }
+                KindCode::Transport => OpenedPort::Transport(
+                    registry
+                        .open_transport(&spec, &self.needs, &self.refs)
+                        .await?,
+                ),
             })
         })
     }

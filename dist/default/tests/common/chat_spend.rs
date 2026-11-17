@@ -103,14 +103,6 @@ pub fn serve(doc: &mut busbar_contract::yaml::Value, data: u16, admin: u16, sign
             json::to_string(&signing.display().to_string()).unwrap()
         ),
     );
-    let advanced = root.entry_or_insert_with("advanced", || Yaml::Map(Pairs::new()));
-    advanced
-        .as_mapping_mut()
-        .expect("advanced is a mapping")
-        .insert_key(
-            Yaml::from("allow_destinations"),
-            busbar_contract::yaml::from_str("[\"127.0.0.1\"]").unwrap(),
-        );
 }
 
 pub struct Gateway {

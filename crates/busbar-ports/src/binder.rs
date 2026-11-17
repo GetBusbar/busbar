@@ -5,6 +5,8 @@
 //! names it; `busbar_kernel::plugin_config` re-exports it and W1-K7 implements `ConfigBinder` there. `Bindings`
 //! stays in the kernel. Every path and signature is the §12.7 text; only the home moved.
 
+use busbar_contract::secret_ref::SecretRef;
+use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 
 /// Round 7. A file-sink destination bound at a D_DEST_PATH node (operator grammar, unchanged from 1.5.x
@@ -44,17 +46,23 @@ pub enum BindError {
     },
     TooMany,
 }
+/// What `resolve_refs` resolves a D_REF_PATH reference through: custody (`SecretCustody`, IF §12.2), which
+/// registers the value in `instance`'s scrub set before it returns it. The registry supplies it; the binder
+/// never reaches a secret instance itself.
+pub trait RefSource: Send + Sync + 'static {
+    /// The value of `reference` for `instance`; None = the resolve failed (no text: the binder writes core's).
+    /// `slot` is its actual leased runtime slot; `binding` is the stable zero-based D_REF_PATH ordinal.
+    /// These values come from the loader/binder, never from plugin-provided records.
+    fn resolve<'a>(
+        &'a self,
+        instance: u64,
+        slot: u32,
+        binding: u32,
+        reference: &'a SecretRef,
+    ) -> BoxFut<'a, Option<SecureVec>>;
+}
+
 pub trait ConfigBinder: Send + Sync + 'static {
-    /// Round 6: install the declared shorthands (from `Registry::sugars()` through `Sugars::declare`), once, after
-    /// every plugin is admitted and before the first `bind`/`bind_any`. A bind before it is a core bug (panics in
-    /// debug, refuses in release). Core itself declares no word.
-    fn set_sugars(&self, sugars: std::sync::Arc<busbar_contract::secret_ref::Sugars>);
-    /// Round 8: install, once and at the same point as `set_sugars`, each configured secret instance's reference
-    /// schema (its plugin's D_REF_SCHEMA, compiled once by the binder). Key = the secret instance's configured
-    /// name (operator vocabulary; an implicit shorthand instance is keyed by its `<word>`). From then on every
-    /// `bind`, `bind_any` and core section parser validates each SecretRef's `settings` against the schema of the
-    /// instance it routes to, before the reference is stored (`BadReference`). `--validate` runs this too.
-    fn set_ref_schemas(&self, schemas: Vec<(std::sync::Arc<str>, Box<str>)>);
     /// Walk `config` (the operator's JSON for this instance). At every node matched by a D_SECRET_PATH
     /// pointer: parse it with busbar-contract's SecretRef parser in the admitted-source context with the
     /// installed `Sugars` (secret_ref.rs `context`: SourceReference, a declared shorthand `{<word>: X}` expanded to
@@ -88,7 +96,9 @@ pub trait ConfigBinder: Send + Sync + 'static {
     fn resolve_refs<'a>(
         &'a self,
         instance: u64,
+        slot: u32,
         bound: Vec<u8>,
+        source: &'a dyn RefSource,
     ) -> BoxFut<'a, Result<busbar_contract::secure::SecureVec, BindError>>;
     fn unbind(&self, instance: u64);
     /// Round 31: `open` on an **unstamped boot only** (§7.2, §11.2), where the plugin may receive a 1.x bag

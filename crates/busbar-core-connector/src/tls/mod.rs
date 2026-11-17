@@ -12,7 +12,7 @@ pub mod client;
 pub mod explain;
 pub mod store;
 
-use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
+use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
 use busbar_kernel::config::sections::TlsCfg;
 use busbar_kernel::config::SecretRef;
@@ -128,7 +128,7 @@ pub struct Identity;
 
 impl ConnectionSecurity for Identity {
     fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a> {
-        Box::pin(async move { Ok(io) })
+        Box::pin(async move { Ok(SecuredIo::anonymous(io)) })
     }
 }
 
@@ -151,13 +151,26 @@ impl ConnectionSecurity for Tls {
             let tokio_io = FuturesAsyncReadCompatExt::compat(io);
             let acceptor = tokio_rustls::TlsAcceptor::from(self.config.clone());
             let tls_stream = acceptor.accept(tokio_io).await?;
+            let peer_certificate = tls_stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|leaf| Box::from(leaf.as_ref()))
+                .unwrap_or_default();
             let known_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(ALPN_H2);
             let mut io = TokioAsyncReadCompatExt::compat(tls_stream);
             if !known_h2 {
-                return Ok(Box::new(io) as Box<dyn RawIo>);
+                return Ok(SecuredIo {
+                    io: Box::new(io),
+                    peer_certificate,
+                });
             }
             expect_h2_preface(&mut io).await?;
-            Ok(Box::new(Preface { io, replayed: 0 }) as Box<dyn RawIo>)
+            Ok(SecuredIo {
+                io: Box::new(Preface { io, replayed: 0 }),
+                peer_certificate,
+            })
         })
     }
 }

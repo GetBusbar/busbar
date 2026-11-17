@@ -93,9 +93,22 @@ impl Used {
     }
 }
 
+/// A secret image declaration admitted before strict configuration parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretSource {
+    pub identity: String,
+    pub ref_schema: String,
+}
+
 /// The grammar one read parses under.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grammar {
+    secret_binding_required: bool,
+    /// Image identities and former names mapped to the verified secret declaration.
+    pub secret_sources: BTreeMap<String, SecretSource>,
+    /// Configured and implicit instance names, bound for this read.
+    pub secret_instances: BTreeMap<String, SecretSource>,
     /// The secret shorthand and roles the admissible secret modules declare.
     pub sugars: Sugars,
     /// Every admissible module by name.
@@ -107,11 +120,76 @@ pub struct Grammar {
 }
 
 impl Grammar {
+    #[must_use]
+    pub fn with_secret_sources(mut self, sources: BTreeMap<String, SecretSource>) -> Self {
+        self.secret_binding_required = true;
+        self.secret_sources = sources;
+        self
+    }
+
+    /// Even an empty admitted image set must reject configured unknown sources.
+    pub fn secret_binding_required(&self) -> bool {
+        self.secret_binding_required
+    }
+
+    /// Bind the raw secret-instance envelope before parsing any SecretRef in the document.
+    /// The image's empty settings acceptance is judged at description, before an implicit instance exists.
+    pub fn bind_secret_instances(
+        &self,
+        configured: &BTreeMap<String, super::SecretModuleCfg>,
+    ) -> Result<Self, String> {
+        let mut bound = self.clone();
+        bound.secret_instances.clear();
+        for (name, config) in configured {
+            if name.trim().is_empty() {
+                return Err("a secret instance name must not be blank".to_owned());
+            }
+            let source = self.secret_sources.get(&config.module).ok_or_else(|| {
+                format!(
+                    "secrets.{name}.module: '{}' is not an admitted secret image",
+                    config.module
+                )
+            })?;
+            bound.secret_instances.insert(name.clone(), source.clone());
+        }
+        let instances: Vec<_> = bound
+            .secret_instances
+            .iter()
+            .map(|(name, source)| (name.as_str(), source.identity.as_str()))
+            .collect();
+        bound.sugars = self.sugars.bind_instances(&instances)?;
+        let explicit_identities: Vec<_> = instances
+            .iter()
+            .map(|(_, identity)| (*identity).to_owned())
+            .collect();
+        for sugar in bound.sugars.iter() {
+            if explicit_identities
+                .iter()
+                .any(|identity| *identity == sugar.plugin)
+            {
+                continue;
+            }
+            let source = self.secret_sources.get(&sugar.plugin).ok_or_else(|| {
+                format!(
+                    "secret shorthand '{}' has no admitted declaring image",
+                    sugar.word
+                )
+            })?;
+            bound
+                .secret_instances
+                .insert(sugar.word.clone(), source.clone());
+        }
+        Ok(bound)
+    }
+
     /// The grammar of a read that admits nothing: canonical `{ module, settings }` references only.
     /// Built by tests and by `--list-plugins`' report mode; no production reader falls back to it.
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            secret_binding_required: false,
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars: Sugars::default(),
             owners: BTreeMap::new(),
             items: Vec::new(),
@@ -122,6 +200,9 @@ impl Grammar {
     #[must_use]
     pub fn new(sugars: Sugars, owners: BTreeMap<String, Owner>, report: Vec<String>) -> Self {
         Self {
+            secret_binding_required: false,
+            secret_sources: BTreeMap::new(),
+            secret_instances: BTreeMap::new(),
             sugars,
             owners,
             items: Vec::new(),
@@ -518,25 +599,12 @@ impl<'a> PhaseOneIn<'a> {
     }
 }
 
-/// The composition root's phase 1 ([`crate::preflight::RootInstall::grammar`]).
-pub type GrammarFn = fn(&PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal>;
-
-/// Phase 1 for one read: the grammar the modules `input` admits declare, through the root's
-/// registry scan and judgement. A read that loads no plugin (`plugins.enabled: false`) in a binary
-/// with no composition root admits nothing, so its grammar is empty; a read that would scan
-/// `plugins.dir` with no root to scan it is refused.
-pub fn grammar_for(input: &PhaseOneIn<'_>) -> Result<Grammar, GrammarRefusal> {
-    let mut grammar = match crate::preflight::root_rows().grammar {
-        Some(phase_one) => phase_one(input)?,
-        None if !input.plugins.enabled => Grammar::empty(),
-        None => {
-            return Err(GrammarRefusal(
-                "no composition root installed the config grammar: plugins.enabled needs the \
-                 root's scan of plugins.dir to read this configuration"
-                    .to_owned(),
-            ))
-        }
-    };
+/// Compute one read's grammar through its explicitly owned root context.
+pub fn grammar_for(
+    input: &PhaseOneIn<'_>,
+    rules: &dyn crate::appbuild::RootRules,
+) -> Result<Grammar, GrammarRefusal> {
+    let mut grammar = rules.grammar(input)?;
     // A read that does not fetch cannot see a module only the fetch delivers (§3.14): a refusal
     // names each pending file.
     if input.fetch == Fetch::None {

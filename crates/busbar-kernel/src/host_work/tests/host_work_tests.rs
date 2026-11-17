@@ -140,11 +140,12 @@ fn rig_with_backend(
 fn rig_with_core(store: Arc<CoreStore>, bounds: WorkBounds) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
-    let s = KernelServices::new()
+    let mut s = KernelServices::new()
         .with_pool(Arc::new(Inline))
         .with_work_bounds(bounds)
+        .with_standing(Arc::new(|key, _| Some(key.clone())))
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
-    assert!(s.attach_persistence(store.clone()));
+    s = s.with_persistence(store.clone());
     for label in ["inst", "other"] {
         s.admit_ready(
             label,
@@ -682,7 +683,6 @@ fn recovery_principal(r: &Rig) -> Arc<VirtualKey> {
             depth: 0,
         },
     );
-    r.s.attach_standing(Arc::new(|key, _| Some(key.clone())));
     key
 }
 
