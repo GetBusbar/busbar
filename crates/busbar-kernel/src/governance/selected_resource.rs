@@ -16,7 +16,7 @@ use foldhash::HashMap;
 
 use super::selected_policy::ResolvedSelectedRules;
 use super::sharded::Sharded;
-use crate::plane_driver::money::native_attempt::PreparedRateAttempt;
+use crate::plane_driver::PreparedRateAttempt;
 
 const CELL_CAPACITY: usize = 262_144;
 const MAX_RULES: usize = 32;
@@ -122,6 +122,7 @@ impl RateRefusal {
 }
 
 /// Owns the original preparation only after any provisional charges have been released.
+#[derive(Debug)]
 pub(crate) struct RateRejected {
     pub(crate) reason: RateRefusal,
     pub(crate) prepared: PreparedRateAttempt,
