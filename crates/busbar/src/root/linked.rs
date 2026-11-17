@@ -666,10 +666,6 @@ pub(crate) fn door_breaker(
     Ok(None)
 }
 
-pub(crate) fn logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
-    crate::root::boot::plugin_logs()
-}
-
 pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::EXPORT_DROPPED_TOTAL,
     busbar_kernel::export::delivery::EXPORT_CUSTODY_TOTAL,

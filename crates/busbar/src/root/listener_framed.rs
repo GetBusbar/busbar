@@ -1278,9 +1278,32 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     });
             }
             request.extensions_mut().insert(slot.clone());
+            // Routed requests on this data listener enter the same boot-owned process admission;
+            // a switched session keeps that lease for its caller input.
+            let Some(lease) = self
+                .framer
+                .process
+                .as_ref()
+                .and_then(|process| process.try_enter(AdmissionClass::Data).ok())
+            else {
+                metrics::counter!(busbar_kernel::snapshot::ADMISSION_DENIED_TOTAL, "gate" => "inbound")
+                    .increment(1);
+                if let Some(admission) = &admission {
+                    admission.refuse(
+                        busbar_contract::caps::StepName::Arrival,
+                        busbar_contract::caps::ReasonCode::InFlightCap,
+                    );
+                }
+                out.send(Op::Refuse {
+                    status: 503,
+                    head_sent: false,
+                });
+                return;
+            };
             self.tasks.spawn(operator::serve(
                 self.router.clone(),
                 request,
+                lease,
                 slot,
                 out,
                 ended,

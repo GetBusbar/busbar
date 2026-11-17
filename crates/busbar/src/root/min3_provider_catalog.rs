@@ -48,8 +48,6 @@ pub(crate) type Allocations = BTreeMap<(String, String), Allocation>;
 #[derive(Clone)]
 pub(crate) struct Association {
     pub(crate) destination: DestinationId,
-    pub(crate) need: NeedId,
-    pub(crate) definition: Arc<UpstreamDef>,
     pub(crate) attempt_timeout_ms: Option<u64>,
     pub(crate) context_max: Option<usize>,
     pub(crate) credential_mode: busbar_contract::config::UpstreamCreds,
@@ -71,7 +69,6 @@ struct StagedRow {
 pub(crate) struct StagedCatalog {
     instance: String,
     rows: BTreeMap<(String, String), StagedRow>,
-    upstreams: Arc<ConfiguredUpstreams>,
     auth_rows: Vec<SelectedRow>,
     capacity: BTreeMap<DestinationId, Arc<Semaphore>>,
 }
@@ -80,7 +77,6 @@ pub(crate) struct StagedCatalog {
 /// actual price/admission receipts, connector declarations and image lease before activation.
 pub(crate) struct SealedCatalog {
     pub(crate) instance: String,
-    pub(crate) model_upstreams: Arc<ConfiguredUpstreams>,
     pub(crate) associations: BTreeMap<(String, String), Association>,
     pub(crate) targets: Targets,
     pub(crate) routes: BTreeMap<DestinationId, MemberRoute>,
@@ -143,8 +139,6 @@ impl StagedCatalog {
                 pair.clone(),
                 Association {
                     destination: row.allocation.destination,
-                    need: row.allocation.need,
-                    definition: Arc::clone(&row.definition),
                     attempt_timeout_ms: row.attempt_timeout_ms,
                     context_max: row.context_max,
                     credential_mode: row.credential_mode,
@@ -161,7 +155,6 @@ impl StagedCatalog {
         });
         Ok(SealedCatalog {
             instance: self.instance,
-            model_upstreams: self.upstreams,
             associations,
             targets,
             routes,
@@ -206,7 +199,6 @@ pub(crate) fn prepare(
         .map(|member| member.need)
         .collect();
     let mut names: BTreeSet<Box<str>> = registered_definitions.names().map(Box::from).collect();
-    let mut definitions = BTreeMap::new();
     let mut rows = BTreeMap::new();
     let mut auth_rows = Vec::new();
     let mut model_capacity = BTreeMap::<String, Arc<Semaphore>>::new();
@@ -313,7 +305,6 @@ pub(crate) fn prepare(
                 .or_insert_with(|| Arc::new(Semaphore::new(limit)));
             capacity.insert(allocation.destination, Arc::clone(slots));
         }
-        definitions.insert(definition.name.clone(), Arc::clone(&definition));
         auth_rows.push(SelectedRow {
             key: key.clone(),
             destination: allocation.destination,
@@ -341,7 +332,6 @@ pub(crate) fn prepare(
     Ok(StagedCatalog {
         instance: plan.instance.clone(),
         rows,
-        upstreams: Arc::new(ConfiguredUpstreams::from_definitions(definitions)),
         auth_rows,
         capacity,
     })

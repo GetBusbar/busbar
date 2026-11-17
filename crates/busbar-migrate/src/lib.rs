@@ -446,7 +446,10 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
     };
     // Refuse existing conflicts before boot opens or converts the store. Step 5 repeats
     // these checks under its lock because another writer can change the files meanwhile.
-    files::backup_absent_or_equal(&backup_path(inputs.path), source.as_bytes())?;
+    files::backup_absent_or_equal(
+        &files::sibling(inputs.path, BACKUP_SUFFIX),
+        source.as_bytes(),
+    )?;
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
