@@ -6,6 +6,10 @@ use super::*;
 use busbar_kernel::plane_driver::native_hook_bindings::{Bindings, OpenedHook, SeatScope};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[path = "tests/min3_hook_plan.rs"]
+mod tests;
+
 pub(crate) struct Environment<'a> {
     cfg: &'a RootCfg,
     governance: Arc<busbar_kernel::governance::GovState>,
