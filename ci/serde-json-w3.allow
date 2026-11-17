@@ -25,7 +25,6 @@ crates/busbar-core-admin/src/v1/json/tests/plane_input_schemas.rs               
 crates/busbar-core-admin/src/v1/tests/service_tests.rs                                     # W3-D-CONTRACT
 crates/busbar-core-oauth2/src/cimd.rs                                                      # W3-D-CONTRACT
 crates/busbar-core-oauth2/src/tests/cimd_tests.rs                                          # W3-D-CONTRACT
-crates/busbar-kernel/src/host_services.rs                                                  # W3-D-CONTRACT
 crates/busbar-kernel/src/off_path/plane_door.rs                                            # W3-D-CONTRACT
 crates/busbar-kernel/src/tests/trust_verify_tests.rs                                       # W3-D-CONTRACT
 crates/busbar-kernel/tests/support/plane_driver_actual.rs                                  # W3-D-CONTRACT
@@ -38,7 +37,6 @@ crates/busbar/src/root/tests/serve.rs                                           
 crates/busbar/src/root/tests/serve_door_far.rs                                             # W3-D-CONTRACT
 crates/busbar/src/root/tests/serve_door_far_caller_secret.rs                               # W3-D-CONTRACT
 crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs                  # W3-D-CONTRACT
-crates/busbar/src/root/units_admin/tests/bound_tests.rs                                    # W3-D-CONTRACT
 crates/busbar/src/tests/kernel_application/misc_router_door.rs                             # W3-D-CONTRACT
 crates/plugin-loader/src/auth_door.rs                                                      # W3-D-CONTRACT
 crates/plugin-loader/src/boot.rs                                                           # W3-D-CONTRACT
@@ -49,11 +47,8 @@ crates/plugin-loader/src/integer_token.rs                                       
 crates/plugin-loader/src/observe.rs                                                        # W3-D-CONTRACT
 crates/plugin-loader/src/pack.rs                                                           # W3-D-CONTRACT
 crates/plugin-loader/src/settings_schema.rs                                                # W3-D-CONTRACT
-crates/plugin-loader/src/sign.rs                                                           # W3-D-CONTRACT
-crates/plugin-loader/src/tarball.rs                                                        # W3-D-CONTRACT
 crates/plugin-loader/src/tests/auth_door_tests.rs                                          # W3-D-CONTRACT
 crates/plugin-loader/tests/fixtures/hook_door_plugin.rs                                    # W3-D-CONTRACT
-crates/plugin-loader/tests/fixtures/secret_door_plugin.rs                                  # W3-D-CONTRACT
 dist/default/tests/traces_stream_both_doors.rs                                             # W3-D-CONTRACT
 tools/plugin-bench/                                                                        # W3-D-CONTRACT
 
