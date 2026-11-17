@@ -23,6 +23,7 @@ fn full_row() -> AuditRowInput {
         message: "applied".into(),
         data: AuditData::from_json(r#"{"plugin_diag":"d1","text":"t1","n":12345678901234567890}"#)
             .unwrap(),
+        unconditional: false,
     }
 }
 
@@ -34,6 +35,40 @@ fn scheme3_row_round_trips_through_its_suffix() {
     assert_eq!(parsed.scheme, crate::audit_ring::AUDIT_SCHEME_ROW);
     assert_eq!(parsed.ts, 1_700_000_000);
     assert_eq!(parsed.row, row);
+}
+
+/// ADMIN-API-1.6-ONE-MODEL section 7.1: a scheme 4 suffix reads back its row, `ts` and `at_ms`, and seals
+/// `at_ms` and `unconditional`.
+#[test]
+fn scheme4_row_round_trips_and_seals_at_ms_and_unconditional() {
+    let mut row = full_row();
+    row.unconditional = true;
+    let suffix = row4_suffix(1_700_000_000_123, &row);
+    let parsed = parse_suffix_entry(&suffix);
+    assert_eq!(parsed.scheme, crate::audit_ring::AUDIT_SCHEME_ROW4);
+    assert_eq!(parsed.ts, 1_700_000_000);
+    assert_eq!(parsed.at_ms, Some(1_700_000_000_123));
+    assert_eq!(parsed.row, row);
+    assert_ne!(
+        row4_suffix(1_700_000_000_124, &row),
+        suffix,
+        "at_ms is sealed"
+    );
+    let mut conditional = row.clone();
+    conditional.unconditional = false;
+    assert_ne!(
+        row4_suffix(1_700_000_000_123, &conditional),
+        suffix,
+        "unconditional is sealed"
+    );
+    assert_ne!(
+        row_suffix(1_700_000_000, &conditional),
+        row4_suffix(1_700_000_000_000, &conditional),
+        "scheme 4 never collides with scheme 3"
+    );
+    for cut in 0..suffix.len() {
+        let _ = parse_suffix_entry(&suffix[..cut]);
+    }
 }
 
 #[test]

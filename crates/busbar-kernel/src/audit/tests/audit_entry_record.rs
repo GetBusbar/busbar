@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
-use crate::audit_ring::{AuditEntry, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_ROW};
+use crate::audit_ring::{
+    AuditEntry, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_ROW, AUDIT_SCHEME_ROW4,
+};
 
 const ADMIN_LOG: &str = "admin";
 
@@ -25,7 +27,10 @@ impl ChainedRecord for AuditEntry {
     const FRAMING: Framing = Framing::PipeSeparated;
 
     fn framing(&self) -> Framing {
-        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED || self.scheme == AUDIT_SCHEME_ROW {
+        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED
+            || self.scheme == AUDIT_SCHEME_ROW
+            || self.scheme == AUDIT_SCHEME_ROW4
+        {
             Framing::LengthPrefixed
         } else {
             Framing::PipeSeparated
@@ -71,7 +76,7 @@ impl ChainedRecord for AuditEntry {
     }
 
     fn digest_fields(&self, d: &mut Digest) {
-        if self.scheme == AUDIT_SCHEME_ROW {
+        if self.scheme == AUDIT_SCHEME_ROW || self.scheme == AUDIT_SCHEME_ROW4 {
             let row = crate::audit::auditlog::AuditRowInput {
                 action: self.action.clone(),
                 resource: self.resource.clone(),
@@ -86,6 +91,13 @@ impl ChainedRecord for AuditEntry {
                 severity: self.severity.clone(),
                 message: self.message.clone(),
                 data: self.data.clone(),
+                unconditional: self.unconditional.unwrap_or(false),
+            };
+            let suffix = match self.at_ms {
+                Some(at_ms) if self.scheme == AUDIT_SCHEME_ROW4 => {
+                    crate::audit::auditlog::row4_suffix(at_ms, &row)
+                }
+                _ => crate::audit::auditlog::row_suffix(self.ts, &row),
             };
             d.raw(&crate::audit::frame_prelude(
                 Framing::PipeSeparated,
@@ -93,7 +105,7 @@ impl ChainedRecord for AuditEntry {
                 None,
                 self.seq,
             ))
-            .raw(&crate::audit::auditlog::row_suffix(self.ts, &row));
+            .raw(&suffix);
             return;
         }
         if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {

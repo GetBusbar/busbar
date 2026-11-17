@@ -806,6 +806,21 @@
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
             "type": "string"
           },
+          "at_ms": {
+            "default": null,
+            "description": "Epoch milliseconds of the same instant as `ts`, sealed by scheme 4; absent on older schemes.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
           "config_generation": {
             "default": null,
             "description": "The config generation after the change, as a decimal string: on every applied row of a\nconfig-changing request, null otherwise.",
@@ -820,7 +835,7 @@
             "description": "Members typed per action. Always an object; `{}` when the action has none."
           },
           "hash": {
-            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.\n\nScheme 3 (ADMIN-API-1.6 section 7.2): `prev_hash|seq` as before, then the row suffix: one 0x03\nbyte, `ts` as scheme 2 writes it, `action`, `resource`, `outcome` and `principal` each\nlength-prefixed, then `config_generation`, `request_id`, `idempotency_key`, `kind` and\n`instance` (each length-prefixed: a single 0x00 byte when absent, 0x01 and the bytes when\npresent), `sections_changed` (an 8-byte big-endian count, then each name length-prefixed),\n`severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its\ncanonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,\nminimal string escapes), so every member of `data` is inside the digest.",
+            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.\n\nScheme 3 (ADMIN-API-1.6 section 7.2): `prev_hash|seq` as before, then the row suffix: one 0x03\nbyte, `ts` as scheme 2 writes it, `action`, `resource`, `outcome` and `principal` each\nlength-prefixed, then `config_generation`, `request_id`, `idempotency_key`, `kind` and\n`instance` (each length-prefixed: a single 0x00 byte when absent, 0x01 and the bytes when\npresent), `sections_changed` (an 8-byte big-endian count, then each name length-prefixed),\n`severity` and `message` (length-prefixed) and `data` as one length-prefixed field holding its\ncanonical JSON (members in ascending order of their names' UTF-8 bytes, no whitespace,\nminimal string escapes), so every member of `data` is inside the digest.\n\nScheme 4 (ADMIN-API-1.6-ONE-MODEL section 7.1): `prev_hash|seq` as before, then one 0x04 byte\nand scheme 3's row fields in scheme 3's order and framing (`ts` is `at_ms` divided by 1000),\nthen `at_ms` as its 8-byte big-endian value, then `client_request_id`, `trace_id`,\n`operation_id` and `on_behalf_of` (each framed like `request_id`), then `unconditional` as one\nbyte (0x01 when true, 0x00 when false), then `before_digest` and `after_digest` (framed like\n`request_id`). A member this record does not serve is absent (a single 0x00 field).",
             "type": "string"
           },
           "idempotency_key": {
@@ -878,7 +893,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields) or 3 (the row fields);\nall are stated on `hash`. A record is sealed under 3 when it is written through the row path\n(`AUDIT.record_by` and `emit_row_now`: every admin request's rows), under 1 otherwise when its\n`action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always\nread back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
+            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join), 2 (length-prefixed fields), 3 (the row fields)\nor 4 (the row fields and the request fields); all are stated on `hash`. A record is sealed under 4\nwhen it is written through the row path (`AUDIT.record_by` and `emit_row_now`: every admin\nrequest's rows; an earlier engine sealed those under 3), under 1 otherwise when its\n`action`, `resource` and `outcome` carry no `|`, and under 2 when they do, so its fields always\nread back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
@@ -918,6 +933,14 @@
               "integer_format": "uint64",
               "representation": "json-integer-token"
             }
+          },
+          "unconditional": {
+            "default": null,
+            "description": "Scheme 4: whether the request was admitted on `If-Match: *`, a deliberately unconditional\nmutation; absent on older schemes.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [

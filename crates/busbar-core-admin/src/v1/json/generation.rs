@@ -103,6 +103,7 @@ fn check_if_match(req: &mut Request, app: &App, rel: &str) -> Result<(), Box<Res
     };
     let value = raw.to_str().unwrap_or("").trim();
     if value == "*" {
+        busbar_kernel::audit::auditlog::note_unconditional();
         return Ok(());
     }
     let bare = value.strip_prefix("W/").unwrap_or(value);
