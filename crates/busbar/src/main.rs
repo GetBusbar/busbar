@@ -1425,8 +1425,9 @@ async fn run(
     let root_rules = Arc::new(root_rules.with_listeners(Arc::clone(&listener_plan)));
     let mut app = Arc::unwrap_or_clone(app);
     app.root_rules = root_rules.clone();
-    let app = Arc::new(app);
     listener_plan.check(&app).unwrap_or_else(|e| die(e));
+    listener_plan.prepare(&mut app).unwrap_or_else(|e| die(e));
+    let app = Arc::new(app);
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 

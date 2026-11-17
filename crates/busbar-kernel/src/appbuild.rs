@@ -1037,7 +1037,9 @@ pub trait RootRules: Send + Sync {
         None
     }
 
-    fn check_built(&self, _app: &App) -> Result<(), String> {
+    /// Complete the exclusively owned candidate's root projections before publication.
+    /// Implementations may replace candidate fields; they must not alter shared prior state.
+    fn check_built(&self, _app: &mut App) -> Result<(), String> {
         Ok(())
     }
 
@@ -2616,7 +2618,7 @@ async fn build_app_native(
         login_methods,
         login_guard,
     );
-    rules.check_built(&app)?;
+    rules.check_built(&mut app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);
     }

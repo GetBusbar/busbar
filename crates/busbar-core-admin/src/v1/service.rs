@@ -841,8 +841,8 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     }
 
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }
@@ -871,8 +871,8 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     next.global_hooks.retain(|n| n != name);
     stage_hook_routes(&mut next)?;
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }
@@ -984,8 +984,8 @@ pub(crate) fn build_with_registry(
         return Err(AdminError::Validation(e));
     }
     rebuild_hook_derived(&mut next);
-    next.root_rules
-        .check_built(&next)
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
         .map_err(AdminError::Validation)?;
     Ok(next)
 }

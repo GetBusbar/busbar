@@ -199,7 +199,7 @@ impl RootRules for Reader {
     ) -> Option<busbar_contract::secure::SecureString> {
         self.policy.held_document(path)
     }
-    fn check_built(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+    fn check_built(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
         self.policy.check_built(app)
     }
     fn mounted_plugin_paths(

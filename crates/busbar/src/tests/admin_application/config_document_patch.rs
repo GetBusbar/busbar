@@ -1065,7 +1065,7 @@ impl busbar_kernel::appbuild::RootRules for PlaneOnMarker {
     fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
         self.inner.check(cfg)
     }
-    fn check_built(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+    fn check_built(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
         self.inner.check_built(app)
     }
     fn mounted_plugin_paths(

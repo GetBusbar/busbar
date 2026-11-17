@@ -44,7 +44,7 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
         fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
             Ok(())
         }
-        fn check_built(&self, candidate: &busbar_kernel::state::App) -> Result<(), String> {
+        fn check_built(&self, candidate: &mut busbar_kernel::state::App) -> Result<(), String> {
             assert_eq!(
                 candidate.config_version, 0,
                 "this is the actual startup candidate"
@@ -135,7 +135,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
         fn check(&self, _: &busbar_kernel::config::RootCfg) -> Result<(), String> {
             Ok(())
         }
-        fn check_built(&self, candidate: &busbar_kernel::state::App) -> Result<(), String> {
+        fn check_built(&self, candidate: &mut busbar_kernel::state::App) -> Result<(), String> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert_eq!(
                 candidate.config_version, 1,

@@ -418,10 +418,10 @@ pub(crate) fn compose_egress(
 /// resolved configuration as it is built (the root's install record,
 /// `busbar_kernel::preflight::RootInstall::config_projection`), and read back when that generation
 /// is swapped in.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DoorConfig {
     /// Candidate-owned physical handlers, constructed by its root rules before publication.
-    pub(crate) listener_routes: std::sync::OnceLock<crate::root::serve::PreparedListeners>,
+    pub(crate) listener_routes: Option<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
     pub(crate) listeners: Result<crate::root::boot::ListenerNeeds, String>,
     /// Effective root binds, independent of the boot catalog used by the early projection.
@@ -449,7 +449,7 @@ pub(crate) fn door_config(
         sections
     });
     let config = DoorConfig {
-        listener_routes: std::sync::OnceLock::new(),
+        listener_routes: None,
         listeners: sections
             .as_ref()
             .map_err(Clone::clone)
@@ -748,7 +748,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         crate::root::serve::claim_ticket_custody(identity)
     }
 
-    fn check_built(&self, app: &App) -> Result<(), String> {
+    fn check_built(&self, app: &mut App) -> Result<(), String> {
         if let Some(config) = app
             .config_projection
             .as_ref()
@@ -757,7 +757,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             config.sections.as_ref().map_err(Clone::clone)?;
         }
         match self.listeners.as_ref() {
-            Some(listeners) => listeners.check(app),
+            Some(listeners) => listeners.prepare(app),
             None => Ok(()),
         }
     }

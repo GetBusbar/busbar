@@ -2008,7 +2008,7 @@ impl ListenerPlan {
 
     pub(crate) fn check(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
         self.check_topology(app)?;
-        self.prepare(app)
+        self.prepare_routes(app).map(|_| ())
     }
 
     fn check_topology(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
@@ -2020,14 +2020,25 @@ impl ListenerPlan {
         Ok(())
     }
 
-    pub(crate) fn prepare(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        let Some(served) = self.served.as_ref() else {
+    pub(crate) fn prepare(&self, app: &mut busbar_kernel::state::App) -> Result<(), String> {
+        self.check_topology(app)?;
+        let Some(prepared) = self.prepare_routes(app)? else {
             return Ok(());
         };
+        let mut cfg = self.config(app)?.clone();
+        cfg.listener_routes = Some(prepared);
+        app.config_projection = Some(Arc::new(cfg));
+        Ok(())
+    }
+
+    fn prepare_routes(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Result<Option<PreparedListeners>, String> {
+        let Some(served) = self.served.as_ref() else {
+            return Ok(None);
+        };
         let cfg = self.config(app)?;
-        if cfg.listener_routes.get().is_some() {
-            return Ok(());
-        }
         let chain: Vec<_> = cfg
             .data_chain
             .iter()
@@ -2072,8 +2083,7 @@ impl ListenerPlan {
             prepared.insert(at, Arc::new(router));
         }
 
-        let _ = cfg.listener_routes.set(prepared);
-        Ok(())
+        Ok(Some(prepared))
     }
 
     pub(crate) fn prepared(
@@ -2084,7 +2094,7 @@ impl ListenerPlan {
         self.config(app)
             .ok()?
             .listener_routes
-            .get()?
+            .as_ref()?
             .get(at)
             .cloned()
     }
@@ -2093,7 +2103,7 @@ impl ListenerPlan {
         &self,
         app: &busbar_kernel::state::App,
     ) -> Option<MountedPaths> {
-        self.config(app).ok()?.listener_routes.get()?;
+        self.config(app).ok()?.listener_routes.as_ref()?;
         let mut paths: MountedPaths = self
             .plugin_mounts
             .as_ref()?

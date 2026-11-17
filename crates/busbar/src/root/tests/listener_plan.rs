@@ -164,6 +164,15 @@ fn plan(mut topology: ListenerNeeds) -> Arc<ListenerPlan> {
     })
 }
 
+fn prepared_app(
+    plan: &ListenerPlan,
+    app: Arc<busbar_kernel::state::App>,
+) -> Arc<busbar_kernel::state::App> {
+    let mut app = Arc::unwrap_or_clone(app);
+    plan.prepare(&mut app).unwrap();
+    Arc::new(app)
+}
+
 async fn projection_boundary_app(
     topology: ListenerNeeds,
     routes: Vec<RouteDecl>,
@@ -224,7 +233,7 @@ async fn projection_boundary_app(
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
     candidate.config_projection = Some(Arc::new(crate::root::door_steps::DoorConfig {
-        listener_routes: std::sync::OnceLock::new(),
+        listener_routes: None,
         root_binds: Ok(topology
             .binds
             .iter()
@@ -320,6 +329,7 @@ async fn listener_policy_retains_each_candidate_across_three_new_generations() {
         )
         .await;
         plan.check(&next).unwrap();
+        let next = prepared_app(&plan, next);
         let selected = select(&source(Arc::clone(&next))).unwrap();
         assert!(Arc::ptr_eq(&selected.app, &next));
         assert!(selected
@@ -402,6 +412,7 @@ async fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separa
             .unwrap(),
     );
     plan.check(&boot).unwrap();
+    let boot = prepared_app(&plan, boot);
     let mut moved = initial.clone();
     moved.needs[0].at = "listen".into();
     let moved = projection_boundary_app(
@@ -937,6 +948,7 @@ async fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_ne
             .unwrap(),
     );
     plan.check(&boot).unwrap();
+    let boot = prepared_app(&plan, boot);
     let replacement = projection_boundary_app(
         topology.clone(),
         vec![unavailable("/exports/private/scrape")],
@@ -950,6 +962,7 @@ async fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_ne
         projection_boundary_app(no_need, vec![unavailable("/exports/private/new")], 2).await;
     plan.check(&new_path)
         .expect("new unmounted paths retain the existing restart-to-apply behavior");
+    let new_path = prepared_app(&plan, new_path);
     let mounted = plan.mounted_plugin_paths(&new_path).unwrap();
     assert_eq!(
         busbar_kernel::plugin_routes::paths_awaiting_restart(
@@ -1056,12 +1069,13 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
     use axum::http::StatusCode;
     let initial = topology();
     let plan = plan(initial.clone());
-    let mut boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1).await;
+    let boot = projection_boundary_app(initial.clone(), vec![labeled_route("boot")], 1).await;
     let plan = Arc::new(
         plan.mount_planes(&super::Served::default(), &boot, &[])
             .unwrap(),
     );
     plan.check(&boot).unwrap();
+    let mut boot = prepared_app(&plan, boot);
     let rules = Arc::new(crate::root::door_steps::Rules::default().with_listeners(plan.clone()));
     Arc::get_mut(&mut boot).unwrap().root_rules = rules.clone();
     let boot_lifetime = Arc::downgrade(&boot);
@@ -1081,6 +1095,7 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
         projection_boundary_app(moved.clone(), vec![labeled_route("discarded")], 2).await;
     Arc::get_mut(&mut discarded).unwrap().root_rules = rules.clone();
     plan.check(&discarded).unwrap();
+    let discarded = prepared_app(&plan, discarded);
     let discarded_routes = Arc::downgrade(&plan.prepared(&discarded, "listen").unwrap());
     let discarded_app = Arc::downgrade(&discarded);
     drop(discarded);
@@ -1123,6 +1138,7 @@ async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their
     let mut next = projection_boundary_app(moved, vec![labeled_route("published")], 2).await;
     Arc::get_mut(&mut next).unwrap().root_rules = rules.clone();
     plan.check(&next).unwrap();
+    let next = prepared_app(&plan, next);
     let next_lifetime = Arc::downgrade(&next);
     handle.swap(next.clone()).await;
     assert_eq!(
@@ -1172,8 +1188,10 @@ async fn a_swap_between_route_selection_and_auth_keeps_the_selected_generation()
             .unwrap(),
     );
     plan.check(&boot).unwrap();
+    let boot = prepared_app(&plan, boot);
     let next = projection_boundary_app(initial, vec![labeled_route("later")], 2).await;
     plan.check(&next).unwrap();
+    let next = prepared_app(&plan, next);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot));
     let swapping = Arc::downgrade(&handle);
     let router = busbar_kernel::router::serve_listener_generations(
@@ -1209,6 +1227,7 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
             .unwrap(),
     );
     plan.check(&boot).unwrap();
+    let boot = prepared_app(&plan, boot);
     let next = projection_boundary_app(
         initial,
         vec![
@@ -1219,6 +1238,7 @@ async fn newly_opened_data_paths_are_physically_served_without_a_restart_report(
     )
     .await;
     plan.check(&next).unwrap();
+    let next = prepared_app(&plan, next);
     let mounted = plan.mounted_plugin_paths(&next).unwrap();
     assert!(
         busbar_kernel::plugin_routes::paths_awaiting_restart(
