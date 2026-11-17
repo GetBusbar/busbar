@@ -127,11 +127,11 @@ impl Rolling {
 const REQUEST_BOUNDS_MS: [u64; 15] = [
     1, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000,
 ];
-const REQUEST_COUNT: &str = "busbar_request_phase_duration_count_total";
-const REQUEST_SUM: &str = "busbar_request_phase_duration_sum_us_total";
-const REQUEST_ERRORS: &str = "busbar_request_phase_errors_total";
-const REQUEST_CLIENT_ERRORS: &str = "busbar_request_phase_client_errors_total";
-const REQUEST_BIN: &str = "busbar_request_phase_duration_bin_total";
+pub(crate) const REQUEST_COUNT: &str = "busbar_request_phase_duration_count_total";
+pub(crate) const REQUEST_SUM: &str = "busbar_request_phase_duration_sum_us_total";
+pub(crate) const REQUEST_ERRORS: &str = "busbar_request_phase_errors_total";
+pub(crate) const REQUEST_CLIENT_ERRORS: &str = "busbar_request_phase_client_errors_total";
+pub(crate) const REQUEST_BIN: &str = "busbar_request_phase_duration_bin_total";
 #[derive(Clone, Default)]
 struct RequestDistribution {
     count: u64,

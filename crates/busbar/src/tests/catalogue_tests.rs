@@ -124,3 +124,102 @@ mod page {
         committed_matches(COMMITTED_JSON, &render_json_for(&host_page()));
     }
 }
+
+/// DES-337 C3: a first-party plugin declaring a host family the plugin series reservation used to
+/// miss (login, card-history alarms, request phases, request telemetry) is refused with the
+/// existing host-series text. A third-party plugin's declarations are never granted at all.
+#[test]
+fn a_plugin_declaring_a_catalogued_host_family_is_refused() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    let observing = busbar_plugin_loader::observe::Observing::default();
+    assert!(observing.install_host_series(crate::root::linked::host_series));
+    for series in [
+        "busbar_login_attempts_total",
+        "busbar_login_throttled_total",
+        "busbar_card_history_alarms_total",
+        "busbar_request_phase_duration_seconds",
+        "busbar_request_phase_duration_count_total",
+        "busbar_telemetry_request_cells",
+    ] {
+        let Err(refused) = busbar_plugin_loader::observe::grant_series(
+            &observing,
+            "c3-plugin",
+            true,
+            &[SeriesDecl::new(series, "counter")],
+        ) else {
+            panic!("a first-party claim on the host family {series} is refused");
+        };
+        assert_eq!(
+            refused,
+            format!(
+                "plugin 'c3-plugin' declares the series '{series}', which the host itself emits"
+            )
+        );
+    }
+}
+
+/// DES-337 §3.3: the generated metrics table in docs/observability.md, between its markers.
+mod metric_table {
+    use busbar_kernel::snapshot::catalogue::{MetricDecl, HOST_METRICS};
+
+    const DOC: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/observability.md");
+    const COMMITTED: &str = include_str!(concat!(
+        env!("BUSBAR_CORE_DIR"),
+        "/../../docs/observability.md"
+    ));
+    const BEGIN: &str = "<!-- metric-catalogue:begin (generated from busbar_kernel::snapshot::catalogue::HOST_METRICS; regenerate with UPDATE_DIAGNOSTICS=1 and the busbar catalogue_tests) -->\n";
+    const END: &str = "<!-- metric-catalogue:end -->\n";
+
+    /// One row per catalogued family, sorted by name: name, type, label keys, unit, help.
+    fn render() -> String {
+        let mut rows: Vec<&MetricDecl> = HOST_METRICS.iter().collect();
+        rows.sort_by_key(|d| d.name);
+        let mut out =
+            String::from("| Metric | Type | Labels | Unit | Help |\n|---|---|---|---|---|\n");
+        for d in rows {
+            let labels = if d.labels.is_empty() {
+                "none".to_owned()
+            } else {
+                d.labels
+                    .iter()
+                    .map(|l| format!("`{l}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} |\n",
+                d.name,
+                d.kind.as_str(),
+                labels,
+                d.unit.map_or("none", |u| u.as_str()),
+                d.help
+            ));
+        }
+        out
+    }
+
+    /// The committed page with the generated table in place of whatever is between the markers.
+    fn regenerated(page: &str) -> String {
+        let (head, rest) = page
+            .split_once(BEGIN)
+            .expect("docs/observability.md carries the metric-catalogue begin marker");
+        let (_, tail) = rest
+            .split_once(END)
+            .expect("docs/observability.md carries the metric-catalogue end marker");
+        format!("{head}{BEGIN}{}{END}{tail}", render())
+    }
+
+    /// C4: the committed metrics table is the catalogue's.
+    #[test]
+    fn the_observability_metric_table_is_generated_from_the_catalogue() {
+        let fresh = regenerated(COMMITTED);
+        if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+            std::fs::write(DOC, &fresh).unwrap_or_else(|e| panic!("write {DOC}: {e}"));
+            return;
+        }
+        assert_eq!(
+            COMMITTED, fresh,
+            "{DOC}'s metric table is stale: regenerate it with UPDATE_DIAGNOSTICS=1 and the busbar catalogue_tests"
+        );
+    }
+}
