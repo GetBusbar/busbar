@@ -739,11 +739,12 @@ diagnostics! {
         "A unit's drained usage report named a class that no installed plane declares as billable, no configured `units:` entry names, and is not one of the reserved four. The unit's one line is still written with every count, but its money is REFUSED rather than priced: a class nobody declared is never billed at zero and never dropped. Every read of the balance the line sits on refuses until it is explained.",
         "The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.";
 
-    /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// auth.chain is written empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+    /// A configuration with no `auth:` block is refused with it at validation (#358).
     OPEN_RELAY_NO_AUTH = 8014, Governance, Actionable, "open-relay-no-auth", "1.6.0", false,
         "auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)",
-        "The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.",
-        "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
+        "The auth chain is written empty (`auth: { chain: [] }`, the operator's explicit open-relay acknowledgement), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. A configuration with no `auth:` block is refused with this code instead of booting: busbar never runs an open relay by omission, and the 1.5.5 upgrade writes `auth: { chain: [] }` for a 1.5.5 config that had none. Acceptable only for local development.",
+        "Configure `auth.chain` (`chain: [keys]` with virtual keys minted through the admin API, and/or an auth plugin) before exposing busbar to any untrusted network. To run unauthenticated deliberately, write `auth: { chain: [] }`. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.";
 
     /// A stored recoverable credential opens under neither at-rest key, so it does not authenticate.
     CREDENTIAL_AT_REST_UNOPENABLE = 8023, Governance, Actionable, "credential-at-rest-unopenable", "1.6.0", false,

@@ -28,9 +28,10 @@ fn upgrade(config: &str, facts: &Facts) -> (String, Vec<String>) {
 
 /// (a) goldens and (j): each 1.5.5 fixture is rewritten once to its golden, byte for byte through
 /// the patch writer. The store-less default install gains `store: {module: memory}`, the block
-/// 1.5.5 implied (AGREED QM2); the fleet config loses its overlay selector, its zero cache-write
-/// rate and its hostless metadata entry, gains the open unit at 0 and the ungoverned binding, and
-/// keeps every comment, quote and blank line, its store module word as written.
+/// 1.5.5 implied (AGREED QM2), and `auth: { chain: [] }`, the open relay it ran (#358); the fleet
+/// config loses its overlay selector, its zero cache-write rate and its hostless metadata entry,
+/// gains the open unit at 0 and the ungoverned binding, and keeps every comment, quote and blank
+/// line, its store module word as written.
 #[test]
 fn the_1_5_5_goldens_are_rewritten_byte_for_byte() {
     let fleet = Facts {
@@ -59,25 +60,26 @@ fn the_1_5_5_goldens_are_rewritten_byte_for_byte() {
 
 /// (j): the store-less shapes 1.5.5 ran on its built-in store each get the explicit block, one
 /// report line, and nothing else changes: no block, a null block, and a block naming no module
-/// (its keys kept; the store's own migrate drops what it does not read).
+/// (its keys kept; the store's own migrate drops what it does not read). Each names its `auth:`
+/// block, so the open posture 1.5.5 implied (#358, below) is not written here.
 #[test]
 fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
     for (source, golden) in [
         (
-            "listen: x\n",
-            "config_version: 1\nlisten: x\nstore:\n  module: memory\n",
+            "listen: x\nauth: {chain: [keys]}\n",
+            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore:\n  module: memory\n",
         ),
         (
-            "listen: x\nstore:\n",
-            "config_version: 1\nlisten: x\nstore:\n  module: memory\n",
+            "listen: x\nauth: {chain: [keys]}\nstore:\n",
+            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore:\n  module: memory\n",
         ),
         (
-            "listen: x\nstore: {token: x}\n",
-            "config_version: 1\nlisten: x\nstore: {module: memory, token: x}\n",
+            "listen: x\nauth: {chain: [keys]}\nstore: {token: x}\n",
+            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: memory, token: x}\n",
         ),
         (
-            "listen: x\nstore: {module: ~, token: x}\n",
-            "config_version: 1\nlisten: x\nstore: {module: memory, token: x}\n",
+            "listen: x\nauth: {chain: [keys]}\nstore: {module: ~, token: x}\n",
+            "config_version: 1\nlisten: x\nauth: {chain: [keys]}\nstore: {module: memory, token: x}\n",
         ),
     ] {
         let (written, report) = upgrade(source, &facts());
@@ -92,8 +94,14 @@ fn a_store_less_1_5_5_config_names_the_store_1_5_5_implied() {
         );
     }
     // A config that names its store keeps it, whatever the word.
-    let (written, report) = upgrade("store:\n  module: postgres\n", &facts());
-    assert_eq!(written, "config_version: 1\nstore:\n  module: postgres\n");
+    let (written, report) = upgrade(
+        "auth: {chain: [keys]}\nstore:\n  module: postgres\n",
+        &facts(),
+    );
+    assert_eq!(
+        written,
+        "config_version: 1\nauth: {chain: [keys]}\nstore:\n  module: postgres\n"
+    );
     // 1b always reports the overlay it looked for (package 2); the chain itself changed nothing.
     assert!(
         report.iter().all(|line| line.starts_with("overlay: ")),
@@ -162,7 +170,7 @@ fn module_words_are_left_as_written() {
         "redis",
     ] {
         let source = format!(
-            "store: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
+            "auth: {{chain: [keys]}}\nstore: {{module: {module}}}\nsecrets:\n  vault: {{module: busbar-hashicorp-vault, settings: {{address: x}}}}\n"
         );
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {
@@ -190,7 +198,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
         "pools:\n  fast:\n    deadline_secs: 5\n",
         "pools:\n  fast:\n    hooks:\n      - audit: {at: route}\n",
     ] {
-        let source = format!("{shape}store: {{module: sqlite}}\n");
+        let source = format!("{shape}auth: {{chain: [keys]}}\nstore: {{module: sqlite}}\n");
         let seen = RefCell::new(None);
         let check = |text: &str, _: Option<&str>| -> Result<(), String> {
             *seen.borrow_mut() = Some(text.to_owned());
@@ -246,7 +254,7 @@ fn the_deleted_passes_inputs_reach_the_strict_parse_unchanged() {
 #[test]
 fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     let source =
-        "rate_card:\n  claude: {input_utok: 3, output_utok: 15}\nstore: {module: sqlite}\n";
+        "auth: {chain: [keys]}\nrate_card:\n  claude: {input_utok: 3, output_utok: 15}\nstore: {module: sqlite}\n";
     let with = |units: &[&str]| Facts {
         open_units: units.iter().map(|unit| (*unit).to_owned()).collect(),
         ..facts()
@@ -254,8 +262,8 @@ fn the_open_units_are_the_boots_facts_and_the_boots_parse_judges_them() {
     let (written, report) = upgrade(source, &with(&["web_search"]));
     assert_eq!(
         written,
-        "config_version: 1\nrate_card:\n  claude: {input_utok: 3, output_utok: 15, units: \
-         {web_search: 0}}\nstore: {module: sqlite}\n"
+        "config_version: 1\nauth: {chain: [keys]}\nrate_card:\n  claude: {input_utok: 3, output_utok: 15, \
+         units: {web_search: 0}}\nstore: {module: sqlite}\n"
     );
     assert_eq!(
         report

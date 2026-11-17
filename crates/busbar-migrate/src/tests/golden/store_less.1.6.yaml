@@ -2,6 +2,8 @@
 config_version: 1
 listen: "0.0.0.0:8080"
 admin_listen: 127.0.0.1:8081
+auth:
+  chain: []
 
 models:
   claude:

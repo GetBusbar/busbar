@@ -10,11 +10,13 @@ use super::*;
 use crate::scratch::{accept, facts, Scratch};
 
 /// A 1.5.5 deployment whose core sections 1.6.0 reads unchanged (it names its store: AGREED QM2
-/// writes the block a store-less 1.5.5 config implied, which red (j) pins).
+/// writes the block a store-less 1.5.5 config implied, which red (j) pins; and its `auth:` block:
+/// #358 writes the open posture a 1.5.5 config with none ran).
 const CONFIG_1_5_5: &str = "\
 # production gateway
 listen: 0.0.0.0:8080   # data plane
 admin_listen: '127.0.0.1:8081'
+auth: {chain: [keys]}
 
 models:
   sonnet:
@@ -71,7 +73,7 @@ fn a_1_5_5_config_is_stamped_once_in_place_with_its_backup() {
     assert_eq!(
         written,
         "# production gateway\nconfig_version: 1\nlisten: 0.0.0.0:8080   # data plane\n\
-         admin_listen: '127.0.0.1:8081'\n\nmodels:\n  sonnet:\n    provider: anthropic\n\
+         admin_listen: '127.0.0.1:8081'\nauth: {chain: [keys]}\n\nmodels:\n  sonnet:\n    provider: anthropic\n\
          store:\n  module: sqlite\n"
     );
     assert_eq!(

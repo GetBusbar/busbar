@@ -92,6 +92,8 @@ const OVERLAY_G: &str = r#"{"version":1,"groups":{"G":{"enabled":true}},"deleted
 const FOLDED_G: &str = "\
 config_version: 1
 listen: 0.0.0.0:8080
+auth:
+  chain: []
 store:
   module: sqlite
   settings:

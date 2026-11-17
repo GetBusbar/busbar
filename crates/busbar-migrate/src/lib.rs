@@ -25,6 +25,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+mod absent_auth;
 mod absent_store;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
