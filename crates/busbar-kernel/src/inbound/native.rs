@@ -940,6 +940,28 @@ pub struct PhysicalPublicExecution {
     lease: AdmissionLease,
 }
 impl PhysicalPublicExecution {
+    /// Execute only the original public core request against its retained prepared generation.
+    /// No caller-supplied URI, router or replacement request can borrow this execution right.
+    pub async fn http_response(&self) -> Result<axum::response::Response, ArrivalRefusal> {
+        use tower::ServiceExt;
+        self.check_executing()?;
+        let snapshot = self
+            .binding
+            .snapshot()
+            .map_err(|_| ArrivalRefusal::Capacity)?;
+        let mut request = super::http_projection::HttpProjection::from_snapshot(snapshot.clone())
+            .map_err(|_| ArrivalRefusal::Capacity)?
+            .into_request(axum::body::Body::from(snapshot.body_bytes()));
+        request.extensions_mut().insert(self.binding.app.clone());
+        let prepared = &self.binding.prepared;
+        let router = (prepared.dispatch_layer)(prepared.router.clone())
+            .with_state(self.binding.handle.clone());
+        Ok(router
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {}))
+    }
+
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }

@@ -282,3 +282,39 @@ async fn combined_form_capacity_and_cancellation_retire_both_maps() {
     assert_eq!(budget.used().0, 0);
     assert!(budget.try_enter(AdmissionClass::Operator).is_ok());
 }
+
+#[tokio::test]
+async fn combined_form_keeps_get_query_semantics_without_content_type() {
+    use axum::extract::FromRequest;
+    let budget = ProcessAdmission::with_limits(1, 65536, 65536);
+    let lease = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let fields: [(&str, &[u8]); 0] = [];
+    let snapshot = ChargedRequestSnapshot::capture(
+        SnapshotInput {
+            method: "GET",
+            path: "/",
+            query: "field=query",
+            query_present: true,
+            authority: "",
+            headers: fields.iter().copied(),
+            peer: "",
+            tls_peer_cert: &[],
+            body: b"field=body",
+            now_s: 1,
+        },
+        &lease,
+    )
+    .unwrap();
+    let request = HttpProjection::from_snapshot(snapshot.clone())
+        .unwrap()
+        .into_request(axum::body::Body::from(snapshot.body_bytes()));
+    let form = ProjectedForm::<FormValue>::from_request(request, &())
+        .await
+        .unwrap();
+    assert_eq!(form.value.field, "query");
+    assert!(form.headers.is_empty());
+    drop(snapshot);
+    drop(lease);
+    drop(form);
+    assert_eq!(budget.used().0, 0);
+}

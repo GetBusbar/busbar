@@ -20,6 +20,7 @@ use rustls_pki_types::{CertificateDer, SignatureVerificationAlgorithm};
 use crate::BACKEND;
 
 mod tickets;
+pub mod write_progress;
 pub use tickets::{ListenerTickets, TICKET_MAX_AGE};
 
 /// The backend refused a TLS config or component.

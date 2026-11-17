@@ -699,6 +699,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-ffi",
+ "busbar-kernel-breaker",
  "busbar-plugin-abi",
  "busbar-ports",
  "flate2",
