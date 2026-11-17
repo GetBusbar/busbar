@@ -228,19 +228,6 @@ impl Drop for Forgotten {
 }
 
 impl ServiceStore {
-    pub(crate) fn bind_child(
-        &self,
-        ticket: Ticket,
-        caller: &Caller,
-        child: Arc<dyn busbar_contract::services::HookChildInvocation>,
-    ) {
-        self.children
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(ticket)
-            .or_default()
-            .insert(caller.incarnation().clone(), child);
-    }
     pub(crate) fn unbind_child(&self, ticket: Ticket) {
         let unbound = self
             .children

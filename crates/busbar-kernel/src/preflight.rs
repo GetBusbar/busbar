@@ -175,8 +175,6 @@ pub struct RootInstall {
     pub endpoint_locate: Option<EndpointLocate>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
-    /// The root's store axis: what boot opens the configured store through.
-    pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
     /// process's one dispatcher (`None`: only a cold-lane plugin resolves).
     pub secret_axis: Option<&'static dyn busbar_contract::secret::SecretAxis>,

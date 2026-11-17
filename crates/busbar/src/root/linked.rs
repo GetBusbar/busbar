@@ -314,7 +314,6 @@ pub fn register_stores(linked: &Linked) {
             endpoint_locate: Some(crate::root::boot::locate_provider_destination),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             // WP3 hook step: native hooks open only in the serving walk; the kernel opens none.
-            store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             secret_admit: Some(crate::root::boot::admit_secrets),
             secret_snapshot: Some(secret_snapshot),

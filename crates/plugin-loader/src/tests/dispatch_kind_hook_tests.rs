@@ -408,7 +408,6 @@ fn zeroed_pending_and_refused_pass_every_op() {
 
 #[test]
 fn the_hook_tail_follows_the_growth_rule() {
-    use crate::dispatch::kinds::hook::HookContext;
     use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
     use busbar_contract::abi::sdk::door::statement;
     let bind = |size: usize| {
@@ -420,10 +419,7 @@ fn the_hook_tail_follows_the_growth_rule() {
             kind_tail: std::ptr::from_ref(&leaked[0]).cast(),
             ..statement("t", "1", 0)
         };
-        <Hook as Kind>::context(&st).map(|c| {
-            c.and_then(|c| c.downcast::<HookContext>().ok())
-                .map(|f| f.facts.class)
-        })
+        crate::dispatch::kinds::hook::facts(&st).map(|f| Some(f.class))
     };
     let host = size_of::<Tail>();
     assert_eq!(bind(host), Ok(Some(CLASS_TAP)));

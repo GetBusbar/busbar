@@ -54,7 +54,7 @@ pub(crate) fn route(r: &hook::Route) -> Result<Route, String> {
     Ok(Route { path, method, auth })
 }
 
-fn read(st: &Statement) -> Result<HookContext, String> {
+fn read(st: &Statement) -> Result<(HookFacts, Vec<Route>), String> {
     use crate::cold::dispatch::kinds as cold;
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     if st.kind_tail.is_null() {
@@ -105,21 +105,17 @@ fn read(st: &Statement) -> Result<HookContext, String> {
             .words
             .push(owned(m.word).ok_or("a hook word is over-long")?);
     }
-    Ok(HookContext {
-        facts,
-        routes: declared_routes,
-    })
+    Ok((facts, declared_routes))
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct HookContext {
-    pub facts: HookFacts,
     pub routes: Vec<Route>,
 }
 
 #[cfg(test)]
 pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
-    read(st).map(|context| context.facts)
+    read(st).map(|(facts, _)| facts)
 }
 
 /// The hook kind.
@@ -146,11 +142,12 @@ impl Kind for Hook {
     const TIMEOUT: Outcome = Outcome::Failed;
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
-        Ok(Some(Box::new(read(st)?)))
+        let (_, routes) = read(st)?;
+        Ok(Some(Box::new(HookContext { routes })))
     }
 
     fn optional_by_statement(s: u32, st: &Statement) -> bool {
-        s == slot::SERVE && read(st).is_ok_and(|context| context.routes.is_empty())
+        s == slot::SERVE && read(st).is_ok_and(|(_, routes)| routes.is_empty())
     }
 
     fn op_name(s: u32) -> &'static str {
