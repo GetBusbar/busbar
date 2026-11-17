@@ -30,19 +30,22 @@ fn participant(
     scope: &ScopedStore,
     record: &Record,
 ) -> std::result::Result<scoped::PreparedRows, scoped::Error> {
-    scope.prepare_participant(&scoped::Request {
-        op_id: [5; 16],
-        predicates: vec![scoped::Predicate {
-            schema: "receipts".into(),
-            key: b"publication".to_vec(),
-            expected: scoped::Expected::Absent,
-        }],
-        mutations: vec![scoped::Mutation::Put {
-            schema: "receipts".into(),
-            key: b"publication".to_vec(),
-            value: Secret::new(record.node.to_be_bytes().to_vec()),
-        }],
-    })
+    scope.prepare_participant(
+        &scoped::Request {
+            op_id: [5; 16],
+            predicates: vec![scoped::Predicate {
+                schema: "receipts".into(),
+                key: b"publication".to_vec(),
+                expected: scoped::Expected::Absent,
+            }],
+            mutations: vec![scoped::Mutation::Put {
+                schema: "receipts".into(),
+                key: b"publication".to_vec(),
+                value: Secret::new(record.node.to_be_bytes().to_vec()),
+            }],
+        },
+        4096,
+    )
 }
 
 #[tokio::test]
@@ -223,4 +226,57 @@ async fn abandoned_unsubmitted_reservation_and_foreign_participant_have_no_effec
     drop(reserved);
     assert!(backend.state.lock().unwrap().sent.is_empty());
     assert!(owner.stage_run(&[entry(2)]).is_ok());
+}
+
+#[tokio::test]
+async fn participant_budget_and_scope_refusals_submit_nothing() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let request = scoped::Request {
+        op_id: [6; 16],
+        predicates: Vec::new(),
+        mutations: vec![scoped::Mutation::Put {
+            schema: "receipts".into(),
+            key: b"p".to_vec(),
+            value: Secret::new(vec![1]),
+        }],
+    };
+    assert!(matches!(
+        scope(store.clone()).prepare_participant(&request, 0),
+        Err(scoped::Error::Access(
+            crate::persistence::facade::AccessError::Overloaded
+        ))
+    ));
+    let untrusted = ScopedStore::authorized(store, "receipt-test", ["receipts".into()]).unwrap();
+    assert!(matches!(
+        untrusted.prepare_participant(&request, 4096),
+        Err(scoped::Error::Unauthorized)
+    ));
+    assert!(backend.state.lock().unwrap().sent.is_empty());
+}
+
+#[tokio::test]
+async fn conditional_reconciliation_does_not_release_or_replace_the_original() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    let owner = owner(store.clone(), 7).await;
+    let reserved = owner.reserve_conditional().unwrap();
+    reserved
+        .prepare(entry(1), |r| participant(&scope(store), r))
+        .await
+        .unwrap();
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert_eq!(reserved.drive().await, Err(RuntimeError::Pending));
+    backend.state.lock().unwrap().receipts.clear();
+    backend.expire_receipt.store(true, Ordering::SeqCst);
+    assert_eq!(reserved.drive().await, Err(RuntimeError::Reconcile));
+    assert_eq!(reserved.drive().await, Err(RuntimeError::Reconcile));
+    assert_eq!(owner.pending_records(), 1);
+    assert!(matches!(
+        owner.stage_run(&[entry(2)]),
+        Err(RuntimeError::Pending)
+    ));
+    assert_eq!(reserved.finish().await, Err(RuntimeError::Pending));
+    assert!(owner.retained_conditional().unwrap().is_some());
+    assert_eq!(backend.state.lock().unwrap().sent.len(), 2);
 }
