@@ -109,3 +109,84 @@ fn owner_local_refs_keep_closed_members_and_reserved_controls_after_embedding() 
         assert!(!validator.is_valid(&case), "{case}");
     }
 }
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn published_registration_resource_reaches_core_ownership_without_plane_authority() {
+    use busbar_contract::json::JsonValueTrait as _;
+    use busbar_kernel::upstreams::{core_field_paths, core_secret_paths, declared, Upstreams as _};
+
+    let mut plane = stated("resource/fixture", "widgets");
+    let mut schema: Value = serde_json::from_str(plane.settings_schema.as_ref().unwrap()).unwrap();
+    schema["$defs"]["member"]["properties"]["resource"] = json!({
+        "type":["string","null"],"minLength":1,"maxLength":128,
+        "pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+        "description":"Core resource label; canonical admission additionally enforces at most 128 UTF-8 bytes."
+    });
+    plane.settings_schema = Some(schema.to_string());
+    let inputs = collect(&[plane]);
+    let mut document = super::super::config_forms::schema_document();
+    inputs.extend_document(&mut document);
+    assert!(document["properties"].get("upstreams").is_none());
+    let validator = jsonschema::validator_for(&document).unwrap();
+    for resource in [
+        None,
+        Some(Value::Null),
+        Some(json!("shared/a")),
+        Some(json!("é".repeat(64))),
+    ] {
+        let mut authored = json!({"widgets":{"member":{"url":"https://example.test"}}});
+        if let Some(resource) = &resource {
+            authored["widgets"]["member"]["resource"] = resource.clone();
+        }
+        assert!(validator.is_valid(&authored), "{authored}");
+        let bag = busbar_contract::json::parse_value(authored.to_string().as_bytes()).unwrap();
+        let split = declared("resource/fixture", &bag, &["/widgets/*"], &|_| {
+            Err("no trust anchor".into())
+        })
+        .unwrap();
+        let expected = resource.as_ref().and_then(Value::as_str);
+        assert_eq!(split.parsed["member"].resource.as_deref(), expected);
+        assert_eq!(
+            split.definitions.get("member").unwrap().resource.as_deref(),
+            expected
+        );
+        assert!(split.visible_bag["widgets"]["member"]
+            .get("resource")
+            .is_none());
+        assert_eq!(split.reattach(&split.visible_bag).unwrap(), bag);
+        assert!(core_field_paths(&bag, &["/widgets/*"])
+            .unwrap()
+            .contains("/widgets/member/resource"));
+        assert!(!core_secret_paths(&bag, &["/widgets/*"])
+            .unwrap()
+            .contains("/widgets/member/resource"));
+        let injected =
+            busbar_contract::json::parse_value(br#"{"widgets":{"member":{"resource":null}}}"#)
+                .unwrap();
+        assert!(split.reattach(&injected).is_err());
+    }
+    for resource in [
+        json!(1),
+        json!(""),
+        json!("bad\nlabel"),
+        json!("x".repeat(129)),
+    ] {
+        let authored =
+            json!({"widgets":{"member":{"url":"https://example.test","resource":resource}}});
+        assert!(!validator.is_valid(&authored), "{authored}");
+    }
+    let multibyte =
+        json!({"widgets":{"member":{"url":"https://example.test","resource":"é".repeat(65)}}});
+    assert!(
+        validator.is_valid(&multibyte),
+        "standard maxLength measures characters"
+    );
+    let bag = busbar_contract::json::parse_value(multibyte.to_string().as_bytes()).unwrap();
+    assert!(
+        declared("resource/fixture", &bag, &["/widgets/*"], &|_| Err(
+            "no trust anchor".into()
+        ))
+        .is_err()
+    );
+}
