@@ -420,6 +420,52 @@ impl NativeDataAllocation {
     }
 
     /// Wire the original candidate's route and budgets before exposing the preparatory Task.
+    pub fn into_pending_runtime(
+        self,
+        seat: &PortSeat,
+        journal: Option<Arc<dyn crate::plane_driver::HookJournal>>,
+        commit: impl FnOnce(RequestPoolReceipt) -> Result<AdmittedUnit, ClientRefusal> + Send + 'static,
+    ) -> Result<NativeDataPending, DataRefused> {
+        if !seat
+            .driver
+            .caller()
+            .same_incarnation(&self.authorization.route.caller)
+            || !Arc::ptr_eq(
+                &seat.request_routes,
+                &self.authorization.route.owners.routes,
+            )
+        {
+            return Err(DataRefused::Binding);
+        }
+        let route = seat
+            .retain_route(
+                self.context(),
+                self.authorization.route.binding.line().route.rung,
+            )
+            .ok_or(DataRefused::Binding)?;
+        let budget = seat.channel_budget.unit();
+        let rates = self
+            .authorization
+            .binding
+            .handle()
+            .selected_rate_admission();
+        Ok(self.into_pending_using(
+            move |receipt, ()| commit(receipt),
+            move |allocation, routes, commit| {
+                Pending::new(allocation, routes, journal, move |receipt| {
+                    commit(receipt, ())
+                })
+            },
+            move |pending| {
+                pending
+                    .with_route(route)
+                    .with_channel_budget(budget)
+                    .with_current_rates(rates)
+            },
+        ))
+    }
+
+    /// Selected Tasks additionally retain their own declaration through the monetary callback.
     pub fn into_pending_selected_runtime(
         self,
         seat: &PortSeat,
