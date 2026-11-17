@@ -80,6 +80,8 @@ impl PersistenceBackend for Backend {
         key: busbar_contract::persistence::CommitKey,
     ) -> Call<'_, Decision> {
         Box::pin(async move {
+            // The native Store adapter checks declared control effects before sending.
+            control::admit(&prepared)?;
             let (decision, hold) = {
                 let mut native = self.0.lock().unwrap();
                 if let Some(apply) = native.before_commit.take() {
@@ -167,21 +169,19 @@ impl PersistenceBackend for Backend {
                                 native.rows.remove(address);
                                 continue;
                             }
-                            _ => panic!("unexpected startup mutation"),
+                            Mutation::DeleteRange {
+                                namespace,
+                                prefix,
+                                exact_key_length,
+                            } => {
+                                assert_eq!(*namespace, control::SLOT_NS);
+                                assert_eq!(*exact_key_length, 20);
+                                let closed: [u8; 16] = prefix.as_slice().try_into().unwrap();
+                                native.slots.retain(|(writer, _), _| *writer != closed);
+                                continue;
+                            }
                         };
                         native.rows.insert(address.clone(), value.clone());
-                        // Closure deletes every slot row of the closed writer.
-                        if let Some(control::Key::Writer(closed)) = (address.namespace
-                            == control::NAMESPACE.0)
-                            .then(|| control::Key::decode(&address.key))
-                            .flatten()
-                        {
-                            if control::Writer::decode(value.expose(&seal))
-                                .is_some_and(|w| w.retired_through == w.admitted_through)
-                            {
-                                native.slots.retain(|(writer, _), _| *writer != closed);
-                            }
-                        }
                     }
                     native.applied += 1;
                     Some(Verdict::Applied)

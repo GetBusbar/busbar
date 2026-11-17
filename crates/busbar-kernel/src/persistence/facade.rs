@@ -33,6 +33,10 @@ pub struct SlotStates {
 mod logical;
 pub(crate) use logical::{LogicalClaim, LogicalId, LogicalPermit};
 
+#[path = "domain.rs"]
+mod domain;
+pub(crate) use domain::{DomainCall, DomainOwner};
+
 /// An already registered writer incarnation. Attachment validates these facts
 /// against one coherent backend observation; it does not mint a grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,7 @@ struct PendingEntry {
     driving: bool,
     logical: Option<LogicalId>,
     identity_owned: bool,
+    domain: Option<domain::Entry>,
     /// The queue slot this entry holds for its whole lifetime.
     slot: u32,
 }
@@ -531,6 +536,12 @@ impl CoreStore {
                 if held.attempt.candidate().fingerprint() != candidate.fingerprint()
                     || held.logical != logical.map(|permit| permit.id)
                     || held.identity_owned != identity_owned
+                    || !domain::same_owner(
+                        held.domain.as_ref().map(|entry| &entry.owner),
+                        logical
+                            .and_then(|permit| permit.domain.as_ref())
+                            .map(|call| &call.owner.id),
+                    )
                 {
                     return Err(AccessError::OperationConflict);
                 }
@@ -569,6 +580,12 @@ impl CoreStore {
                         driving: false,
                         logical: logical.map(|permit| permit.id),
                         identity_owned,
+                        domain: logical
+                            .and_then(|permit| permit.domain.as_ref())
+                            .map(|call| domain::Entry {
+                                owner: call.owner.id.clone(),
+                                foreground: Arc::downgrade(&call.foreground),
+                            }),
                         slot,
                     },
                 );
@@ -600,6 +617,15 @@ impl CoreStore {
     }
 
     async fn drive(&self, id: PendingId, attempt: Arc<Attempt>) -> Result<Submission, AccessError> {
+        self.drive_with(id, attempt, None).await
+    }
+
+    async fn drive_with(
+        &self,
+        id: PendingId,
+        attempt: Arc<Attempt>,
+        foreground: Option<&Arc<()>>,
+    ) -> Result<Submission, AccessError> {
         {
             let mut pending = self.lock()?;
             let entry = pending
@@ -609,7 +635,12 @@ impl CoreStore {
             if !Arc::ptr_eq(&entry.attempt, &attempt) {
                 return Err(AccessError::OperationConflict);
             }
-            if entry.driving {
+            let reserved_elsewhere = entry.domain.as_ref().is_some_and(|domain| {
+                foreground.is_none_or(|held| {
+                    !std::sync::Weak::ptr_eq(&domain.foreground, &Arc::downgrade(held))
+                })
+            });
+            if entry.driving || reserved_elsewhere {
                 return Ok(Submission {
                     id,
                     result: SubmitResult::Busy,

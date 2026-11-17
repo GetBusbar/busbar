@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::json::{json, JsonValueTrait, Value};
+use busbar_contract::json::{json, JsonContainerTrait, Value};
 use busbar_plugin_abi::host_side::caller::Accept;
 
 use super::*;

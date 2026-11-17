@@ -86,6 +86,7 @@ pub mod protocol;
 
 pub mod provider_keys;
 pub mod redacted;
+pub mod response_delivery;
 pub mod retry;
 
 #[allow(missing_docs)]

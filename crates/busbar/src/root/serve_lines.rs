@@ -451,11 +451,11 @@ where
     Close: FnOnce(),
 {
     let limits = busbar_kernel::config::limits::installed();
-    let max_line = limits.map_or_else(
+    let max_line = limits.as_ref().map_or_else(
         busbar_kernel::config::limits::default_request_body_max_bytes,
         |l| l.request_body_max_bytes,
     );
-    let max_inbound = limits.map_or_else(
+    let max_inbound = limits.as_ref().map_or_else(
         busbar_kernel::config::limits::default_max_inbound_concurrent,
         |l| l.max_inbound_concurrent,
     );

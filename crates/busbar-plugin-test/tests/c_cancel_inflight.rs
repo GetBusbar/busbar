@@ -208,21 +208,19 @@ pub(crate) fn rig(
     on_release: fn(),
 ) -> (Registry, Arc<YieldNeeds>, String) {
     let binder: Arc<dyn ConfigBinder> = Arc::new(MemBinder::new());
-    let slots = Arc::new(busbar_plugin_loader::instance::SlotTable::new());
-    busbar_plugin_loader::instance::install_sinks(&slots);
-    let mut images =
-        busbar_plugin_loader::instance::ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+    let process = crate::process_resources();
+    let mut images = busbar_plugin_loader::instance::ImagesBuilder::new(
+        &HOST,
+        Arc::clone(process.slots()),
+        Ceilings::DEFAULT,
+    );
     let admitted = admit_header(plugin).expect("the fixture image is admitted");
     let identity = admitted.identity().to_owned();
     images
         .admit(admitted)
         .expect("the fixture image is described");
     let needs = Arc::new(YieldNeeds::new(on_release));
-    let registry = Registry::new(
-        images.finish(),
-        binder,
-        Arc::new(busbar_plugin_loader::process::InstanceIds::default()),
-    );
+    let registry = Registry::new(images.finish(), binder, Arc::clone(process.ids()));
     (registry, needs, identity)
 }
 

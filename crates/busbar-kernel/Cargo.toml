@@ -100,7 +100,6 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-sup
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
-stats_alloc = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 
 [lints]

@@ -5,10 +5,11 @@
 //! (EXTRACT-IF-SWEEPS S3, S4): no row is collected into a fresh `Vec` and no table is swept.
 use super::*;
 
+/// Bytes this thread allocated while `f` ran (zero exactly when `f` made no allocation).
 fn allocations_in(f: impl FnOnce()) -> u64 {
-    crate::CountingJemalloc::reset();
+    crate::ThreadAllocated::reset();
     f();
-    crate::CountingJemalloc::count()
+    crate::ThreadAllocated::bytes()
 }
 
 /// Mint one unit on `stream` of `framing` (a connection id equal to the framing id).

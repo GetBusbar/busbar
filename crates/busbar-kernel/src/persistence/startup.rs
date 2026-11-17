@@ -671,10 +671,8 @@ impl Startup {
                         expected: ExpectedValue::Absent,
                     },
                 ];
-                let mut mutations = vec![Mutation::Put {
-                    address: writer_address(authority.writer),
-                    value: Secret::new(open_writer().encode().ok_or(Error::Corrupt)?.to_vec()),
-                }];
+                let mut mutations = control::writer_put(authority.writer, None, open_writer())
+                    .ok_or(Error::Corrupt)?;
                 let mut takeover = None;
                 let mut waiting = false;
                 if let Some(pending) = birth.as_mut().filter(|birth| !birth.published) {
@@ -744,12 +742,10 @@ impl Startup {
                                         expected: ExpectedValue::Absent,
                                     },
                                 });
-                                mutations.push(Mutation::Put {
-                                    address: writer_address(previous),
-                                    value: Secret::new(
-                                        retired.encode().ok_or(Error::Corrupt)?.to_vec(),
-                                    ),
-                                });
+                                mutations.extend(
+                                    control::writer_put(previous, Some(prior), retired)
+                                        .ok_or(Error::Corrupt)?,
+                                );
                                 takeover = Some(Takeover {
                                     dataset: info.dataset,
                                     previous,
@@ -843,10 +839,7 @@ fn writer_transition(session: &Session, next: control::Writer) -> Result<Prepare
                 session.writer.encode().ok_or(Error::Corrupt)?.to_vec(),
             ),
         ],
-        vec![Mutation::Put {
-            address: writer_address(authority.writer),
-            value: Secret::new(next.encode().ok_or(Error::Corrupt)?.to_vec()),
-        }],
+        control::writer_put(authority.writer, Some(session.writer), next).ok_or(Error::Corrupt)?,
     )
 }
 

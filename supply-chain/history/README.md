@@ -47,6 +47,11 @@ inventory at the baseline commit, not a cargo-vet execution result or a complete
 inventory of unrelated coverage gaps. Future lock/import changes require fresh
 resolution in CI.
 
+The [2026-11-17 imported-coverage follow-up](imported-coverage-follow-up.md)
+records the exact upstream chain subsequently restored for pkg-config 0.3.34 in
+both stores, immutable source identities, and the remaining 12 root/13 default
+gaps. The baseline TSV remains historical; the follow-up is not a green vet result.
+
 Some removed records were already disconnected from the actual graphs:
 `constant_time_eq` is absent from both locks; `fancy-regex` remains at exempted
 `0.19.0`; `oauth-as` is exempted at `1.1.0`; root `olpc-cjson` has an existing exact

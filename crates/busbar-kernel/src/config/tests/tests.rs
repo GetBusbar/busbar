@@ -119,6 +119,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         routing: RoutingCfg::default(),
         telemetry: Default::default(),
         records: Default::default(),
+        audit: Default::default(),
     }
 }
 
@@ -1445,6 +1446,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         key_ttl: None,
         policy: Default::default(),
         login_limits: Default::default(),
+        verdict_cache: Default::default(),
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -2690,7 +2692,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
             message,
             format!(
                 "auth.bogus_key: unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
-                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits` at line {line} \
+                 `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache` at line {line} \
                  column 3"
             )
         );
