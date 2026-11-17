@@ -716,6 +716,21 @@ fn native_physical_public_completion_requires_exact_public_core_class() {
     }
 }
 
+#[test]
+fn native_physical_core_request_cannot_acquire_data_preparation_custody() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let mut pending = complete_input(request);
+    assert!(matches!(
+        pending.begin_data_preparation(),
+        Err(ArrivalRefusal::Class)
+    ));
+    // A rejected attempt creates no verifier guard and does not cancel the actual public right.
+    let public = pending.complete_public().unwrap();
+    assert!(public.check_executing().is_ok());
+}
+
 #[tokio::test]
 async fn native_physical_public_completion_obeys_actual_publication_gate() {
     let f = fixture();
