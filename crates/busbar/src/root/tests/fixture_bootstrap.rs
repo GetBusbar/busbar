@@ -47,6 +47,7 @@ pub(crate) fn described(
 }
 
 struct Owners {
+    channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
     planes: Vec<PlaneImage>,
@@ -311,6 +312,10 @@ impl ServingFixture {
                     .map(|(name, split)| (name, Arc::new(split.definitions)))
                     .collect(),
                 catalogs: Default::default(),
+                channel_budgets: self
+                    .owners
+                    .channel_accounts
+                    .for_instances(&built.registry, &instances)?,
                 signals: Arc::clone(&shared.signals),
                 secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
                 kernel: Arc::new(Kernel::new()),
@@ -437,6 +442,7 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
+        channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
         planes,
