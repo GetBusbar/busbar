@@ -657,6 +657,9 @@ impl Rules {
             .as_ref()
             .ok_or("candidate has no native listener plan")?;
         self.check_native_topology(app, plan)?;
+        if app.prepared_generation() != Some(owners.epoch) {
+            return Err("native candidate has no matching reserved publication epoch".into());
+        }
         let native = served
             .native
             .as_ref()

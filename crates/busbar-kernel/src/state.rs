@@ -63,6 +63,7 @@ pub struct App {
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    pub(crate) publication_generation: Option<Arc<crate::config::generation::Reservation>>,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -649,6 +650,15 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// The durable epoch reserved for this unpublished candidate by its retained transaction.
+    /// A boot has no transaction reservation and uses its separately confirmed initial identity.
+    pub fn prepared_generation(&self) -> Option<u64> {
+        self.publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+            .map(|held| held.epoch())
+    }
+
     pub(crate) fn assemble(
         parts: AppParts,
         tslots: Arc<crate::telemetry::AppSlots>,
@@ -663,6 +673,7 @@ impl App {
             port_seats,
             exports,
             root_rules,
+            publication_generation: None,
             config_projection,
             config_tables,
             store,
@@ -1197,7 +1208,7 @@ impl AppHandle {
     /// Reserve the durable generation without invalidating the still-published generation.
     /// Only successful publication updates the shared fence; failed activation may leave a gap
     /// in durable numbering, but cannot revoke the currently serving auth policy.
-    async fn reserve_generation(&self) -> Result<u64, String> {
+    pub(crate) async fn reserve_generation(&self) -> Result<u64, String> {
         let cell = self.load().config_generation.clone();
         let prior = cell.load(std::sync::atomic::Ordering::Acquire);
         match crate::persistence::boot_identity::live() {
@@ -1257,6 +1268,16 @@ impl AppHandle {
         };
 
         let prior = self.load();
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.check(&prior)?;
+            if generation != Some(held.epoch()) {
+                return Err("candidate publication epoch differs from its prepared owners".into());
+            }
+        }
         for decl in crate::plane_driver::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
@@ -1288,6 +1309,13 @@ impl AppHandle {
             next.config_generation
                 .store(generation, std::sync::atomic::Ordering::Release);
         }
+        if let Some(held) = next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            held.publish();
+        }
         self.current.store(next.clone());
         *published = true;
         drop(admission);
@@ -1313,6 +1341,20 @@ impl AppHandle {
         Ok(())
     }
 
+    async fn candidate_generation(&self, next: &App) -> Result<u64, String> {
+        match next
+            .publication_generation
+            .as_ref()
+            .filter(|held| held.pending())
+        {
+            Some(held) => {
+                held.check(&self.load())?;
+                Ok(held.epoch())
+            }
+            None => self.reserve_generation().await,
+        }
+    }
+
     pub async fn commit_and_swap(
         &self,
         next: Arc<App>,
@@ -1321,7 +1363,7 @@ impl AppHandle {
         let _application = self.application.lock().await;
         persist()?;
         let mut publication = UnpublishedOverlay::new(self.load().overlay_path.clone());
-        let generation = self.reserve_generation().await?;
+        let generation = self.candidate_generation(&next).await?;
         self.swap_with_commit(
             next.clone(),
             None,
@@ -1376,7 +1418,7 @@ impl AppHandle {
                 "App generation changed during rate preparation; reload before retrying".into(),
             );
         }
-        let generation = self.reserve_generation().await?;
+        let generation = self.candidate_generation(&next).await?;
         let confirmed = prepared.confirm_activation().await?;
         self.swap_with_commit(
             next.clone(),
