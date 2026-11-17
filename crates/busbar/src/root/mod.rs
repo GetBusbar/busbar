@@ -206,6 +206,8 @@ pub(crate) mod migrate;
 pub(crate) mod migrate_records;
 /// The boot's MIN-3 registry: Need handlers, image admission, the boot walk (ROOT-BOOT).
 pub(crate) mod min3_boot;
+/// Native lifetime custody attached to the exact published App.
+pub(crate) mod min3_candidate;
 pub(crate) mod min3_candidate_secrets;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
