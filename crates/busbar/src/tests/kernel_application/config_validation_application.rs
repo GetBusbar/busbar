@@ -47,6 +47,12 @@ pub(crate) fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
+        // #359 SEC-L1: both root listeners serve plaintext here, so the fixtures write the explicit acceptance.
+        listener_acceptances: busbar_kernel::config::listener_acceptance::ListenerAcceptances {
+            listen: Some(fixture_plaintext()),
+            admin_listen: Some(fixture_plaintext()),
+            inert: Vec::new(),
+        },
         auth: None,
 
         providers: providers
@@ -4449,6 +4455,15 @@ fn boot_narration_is_once_and_admission_outside_boot_still_narrates() {
     assert_eq!(lines, 1, "the boot narration advises once");
 }
 
+/// The explicit plaintext acceptance the root-listener fixtures write (#359 SEC-L1).
+fn fixture_plaintext() -> busbar_kernel::config::min3::InsecureTransport {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    }
+}
+
 /// A configuration read from `tail` (YAML) as an operator's config.yaml, resolved (#359 SEC-L1 fixtures).
 fn listener_doc(tail: &str) -> Result<RootCfg, Vec<String>> {
     let text =
@@ -4552,5 +4567,51 @@ fn a_root_listener_without_tls_refuses_unless_its_plaintext_acceptance_is_writte
         errors.iter().any(|error| error.contains("BUSBAR-3172")
             && error.contains("`listen_insecure_transport` is written beside `tls`")),
         "TLS beside an acceptance is refused as contradictory: {errors:?}"
+    );
+}
+
+/// #359 SEC-L1: the acceptance is file-only. An overlay body that carries it is refused, and an overlay that
+/// SETS TLS wins: the file's acceptance is inert (named for the boot's removable warning), never a refusal.
+#[test]
+fn a_listener_acceptance_is_file_only_and_an_overlay_tls_makes_it_inert() {
+    let overlay = busbar_contract::yaml::from_str::<busbar_kernel::config::overlay::RootSettings>(
+        "listen_insecure_transport: { accept: [plaintext], reason: \"r\" }\n",
+    );
+    assert!(
+        overlay.is_err(),
+        "an overlay body carrying the acceptance is refused"
+    );
+
+    let text = format!(
+        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [], admin_auth: [] }}\n\
+         listen_insecure_transport: {{ accept: [plaintext], reason: \"until the cert lands\" }}\n\
+         admin_listen_insecure_transport: {{ accept: [plaintext], reason: \"loopback only\" }}\n"
+    );
+    let grammar = crate::root::boot::axis_test_grammar();
+    let mut deploy =
+        busbar_kernel::config::deploy_from_yaml_str(&text, &grammar).expect("the file reads");
+    let with_tls = busbar_kernel::config::deploy_from_yaml_str(
+        &format!("providers: {{}}\nmodels: {{}}\ntls: {LISTENER_TLS}\n"),
+        &grammar,
+    )
+    .expect("a TLS document reads");
+    busbar_kernel::config::overlay::RootSettings {
+        tls: with_tls.tls.clone(),
+        ..Default::default()
+    }
+    .apply_to_deploy(&mut deploy);
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("an overlay TLS over a file acceptance resolves");
+    assert_eq!(
+        cfg.listener_acceptances.inert,
+        ["listen_insecure_transport"],
+        "the superseded file acceptance is named for the removable warning"
+    );
+    assert!(cfg.listener_acceptances.listen.is_none());
+    assert!(cfg.listener_acceptances.admin_listen.is_some());
+    let errors = validate(&cfg).err().unwrap_or_default();
+    assert!(
+        !errors.iter().any(|error| error.contains("BUSBAR-3172")),
+        "an overlay TLS is never a boot refusal: {errors:?}"
     );
 }

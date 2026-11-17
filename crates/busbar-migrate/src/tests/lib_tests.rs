@@ -383,3 +383,27 @@ fn a_write_back_that_loses_the_stamp_is_refused() {
     assert_eq!(refused.word(), "CONFIG");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), STAMPED);
 }
+
+/// #359 SEC-L1: the upgrade writes no plaintext acceptance; the report names each root listener the planned
+/// document leaves without TLS, with its one-line remedy. A listener with TLS (a folded overlay `tls`
+/// included) or an operator-written acceptance gets no line.
+#[test]
+fn the_report_gives_the_remedy_for_each_plaintext_root_listener() {
+    let lines = super::plaintext_listener_lines("listen: 0.0.0.0:8080\n");
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].starts_with("`listen` has no TLS"), "{lines:?}");
+    assert!(lines[0].contains("BUSBAR-3172"));
+    assert!(lines[0]
+        .contains("`listen_insecure_transport: { accept: [plaintext], reason: \"<why>\" }`"));
+    assert!(
+        lines[1].starts_with("`admin_listen` has no TLS"),
+        "{lines:?}"
+    );
+    assert!(lines[1].contains("`admin_listen_insecure_transport: {"));
+
+    let lines = super::plaintext_listener_lines(
+        "listen: 0.0.0.0:8080\ntls: { cert: { file: c.pem }, key: { file: k.pem } }\n\
+         admin_listen_insecure_transport: { accept: [plaintext], reason: \"loopback\" }\n",
+    );
+    assert!(lines.is_empty(), "{lines:?}");
+}

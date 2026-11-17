@@ -127,6 +127,8 @@ The thousands digit is the area.
 | [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
+| [BUSBAR-3171](/docs/1.6/errors/BUSBAR-3171/) | A reserved configuration key was written | 1.6.0 |
+| [BUSBAR-3172](/docs/1.6/errors/BUSBAR-3172/) | A listener would serve plaintext without an acceptance | 1.6.0 |
 | [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | The retired migration command was given no file to migrate — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | The retired migration command could not read the file it was given — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3403](/docs/1.6/errors/BUSBAR-3403/) | The retired migration command could not resolve its working directory — RETIRED *(retired)* | 1.6.0 |

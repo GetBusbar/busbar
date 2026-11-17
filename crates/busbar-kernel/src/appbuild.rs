@@ -1987,6 +1987,9 @@ async fn build_app_native(
         });
     }
 
+    // #359 SEC-L1: a root listener served in the clear under its acceptance is bannered and audited.
+    crate::config::listener_acceptance::announce(&cfg);
+
     eprintln!(
         "busbar: {} models, {} pools",
         lane_inputs.len(),

@@ -122,6 +122,9 @@ pub(crate) fn base_deploy() -> DeployCfg {
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
         admin_tls: None,
         admin_require_mtls: true,
+        listen_insecure_transport: None,
+        admin_listen_insecure_transport: None,
+        inert_listener_acceptances: Vec::new(),
         config: Default::default(),
         providers_file: None,
         auth: None,
@@ -2764,8 +2767,9 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     assert_eq!(
         error.to_string(),
         "bogus_key: unknown field `bogus_key`, expected one of `config_version`, `listen`, \
-         `public_url`, `tls`, \
+         `public_url`, `tls`, `listen_insecure_transport`, \
          `admin_listen`, `config`, `providers_file`, `oauth_as`, `admin_tls`, \
+         `admin_listen_insecure_transport`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \

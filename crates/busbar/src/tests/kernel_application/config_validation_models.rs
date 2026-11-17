@@ -29,6 +29,12 @@ fn make_root_cfg(
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
+        // #359 SEC-L1: both root listeners serve plaintext here, so the fixtures write the explicit acceptance.
+        listener_acceptances: busbar_kernel::config::listener_acceptance::ListenerAcceptances {
+            listen: Some(fixture_plaintext()),
+            admin_listen: Some(fixture_plaintext()),
+            inert: Vec::new(),
+        },
         auth: None,
 
         providers: providers
@@ -645,4 +651,13 @@ fn test_validate_model_without_provider_error() {
     assert_eq!(errs.len(), 1);
     assert!(errs[0].contains("orphan_model"));
     assert!(errs[0].contains("references unknown provider"));
+}
+
+/// The explicit plaintext acceptance the root-listener fixtures write (#359 SEC-L1).
+fn fixture_plaintext() -> busbar_kernel::config::min3::InsecureTransport {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    }
 }

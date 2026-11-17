@@ -80,7 +80,8 @@ const HELD_BUF: usize = 16 * 1024;
 /// The seat owners sit above every dispatch handle id (24 bits) and below the connector's test owners.
 const SEAT_OWNER_BASE: u64 = 1 << 40;
 /// The audit action of a seat that runs with an `insecure_transport` acceptance (TRANSPORT-SECURITY-POLICY §4).
-pub(crate) const INSECURE_ACCEPTED: &str = "config.insecure_transport_accepted";
+pub(crate) const INSECURE_ACCEPTED: &str =
+    busbar_kernel::config::listener_acceptance::INSECURE_ACCEPTED;
 /// The audit action of a held HTTP dial the instance's acceptance does not cover (the connector's own action).
 const INSECURE_REFUSED: &str = "egress.insecure_transport_refused";
 /// The audit action of a stdio channel that tripped (IF §12.19: the fifth child end inside 60 s).
