@@ -815,6 +815,7 @@ impl Steps<'_> {
         }
     }
 
+    #[cfg(test)]
     async fn open_plane(
         &self,
         spec: &InstanceSpec<'_>,
@@ -822,15 +823,6 @@ impl Steps<'_> {
         hooks: &hooks::Environment,
         opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<(), OpenError> {
-        let services = self.services.clone().ok_or_else(|| {
-            OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
-        })?;
-        let seal = busbar_kernel::seal::acquire();
-        let caller = busbar_contract::services::Caller::issue(
-            &seal,
-            Arc::from(spec.name),
-            busbar_contract::abi::mechanism::KindCode::Plane,
-        );
         let who = Namespace {
             plugin: Arc::from(prepared.identity()),
             name: Arc::from(prepared.name()),
@@ -847,6 +839,29 @@ impl Steps<'_> {
             .registry
             .open_plane_reserved(prepared, &needs, &prefix.refs())
             .await?;
+        self.compose_plane(spec, who, port, hooks, opened_hooks)
+    }
+
+    fn compose_plane(
+        &self,
+        spec: &InstanceSpec<'_>,
+        who: Namespace,
+        port: Arc<dyn busbar_ports::plane::PlanePort>,
+        hooks: &hooks::Environment,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
+    ) -> Result<(), OpenError> {
+        let services = self.services.clone().ok_or_else(|| {
+            OpenError::Unknown(
+                "the kernel services are not installed: a plane cannot compose".into(),
+            )
+        })?;
+        let seal = busbar_kernel::seal::acquire();
+        let caller = busbar_contract::services::Caller::issue(
+            &seal,
+            Arc::from(spec.name),
+            busbar_contract::abi::mechanism::KindCode::Plane,
+        );
+        let prefix = self.prefix();
         let driver = PortDriver::new(
             port,
             Arc::clone(&services),
@@ -949,27 +964,14 @@ impl Steps<'_> {
         &self,
         index: u32,
         prepared: PreparedInstance,
-        hooks: Option<&hooks::Environment>,
-        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<Option<OpenedPort>, OpenError> {
-        let Some((kind, spec)) = self.instances.get(index as usize) else {
+        let Some((kind, _)) = self.instances.get(index as usize) else {
             return Err(OpenError::Unknown("unconfigured serving step".into()));
         };
         match kind {
             KindCode::Secret | KindCode::Store => Err(OpenError::Unknown(
                 "bootstrap instances cannot reopen in the serving stage".into(),
             )),
-            KindCode::Plane
-                if spec.purpose
-                    != busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
-            {
-                let hooks = hooks.ok_or_else(|| {
-                    OpenError::Unknown("native plane has no frozen hook construction inputs".into())
-                })?;
-                self.open_plane(spec, prepared, hooks, opened_hooks)
-                    .await
-                    .map(|()| None)
-            }
             _ => self.open_port(index, prepared).await.map(Some),
         }
     }
@@ -1476,6 +1478,7 @@ pub(crate) async fn finish(
     let mut opened_auth = Vec::new();
     let mut export_doors = Vec::new();
     let mut opened_hooks = std::collections::BTreeMap::new();
+    let mut opened_planes = Vec::new();
     for (index, prepared) in reserved {
         let instance_id = prepared.id();
         let who = Namespace {
@@ -1484,6 +1487,7 @@ pub(crate) async fn finish(
             instance: prepared.id(),
             slot: prepared.slot(),
         };
+        let plane = (prepared.kind() == KindCode::Plane).then(|| who.clone());
         let port = if prepared.kind() == KindCode::Auth {
             let prefix = steps.prefix();
             let needs = built.needs_for(
@@ -1520,10 +1524,13 @@ pub(crate) async fn finish(
             Some(OpenedPort::Hook(port))
         } else {
             steps
-                .open_reserved(index, prepared, hooks, &opened_hooks)
+                .open_reserved(index, prepared)
                 .await
                 .map_err(|error| format!("serving open {index}: {error:?}"))?
         };
+        if let (Some(who), Some(OpenedPort::Plane(port))) = (plane, &port) {
+            opened_planes.push((index, who, Arc::clone(port)));
+        }
         if let Some(OpenedPort::Export(port)) = &port {
             let instance = instances
                 .get(index as usize)
@@ -1591,6 +1598,7 @@ pub(crate) async fn finish(
         }
         // Temporary planes are never composed into seats or published. Keep bootstrap owners
         // while the record/config writers run, then close them before replacing this process.
+        drop(opened_planes);
         let mut opened = walked.opened;
         opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
         let admission = startup;
@@ -1690,6 +1698,15 @@ pub(crate) async fn finish(
         owners,
         Duration::from_secs(auth_policy.unknown_key_refresh_s),
     )?);
+    let hooks = hooks.ok_or("native planes have no frozen hook construction inputs")?;
+    for (index, who, port) in opened_planes {
+        let (_, spec) = specs
+            .get(index as usize)
+            .ok_or("opened plane has no configured owner")?;
+        steps
+            .compose_plane(spec, who, port, hooks, &opened_hooks)
+            .map_err(|error| format!("serving plane {index}: {error:?}"))?;
+    }
     let provisioning = super::provisioning::mounts(
         &auth_policy,
         &auth,
