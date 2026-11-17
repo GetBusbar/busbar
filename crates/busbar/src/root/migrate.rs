@@ -102,9 +102,7 @@ pub(crate) fn run_in(
         return Ok(());
     };
     for line in plan.report() {
-        // A line that carries a BUSBAR code is one the operator must act on or know about (the
-        // retired cloud-metadata carve-outs, BUSBAR-3411): a warning, not information.
-        if line.starts_with("BUSBAR-") {
+        if warns(line) {
             tracing::warn!(target: "busbar::migrate", "{line}");
         } else {
             tracing::info!(target: "busbar::migrate", "{line}");
@@ -588,20 +586,34 @@ pub(crate) fn record_completed_changes(written: &Written) {
     let Some(plan) = PENDING.get() else {
         return;
     };
-    for line in plan.report() {
-        if let Some(paths) = line
-            .strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
-            .and_then(|rest| rest.split_once(';'))
-            .map(|(paths, _)| paths)
-        {
-            busbar_kernel::audit_ring::AUDIT.record_by(
-                "migrate.metadata_carve_out_removed",
-                paths,
-                busbar_kernel::audit_ring::OUTCOME_APPLIED,
-                "system",
-            );
-        }
+    for (action, subject) in audit_rows(plan.report()) {
+        busbar_kernel::audit_ring::AUDIT.record_by(
+            action,
+            &subject,
+            busbar_kernel::audit_ring::OUTCOME_APPLIED,
+            "system",
+        );
     }
+}
+
+/// A report line that carries a BUSBAR code is one the operator must act on or know about (the
+/// retired cloud-metadata carve-outs, BUSBAR-3411): it is logged as a warning, not information.
+fn warns(line: &str) -> bool {
+    line.starts_with("BUSBAR-")
+}
+
+/// The audit rows a completed step-5 write owes: one `(action, subject)` per security-relevant
+/// change the plan reported under a BUSBAR code. A subject names configuration paths, never a
+/// value (#293).
+fn audit_rows(report: &[String]) -> Vec<(&'static str, String)> {
+    report
+        .iter()
+        .filter_map(|line| {
+            line.strip_prefix("BUSBAR-3411: removed the retired cloud-metadata carve-out key(s) ")
+                .and_then(|rest| rest.split_once(';'))
+                .map(|(paths, _)| ("migrate.metadata_carve_out_removed", paths.to_owned()))
+        })
+        .collect()
 }
 
 /// Replace this process with a fresh image of itself: the same executable and argv, with
