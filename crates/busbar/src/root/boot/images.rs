@@ -32,7 +32,15 @@ pub(crate) fn prepare(
             .first_party_floors
             .insert(name.clone(), version.clone());
     }
-    let admitted = crate::root::min3_boot::admit_images(&plugins).map_err(GrammarRefusal)?;
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
+        .iter()
+        .map(super::linked_row)
+        .collect();
+    linked.extend(super::linked_exports(crate::LINKED.export_doors).map_err(GrammarRefusal)?);
+    // The read owns one capture: executable admission and grammar consume its exact bytes.
+    let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
+    let admitted =
+        crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
     let proofs = admitted
         .iter()
         .map(|(image, _)| {
@@ -56,12 +64,6 @@ pub(crate) fn prepare(
             .map_err(|error| GrammarRefusal(error.to_string()))?;
     }
     let images = builder.finish();
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(super::linked_row)
-        .collect();
-    linked.extend(super::linked_exports(crate::LINKED.export_doors).map_err(GrammarRefusal)?);
-    let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
     let grammar = crate::root::secret_grammar::of_images(
         &images,
         super::owners_of(&metadata),
@@ -90,6 +92,46 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {
+        self.proofs
+            .iter()
+            .filter(|(_, proof)| proof.kind == busbar_plugin_abi::types::KindCode::Transport)
+            .map(|(name, proof)| (name.clone(), proof.digest))
+            .collect()
+    }
+
+    /// Preserve the admitted executable owners alongside the metadata from this same read.
+    pub(crate) fn prepared_read(
+        &self,
+        input: &PhaseOneIn<'_>,
+    ) -> Result<busbar_kernel::config::grammar::PreparedConfigRead, GrammarRefusal> {
+        let planes = crate::root::min3_provider_plan::descriptors(self).map_err(GrammarRefusal)?;
+        Ok(
+            busbar_kernel::config::grammar::PreparedConfigRead::new(self.grammar.clone())
+                .with_provider_planes(planes)
+                .with_context(Arc::new(self.clone()))
+                .for_input(input),
+        )
+    }
+
+    /// Metadata comes from the same admitted image whose lease this read retains.
+    pub(crate) fn plane_identity(
+        &self,
+        canonical: &str,
+    ) -> Result<Arc<busbar_kernel::plane_driver::image_identity::PlaneImageIdentity>, String> {
+        let proof = self
+            .proofs
+            .get(canonical)
+            .filter(|proof| proof.kind == busbar_plugin_abi::types::KindCode::Plane)
+            .ok_or_else(|| format!("plane `{canonical}` has no retained admitted image proof"))?;
+        busbar_kernel::plane_driver::image_identity::PlaneImageIdentity::new(
+            canonical.into(),
+            proof.digest,
+        )
+        .map(Arc::new)
+        .map_err(str::to_owned)
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,
@@ -183,6 +225,10 @@ mod pin_tests {
             .is_err());
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/read_inventory.rs"]
+mod read_inventory_tests;
 
 /// Admit a fixture's own archive scan, without borrowing another fixture's process-global registry.
 #[cfg(test)]

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::sign::{sign, SigningKey};
+use crate::sign::{sign, Manifest, SigningKey};
 
 fn manifest() -> Manifest {
     Manifest {

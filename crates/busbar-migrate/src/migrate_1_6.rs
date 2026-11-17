@@ -232,6 +232,23 @@ fn retire_metadata_carve_outs(root: &mut Pairs, report: &mut Vec<String>) {
     ));
 }
 
+/// #358 (owner ruling L1: refuse, give remedy, no auto-write): 1.5.5 ran a config with no `auth:`
+/// block, or a null one, as an open relay, and 1.6.0 refuses to boot it (BUSBAR-8014). The upgrade
+/// writes nothing for it, never an open relay: it reports one action item carrying the boot
+/// refusal's remedy. Decided on the resolved document, as 1.5.5 decided it.
+pub(crate) fn report_absent_auth(resolved: &Value, report: &mut Vec<String>) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::OPEN_RELAY_NO_AUTH.banner();
+    if resolved.get("auth").is_some_and(|auth| !auth.is_null()) {
+        return;
+    }
+    report.push(format!(
+        "{CODE}: no `auth:` block: 1.5.5 ran this config as an open relay; 1.6.0 refuses to boot \
+         it and the upgrade writes nothing for you; {}",
+        busbar_kernel::config_validate::OPEN_RELAY_REMEDY
+    ));
+}
+
 /// Operator text for a log line: control characters shown as escapes.
 pub(crate) fn escape_control(text: &str) -> String {
     text.chars()

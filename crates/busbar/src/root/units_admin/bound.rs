@@ -513,10 +513,7 @@ pub(crate) fn trust_actor_unresolved(verb: busbar_core_admin::KernelVerb) -> Adm
 /// The request's `Idempotency-Key`, as [`replayable`] keys it: the operation a decision records.
 pub(crate) fn idempotency_key(request: &super::AdminRequest) -> Option<&str> {
     request
-        .headers
-        .iter()
-        .find(|(name, _)| name == IDEMPOTENCY_KEY_HEADER)
-        .map(|(_, value)| value.as_str())
+        .header(IDEMPOTENCY_KEY_HEADER)
         .filter(|value| !value.is_empty())
 }
 
@@ -760,34 +757,77 @@ pub(crate) fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLoo
 pub(crate) fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(
         move |request: &super::AdminRequest| -> super::AdminDoorFuture {
-            let headers: axum::http::HeaderMap = (request.headers.iter())
-                .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
-                .collect();
-            let snapshot = app.load();
-            let original = busbar_kernel::auth::native_admin::http_request(
-                &request.method,
-                &request.path,
-                &headers,
-                &request.body,
-                busbar_kernel::store::now(),
-            );
-            // The root unit already owns this host request id; zero is never replaced by a wire value.
-            let Some(request_id) = std::num::NonZeroU64::new(request.unit) else {
+            let projection = request.http_projection();
+            let headers = if projection.is_some() {
+                None
+            } else {
+                request.http_headers().ok()
+            };
+            if projection.is_none() && headers.is_none() {
                 return Box::pin(std::future::ready(
                     busbar_kernel::auth::AdminDoor::Denied.into(),
                 ));
+            }
+            let (handle, snapshot, id, cx) = if let Some(binding) = &request.binding {
+                if !Arc::ptr_eq(binding.handle(), &app)
+                    || binding.check_live().is_err()
+                    || binding.invocation().request_id().get() != request.unit
+                    || !binding
+                        .snapshot()
+                        .is_ok_and(|original| Arc::ptr_eq(&original, request.snapshot()))
+                {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Denied.into(),
+                    ));
+                }
+                let id = binding.invocation();
+                let mut cx = busbar_kernel::auth::admin_call_context(id);
+                if let Some(deadline) = binding.deadline() {
+                    cx.deadline = cx.deadline.min(deadline);
+                }
+                (binding.handle().clone(), binding.app().clone(), id, cx)
+            } else {
+                let selected = app.load();
+                if selected.native_admin.is_some() {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Unavailable(
+                            busbar_kernel::auth::VerifierUnavailable::NoVerdict,
+                        )
+                        .into(),
+                    ));
+                }
+                let Some(request_id) = std::num::NonZeroU64::new(request.unit) else {
+                    return Box::pin(std::future::ready(
+                        busbar_kernel::auth::AdminDoor::Denied.into(),
+                    ));
+                };
+                let id = busbar_kernel::state::InvocationId::from_request_id(request_id);
+                (
+                    app.clone(),
+                    selected,
+                    id,
+                    busbar_kernel::auth::admin_call_context(id),
+                )
             };
-            let id = busbar_kernel::state::InvocationId::from_request_id(request_id);
             let invocation = busbar_kernel::auth::native_admin::Invocation {
-                handle: Arc::clone(&app),
+                handle,
                 selected: snapshot,
                 id,
-                cx: busbar_kernel::auth::admin_call_context(id),
-                request: Arc::new(original),
+                cx,
+                request: Arc::clone(request.snapshot()),
             };
-            Box::pin(
-                async move { busbar_kernel::auth::admin_verdict_for(invocation, &headers).await },
-            )
+            Box::pin(async move {
+                let headers = projection
+                    .as_ref()
+                    .map(|p| p.headers())
+                    .or(headers.as_ref());
+                match headers {
+                    Some(headers) => {
+                        busbar_kernel::auth::admin_verdict_for(invocation, headers).await
+                    }
+                    None => busbar_kernel::auth::AdminDoor::Denied.into(),
+                }
+            })
         },
     )
 }
@@ -1244,7 +1284,7 @@ where
         }
         let Replayed { answer, terminal } = held.replay(journal, context).await;
         if let Some(terminal) = terminal {
-            settle_terminal(cache, store, key, unit.at, &held.value, terminal).await;
+            settle_terminal(cache, store, key, unit.at(), &held.value, terminal).await;
         }
         return Ok(replayed(
             answer,
@@ -1254,7 +1294,7 @@ where
             context,
         ));
     }
-    match cache.answers.probe(key.clone(), unit.at) {
+    match cache.answers.probe(key.clone(), unit.at()) {
         Probe::Replay(value) if value.digest == digest => {
             Ok(replayed(value.answer, &scope, header, None, context))
         }
@@ -1265,7 +1305,7 @@ where
             let store_now = store.and_then(|store| store());
             let claim = match &store_now {
                 Some(store_now) => {
-                    match durable::claim_held(store_now, reservation.key(), unit.at).await {
+                    match durable::claim_held(store_now, reservation.key(), unit.at()).await {
                         Ok(claim) => Some(claim),
                         Err(Refused::Answer(kept) | Refused::Retained(kept)) => {
                             return match kept_answer(&kept) {
@@ -1284,7 +1324,7 @@ where
                                                 cache,
                                                 store,
                                                 key,
-                                                unit.at,
+                                                unit.at(),
                                                 &held.value,
                                                 terminal,
                                             )
@@ -1299,7 +1339,7 @@ where
                                         ))
                                     } else {
                                         let answer = value.answer.clone();
-                                        reservation.commit(value, unit.at);
+                                        reservation.commit(value, unit.at());
                                         Ok(replayed(answer, &scope, header, None, context))
                                     }
                                 }
@@ -1340,7 +1380,7 @@ where
                         receipt: None,
                     };
                     let settled = Settled::Answer(stored_answer(&value));
-                    reservation.commit(value, unit.at);
+                    reservation.commit(value, unit.at());
                     (Ok(answer), settled)
                 }
                 Ok(EffectAnswer {
@@ -1362,7 +1402,7 @@ where
                                 Arc::new(HeldSettlement {
                                     store: Arc::clone(store_now),
                                     claim: claim.clone(),
-                                    at: unit.at,
+                                    at: unit.at(),
                                     settled: settled.clone(),
                                 })
                             });
@@ -1382,7 +1422,7 @@ where
                 }
             };
             if let (Some(store_now), Some(claim)) = (&store_now, &claim) {
-                if let Err(why) = durable::settle(store_now, claim, unit.at, &settled).await {
+                if let Err(why) = durable::settle(store_now, claim, unit.at(), &settled).await {
                     tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; its original claim remains held");
                 }
             }

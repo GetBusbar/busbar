@@ -297,3 +297,303 @@ fn mismatched_precharged_storage_is_discarded_without_leaking_capacity() {
     assert!(credit.into_input(b"too much".to_vec()).is_err());
     assert_eq!(budget.used(), (0, 0));
 }
+
+#[derive(Default)]
+struct ReservationRecorder {
+    visits: AtomicU64,
+    increments: Arc<AtomicU64>,
+}
+impl metrics::Recorder for ReservationRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(key.name(), crate::snapshot::ADMISSION_DENIED_TOTAL);
+        assert!(key
+            .labels()
+            .any(|label| label.key() == "gate" && label.value() == "inbound_body_bytes"));
+        metrics::Counter::from_arc(Arc::clone(&self.increments))
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        self.visits.fetch_add(1, Ordering::Relaxed);
+        metrics::Histogram::noop()
+    }
+}
+
+#[test]
+fn private_reservation_never_reenters_a_recorder_on_success_capacity_or_overflow() {
+    let budget = budget(0);
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        assert_eq!(budget.reserve(AdmissionClass::Data, 12), Ok(12));
+        assert!(budget.reserve(AdmissionClass::Data, 1).is_err());
+        assert!(budget.reserve(AdmissionClass::Data, usize::MAX).is_err());
+        assert_eq!(budget.used(), (12, 12));
+        budget.release(AdmissionClass::Data, 12);
+    });
+    assert_eq!(
+        recorder.visits.load(Ordering::Relaxed),
+        0,
+        "reservation under a registry guard must not look up any recorder handle"
+    );
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn public_byte_denials_still_report_once_per_failed_attempt() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve(12).unwrap();
+        assert!(request.try_reserve(1).is_err());
+        assert!(request.try_reserve(usize::MAX).is_err());
+        drop(credit);
+    });
+    assert_eq!(recorder.increments.load(Ordering::Relaxed), 2);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn unreported_credit_preserves_class_and_request_without_recorder_access() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    let credit = metrics::with_local_recorder(&recorder, || {
+        let credit = request.try_reserve_unreported(12).unwrap();
+        assert!(request.try_reserve_unreported(1).is_err());
+        assert!(request.try_reserve_unreported(usize::MAX).is_err());
+        credit
+    });
+    assert_eq!(recorder.visits.load(Ordering::Relaxed), 0);
+    assert_eq!(credit.request().class(), AdmissionClass::Data);
+    drop(request);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(budget.used(), (12, 12));
+    drop(credit);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+#[test]
+fn connection_storage_charges_bytes_before_any_request_without_taking_count() {
+    let budget = budget(2);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let credit = source.try_reserve(12).unwrap();
+    assert_eq!(budget.used(), (12, 12));
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    assert!(request.try_reserve(1).is_err());
+    drop(credit);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(request.try_reserve(12).is_ok());
+}
+
+#[test]
+fn connection_request_and_input_storage_share_one_class_transaction() {
+    let budget = budget(2);
+    let connection = budget.connection_storage(AdmissionClass::Data);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let inbound = request.try_reserve(4).unwrap();
+    let staged = request.storage().try_reserve(4).unwrap();
+    let tls = connection.try_reserve(4).unwrap();
+    assert_eq!(budget.used(), (12, 12));
+    assert!(connection.try_reserve(1).is_err());
+    assert!(request.storage().try_reserve(1).is_err());
+    let operator = budget.connection_storage(AdmissionClass::Operator);
+    let floor = operator.try_reserve(4).unwrap();
+    assert_eq!(budget.used(), (16, 12));
+    assert!(operator.try_reserve(1).is_err());
+    drop((inbound, staged, tls, floor));
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn erased_request_source_and_credit_retain_the_original_count() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let source = request.storage();
+    drop(request);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    let credit = source.try_reserve(7).unwrap();
+    drop(source);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    assert_eq!(budget.used(), (7, 7));
+    drop(credit);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn shared_storage_reservation_never_reenters_the_recorder() {
+    let budget = budget(0);
+    let connection = budget.connection_storage(AdmissionClass::Data);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let recorder = ReservationRecorder::default();
+    metrics::with_local_recorder(&recorder, || {
+        let first = connection.try_reserve(6).unwrap();
+        let second = request.storage().try_reserve(6).unwrap();
+        assert!(connection.try_reserve(1).is_err());
+        assert!(request.storage().try_reserve(usize::MAX).is_err());
+        drop((first, second));
+    });
+    assert_eq!(recorder.visits.load(Ordering::Relaxed), 0);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn storage_splits_and_same_origin_merge_preserve_exact_weight() {
+    let budget = budget(0);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    let mut first = source.try_reserve(12).unwrap();
+    let part = first.split(5).unwrap();
+    assert_eq!(first.len(), 7);
+    assert_eq!(part.len(), 5);
+    assert_eq!(budget.used(), (12, 12));
+    first.try_merge(part).unwrap();
+    assert_eq!(first.len(), 12);
+    assert!(first.split(13).is_err());
+    assert_eq!(budget.used(), (12, 12));
+    drop(first);
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn storage_merge_rejects_different_original_requests_without_retiring_either() {
+    let budget = budget(0);
+    let first = budget.try_enter(AdmissionClass::Data).unwrap();
+    let second = budget.try_enter(AdmissionClass::Data).unwrap();
+    let mut a = first.storage().try_reserve(3).unwrap();
+    let b = second.storage().try_reserve(4).unwrap();
+    let b = a.try_merge(b).unwrap_err();
+    assert_eq!(budget.used(), (7, 7));
+    assert_eq!((a.len(), b.len()), (3, 4));
+    drop((a, b));
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn concurrent_sources_never_borrow_the_operator_floor() {
+    let budget = budget(0);
+    let source = budget.connection_storage(AdmissionClass::Data);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let source = source.clone();
+            let budget = Arc::clone(&budget);
+            scope.spawn(move || {
+                for _ in 0..1000 {
+                    let credit = source.try_reserve(3);
+                    let (total, data) = budget.used();
+                    assert!(data <= 12 && data <= total && total <= 16);
+                    drop(credit);
+                }
+            });
+        }
+    });
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn repeatedly_erased_same_request_sources_merge_without_losing_count() {
+    let budget = budget(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let mut first = request.storage().try_reserve(3).unwrap();
+    let second = request.storage().try_reserve(4).unwrap();
+    first.try_merge(second).unwrap();
+    drop(request);
+    assert_eq!(first.len(), 7);
+    assert!(budget.try_enter(AdmissionClass::Data).is_err());
+    drop(first);
+    assert_eq!(budget.used(), (0, 0));
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn mixed_concurrent_storage_and_input_credits_preserve_both_ceilings() {
+    let budget = budget(0);
+    let data = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let sources = [
+        data.storage(),
+        operator.storage(),
+        budget.connection_storage(AdmissionClass::Data),
+        budget.connection_storage(AdmissionClass::Operator),
+    ];
+    std::thread::scope(|scope| {
+        for source in sources {
+            let budget = Arc::clone(&budget);
+            scope.spawn(move || {
+                for _ in 0..1000 {
+                    let credit = source.try_reserve(3);
+                    let (total, data) = budget.used();
+                    assert!(data <= 12 && data <= total && total <= 16);
+                    drop(credit);
+                }
+            });
+        }
+        for request in [data, operator] {
+            let budget = Arc::clone(&budget);
+            scope.spawn(move || {
+                for _ in 0..1000 {
+                    let credit = request.try_reserve_unreported(3);
+                    let (total, data) = budget.used();
+                    assert!(data <= 12 && data <= total && total <= 16);
+                    drop(credit);
+                }
+            });
+        }
+    });
+    assert_eq!(budget.used(), (0, 0));
+}
+
+#[test]
+fn request_identity_distinguishes_admissions_in_the_same_process_and_class() {
+    let budget = ProcessAdmission::with_limits(4, 32, 8);
+    let first = budget.try_enter(AdmissionClass::Data).unwrap();
+    let shared = first.clone();
+    let second = budget.try_enter(AdmissionClass::Data).unwrap();
+    let operator = budget.try_enter(AdmissionClass::Operator).unwrap();
+    let other_budget = ProcessAdmission::with_limits(4, 32, 8);
+    let other = other_budget.try_enter(AdmissionClass::Data).unwrap();
+
+    assert!(first.same_request(&first));
+    assert!(first.same_request(&shared));
+    assert!(shared.same_request(&first));
+    assert!(!first.same_request(&second));
+    assert!(!second.same_request(&first));
+    assert!(!first.same_request(&operator));
+    assert!(!first.same_request(&other));
+    let input = first.copy_input(b"owned").unwrap();
+    assert!(input.request().same_request(&first));
+    assert!(!input.request().same_request(&second));
+    drop(first);
+    assert!(input.request().same_request(&shared));
+    assert_eq!(budget.used(), (5, 5));
+    drop(input);
+    assert_eq!(budget.used(), (0, 0));
+}

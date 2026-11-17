@@ -10,6 +10,35 @@ use busbar_kernel::persistence::{
 use busbar_kernel_audit::{AuditChain, AuditRecord};
 use std::{path::Path, sync::Arc};
 const NOW: u64 = 1_700_000_000;
+
+#[tokio::test]
+async fn split_binding_retains_the_verified_immutable_deployment_public_history() {
+    let core = crate::root::real_store::core().await;
+    let identity = BootIdentity::new(core.clone()).unwrap();
+    let mut first = node(core.clone(), None).await;
+    let (_, bound) = bind_split(&mut first, &identity, &token(), StepName::Meter, NOW)
+        .await
+        .unwrap();
+    assert_eq!(bound.verification_keys.keys().len(), 1);
+    let original = bound.verification_keys.keys()[0].clone();
+    assert_eq!(first.record.signing_key_id(), Some(original.key_id()));
+    assert!(bound.verification_keys.get("unknown").is_none());
+    drained(&first).await;
+    drop(bound);
+    drop(first);
+    let mut restarted = node(core, None).await;
+    let (_, bound) = bind_split(
+        &mut restarted,
+        &identity,
+        &token(),
+        StepName::Meter,
+        NOW + 1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(bound.verification_keys.keys(), &[original]);
+}
+
 fn token() -> Grant<DurableWrite> {
     crate::root::kernel::new_kernel().durability_token()
 }

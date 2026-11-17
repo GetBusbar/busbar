@@ -139,7 +139,9 @@ async fn usage_folded_once() {
     let (metered, report) = drive(&u, 9101, &[reported(0, 7), reported(1, 3)], None, &scope);
     let metered = metered.expect("the meter gate passes priced counts");
     assert_eq!(metered.lines().len(), 2, "one line per counted class");
-    let (exact, fee, _lane) = report.expect("the late accrual reports the unit");
+    let (exact, fee, _lane, _) = report
+        .and_then(crate::root::linked::node::Reported::legacy)
+        .expect("the late accrual reports the unit");
     assert_eq!(exact.usage_units.get("input"), Some(&Count::from(7u64)));
     assert_eq!(exact.usage_units.get("output"), Some(&Count::from(3u64)));
     assert_eq!(fee, 0, "no fee unit declared");
@@ -164,7 +166,9 @@ async fn usage_folded_once() {
         &scope,
     );
     metered.expect("the meter gate passes the counts it saw");
-    let (exact, _, _) = report.expect("the late accrual reports the unit");
+    let (exact, _, _, _) = report
+        .and_then(crate::root::linked::node::Reported::legacy)
+        .expect("the late accrual reports the unit");
     assert_eq!(
         exact.usage_units.get("output"),
         Some(&Count::from(11u64)),
@@ -193,7 +197,9 @@ async fn overflow_unit_audited_unpriced_not_billed() {
     let (metered, report) = drive(&u, 9201, &counts, None, &scope);
     let refusal = metered.expect_err("seventeen counted classes cannot be one usage report");
     assert_eq!(refusal.reason(), ReasonCode::Unpriced);
-    let (exact, _, _) = report.expect("the late accrual still reports what was counted");
+    let (exact, _, _, _) = report
+        .and_then(crate::root::linked::node::Reported::legacy)
+        .expect("the late accrual still reports what was counted");
     assert_eq!(exact.usage_units.len(), 17);
     assert_eq!(
         scope.count(Derive::UsageFold),

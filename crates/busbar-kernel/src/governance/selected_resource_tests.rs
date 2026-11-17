@@ -3,8 +3,8 @@
 
 use super::*;
 
-const INPUT: MeterClassId = MeterClassId::new("tokens.input");
-const OUTPUT: MeterClassId = MeterClassId::new("tokens.output");
+const INPUT: &str = "tokens.input";
+const OUTPUT: &str = "tokens.output";
 
 fn rates(capacity: usize) -> (Arc<SelectedRates>, Arc<AtomicU64>) {
     let elapsed = Arc::new(AtomicU64::new(0));
@@ -42,7 +42,7 @@ fn rule(metric: RateMetric, threshold: u64) -> RateTerms {
     }
 }
 
-fn token(class: MeterClassId, amount: Option<i128>, authoritative: bool) -> EffectiveToken {
+fn token(class: &str, amount: Option<i128>, authoritative: bool) -> EffectiveToken<'_> {
     EffectiveToken {
         class,
         quantity: amount.map(|n| Count::from_integer(n).unwrap()),
@@ -50,7 +50,7 @@ fn token(class: MeterClassId, amount: Option<i128>, authoritative: bool) -> Effe
     }
 }
 
-fn view(amount: i128) -> EffectiveTokenView {
+fn view(amount: i128) -> EffectiveTokenView<'static> {
     EffectiveTokenView(vec![token(INPUT, Some(amount), true)])
 }
 
@@ -87,6 +87,33 @@ fn all_rows_refuse_atomically_and_unsent_drop_releases_only_its_slot() {
     let snapshot = inspect(&rates, rpm);
     assert_eq!(snapshot.provisional_requests, 0);
     assert_eq!(snapshot.committed_requests, 1);
+}
+
+#[test]
+fn pre_send_release_precedes_fallback_and_preserves_peer_custody() {
+    let (rates, _) = rates(16);
+    let rpm = rule(RateMetric::Requests, 2);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let peer = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    let cancelled = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 2);
+
+    // Cancellation must complete this release before returning preparation custody.
+    drop(cancelled);
+    let snapshot = inspect(&rates, rpm.clone());
+    assert_eq!(snapshot.provisional_requests, 1);
+    assert_eq!(snapshot.committed_requests, 0);
+    let snapshot = inspect(&rates, tpm.clone());
+    assert_eq!(snapshot.known_tokens, Count::ZERO);
+    assert!(!snapshot.uncertain);
+
+    let fallback = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 2);
+    drop(fallback);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 1);
+    drop(peer);
+    assert_eq!(inspect(&rates, rpm).provisional_requests, 0);
+    assert!(!inspect(&rates, tpm).uncertain);
 }
 
 #[test]
@@ -343,7 +370,7 @@ fn independent_processes_do_not_share_rate_cells_and_clock_overflow_fails_closed
 fn no_matching_rows_are_a_noop_even_without_a_usable_rate_clock() {
     let (rates, elapsed) = rates(1);
     elapsed.store(u64::MAX, Ordering::Relaxed);
-    let mut hold = rates.reserve_terms(Vec::new(), &[]).unwrap();
+    let mut hold = rates.reserve_terms(Vec::new(), &[] as &[&str]).unwrap();
     hold.commit().unwrap();
     hold.finish(TokenCoverage::Complete).unwrap();
     assert!(rates.headroom_terms(Vec::new()).unwrap().is_empty());
@@ -460,4 +487,183 @@ fn retained_scope_key_storage_is_bounded_and_preallocated() {
     term.resource = "x".repeat(128).into();
     let key = term.scope_key();
     assert_eq!(key.len(), 661);
+}
+
+#[test]
+fn native_dynamic_physical_classes_survive_their_declaring_storage_and_reject_new_names() {
+    use busbar_plugin_abi::plane::{FB_ATTEMPT_USAGE, UNIT_COUNT, UNIT_TOKENS};
+    use busbar_ports::codec::fallback_usage::Declaration;
+    use busbar_ports::plane::UsageClass;
+
+    let input = format!("tokens.native_input_{}", 41);
+    let output = format!("tokens.native_output_{}", 41);
+    let session = format!("request.native_{}", 41);
+    let classes = vec![
+        UsageClass {
+            class: input.clone().into_boxed_str(),
+            unit: UNIT_TOKENS,
+            expected_units: None,
+        },
+        UsageClass {
+            class: output.clone().into_boxed_str(),
+            unit: UNIT_TOKENS,
+            expected_units: None,
+        },
+        UsageClass {
+            class: session.clone().into_boxed_str(),
+            unit: UNIT_COUNT,
+            expected_units: None,
+        },
+    ];
+    let attempt_classes = vec![
+        input.clone().into_boxed_str(),
+        output.clone().into_boxed_str(),
+    ];
+    let frozen: Box<[Box<str>]> = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes)
+        .unwrap()
+        .physical_classes()
+        .map(Box::<str>::from)
+        .collect();
+    assert_eq!(frozen.len(), 2);
+    assert!(!frozen.iter().any(|class| class.as_ref() == session));
+    drop(classes);
+    drop(attempt_classes);
+
+    let (rates, _) = rates(4);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let mut hold = rates.reserve_terms(vec![tpm.clone()], &frozen).unwrap();
+    drop(frozen);
+    hold.commit().unwrap();
+    hold.observe(&EffectiveTokenView(vec![
+        EffectiveToken {
+            class: input.as_str(),
+            quantity: Some(Count::from_integer(3).unwrap()),
+            authoritative: true,
+        },
+        EffectiveToken {
+            class: output.as_str(),
+            quantity: Some(Count::ZERO),
+            authoritative: true,
+        },
+    ]))
+    .unwrap();
+    let later_generation_class = format!("tokens.native_output_{}", 42);
+    assert_eq!(
+        hold.observe(&EffectiveTokenView(vec![
+            EffectiveToken {
+                class: input.as_str(),
+                quantity: Some(Count::from_integer(8).unwrap()),
+                authoritative: true
+            },
+            EffectiveToken {
+                class: later_generation_class.as_str(),
+                quantity: Some(Count::ZERO),
+                authoritative: true
+            },
+        ]))
+        .unwrap_err(),
+        RateObservationError::InvalidView
+    );
+    assert_eq!(
+        inspect(&rates, tpm).known_tokens,
+        Count::from_integer(3).unwrap()
+    );
+    let finished = hold.finish(TokenCoverage::Complete).unwrap();
+    drop(input);
+    drop(output);
+    assert!(finished
+        .highwater
+        .iter()
+        .any(|(class, amount)| class.as_ref() == "tokens.native_input_41"
+            && *amount == Count::from_integer(3).unwrap()));
+    assert!(finished
+        .highwater
+        .iter()
+        .any(|(class, amount)| class.as_ref() == "tokens.native_output_41" && amount.is_zero()));
+}
+
+#[tokio::test]
+async fn publication_clock_failure_keeps_original_app_policy_epoch_and_governor() {
+    use crate::config::transaction::{config_transaction, Outcome, TxnError};
+    use crate::governance::selected_policy::{
+        SelectedPolicy, SelectedTargetConfig, SelectedTargetKind,
+    };
+    let groups = |amount: u64| -> BTreeMap<String, crate::config::groups::GroupCfg> {
+        busbar_contract::yaml::from_str(&format!(
+            "team:\n  limits:\n    - {{id: rpm, upstream_resource: p/r, requests: {amount}, per: minute, per_key: true, enforcement: process}}"
+        )).unwrap()
+    };
+    let target = SelectedTargetConfig {
+        instance: "p",
+        kind: SelectedTargetKind::Model,
+        pool: "pool",
+        member: "p\u{1f}member",
+        resource: Some("r"),
+        attempt_accounting: true,
+    };
+    let mut app = crate::inbound::native::tests::app();
+    let owned = Arc::get_mut(&mut app).unwrap();
+    let initial = groups(2);
+    owned.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &initial));
+    owned.governance = Some(Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    ));
+    SelectedPolicy::compile(&initial, owned.cost.clone(), &[target], None)
+        .unwrap()
+        .install_initial(owned)
+        .unwrap();
+    let handle = Arc::new(crate::state::AppHandle::new(app));
+    let prior = handle.load();
+    let policy = prior.selected_policy.as_ref().unwrap().clone();
+    let governor = prior.governance.as_ref().unwrap().selected_rates().clone();
+    let epoch = prior.config_generation.load(Ordering::Acquire);
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let observed = callbacks.clone();
+    handle.on_apply(Box::new(move |_| {
+        observed.fetch_add(1, Ordering::AcqRel);
+    }));
+    let result: Result<(), TxnError> = config_transaction(&handle, |txn| {
+        let prior = txn.app().clone();
+        Ok(Outcome::asynchronous(async move {
+            let mut next = (*prior).clone();
+            next.publication_generation = crate::config::generation::reserve(Some(&prior))
+                .await
+                .map_err(TxnError::Validation)?;
+            next.selected_predecessor = prior.selected_policy.clone();
+            let changed = groups(7);
+            next.cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &changed));
+            let pending = SelectedPolicy::compile(
+                &changed,
+                next.cost.clone(),
+                &[target],
+                next.selected_predecessor(),
+            )
+            .unwrap();
+            next.prepare_selected_policy(pending)
+                .map_err(TxnError::Validation)?;
+            next.governance
+                .as_ref()
+                .unwrap()
+                .selected_rates()
+                .unavailable
+                .store(true, Ordering::Release);
+            Ok(Outcome::commit_async(Arc::new(next), async { Ok(()) }, ()))
+        }))
+    })
+    .await;
+    assert!(result.is_err());
+    let current = handle.load();
+    assert!(Arc::ptr_eq(&prior, &current));
+    assert!(Arc::ptr_eq(
+        &policy,
+        current.selected_policy.as_ref().unwrap()
+    ));
+    assert_eq!(current.config_generation.load(Ordering::Acquire), epoch);
+    assert!(Arc::ptr_eq(
+        &governor,
+        current.governance.as_ref().unwrap().selected_rates()
+    ));
+    assert_eq!(callbacks.load(Ordering::Acquire), 0);
 }

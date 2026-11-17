@@ -313,7 +313,7 @@ pub struct Field {
 /// [`Blob::fmt`]: absent.
 pub const BLOB_ABSENT: u32 = 0;
 /// [`Blob::fmt`]: one JSON document.
-pub const BLOB_JSON: u32 = 1;
+pub use busbar_artifact_metadata::BLOB_JSON;
 /// [`Blob::fmt`]: JSON lines.
 pub const BLOB_JSONL: u32 = 2;
 /// [`Blob::fmt`]: opaque octets.

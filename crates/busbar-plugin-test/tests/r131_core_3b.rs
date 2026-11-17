@@ -53,7 +53,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "counts allocations around Frame calls of the plane fixture door: needs the HostView row (not built)",
     ),
     ("dist/default/tests/fixtures/plane_driver_test_plane.rs", PLANE_DRIVER),
-    ("dist/default/tests/hook_parity_driver/rig.rs", PLANE_DRIVER),
     ("dist/default/tests/plane_driver.rs", PLANE_DRIVER),
     ("dist/default/tests/plane_forged_context.rs", PLANE_DRIVER),
     ("dist/default/tests/plane_rider.rs", PLANE_DRIVER),

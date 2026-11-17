@@ -196,6 +196,7 @@ fn an_identified_principal_with_no_grant_is_refused() {
         module: module.to_string(),
         principal,
         resolved: None,
+        signed_authority: None,
     };
     let refused = |role_bindings: &crate::config::RoleBindings, v: ChainVerdict, why: &str| {
         match resolve_identity_from_bindings(role_bindings, v) {
@@ -1011,6 +1012,7 @@ async fn data_verifier_outcome_projection_preserves_the_503_and_401_envelopes() 
             module: "test-groups-module".into(),
             principal: grp_principal("test:admins", &["admins"]),
             resolved: None,
+            signed_authority: None,
         },
     )
     .expect_err("an identified unbound principal has no grant");
@@ -1716,6 +1718,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let bindings = bindings_for(
         "test-scope-module",
@@ -1771,6 +1774,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let star = bindings_for(
         "test-scope-module",
@@ -1822,6 +1826,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     for (scope, rung) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
         let bindings = bindings_for(
@@ -1857,6 +1862,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
         module: "test-scope-module".to_string(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
+        signed_authority: None,
     };
     let bindings = bindings_for(
         "test-scope-module",
