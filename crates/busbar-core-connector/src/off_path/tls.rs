@@ -137,6 +137,14 @@ pub(crate) fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
 ) -> Result<Arc<ServerConfig>, String> {
+    build_server_config_for_alpn(tls, resolver, ALPN_OFFER)
+}
+
+pub(crate) fn build_server_config_for_alpn(
+    tls: &TlsCfg,
+    resolver: &SecretResolver,
+    alpn: &[&[u8]],
+) -> Result<Arc<ServerConfig>, String> {
     let certs = load_cert_chain(resolver, &tls.cert)?;
     let key = load_private_key(resolver, &tls.key)?;
 
@@ -160,7 +168,7 @@ pub(crate) fn build_server_config(
             None => builder.with_no_client_auth(),
         };
         let mut config = builder.with_single_cert(certs, key)?;
-        config.alpn_protocols = ALPN_OFFER.iter().map(|p| p.to_vec()).collect();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         select_server_output(config)
     })
     .map_err(|e| match e {
@@ -204,6 +212,16 @@ pub(crate) fn prepare(
     resolver: &SecretResolver,
     transport_capable: bool,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
+    prepare_for_alpn(label, tls_cfg, resolver, transport_capable, ALPN_OFFER)
+}
+
+pub(crate) fn prepare_for_alpn(
+    label: &str,
+    tls_cfg: Option<&TlsCfg>,
+    resolver: &SecretResolver,
+    transport_capable: bool,
+    alpn: &[&[u8]],
+) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
     let Some(tls) = tls_cfg else {
         return Ok(Arc::new(Identity));
     };
@@ -212,11 +230,12 @@ pub(crate) fn prepare(
             label: label.to_string(),
         });
     }
-    let config =
-        build_server_config(tls, resolver).map_err(|reason| FailClosed::MaterialUnavailable {
+    let config = build_server_config_for_alpn(tls, resolver, alpn).map_err(|reason| {
+        FailClosed::MaterialUnavailable {
             label: label.to_string(),
             reason,
-        })?;
+        }
+    })?;
     Ok(Arc::new(Tls::new(config)))
 }
 

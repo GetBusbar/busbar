@@ -252,5 +252,17 @@ pub fn prepare(
     crate::off_path::tls::prepare(label, tls_cfg, resolver, transport_capable)
 }
 
+/// Prepare a listener using the selected transport supplier's server ALPN offer.
+/// The supplied order and an empty offer are preserved exactly.
+pub fn prepare_for_alpn(
+    label: &str,
+    tls_cfg: Option<&TlsCfg>,
+    resolver: &SecretResolver,
+    transport_capable: bool,
+    alpn: &[&[u8]],
+) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
+    crate::off_path::tls::prepare_for_alpn(label, tls_cfg, resolver, transport_capable, alpn)
+}
+
 #[cfg(test)]
 mod tests;

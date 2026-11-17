@@ -148,6 +148,26 @@ async fn build_server_config_and_prepare_build_from_operator_config() {
     drop(security);
 }
 
+#[test]
+fn supplier_server_alpn_offer_is_preserved() {
+    let (tls, _) = valid_tls_cfg();
+    let resolver = fixture_resolver(&tls);
+    for offer in [
+        &[&b"http/1.1"[..]][..],
+        &[&b"custom"[..], &b"h2"[..]][..],
+        &[],
+    ] {
+        let config = crate::off_path::tls::build_server_config_for_alpn(&tls, &resolver, offer)
+            .expect("valid listener material");
+        assert_eq!(
+            config.alpn_protocols,
+            offer.iter().map(|p| p.to_vec()).collect::<Vec<_>>()
+        );
+        prepare_for_alpn("supplier-listener", Some(&tls), &resolver, true, offer)
+            .expect("supplier offer must prepare");
+    }
+}
+
 /// A syntactically invalid PEM cert errors with the cert named, not a panic — moved here verbatim
 #[test]
 fn malformed_cert_errors_clearly() {
