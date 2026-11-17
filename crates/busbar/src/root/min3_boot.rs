@@ -799,6 +799,7 @@ impl BootSteps for BootstrapSteps<'_> {
 
 /// S8 steps hold the completed S5 secret prefix. They cannot extend or replace it.
 struct Steps<'r> {
+    images: &'r super::boot::images::FileImages,
     registry: &'r MinRegistry,
     instances: &'r [(KindCode, InstanceSpec<'r>)],
     services: Option<Arc<KernelServices>>,
@@ -986,6 +987,10 @@ impl Steps<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(PortSeat {
+                image: self
+                    .images
+                    .plane_identity(&who.plugin)
+                    .map_err(OpenError::Unknown)?,
                 instance: spec.name.to_owned(),
                 driver: Arc::new(driver),
                 audience: audience_of(spec.config_json),
@@ -1115,6 +1120,7 @@ pub(crate) struct BootstrapReady {
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
+    images: Arc<super::boot::images::FileImages>,
     channel_accounts: Arc<ChannelAccounts>,
     hook_plan: hooks::Plan,
     provider_plan: super::min3_provider_plan::Plan,
@@ -1295,6 +1301,7 @@ pub(crate) fn prepare_serving(
     catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
 ) -> Result<ServingReady, String> {
+    let effective_images = Arc::new(effective_images);
     let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
         channel_accounts,
@@ -1306,7 +1313,7 @@ pub(crate) fn prepare_serving(
         converting,
         normalization_source,
     } = ready;
-    let images = effective_images.images;
+    let images = effective_images.images.clone();
     let transports: Vec<String> = images
         .identities()
         .filter(|id| {
@@ -1318,7 +1325,8 @@ pub(crate) fn prepare_serving(
         .collect();
     let planes: Vec<PlaneImage> = effective_images
         .aliases
-        .into_iter()
+        .iter()
+        .cloned()
         .filter(|(id, _)| {
             images
                 .described(id)
@@ -1496,6 +1504,7 @@ pub(crate) fn prepare_serving(
     };
     let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
+        images: effective_images,
         channel_accounts,
         hook_plan,
         provider_plan,
@@ -1547,6 +1556,7 @@ pub(crate) async fn finish(
     String,
 > {
     let ServingReady {
+        images,
         channel_accounts,
         hook_plan,
         provider_plan,
@@ -1604,6 +1614,7 @@ pub(crate) async fn finish(
         table: ConnTable::installed(),
     };
     let mut steps = Steps {
+        images: &images,
         registry: &built.registry,
         instances: &specs,
         services,

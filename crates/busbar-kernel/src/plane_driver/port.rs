@@ -131,6 +131,8 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
 /// of its config block, `None` when it states none), what its intents run against and who it is to the store.
 #[derive(Clone)]
 pub struct PortSeat {
+    /// Actual admitted image metadata retained by the same read that opened this seat.
+    pub image: Arc<super::image_identity::PlaneImageIdentity>,
     pub instance: String,
     /// Exact catalog and registration request domains retained by this serving generation.
     pub request_routes: Arc<super::request_admission::RequestRoutes>,
