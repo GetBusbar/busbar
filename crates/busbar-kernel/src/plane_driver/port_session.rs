@@ -352,6 +352,8 @@ pub struct ExMsgItem {
 #[derive(Debug, Default)]
 pub struct Answer {
     emitted: bool,
+    attempt_usage: Vec<AttemptUsageItem>,
+    attempt_end: Option<busbar_plugin_abi::fallback_usage::AttemptEnd>,
     preparation: PreparationFacts,
     resource_echo: Option<ResourceEcho>,
     pub client: Vec<ToClient>,
@@ -385,6 +387,27 @@ pub struct Answer {
     default_exchange: u32,
     head: Option<(u16, HeadFields)>,
     trailers: Option<HeadFields>,
+}
+
+#[derive(Debug)]
+struct AttemptUsageItem {
+    attempt: u32,
+    class: Box<str>,
+    amount: u64,
+    scale: u32,
+    source: busbar_plugin_abi::fallback_usage::UsageSource,
+}
+
+impl AttemptUsageItem {
+    fn borrowed(&self) -> busbar_plugin_abi::fallback_usage::AttemptUsage<'_> {
+        busbar_plugin_abi::fallback_usage::AttemptUsage {
+            attempt: self.attempt,
+            class: &self.class,
+            amount: self.amount,
+            scale: self.scale,
+            source: self.source,
+        }
+    }
 }
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
@@ -621,10 +644,28 @@ impl Answer {
                 }
                 self.preparation.estimates(estimates)?;
             }
-            // A prepared exchange is not a committed attempt. Until the monetary consumer
-            // installs the actual transport-owned partition, these records have no owner.
-            PlaneOut::AttemptUsage(_) | PlaneOut::AttemptUsageEnd(_) => {
-                return Err(Violation::BadRecords);
+            PlaneOut::AttemptUsage(usage) => {
+                if !matches!(origin, Origin::Piece(FROM_UPSTREAM) | Origin::End)
+                    || (matches!(origin, Origin::Piece(_)) && self.default_exchange != 0)
+                    || self.attempt_end.is_some()
+                {
+                    return Err(Violation::BadRecords);
+                }
+                self.attempt_usage.push(AttemptUsageItem {
+                    attempt: usage.attempt,
+                    class: usage.class.into(),
+                    amount: usage.amount,
+                    scale: usage.scale,
+                    source: usage.source,
+                });
+            }
+            PlaneOut::AttemptUsageEnd(end) => {
+                if !matches!(origin, Origin::Piece(FROM_UPSTREAM) | Origin::End)
+                    || (matches!(origin, Origin::Piece(_)) && self.default_exchange != 0)
+                    || self.attempt_end.replace(end).is_some()
+                {
+                    return Err(Violation::BadRecords);
+                }
             }
             PlaneOut::ResourceEcho(echo) => {
                 if origin != Origin::Upstream || self.resource_echo.is_some() {
@@ -1120,6 +1161,7 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    active_attempt: Option<super::NativeAttempt>,
     data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     declaration: Arc<FrozenUsage>,
     session_classes: std::collections::BTreeSet<String>,
@@ -1193,6 +1235,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            active_attempt: None,
             data,
             declaration,
             session_classes: std::collections::BTreeSet::new(),
@@ -1227,6 +1270,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            active_attempt: None,
             data: None,
             declaration,
             session_classes: std::collections::BTreeSet::new(),
@@ -1249,6 +1293,31 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     }
     pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.data.as_ref()
+    }
+
+    pub(crate) fn install_attempt(
+        &mut self,
+        attempt: super::NativeAttempt,
+    ) -> Result<(), SessionError> {
+        if self.active_attempt.is_some()
+            || !attempt.accepts(&self.request_declaration()?)
+            || match (self.data.as_ref(), attempt.data()) {
+                (Some(expected), Some(actual)) => !Arc::ptr_eq(expected, actual),
+                (None, None) => false,
+                _ => true,
+            }
+        {
+            return Err(SessionError::NotDriven);
+        }
+        self.active_attempt = Some(attempt);
+        Ok(())
+    }
+
+    pub(crate) fn finish_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.take() {
+            attempt.seal().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn bind_admission(
@@ -1343,6 +1412,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let answer = self.checked(answer)?;
+        self.finish_attempt()?;
         buffered.release();
         Ok(answer.seal())
     }
@@ -1418,7 +1488,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
 
     /// A violation drops the session, which cancels it; the plane is told nothing.
     fn checked(&mut self, answer: Answer) -> Result<Answer, SessionError> {
-        let answer = answer.seal();
+        let mut answer = answer.seal();
         if self.data.as_ref().is_some_and(|data| !data.is_live()) {
             self.session = None;
             return Err(SessionError::NotDriven);
@@ -1479,15 +1549,62 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::Violation(Violation::BadRecords));
         }
-        if let Err(error) = self.keep_usage(&answer) {
-            self.session = None;
-            return Err(error);
+        let usage = self
+            .validated_usage(&answer)
+            .inspect_err(|_| self.session = None)?;
+        if !answer.attempt_usage.is_empty() || answer.attempt_end.is_some() {
+            let Some(attempt) = self.active_attempt.as_mut() else {
+                self.session = None;
+                return Err(SessionError::Violation(Violation::BadRecords));
+            };
+            let reports: Vec<_> = answer
+                .attempt_usage
+                .iter()
+                .map(AttemptUsageItem::borrowed)
+                .collect();
+            let rounded = attempt
+                .observe(&reports, answer.attempt_end)
+                .map_err(|error| {
+                    self.session = None;
+                    match error {
+                        super::NativeAttemptError::Usage(_) => {
+                            SessionError::Violation(Violation::BadRecords)
+                        }
+                        _ => SessionError::NotDriven,
+                    }
+                })?;
+            if rounded {
+                for class in answer
+                    .attempt_usage
+                    .iter()
+                    .filter(|usage| {
+                        super::usage::scaled(usage.amount, usage.scale)
+                            .is_some_and(|(_, rounded)| rounded)
+                    })
+                    .map(|usage| &usage.class)
+                    .collect::<std::collections::BTreeSet<_>>()
+                {
+                    answer.audits.push(AuditRow {
+                        verdict: AUDIT_DEGRADED,
+                        action: super::port_money::ACTION_ROUNDED.into(),
+                        resource: format!(
+                            "unit:{} class:{class}",
+                            self.invocation
+                                .as_ref()
+                                .expect("committed task has invocation")
+                                .unit()
+                        )
+                        .into(),
+                    });
+                }
+            }
         }
+        self.usage = usage;
         self.session_classes = session_classes;
         Ok(answer.seal())
     }
 
-    fn keep_usage(&mut self, answer: &Answer) -> Result<(), SessionError> {
+    fn validated_usage(&self, answer: &Answer) -> Result<SessionUsage, SessionError> {
         let mut usage = self.usage.clone();
         for u in &answer.usage {
             let rec = UsageRec {
@@ -1499,8 +1616,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 .answer(&u.class, rec)
                 .map_err(|why| SessionError::Violation(Violation::Usage(why)))?;
         }
-        self.usage = usage;
-        Ok(())
+        Ok(usage)
     }
 }
 
