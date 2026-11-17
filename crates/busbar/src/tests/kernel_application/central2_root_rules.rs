@@ -37,7 +37,7 @@ async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_bann
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())

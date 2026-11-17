@@ -1235,7 +1235,7 @@ async fn serve_keys_fixture(
             document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
             document["plugins"] =
                 super::plugins::config_document(&super::plugins::trusted_config(&directory));
-            document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+            document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
             document["identity-providers"] = serde_json::json!({"admin-tokens": {
                 "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
             }});

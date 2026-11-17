@@ -30,11 +30,13 @@ async fn app() -> Arc<busbar_kernel::state::App> {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -81,7 +83,7 @@ struct Answer {
 }
 
 async fn ask(addr: SocketAddr, path: &str) -> Answer {
-    let response = reqwest::Client::new()
+    let response = crate::root::test_plugins::operator_client()
         .get(format!("http://{addr}{path}"))
         .send()
         .await

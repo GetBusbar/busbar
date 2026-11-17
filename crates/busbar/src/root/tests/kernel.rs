@@ -609,7 +609,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
         &json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

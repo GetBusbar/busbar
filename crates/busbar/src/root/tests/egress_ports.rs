@@ -216,7 +216,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     crate::dist_root_install::install();
     let empty = busbar_kernel::config::deploy_from_yaml_str(
-        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+        "store: {module: memory}\nauth: {chain: []}\nproviders: {}\nmodels: {}\n",
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the serving deployment parses");
