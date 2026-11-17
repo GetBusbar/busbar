@@ -149,6 +149,28 @@ fn target_for(name: &str) -> Option<MemberTarget> {
 }
 
 #[test]
+fn target_lookup_preserves_the_selected_member_qualification() {
+    let fake = Fake::default();
+    fake.picks
+        .lock()
+        .unwrap()
+        .push_back(member("seat\u{1f}model"));
+    let rt = Runtime::new().unwrap();
+    let tok = token();
+    let cell = Mutex::new(Some(fake));
+    let make = |_: &Wants| cell.lock().unwrap().take().unwrap();
+    let targets = |name: &str| (name == "seat\u{1f}model").then(MemberTarget::bare);
+    let handle = rt.handle().clone();
+    let walk = EgressWalk::new(&make, &tok, &handle, &targets);
+    let got = walk.members().next(&Wants::default());
+    assert!(
+        got.is_some(),
+        "the exact configured member must reach its target record"
+    );
+    assert_eq!(&*got.unwrap().upstream, "model");
+}
+
+#[test]
 fn a_pick_becomes_a_candidate_named_as_the_operator_and_stated_as_its_target() {
     let fake = Fake::default();
     fake.picks.lock().unwrap().push_back(member("a"));
