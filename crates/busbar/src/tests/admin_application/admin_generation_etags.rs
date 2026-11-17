@@ -365,6 +365,51 @@ fn unknown_effect_request(body: &'static str) -> axum::http::Request<axum::body:
 }
 
 #[tokio::test]
+async fn unreadable_retained_intent_refuses_without_an_effect() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let s = serve("unknown-effect-unreadable-intent", false).await;
+    let store = durable::scoped_store(
+        s.app
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let key = ("anonymous".into(), "op:unknown-effect".into());
+    let now = busbar_kernel::store::now();
+    let claim = durable::claim_held(&store, &key, now).await.unwrap();
+    durable::settle(&store, &claim, now, &Settled::Retained(vec![255]))
+        .await
+        .unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let response = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone())
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
 async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
     isolated!(CHILD, WITNESS, witness = "generation");
     use std::sync::atomic::{AtomicUsize, Ordering};

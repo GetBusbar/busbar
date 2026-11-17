@@ -477,4 +477,11 @@ async fn held_operation_lookup_follows_the_current_generation() {
         Ok(None),
         "completed held answers keep the ordinary retention boundary"
     );
+    let later = now + IDEMPOTENCY_TTL_SECS * 2;
+    assert!(durable::claim_held(store.as_ref(), &k, later).await.is_ok());
+    assert_eq!(
+        durable::claim_held(store.as_ref(), &k, later).await,
+        Err(Refused::InFlight),
+        "expiry admits exactly one new generation"
+    );
 }
