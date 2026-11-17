@@ -528,6 +528,43 @@ pub struct AuthDeployCfg {
     /// [`LoginLimitsCfg`]). Absent ⇒ the owner-signed defaults; the limiter is always on.
     #[serde(default)]
     pub login_limits: LoginLimitsCfg,
+    /// Core-owned native verifier cache policy (IF §12.28), never plugin settings.
+    #[serde(default)]
+    pub verdict_cache: VerdictCacheCfg,
+}
+
+/// `auth.verdict_cache` uses the kernel cache's adopted defaults and bounds.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct VerdictCacheCfg {
+    pub default_ttl_s: u32,
+    pub max_ttl_s: u32,
+    pub max_entries: u32,
+    pub max_identity_bytes: u32,
+}
+
+impl Default for VerdictCacheCfg {
+    fn default() -> Self {
+        let policy = crate::auth::verdicts::VerdictPolicy::DEFAULT;
+        Self {
+            default_ttl_s: policy.default_ttl_s,
+            max_ttl_s: policy.max_ttl_s,
+            max_entries: policy.max_entries,
+            max_identity_bytes: policy.max_identity_bytes,
+        }
+    }
+}
+
+impl VerdictCacheCfg {
+    pub fn resolve(self) -> Result<crate::auth::verdicts::VerdictPolicy, &'static str> {
+        crate::auth::verdicts::VerdictPolicy {
+            default_ttl_s: self.default_ttl_s,
+            max_ttl_s: self.max_ttl_s,
+            max_entries: self.max_entries,
+            max_identity_bytes: self.max_identity_bytes,
+        }
+        .checked()
+    }
 }
 
 /// `auth.login_limits:` as written. Every key is optional; absent keys take the defaults in
@@ -597,6 +634,7 @@ impl Default for AuthDeployCfg {
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
             login_limits: LoginLimitsCfg::default(),
+            verdict_cache: VerdictCacheCfg::default(),
         }
     }
 }
@@ -606,6 +644,8 @@ impl Default for AuthDeployCfg {
 /// constructed by `resolve`, never parsed from YAML.
 #[derive(Debug, Clone)]
 pub struct AuthCfg {
+    /// The authored native verifier cache policy, retained for config round trips.
+    pub verdict_cache: VerdictCacheCfg,
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
     /// resolves the same key). REQUIRED when the data-plane chain names the built-in `keys` verifier
@@ -643,6 +683,7 @@ impl AuthCfg {
     ) -> impl Serialize + 'a {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            verdict_cache: &'a VerdictCacheCfg,
             signing_key: F0,
             chain: F1,
             admin_auth: F2,
@@ -652,6 +693,7 @@ impl AuthCfg {
             policy: &'a AuthPolicyCfg,
         }
         View {
+            verdict_cache: &self.verdict_cache,
             signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
             chain: self
                 .chain
@@ -678,6 +720,7 @@ impl AuthCfg {
 impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
+            verdict_cache: VerdictCacheCfg::default(),
             signing_key: None,
             chain: vec![],
             admin_auth: default_admin_auth(),
