@@ -41,6 +41,7 @@ const INSTANCE: u64 = 7;
 
 fn def(name: &str) -> Arc<UpstreamDef> {
     Arc::new(UpstreamDef {
+        resource: None,
         allow_private: false,
         name: name.into(),
         url: None,

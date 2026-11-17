@@ -1063,6 +1063,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
 fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount,
         per: Some(LimitWindow::Day),
@@ -1335,6 +1336,7 @@ async fn a_live_parent_at_the_request_cap_admits_and_ledgers_its_child() {
 
     let (app, key) = downgrade_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Requests,
             amount: 1,
             per: Some(LimitWindow::Day),
@@ -1843,6 +1845,7 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     .collect::<std::collections::BTreeMap<_, _>>();
     let (app, key) = money_book(
         vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: 1_000_000,
             per: Some(LimitWindow::Day),
@@ -2083,6 +2086,7 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
 fn one_request_a_day() -> busbar_kernel::config::groups::LimitCfg {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Requests,
         amount: 1,
         per: Some(LimitWindow::Day),
@@ -5336,6 +5340,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             parent: None,
             enabled: true,
             limits: vec![LimitCfg {
+                selected: None,
                 metric: LimitMetric::Budget,
                 amount: 1,
                 per: Some(LimitWindow::Day),

@@ -137,6 +137,10 @@ fn minimal_value(key: &str) -> &'static str {
         "per" => "day",
         "pool" | "downgrade_to" => "p",
         "on_exhaust" => "block",
+        "id" => "r",
+        "upstream_resource" => "p/r",
+        "per_key" => "true",
+        "enforcement" => "process",
         k if LimitMetric::from_key(k).is_some() => "1",
         other => panic!("no minimal value for limit key `{other}`; add one"),
     }

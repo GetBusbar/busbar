@@ -31,6 +31,7 @@ struct LimitRead {
 
 fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {
+        selected: None,
         metric: LimitMetric::Budget,
         amount: cents,
         per: Some(per),

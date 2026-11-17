@@ -186,6 +186,7 @@ fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::conf
         parent: parent.map(String::from),
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Budget,
             amount: u64::try_from(cap).unwrap_or(0),
             per: Some(per),
@@ -1558,6 +1559,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                 parent: None,
                 enabled: true,
                 limits: vec![LimitCfg {
+                    selected: None,
                     metric: LimitMetric::Requests,
                     amount: 0,
                     per: Some(LimitWindow::Minute),
@@ -1585,6 +1587,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                 enabled: true,
                 limits: vec![
                     LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Requests,
                         amount: 4,
                         per: Some(LimitWindow::Minute),
@@ -1593,6 +1596,7 @@ async fn test_rate_headroom_reports_fraction_remaining() {
                         downgrade_to: None,
                     },
                     LimitCfg {
+                        selected: None,
                         metric: LimitMetric::Tokens,
                         amount: 100_000,
                         per: Some(LimitWindow::Minute),
@@ -4576,6 +4580,7 @@ async fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     let concurrent_group = || crate::config::GroupCfg {
         enabled: true,
         limits: vec![LimitCfg {
+            selected: None,
             metric: LimitMetric::Concurrent,
             amount: 4,
             per: None,

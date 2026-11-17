@@ -9,6 +9,9 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCfg {
+    /// Opaque configured selected-rate identity, validated by the host target producer.
+    #[serde(default)]
+    pub resource: Option<Box<str>>,
     /// Lifetime request cap for this model entry. `-1` (the default, via [`neg1`]) means unlimited.
     #[serde(default = "neg1")]
     pub max_requests: i64,

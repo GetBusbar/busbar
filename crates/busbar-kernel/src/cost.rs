@@ -282,6 +282,9 @@ impl CostModel {
                 let mut buckets: Vec<GroupBucket> = Vec::new();
                 let mut concurrent_cap: Option<u64> = None;
                 for l in &g.limits {
+                    if l.selected.is_some() {
+                        continue;
+                    }
                     match (l.metric, l.per) {
                         (LimitMetric::Concurrent, _) => {
                             concurrent_cap =

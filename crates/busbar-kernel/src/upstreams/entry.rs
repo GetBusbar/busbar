@@ -53,6 +53,7 @@ const KEYS: &[&str] = &[
     "auth",
     "upstream_credentials",
     "allow_private",
+    "resource",
 ];
 const COMMAND_KEYS: &[&str] = &["argv", "env", "cwd", "pin", "idle_s"];
 const TLS_KEYS: &[&str] = &["pin_spki", "client_identity", "trust"];
@@ -173,6 +174,7 @@ impl UpstreamDef {
         }
         Ok(UpstreamDef {
             name: name.into(),
+            resource: cfg.resource.clone(),
             url,
             command,
             tls,
