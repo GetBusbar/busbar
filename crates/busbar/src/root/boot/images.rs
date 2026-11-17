@@ -202,6 +202,10 @@ mod pin_tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/read_inventory.rs"]
+mod read_inventory_tests;
+
 /// Admit a fixture's own archive scan, without borrowing another fixture's process-global registry.
 #[cfg(test)]
 pub(crate) fn fixture(
