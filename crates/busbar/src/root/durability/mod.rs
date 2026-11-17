@@ -465,6 +465,8 @@ pub(crate) fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>
 }
 
 pub struct NodeBook {
+    /// Verified persisted deployment public keys, retained with journal/export history.
+    pub audit_verification_keys: Arc<AuditKeySet>,
     pub durability: Arc<std::sync::Mutex<Durability>>,
     pub runtime_journal: Arc<RuntimeJournal>,
     pub node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
@@ -499,6 +501,7 @@ pub(crate) async fn node_book(
     )
     .await?;
     Ok(NodeBook {
+        audit_verification_keys: Arc::new(AuditKeySet::new()),
         durability: Arc::new(std::sync::Mutex::new(durability)),
         runtime_journal: journal,
         node_lease: None,

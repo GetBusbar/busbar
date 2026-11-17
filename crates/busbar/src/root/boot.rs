@@ -2143,6 +2143,7 @@ impl BookPreparation {
         // SEALING-FIX §3.3, §5.3: the key's signing power goes to the two signer threads; the book
         // keeps only the public half. The notary starts from the resumed head, read before any
         // recovery line is appended, once serving begins (`main`).
+        let audit_verification_keys = Arc::new(bound.verification_keys);
         let (audit, checkpoint) = {
             let durability = self.durability.as_ref().unwrap();
             let (services, checkpoint) = super::durability::audit_services::AuditServices::spawn(
@@ -2244,6 +2245,7 @@ impl BookPreparation {
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
         self.phase = BookPhase::Ready;
         Ok(super::durability::NodeBook {
+            audit_verification_keys,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
             node_lease: self.node_lease.take(),
