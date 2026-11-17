@@ -3502,8 +3502,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+source = "git+https://github.com/MattJackson/rustls?rev=a33d40bc1e034c617f566a7e2d70fef8422f43ba#a33d40bc1e034c617f566a7e2d70fef8422f43ba"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
