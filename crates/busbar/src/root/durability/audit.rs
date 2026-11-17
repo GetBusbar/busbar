@@ -6,7 +6,76 @@ use super::*;
 use busbar_kernel::persistence::journal::head_cell::Head;
 use busbar_kernel_audit::{Fingerprint, LineAt, Linked, Prepared};
 
+/// Canonical terminal facts retained by the Node entry before any journal effect. The entry
+/// also retains its original audit pass and the byte credit for this input plus preparation.
+pub(crate) struct FrozenNativeAudit {
+    inputs: AuditInputs,
+    identity: LineIdentity,
+    journal: Arc<RuntimeJournal>,
+}
+
+impl FrozenNativeAudit {
+    pub(crate) fn new(mut inputs: AuditInputs, book: &Arc<std::sync::Mutex<Durability>>) -> Self {
+        let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
+        let identity = held.line_identity();
+        inputs.what.incarnation = identity.incarnation;
+        Self {
+            inputs,
+            identity,
+            journal: held.journal.clone(),
+        }
+    }
+}
+
+/// Exact original installed in the Node's preallocated terminal slot before chain publication.
+/// A cloned driver loan never takes custody away from that entry. This is not signed coverage.
+#[derive(Clone)]
+pub(crate) struct NativeStagedAudit {
+    journal: Arc<RuntimeJournal>,
+    run: Arc<StagedRun>,
+    line: LineAt,
+}
+
+impl NativeStagedAudit {
+    pub(crate) fn line(&self) -> LineAt {
+        self.line
+    }
+
+    /// Drive only the retained original. Success means journal Applied, never a notary receipt.
+    pub(crate) async fn confirm_journal(
+        &self,
+    ) -> Result<(), busbar_kernel::persistence::journal::runtime::RuntimeError> {
+        self.journal.confirm(&self.run).await?;
+        records_pulse().notify_waiters();
+        Ok(())
+    }
+}
+
 impl Durability {
+    /// Caller holds the native entry lock and has reserved preparation bytes. A failed prepare
+    /// or stage leaves its frozen inputs/pass intact; a successful stage installs the exact run
+    /// before advancing the chain. No await, callback into Node, or Store work occurs here.
+    pub(crate) fn stage_native(
+        book: &Arc<std::sync::Mutex<Self>>,
+        frozen: &FrozenNativeAudit,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+        slot: &mut Option<NativeStagedAudit>,
+    ) -> Result<(), DurabilityLost> {
+        if slot.is_some() {
+            return Err(DurabilityLost::observed(token, StepName::Audit));
+        }
+        let prepared = AuditChain::prepare(frozen.inputs.clone(), frozen.identity.node);
+        let mut held = book.lock().unwrap_or_else(|poison| poison.into_inner());
+        if held.line_identity() != frozen.identity || !Arc::ptr_eq(&held.journal, &frozen.journal) {
+            return Err(DurabilityLost::observed(token, StepName::Audit));
+        }
+        let journal = held.journal.clone();
+        held.stage_prepared_custody(prepared, pass, token, |line, run| {
+            *slot = Some(NativeStagedAudit { journal, run, line });
+        })
+    }
+
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
         let mut keyed = false;
@@ -80,6 +149,18 @@ impl Durability {
         pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
     ) -> Result<(LineAt, Arc<StagedRun>), DurabilityLost> {
+        self.stage_prepared_custody(prepared, pass, token, |line, run| (line, run))
+    }
+
+    /// The private install callback is only an infallible move into already-owned storage.
+    /// It runs after the RAM stage accepted the original and before any chain/head publication.
+    fn stage_prepared_custody<T>(
+        &mut self,
+        prepared: Prepared,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+        install: impl FnOnce(LineAt, Arc<StagedRun>) -> T,
+    ) -> Result<T, DurabilityLost> {
         let linked_ms = busbar_kernel::store::now_ms();
         let linked: Linked = self.record.link(prepared, linked_ms, pass);
         let entry = audit_entry(linked.record())
@@ -88,12 +169,13 @@ impl Durability {
             .journal
             .stage_run(&[entry])
             .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
-        self.record.advance(&linked);
         let line = LineAt {
             chain_seq: linked.record().seq,
             node_seq: run.records().first().map_or(0, |r| r.node_seq),
             fp: linked.fingerprint(),
         };
+        let installed = install(line, run);
+        self.record.advance(&linked);
         self.head.publish(&Head {
             seq: line.chain_seq,
             node_seq: line.node_seq,
@@ -105,7 +187,7 @@ impl Durability {
             self.audit_signed_from = Some(record.seq);
         }
         self.audit_ring.push(record);
-        Ok((line, run))
+        Ok(installed)
     }
 
     /// The request path's stage when the caller could not prepare before the lock: prepare here,
@@ -289,6 +371,10 @@ pub(super) mod tests;
 #[cfg(test)]
 #[path = "../tests/durability_audit_node.rs"]
 mod node_tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_native_audit.rs"]
+mod native_tests;
 
 /// THE BOOT CONSTANTS A LINE NAMES, copied out of the book at bind so the request path prepares
 /// (hashes) its line before taking the book's lock.
