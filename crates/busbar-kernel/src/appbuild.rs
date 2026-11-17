@@ -1690,7 +1690,6 @@ pub async fn build_app_from_config_with_store(
             recover_usage_before_hydration,
             None,
             None,
-            None,
         )),
     )
     .await
@@ -1712,8 +1711,6 @@ pub struct BootBuild<'a> {
     pub boot_store: Arc<crate::persistence::facade::CoreStore>,
     /// The fully opened S5 secret view; application construction never reopens it.
     pub secret_resolver: Arc<config::secret::SecretResolver>,
-    /// The boot's unique prepared native owner, consumed through the same early/late seam.
-    pub preparation: Option<Box<dyn CandidatePreparation>>,
 }
 
 pub async fn build_boot_app(
@@ -1735,7 +1732,6 @@ pub async fn build_boot_app(
             true,
             boot.judged,
             Some(boot.secret_resolver),
-            boot.preparation,
         )),
     )
     .await
@@ -1767,7 +1763,6 @@ async fn build_app_native(
     recover_usage_before_hydration: bool,
     judged: Option<config_validate::Judged>,
     opened_secrets: Option<Arc<config::secret::SecretResolver>>,
-    initial_preparation: Option<Box<dyn CandidatePreparation>>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     if let Some(read) = cfg.grammar.prepared() {
         read.check_plugins(&plugins_cfg)?;
@@ -1869,9 +1864,17 @@ async fn build_app_native(
         governance::principal_transition::requirements(&cfg, plugin_registry.as_ref())?;
 
     let publication_generation = config::generation::reserve(prior).await?;
-    let preparation = match initial_preparation {
-        Some(preparation) => Some(preparation),
-        None => rules.prepare_candidate(&cfg, &plugins_cfg).await?,
+    // Only build_boot_app supplies opened_secrets: its retained root preparation owns
+    // the exact already-opened bootstrap prefix and ServingReady. Full initial native
+    // completion remains after NodeBook confirms the boot generation. Every runtime
+    // rebuild instead requires its real early/late candidate producer here.
+    let preparation = if opened_secrets.is_some() {
+        if prior.is_some() || boot_store.is_none() {
+            return Err("initial secret ownership requires the admitted boot Store".into());
+        }
+        None
+    } else {
+        rules.prepare_candidate(&cfg, &plugins_cfg).await?
     };
     let prepared_resolver = preparation
         .as_ref()
