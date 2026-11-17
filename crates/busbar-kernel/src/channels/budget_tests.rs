@@ -225,3 +225,41 @@ fn failed_general_reclassification_preserves_all_protected_charges() {
     drop((reply, general));
     assert_eq!(process.used(), Claim::default());
 }
+
+#[test]
+fn storage_source_uses_the_same_general_owner_and_never_spends_reply_capacity() {
+    let process = ChannelBudget::new();
+    let unit = process.instance().unit();
+    let source = unit.storage();
+    let mut credit = source.try_reserve(UNIT_BYTES - REPLY_BYTES).unwrap();
+    assert!(unit
+        .reserve(
+            Claim {
+                bytes: 1,
+                ..Claim::default()
+            },
+            None
+        )
+        .is_err());
+    assert!(source.try_reserve(1).is_err());
+    let part = credit.split(100).unwrap();
+    credit.try_merge(part).unwrap();
+    let reply = unit
+        .reserve_reply(
+            Claim {
+                bytes: REPLY_BYTES,
+                ..Claim::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(process.used().bytes, UNIT_BYTES);
+    drop((reply, credit));
+    assert_eq!(process.used(), Claim::default());
+    let mut original = source.try_reserve(1).unwrap();
+    original
+        .try_merge(unit.clone().storage().try_reserve(1).unwrap())
+        .unwrap();
+    let foreign = process.instance().unit().storage().try_reserve(1).unwrap();
+    assert!(original.try_merge(foreign).is_err());
+}
