@@ -81,66 +81,104 @@ pub(crate) struct PlaneFixture {
     pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
     _owners: Arc<Owners>,
     _prefix: Arc<BootSecrets>,
-    records: Records,
-    directory: Directory,
-    hook_specs: Vec<Configured>,
-    public_url: Option<String>,
+    hooks: std::collections::BTreeMap<String, HookFixture>,
+    _invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
 }
 
-pub(crate) struct HookFixture {
-    pub(crate) who: Namespace,
-    pub(crate) port: Arc<dyn busbar_ports::hook::HookPort>,
-    pub(crate) described: busbar_plugin_loader::instance::Described,
-    pub(crate) limits: busbar_plugin_abi::host_side::caller::InstanceLimits,
+impl std::fmt::Debug for PlaneFixture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneFixture")
+            .field("seat", &self.seat)
+            .finish_non_exhaustive()
+    }
 }
+
+pub(crate) type HookFixture = hooks::Opened;
 
 impl PlaneFixture {
-    /// Open the candidate's actual hooks over the plane's same Registry, secret prefix, Store
-    /// and directory owners. The hook pipeline receives the admitted immutable describe records,
-    /// including D_WORD; no legacy HookCalls adapter or synthetic capability grant is involved.
+    /// The ports already opened and frozen before the driver and every dormant worker.
     pub(crate) async fn hooks(
         &self,
     ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
-        let built = &self._owners.built;
-        let needs = built.needs_for(
-            Arc::clone(&self._prefix),
-            Arc::clone(&self.records),
-            Arc::clone(&self.directory),
+        Ok(self.hooks.clone())
+    }
+
+    /// The production dispatcher shape, retaining the fixture's actual opened instance leases.
+    /// Its workers remain dormant until the caller has published the complete listener plan.
+    pub(crate) fn served(
+        mut self,
+        app: &Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+    ) -> (
+        crate::root::serve::Served,
+        crate::root::boot::workers::PreparedWorkers,
+    ) {
+        let workers = std::mem::replace(
+            &mut self.workers,
+            crate::root::boot::workers::PreparedWorkers::new(),
         );
-        let refs = self._prefix.refs();
-        let specs = specifications(&self.hook_specs, self.public_url.as_deref(), false);
-        let mut opened = std::collections::BTreeMap::new();
-        for (_, spec) in specs {
-            let prepared = built
-                .registry
-                .reserve(&spec)
-                .map_err(|why| format!("{why:?}"))?;
-            let described = built
-                .registry
-                .described(prepared.identity())
-                .ok_or("native hook reservation lost its admitted description")?;
-            let who = Namespace {
-                plugin: Arc::from(prepared.identity()),
-                name: Arc::from(prepared.name()),
-                instance: prepared.id(),
-                slot: prepared.slot(),
-            };
-            let port = built
-                .registry
-                .open_hook_reserved(prepared, &needs, &refs)
-                .await
-                .map_err(|why| format!("{why:?}"))?;
-            opened.insert(
-                spec.name.to_owned(),
-                HookFixture {
-                    who,
-                    port,
-                    described,
-                    limits: spec.limits,
-                },
-            );
-        }
-        Ok(opened)
+        let owner = Arc::new(self);
+        let served = crate::root::serve::Served {
+            ports: vec![owner.seat.clone()],
+            native_fixture: Some(owner),
+            billing: Some(billing),
+            post: Some(post),
+            tables: app.serve_tables.clone(),
+            ..Default::default()
+        };
+        (served, workers)
+    }
+
+    /// Publish the actual native HTTP mounts and their checked generation before starting any
+    /// prepared instance worker. Callers retain this owner while either router can serve.
+    pub(crate) fn publish(
+        self,
+        app: Arc<busbar_kernel::state::App>,
+        post: Arc<crate::root::plane_node::NodeEndPost>,
+        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
+        body_limit: usize,
+    ) -> Result<PublishedFixture, String> {
+        let (served, workers) = self.served(&app, post, billing);
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || crate::root::kernel::ROOT_CARD.pin(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )?;
+        let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
+            app,
+            mounts.routes,
+            mounts.sessions,
+            mounts.refusals,
+            body_limit,
+            0,
+            false,
+        );
+        let workers = workers.start();
+        Ok(PublishedFixture {
+            data,
+            admin,
+            handle,
+            routes: mounts.data,
+            workers,
+        })
+    }
+}
+
+pub(crate) struct PublishedFixture {
+    pub(crate) data: axum::Router,
+    pub(crate) admin: axum::Router,
+    pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
+    pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
+    workers: crate::root::boot::workers::RunningWorkers,
+}
+
+impl PublishedFixture {
+    pub(crate) async fn stop(self) -> Result<(), String> {
+        self.workers.stop().await
     }
 }
 
@@ -209,11 +247,32 @@ impl ServingFixture {
                 app.role_bindings.clone(),
             ),
         ));
+        let hook_specs = hooks::configured(cfg)?;
+        let mut opened_hooks = std::collections::BTreeMap::new();
+        for (_, spec) in specifications(&hook_specs, cfg.public_url.as_deref(), false) {
+            let prepared = built
+                .registry
+                .reserve(&spec)
+                .map_err(|why| format!("{why:?}"))?;
+            let hook = hooks::open(
+                built,
+                prepared,
+                Arc::clone(&prefix),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            )
+            .await
+            .map_err(|why| format!("{why:?}"))?;
+            opened_hooks.insert(spec.name.to_owned(), hook);
+        }
+        let hook_inputs = hooks::Environment::new(cfg, app)?;
+        hook_inputs.check_pools(&instances)?;
         let steps = Steps {
             registry: &built.registry,
             instances: &specs,
             services: Some(services),
             seats: Mutex::default(),
+            invocations: Mutex::default(),
             shared: Arc::clone(&shared),
             directory: provisioning.directory,
             core,
@@ -239,7 +298,7 @@ impl ServingFixture {
             .reserve(spec)
             .map_err(|why| format!("{why:?}"))?;
         steps
-            .open_plane(spec, prepared)
+            .open_plane(spec, prepared, &hook_inputs, &opened_hooks)
             .await
             .map_err(|why| format!("{why:?}"))?;
         let seat = steps
@@ -258,34 +317,18 @@ impl ServingFixture {
             workers.push(probe);
         }
         let ticking = seat.clone();
+        let invocations = steps
+            .invocations
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
         workers.push(async move { ticking.tick_task(shared.push.clone()).await });
-        let seal = busbar_kernel::seal::lend();
-        let hook_specs = cfg
-            .hooks
-            .iter()
-            .map(|(name, hook)| {
-                Ok(Configured {
-                    kind: KindCode::Hook,
-                    identity: hook.module.clone(),
-                    name: name.clone(),
-                    config: hook
-                        .settings
-                        .encode()
-                        .map_err(|why| format!("hooks.{name}: {why}"))?
-                        .into_exposed(&seal),
-                    limits: busbar_kernel::appbuild::instance_limits(cfg, "hooks", name),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         Ok(PlaneFixture {
             seat,
             workers,
             _owners: Arc::clone(&self.owners),
             _prefix: prefix,
-            records,
-            directory,
-            hook_specs,
-            public_url: cfg.public_url.clone(),
+            hooks: opened_hooks,
+            _invocations: invocations,
         })
     }
 }

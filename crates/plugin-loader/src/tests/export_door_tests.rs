@@ -1053,7 +1053,7 @@ fn shed_folds_once_per_pass() {
     let (sink, shared) = counting_sink();
     crate::observe::testing::clear(&guard);
     for _ in 0..1000 {
-        sink.shed();
+        sink.shed(busbar_contract::export_calls::ExportLossKind::CaptureRefused);
     }
     flush_until(&shared, 0);
     let folds = counting_shed_folds();

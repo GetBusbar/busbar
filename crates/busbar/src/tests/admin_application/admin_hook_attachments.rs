@@ -89,7 +89,7 @@ async fn serve(name: &str, require_if_match: bool) -> Served {
     let mut document = serde_json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
-                  "policy": { "require_if_match": require_if_match } },
+                  "require_if_match": require_if_match },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
         "identity-providers": {},

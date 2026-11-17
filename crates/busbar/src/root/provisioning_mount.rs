@@ -40,9 +40,12 @@ impl IdentityPolicy for ClientPolicy {
         self.epoch
     }
 
-    fn authorize(&self, instance: u64, identity: &Identity, _req: &AuthIn<'_>) -> Result<(), u32> {
+    fn authorize(&self, instance: u64, identity: &Identity, req: &AuthIn<'_>) -> Result<(), u32> {
         if self.current_epoch.load(Ordering::Acquire) == self.epoch
             && instance == self.instance
+            && !identity
+                .expires_at_s()
+                .is_some_and(|until| req.now_s >= until)
             && provision::client_entry(&self.clients, identity.subject()).is_some()
         {
             Ok(())
@@ -301,6 +304,32 @@ mod tests {
         assert!(policy
             .authorize(41, &Identity::from_ticket("IdP", ""), &request())
             .is_err());
+    }
+
+    #[test]
+    fn client_policy_refuses_expired_identity_before_replay() {
+        use busbar_plugin_abi::auth::F_EXPIRES_AT_S;
+        use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
+        use busbar_ports::auth::{decode_verify_ok, VerifyOk};
+
+        let policy = ClientPolicy {
+            instance: 41,
+            epoch: 7,
+            current_epoch: Arc::new(AtomicU64::new(7)),
+            clients: vec!["IdP".into()],
+        };
+        let mut records = Reply::new();
+        records.put_text(tag::ID_SUBJECT, "IdP").unwrap();
+        records.put_fact(F_EXPIRES_AT_S, 1).unwrap();
+        let VerifyOk::Identity(identity) =
+            decode_verify_ok(Records::new(records.as_bytes())).unwrap()
+        else {
+            panic!("identity records");
+        };
+        assert_eq!(policy.authorize(41, &identity, &request()), Err(R_POLICY));
+        let mut before_expiry = request();
+        before_expiry.now_s = 0;
+        assert_eq!(policy.authorize(41, &identity, &before_expiry), Ok(()));
     }
 
     #[test]

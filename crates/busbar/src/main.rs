@@ -386,11 +386,8 @@ fn main() {
     for w in warnings {
         eprintln!("{w}");
     }
-    // Retired 1.5.x launch variables are never read; a set one is reported (BUSBAR-3029) here, where
-    // 1.5.5 printed its deprecation line, before the config load that can refuse.
-    for w in root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
-    }
+    // Refuse retired launch inputs before migration or any configuration is read.
+    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
@@ -670,6 +667,7 @@ async fn run(
     let LoadedConfig {
         deploy,
         defs,
+        resource_ownership: _,
         providers_path,
         overlay_path: _,
         config_locked,
@@ -756,6 +754,7 @@ async fn run(
             let _ = root::min3_boot::finish(
                 conversion, process_io.handle(), store_admission, None,
                 busbar_kernel::plane_driver::port_work::governed_binder(None, Default::default()),
+                None,
             )
                 .await.unwrap_or_else(|error| die(error));
             die("unstamped conversion returned without its required restart");
@@ -860,10 +859,13 @@ async fn run(
             eprintln!("[info] {notice}");
         }
 
-        let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            deploy.groups.keys().cloned().collect();
+        let resource_ownership = config::ResourceOwnership::capture(&deploy);
+        let base_hook_names = resource_ownership.hook_names().clone();
+        let base_group_names = resource_ownership.group_names().clone();
         if let Some(doc) = overlay_doc.as_ref() {
+            resource_ownership.validate_named_maps(doc).unwrap_or_else(|error| {
+                die(boot_error("Store overlay refused", error))
+            });
             config::overlay::apply_root_to_deploy(&mut deploy, doc).unwrap_or_else(|error| {
                 die(boot_error(
                     "Store overlay refused",
@@ -1180,6 +1182,7 @@ async fn run(
         root::connector::dest_judge(&cfg).guard().clone(),
     )
     .unwrap_or_else(|error| die(error));
+    let native_config = cfg.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver,
         startup: store_admission,
@@ -1334,6 +1337,10 @@ async fn run(
         busbar_kernel::plane_driver::port_work::governed_binder(
             app.governance.clone(),
             app.role_bindings.clone(),
+        ),
+        Some(
+            root::min3_boot::hooks::Environment::new(&native_config, &app)
+                .unwrap_or_else(|error| die(error)),
         ),
     )
     .await

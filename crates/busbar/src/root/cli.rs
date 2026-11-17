@@ -503,8 +503,9 @@ pub(crate) fn validate_judged(
 }
 
 pub(crate) fn validate_config_command() -> i32 {
-    for w in crate::root::retired_env::ignored_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{w}");
+    if let Err(refusal) = crate::root::retired_env::check_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("{refusal}");
+        return EXIT_FAILURE;
     }
     let argv = argv();
     let providers_override = argv.providers.as_deref().map(std::path::PathBuf::from);
