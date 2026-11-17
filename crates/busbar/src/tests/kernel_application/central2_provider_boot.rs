@@ -44,7 +44,7 @@ async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
@@ -136,7 +136,7 @@ async fn boot_starts_a_keyless_lane_declared_none() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())

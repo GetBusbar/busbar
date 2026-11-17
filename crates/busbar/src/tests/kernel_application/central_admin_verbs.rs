@@ -65,7 +65,7 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

@@ -108,7 +108,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     let addr = listener.local_addr().unwrap();
     let _h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
+    let admin = |req: reqwest::RequestBuilder| req.header("authorization", "Bearer admintok");
     let url = format!("http://{addr}/api/v1/admin/restart");
 
     let resp = admin(client.post(&url))

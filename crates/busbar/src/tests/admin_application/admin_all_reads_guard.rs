@@ -68,7 +68,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 
         let wrong = client
             .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "not-the-token")
+            .header("authorization", "Bearer not-the-token")
             .send()
             .await
             .unwrap();

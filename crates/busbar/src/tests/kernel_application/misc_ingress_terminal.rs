@@ -42,7 +42,7 @@ async fn deployment(pool: &str) -> Arc<App> {
         "providers": {"local": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1", "api_key": {"file": credential}}},
         "models": {"m": {"provider": "local"}},
         "pools": {pool: {"members": ["m"]}},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())

@@ -927,3 +927,47 @@ mod records_step {
         }
     }
 }
+
+/// #293 (CM-4): removing a retired cloud-metadata carve-out is a warning, and the completed step-5
+/// write owes one audit row naming the removed paths, never a value; an uncoded report line stays
+/// information and owes no row.
+#[test]
+fn a_carve_out_removal_warns_and_is_audited_by_path() {
+    let removal = format!(
+        "{}: removed the retired cloud-metadata carve-out key(s) security.allow_metadata_hosts, \
+         providers.bedrock.allow_metadata_hosts; 1.6.0 refuses cloud metadata for every outbound \
+         connection and no configuration admits it",
+        busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner()
+    );
+    let plain = "providers.bedrock.unused_key: removed (1.5.5 ignored this catalog key)".to_owned();
+    assert!(warns(&removal), "{removal}");
+    assert!(!warns(&plain), "{plain}");
+    assert_eq!(
+        audit_rows(&[removal, plain]),
+        [(
+            "migrate.metadata_carve_out_removed",
+            "security.allow_metadata_hosts, providers.bedrock.allow_metadata_hosts".to_owned()
+        )]
+    );
+}
+
+/// #293: the binding the migration writes to keep 1.5.5's ungoverned access (BUSBAR-3408) is a
+/// security-relevant grant: a warning, and the completed step-5 write owes one audit row per
+/// binding naming its path.
+#[test]
+fn an_ungoverned_binding_grant_warns_and_is_audited_by_path() {
+    let grant: String = busbar_kernel::diagnostics::coded::migrate_ungoverned_binding_added(
+        "sso",
+        "*",
+        "every principal it identifies",
+    )
+    .into();
+    assert!(warns(&grant), "{grant}");
+    assert_eq!(
+        audit_rows(&[grant]),
+        [(
+            "migrate.ungoverned_binding_added",
+            "auth.role_bindings.sso.\"*\"".to_owned()
+        )]
+    );
+}

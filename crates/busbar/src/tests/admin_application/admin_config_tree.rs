@@ -48,7 +48,7 @@ impl Served {
         self.read(
             self.client
                 .get(self.url(path))
-                .header("x-admin-token", ADMIN_TOKEN),
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN)),
         )
         .await
     }
@@ -57,7 +57,7 @@ impl Served {
         self.read(
             self.client
                 .request(method, self.url(path))
-                .header("x-admin-token", ADMIN_TOKEN)
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN))
                 .header("content-type", "application/json")
                 .body(busbar_contract::json::to_vec(body).unwrap()),
         )
@@ -236,7 +236,7 @@ async fn config_tree_effective_has_every_section() {
         .read(
             s.client
                 .get(s.url("/config/tree"))
-                .header("x-admin-token", ADMIN_TOKEN)
+                .header("authorization", format!("Bearer {}", ADMIN_TOKEN))
                 .header("if-none-match", &etag),
         )
         .await;

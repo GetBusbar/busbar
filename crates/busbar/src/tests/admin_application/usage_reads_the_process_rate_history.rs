@@ -114,10 +114,12 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         settings.is_object(),
         "the actual Store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let mut document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+        "auth": { "chain": [], "admin_auth": [operator] },
         "store": { "module": module, "settings": settings },
         "rate_card": BTreeMap::from([(
             LANE,
@@ -245,7 +247,9 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .expect("a port");
     let addr = listener.local_addr().expect("an address");
     let serving = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let response = reqwest::get(format!("http://{addr}/api/v1/admin/usage?window={bucket}"))
+    let response = crate::root::test_plugins::operator_client()
+        .get(format!("http://{addr}/api/v1/admin/usage?window={bucket}"))
+        .send()
         .await
         .expect("the surface answers");
     assert_eq!(response.status().as_u16(), 200, "the usage read answers");
@@ -263,11 +267,13 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         "the response names the history entry that priced it: {body}"
     );
     let key = dated_key.hex();
-    let replay = reqwest::get(format!(
-        "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={key}"
-    ))
-    .await
-    .expect("the keyed usage replay answers");
+    let replay = crate::root::test_plugins::operator_client()
+        .get(format!(
+            "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={key}"
+        ))
+        .send()
+        .await
+        .expect("the keyed usage replay answers");
     assert_eq!(replay.status().as_u16(), 200);
     let replay =
         json::parse_value(&replay.bytes().await.expect("a JSON replay")).expect("a JSON replay");
@@ -285,11 +291,13 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         "gggggggggggggggggggggggggggggggggggggggg",
         "ffffffffffffffffffffffffffffffffffffffff",
     ] {
-        let response = reqwest::get(format!(
-            "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={invalid}"
-        ))
-        .await
-        .expect("an invalid snapshot request answers");
+        let response = crate::root::test_plugins::operator_client()
+            .get(format!(
+                "http://{addr}/api/v1/admin/usage?window={bucket}&as_of={invalid}"
+            ))
+            .send()
+            .await
+            .expect("an invalid snapshot request answers");
         assert_eq!(
             response.status().as_u16(),
             400,

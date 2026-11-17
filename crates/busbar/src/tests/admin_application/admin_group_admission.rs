@@ -70,7 +70,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 
     let created = client
         .post(&base)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k"}))
         .send()
         .await
@@ -86,7 +86,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 
     let set = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"group": "eng"}))
         .send()
         .await
@@ -102,7 +102,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 
     let dangling = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"group": "ghost"}))
         .send()
         .await
@@ -115,7 +115,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 
     let cleared = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"group": null}))
         .send()
         .await
@@ -127,7 +127,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     assert!(cleared["group"].is_null(), "null unbinds: {cleared}");
     let toggled = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": false}))
         .send()
         .await
@@ -149,7 +149,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     ] {
         let r = client
             .patch(&key_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&gone)
             .send()
             .await
@@ -222,7 +222,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({
             "name": "alice-cli",
             "group": "user:alice",
@@ -245,7 +245,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 
     let leaf = client
         .get(format!("http://{addr}/api/v1/admin/groups/user:alice"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -267,7 +267,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         .get(format!(
             "http://{addr}/api/v1/admin/groups/user:alice/usage"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -288,7 +288,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 
     let resp2 = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({
             "name": "alice-cli-2",
             "group": "user:alice",
@@ -368,7 +368,7 @@ async fn test_mint_parent_mismatch_is_409() {
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k", "group": "user:bob", "parent": "team-b"}))
         .send()
         .await
@@ -386,7 +386,7 @@ async fn test_mint_parent_mismatch_is_409() {
 
     let ok = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k2", "group": "user:bob", "parent": "team-a"}))
         .send()
         .await
@@ -451,7 +451,7 @@ async fn test_max_keys_per_principal_cap_trips() {
     let mint = |name: &str, group: &str| {
         client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": name, "group": group}))
             .send()
     };
@@ -527,7 +527,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 
     let filler = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "filler", "group": "capped"}))
         .send()
         .await
@@ -540,7 +540,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 
     let at_cap = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "reuse-at-cap")
         .json(&json::json!({"name": "second", "group": "capped"}))
         .send()
@@ -554,7 +554,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 
     let deleted = client
         .delete(format!("{keys_url}/{filler_id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -562,7 +562,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 
     let retry = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "reuse-at-cap")
         .json(&json::json!({"name": "second", "group": "capped"}))
         .send()
@@ -674,7 +674,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         async move {
             client
                 .post(&url)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&json::json!({"name": name, "group": "capped"}))
                 .send()
                 .await

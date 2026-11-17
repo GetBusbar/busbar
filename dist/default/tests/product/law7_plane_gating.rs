@@ -94,7 +94,6 @@ static PROBE: PlaneDecl = PlaneDecl {
     named_def_list: None,
     named_def_get: None,
     registry_contains: None,
-    reresolve_gates: None,
     openapi_schemas: None,
     on_swap: None,
     parse_section: None,
@@ -140,7 +139,7 @@ async fn boot_hooks_run(sections: &[&'static str]) -> (usize, usize) {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {}
         }),
@@ -310,7 +309,7 @@ async fn only_a_configured_plane_builds_its_slot() {
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
                 "providers": {}, "models": {},
-                "auth": {"chain": [], "admin_auth": []},
+                "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {}
             }),

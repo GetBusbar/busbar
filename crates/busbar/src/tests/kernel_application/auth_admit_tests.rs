@@ -30,7 +30,7 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "auth": { "chain": [] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -117,7 +117,7 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing_key } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing_key } },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

@@ -94,7 +94,7 @@ pub fn check_with(
         )
     })
     .map_err(Refusal::Config)?;
-    crate::preflight::validate_pool_strategies(cfg, &registry).map_err(Refusal::Plugins)?;
+    crate::preflight::validate_pool_strategies(cfg).map_err(Refusal::Plugins)?;
     secret_refs::registry_refusal_with(registry.as_ref(), cfg, c.secret_axis)
         .map_err(Refusal::Plugins)?;
 

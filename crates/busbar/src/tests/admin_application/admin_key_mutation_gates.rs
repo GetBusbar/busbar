@@ -242,7 +242,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let post = |client: &reqwest::Client, url: &str| {
         client
             .post(url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "dc-1")
             .body(r#"{"name": "disconnector"}"#)
@@ -287,7 +287,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let probe = reqwest::Client::new();
     let mid = probe
         .get(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -333,7 +333,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
 
     let keys = normal_client
         .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -452,7 +452,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "r"}))
         .send()
         .await
@@ -470,7 +470,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     let first = tokio::spawn(async move {
         first_client
             .post(&first_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("idempotency-key", "rot-inflight")
             .send()
             .await
@@ -481,7 +481,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 
     let second = client
         .post(&rotate_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "rot-inflight")
         .send()
         .await
@@ -619,7 +619,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     let patch_task = tokio::spawn(async move {
         reqwest::Client::new()
             .patch(&patch_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"enabled": false}))
             .send()
             .await
@@ -639,7 +639,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     let delete_task = tokio::spawn(async move {
         reqwest::Client::new()
             .delete(&delete_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -654,7 +654,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
 
     let listed = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -783,7 +783,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     let rotate_task = tokio::spawn(async move {
         reqwest::Client::new()
             .post(&rotate_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -802,7 +802,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     let delete_task = tokio::spawn(async move {
         reqwest::Client::new()
             .delete(&delete_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -817,7 +817,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
 
     let listed = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -948,7 +948,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     let patch_task = tokio::spawn(async move {
         let _ = reqwest::Client::new()
             .patch(&patch_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"enabled": false}))
             .send()
             .await;
@@ -968,7 +968,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     let delete_task = tokio::spawn(async move {
         reqwest::Client::new()
             .delete(&delete_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -1110,7 +1110,7 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
     let patch_task = tokio::spawn(async move {
         reqwest::Client::new()
             .patch(&patch_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"enabled": false}))
             .send()
             .await
@@ -1129,7 +1129,7 @@ async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store(
         std::time::Duration::from_secs(5),
         reqwest::Client::new()
             .delete(url(&other_key.id))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send(),
     )
     .await;

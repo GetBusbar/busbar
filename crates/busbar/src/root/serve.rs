@@ -1277,119 +1277,6 @@ impl std::fmt::Debug for StreamFramers {
     }
 }
 
-pub(crate) struct HookStage {
-    pub(crate) host: busbar_kernel::plane_driver::GenerationHost,
-
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-
-    pub(crate) journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
-}
-
-pub(crate) struct GovCaller {
-    pub(crate) host: Arc<dyn busbar_kernel::plane_driver::EngineHost>,
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-}
-
-impl GovCaller {
-    pub(crate) fn key(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
-        self.gov.lookup_by_sub(principal)
-    }
-}
-
-impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
-    fn key(&self, principal: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
-        self.key(principal)
-            .map(|k| busbar_kernel::plane_driver::CallerKey {
-                id: k.id.clone(),
-                name: k.name.clone(),
-            })
-    }
-
-    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
-        let group = principal
-            .and_then(|p| self.key(p))
-            .and_then(|k| k.group.clone());
-        self.host.caller_in_hook_groups(group.as_deref(), groups)
-    }
-
-    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
-        let key = self.key(principal)?;
-        let pin = self.host.meter_pin()?;
-        self.host
-            .rate_headroom(&pin, &key, Some(pool), busbar_kernel::store::now())
-    }
-
-    fn budget(&self, principal: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        match (self.key(principal), self.host.meter_pin()) {
-            (Some(key), Some(pin)) => {
-                self.host
-                    .budget_state(&pin, &key, busbar_kernel::store::now())
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    fn hook_read<'a>(
-        &'a self,
-        hook: &'a str,
-        principal: Option<&'a str>,
-        dialect: &'a str,
-        identity: bool,
-    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
-        self.host.hook_read(hook, principal, dialect, identity)
-    }
-
-    fn hook_reads<'a>(
-        &'a self,
-        hooks: &'a [&'a str],
-        principal: Option<&'a str>,
-        dialect: &'a str,
-        identity: bool,
-    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
-        self.host.hook_reads(hooks, principal, dialect, identity)
-    }
-}
-
-pub(crate) struct LiveHooks {
-    pub(crate) host: busbar_kernel::plane_driver::GenerationHost,
-    pub(crate) gov: Arc<busbar_kernel::governance::GovState>,
-    pub(crate) dialects: Vec<String>,
-
-    pub(crate) plane_key: String,
-}
-
-impl LiveHooks {
-    pub(crate) fn current(&self) -> busbar_kernel::plane_driver::HostHooks {
-        let host = (self.host)();
-        busbar_kernel::plane_driver::HostHooks {
-            host: Arc::clone(&host),
-            caller: Arc::new(GovCaller {
-                host,
-                gov: Arc::clone(&self.gov),
-            }),
-            dialects: self.dialects.clone(),
-            plane_key: self.plane_key.clone(),
-        }
-    }
-}
-
-impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
-    fn bind(
-        &self,
-        bind: &busbar_kernel::plane_driver::Bind<'_>,
-    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
-        self.current().bind(bind)
-    }
-
-    fn denied(&self, dialect: u32, status: u16) {
-        self.current().denied(dialect, status);
-    }
-
-    fn dialect(&self, dialect: u32) -> String {
-        busbar_kernel::plane_driver::dialect_at(&self.dialects, dialect)
-    }
-}
-
 /// Reserved credential and hop fields never enter a plane request, regardless of carrier.
 fn keep_arrival_field(name: &[u8]) -> bool {
     !name.eq_ignore_ascii_case(b"x-busbar-recovery-work")
@@ -1906,89 +1793,87 @@ impl DataRoutes {
             }
         };
         super::measurements::request(scope, async {
-        let carrier_end = CarrierEnd {
-            unit: unit.get(),
-            ended: attach.ended.take(),
-        };
-        self.frames_lock().insert(unit.get(), DispatchFrame {
-            app: Arc::clone(&door.app),
-            request: door.request.clone(),
-        });
-        let _frame = UnitFrame {
-            routes: &self,
-            unit: unit.get(),
-        };
-        let _ticket_source =
-            node.ticket_custody
-                .register(unit, door.key.as_ref(), served, &live, &door.app);
-        let steps = DoorSteps::new(
-            &live.facts,
-            &live.pools,
-            node.resolver(),
-            door.app,
-            Some(&*served.money),
-            DoorCaller {
-                principal: door.principal.clone(),
-                key: door.key,
-                open: door.open,
-                arrived: arrived.secs(),
-                records: Some(Arc::clone(served.kernel.units())),
-                depth: 0,
-                credential: door.credential.clone(),
-                ticket: door.ticket,
-            },
-        )
-        .with_invocation_owner(self.invocation_owner(door.plane))
-        .with_ticket_admission(
-            door.host_ticket_admission,
-            Arc::clone(&node.ticket_custody.nonce),
-            Arc::clone(&live.ticket_nonce),
-        );
-        let far = DoorFar {
-            observations: Some(observations::UnitBinding {
-                served,
-                live: &live,
-                unit,
-                selected_member: OnceLock::new(),
-            }),
-            authorization: Arc::clone(served.kernel.units()),
-            egress: live.egress.as_deref(),
-            shown: live.shown.as_ref(),
-            steps: &steps,
-            unit,
-            credential: door.credential,
-            far: OnceLock::new(),
-        };
-        let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
-        let Some((opened, ctx, slot)) = node
-            .open_borrowed(
-                unit,
-                arrived,
-                &door.principal,
-                &self.post,
-                &units,
-                (self.pin)(),
-                live.facts.audit_kind,
-                door.admission.as_ref(),
-                &door.request,
+            let carrier_end = CarrierEnd {
+                unit: unit.get(),
+                ended: attach.ended.take(),
+            };
+            self.frames_lock().insert(
+                unit.get(),
+                DispatchFrame {
+                    app: Arc::clone(&door.app),
+                    request: door.request.clone(),
+                },
+            );
+            let _frame = UnitFrame {
+                routes: &self,
+                unit: unit.get(),
+            };
+            let _ticket_source =
+                node.ticket_custody
+                    .register(unit, door.key.as_ref(), served, &live, &door.app);
+            let steps = DoorSteps::new(
+                &live.facts,
+                &live.pools,
+                node.resolver(),
+                door.app,
+                Some(&*served.money),
+                DoorCaller {
+                    principal: door.principal.clone(),
+                    key: door.key,
+                    open: door.open,
+                    arrived: arrived.secs(),
+                    records: Some(Arc::clone(served.kernel.units())),
+                    depth: 0,
+                    credential: door.credential.clone(),
+                    ticket: door.ticket,
+                },
             )
-            .await
-        else {
-            let _ = verdict.send(Err(None));
-            return;
-        };
-        let slot = slot.with_money(&served.money, &live.facts);
-        let admitted = match opened {
-            SessionOpen::Admitted {
-                route,
-                destinations,
-                ..
-            } => match units.open_hooks(&route, &ctx).await {
-                Err(reason) => {
-                    self.post.stopped(unit, reason);
-                    None
-                }
-                Ok(()) => match attach.admitted.take().map(|admitted| admitted(unit.get())) {
+            .with_invocation_owner(self.invocation_owner(door.plane))
+            .with_ticket_admission(
+                door.host_ticket_admission,
+                Arc::clone(&node.ticket_custody.nonce),
+                Arc::clone(&live.ticket_nonce),
+            );
+            let far = DoorFar {
+                observations: Some(observations::UnitBinding {
+                    served,
+                    live: &live,
+                    unit,
+                    selected_member: OnceLock::new(),
+                }),
+                authorization: Arc::clone(served.kernel.units()),
+                egress: live.egress.as_deref(),
+                shown: live.shown.as_ref(),
+                steps: &steps,
+                unit,
+                credential: door.credential,
+                far: OnceLock::new(),
+            };
+            let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
+            let Some((opened, ctx, slot)) = node
+                .open_borrowed(
+                    unit,
+                    arrived,
+                    &door.principal,
+                    &self.post,
+                    &units,
+                    (self.pin)(),
+                    live.facts.audit_kind,
+                    door.admission.as_ref(),
+                    &door.request,
+                )
+                .await
+            else {
+                let _ = verdict.send(Err(None));
+                return;
+            };
+            let slot = slot.with_money(&served.money, &live.facts);
+            let admitted = match opened {
+                SessionOpen::Admitted {
+                    route,
+                    destinations,
+                    ..
+                } => match attach.admitted.take().map(|admitted| admitted(unit.get())) {
                     Some(Err(reason)) => {
                         tracing::warn!(plane = %served.instance, unit = unit.get(), error = ?reason,
                             "session carrier could not attach to its admitted unit");
@@ -1997,46 +1882,46 @@ impl DataRoutes {
                     }
                     None | Some(Ok(())) => Some((route, destinations)),
                 },
-            },
-            SessionOpen::Refused | SessionOpen::Settled(_) => None,
-        };
-        let status = match admitted {
-            Some((route, destinations)) => {
-                let _ = verdict.send(Ok(()));
-                match units
-                    .session_priced(&route, &ctx, &destinations, steps.charged())
-                    .await
-                {
-                    Ok(()) => self.post.completed(unit),
-                    Err(reason) => self.post.stopped(unit, reason),
+                SessionOpen::Refused | SessionOpen::Settled(_) => None,
+            };
+            let status = match admitted {
+                Some((route, destinations)) => {
+                    let _ = verdict.send(Ok(()));
+                    match units
+                        .session_priced(&route, &ctx, &destinations, steps.charged())
+                        .await
+                    {
+                        Ok(()) => self.post.completed(unit),
+                        Err(reason) => self.post.stopped(unit, reason),
+                    }
+                    attach.answered
                 }
-                attach.answered
-            }
-            None => {
-                let rendered = units.take_rendered();
-                let status = rendered
-                    .as_ref()
-                    .map_or_else(|| refusal_status(ReasonCode::PlanePanic), |r| r.status);
-                let _ = verdict.send(Err(rendered));
-                status
-            }
-        };
+                None => {
+                    let rendered = units.take_rendered();
+                    let status = rendered
+                        .as_ref()
+                        .map_or_else(|| refusal_status(ReasonCode::PlanePanic), |r| r.status);
+                    let _ = verdict.send(Err(rendered));
+                    status
+                }
+            };
 
-        self.post
-            .reported(unit, report_of(&served.money, unit, &live.facts));
-        if let Err(error) = slot.finish_with(&self.post, &units).await {
-            // Persistence uncertainty cannot rewrite the observed client/plane
-            // outcome or invent a different fee/refund verdict. The original
-            // audit and checkpoint custody remain pending; no ticket becomes
-            // ready until the native audit confirmation succeeds.
-            tracing::error!(?error, "session audit was not durably confirmed");
-        }
-        served.money.settle_end(unit, status);
-        // This callback only unpairs the physical carrier. Keep it alive across
-        // terminal confirmation, then release it on failure as well: a real
-        // disconnect is resource cleanup, never a durable-success assertion.
-        drop(carrier_end);
-        }).await;
+            self.post
+                .reported(unit, report_of(&served.money, unit, &live.facts));
+            if let Err(error) = slot.finish_with(&self.post, &units).await {
+                // Persistence uncertainty cannot rewrite the observed client/plane
+                // outcome or invent a different fee/refund verdict. The original
+                // audit and checkpoint custody remain pending; no ticket becomes
+                // ready until the native audit confirmation succeeds.
+                tracing::error!(?error, "session audit was not durably confirmed");
+            }
+            served.money.settle_end(unit, status);
+            // This callback only unpairs the physical carrier. Keep it alive across
+            // terminal confirmation, then release it on failure as well: a real
+            // disconnect is resource cleanup, never a durable-success assertion.
+            drop(carrier_end);
+        })
+        .await;
     }
 
     /// The datagram opening as the owner tests drive it: a named carrier.

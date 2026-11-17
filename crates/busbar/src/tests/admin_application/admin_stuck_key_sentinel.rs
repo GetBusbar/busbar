@@ -129,7 +129,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "rotated"}))
         .send()
         .await
@@ -164,7 +164,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
 
     let mint = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "stuck-mint")
         .body(json::json!({"name": "k"}).to_string())
@@ -178,7 +178,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     );
     let rotate = client
         .post(format!("{keys_url}/{id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", "stuck-rotate")
         .send()
         .await

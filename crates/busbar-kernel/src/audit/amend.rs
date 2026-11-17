@@ -19,16 +19,6 @@ fn pass() -> Pass<Audit> {
     Pass::<Audit>::mint(&crate::seal::acquire())
 }
 
-pub(crate) async fn hook_read(
-    amendments: &NodeAmendments,
-    name: &str,
-    principal: Option<&str>,
-    op: &str,
-    identity: bool,
-) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    hook_reads(amendments, &[name], principal, op, identity).await
-}
-
 /// Record that every hook in `names` is handed the unit's content: one amendment per hook, staged
 /// and confirmed together (one durable commit for the whole set).
 pub(crate) async fn hook_reads(
@@ -89,5 +79,5 @@ pub async fn record_test_hook_read(
     op: &str,
     identity: bool,
 ) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
-    hook_read(amendments, name, principal, op, identity).await
+    hook_reads(amendments, &[name], principal, op, identity).await
 }

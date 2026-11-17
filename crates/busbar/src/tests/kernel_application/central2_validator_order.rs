@@ -10,6 +10,10 @@ fn secrets_block_rejects_builtin_resolver_names() {
 
     for reserved in ["env", "file"] {
         crate::dist_root_install::install();
+        // Bind the linked operator: the config takes the closed default admin chain.
+        busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
+            None,
+        ));
         let library_path = crate::root::test_plugins::application_store_library();
         let module = crate::root::test_plugins::native_image(&library_path).name;
         let manifest = crate::root::test_plugins::native_manifest(
@@ -38,7 +42,7 @@ fn secrets_block_rejects_builtin_resolver_names() {
         let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())
@@ -93,6 +97,8 @@ fn one_validator_refuses_in_one_order() {
     const WITNESS: &str = "actual root validator phase assertions completed";
     isolated!(CHILD, WITNESS, witness = "usage");
     crate::dist_root_install::install();
+    // Bind the linked operator: the config takes the closed default admin chain.
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     let library_path = crate::root::test_plugins::application_store_library();
     let module = crate::root::test_plugins::native_image(&library_path).name;
     let manifest = crate::root::test_plugins::native_manifest(
@@ -121,7 +127,7 @@ fn one_validator_refuses_in_one_order() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {"acme": {"protocol": dialect, "base_url": "https://api.example.com", "api_key": "none"}},
         "models": {},
-        "auth": { "chain": [], "admin_auth": [] },
+        "auth": { "chain": [] },
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     }), &crate::root::boot::axis_test_grammar())

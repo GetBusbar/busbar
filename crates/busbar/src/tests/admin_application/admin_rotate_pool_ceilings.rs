@@ -114,7 +114,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
     let created = json::parse_value(
         &client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&request)
             .send()
             .await
@@ -139,7 +139,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         .generation_hash;
     let response = client
         .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .send()
         .await
         .unwrap();
@@ -278,7 +278,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
     let created = json::parse_value(
         &client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&request)
             .send()
             .await
@@ -303,7 +303,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         .generation_hash;
     let response = client
         .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
-        .header("x-admin-token", &delegated_token)
+        .header("authorization", format!("Bearer {}", &delegated_token))
         .send()
         .await
         .unwrap();
@@ -430,7 +430,7 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
     let created = json::parse_value(
         &client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&request)
             .send()
             .await
@@ -453,7 +453,7 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let resp = client
             .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
-            .header("x-admin-token", &delegated_token)
+            .header("authorization", format!("Bearer {}", &delegated_token))
             .header("idempotency-key", "past-ceiling")
             .send()
             .await

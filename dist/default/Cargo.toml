@@ -332,8 +332,6 @@ auth-oauth = "auths"
 auth-webhook-signature = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
-secret-env = "secret-doors"
-secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
 # its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
@@ -501,7 +499,6 @@ listener_session = "busbar-transport-ws"
 listener_carrier = "busbar-transport-tcp"
 boot_session_locate = "busbar-transport-ws"
 door_steps = "busbar-auth-oauth"
-inbound = "busbar-plane-llm"
 admin_application = "busbar-hook-webrequest"
 sqlite_application = "busbar-store-sqlite"
 linked_auth = "busbar-auth-webhook-signature"
@@ -511,7 +508,7 @@ migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
-# The secret sources those tests read references through: the axis the root links (`secret-doors`),
+# The secret sources those tests read references through: the native secret images the root links,
 # published beside the planes so a test reads the source shorthand those sources declare.
 secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
@@ -750,8 +747,8 @@ busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postg
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
 busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
-busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
+busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
 busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "7877ca767f9f4da677df369afc022b2cbd5633cf" }
@@ -768,8 +765,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "007554053b92727b5ca71b23c2304c4cf1549a17" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "81f591ae354391d4c5a4ec31e9b23db345da4019" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "171ffa824c4e99e0e466c84ada50a74d62cce96b" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "4360a0ba0dc60a7ade98cd3401ec47495aee73f1" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.

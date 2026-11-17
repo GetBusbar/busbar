@@ -123,7 +123,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
             "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team" } } }
         },
@@ -321,7 +321,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
                 "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
             },
             "auth": {
-                "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                "chain": ["corp"], "signing_key": { "file": signing },
                 "key_ttl": "1h",
                 "role_bindings": { "corp": { "eng": { "group": "team-b" } } }
             },
@@ -483,7 +483,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
             "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
         },
         "auth": {
-            "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+            "chain": ["corp"], "signing_key": { "file": signing },
             "key_ttl": "1h",
             "role_bindings": { "corp": { "eng": { "group": "team-a" } } }
         },
@@ -633,7 +633,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
                 "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
             },
             "auth": {
-                "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                "chain": ["corp"], "signing_key": { "file": signing },
                 "key_ttl": "1h", "policy": { "self_mint": self_mint },
                 "role_bindings": { "corp": { "eng": { "group": "team" } } }
             },
@@ -868,7 +868,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     "corp": { "module": oidc_module, "settings": common::credentials::settings("api://auth-self-groups") }
                 },
                 "auth": {
-                    "chain": ["corp"], "admin_auth": [], "signing_key": { "file": signing },
+                    "chain": ["corp"], "signing_key": { "file": signing },
                     "key_ttl": "1h", "policy": policy,
                     "role_bindings": { "corp": { "eng": { "group": "team" } } }
                 },

@@ -173,7 +173,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -301,7 +301,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}/absent"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -421,7 +421,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let root = busbar_kernel::config::named_map::NamedMapSection::Export.path_root();
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -436,7 +436,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     assert_eq!(names, ["broken"], "the unparseable overlay entry is listed");
     let response = client
         .get(format!("http://{addr}/api/v1/admin{root}/broken"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -547,7 +547,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     for suffix in ["", "/absent"] {
         let response = client
             .get(format!("http://{addr}/api/v1/admin{root}{suffix}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();

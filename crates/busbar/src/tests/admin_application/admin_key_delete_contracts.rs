@@ -101,7 +101,7 @@ async fn test_delete_existing_key_returns_200() {
     let client = reqwest::Client::new();
     let resp = client
         .delete(format!("http://{addr}/api/v1/admin/keys/{}", key.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -147,7 +147,7 @@ async fn test_delete_missing_key_returns_404() {
     let client = reqwest::Client::new();
     let resp = client
         .delete(format!("http://{addr}/api/v1/admin/keys/vk_does_not_exist"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -259,14 +259,14 @@ async fn test_delete_key_is_not_idempotent_204() {
     let url = format!("http://{addr}/api/v1/admin/keys/{}", key.id);
     let first = client
         .delete(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
     assert_eq!(first.status().as_u16(), 204);
     let second = client
         .delete(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -377,7 +377,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
             let client = reqwest::Client::new();
             client
                 .delete(&url)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .send()
                 .await
                 .unwrap()
@@ -504,7 +504,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
 
     let del = client
         .delete(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -512,7 +512,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
 
     let patched = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": true}))
         .send()
         .await
@@ -525,7 +525,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
 
     let usage = client
         .get(format!("{key_url}/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -536,7 +536,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     );
     let listed = client
         .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()

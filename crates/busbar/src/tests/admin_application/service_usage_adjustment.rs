@@ -220,7 +220,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     async fn total(client: &reqwest::Client, addr: std::net::SocketAddr, day: u64) -> json::Value {
         let response = client
             .get(format!("http://{addr}/api/v1/admin/usage?window={day}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();

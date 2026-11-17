@@ -87,7 +87,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     let created = json::parse_value(
         &client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "verifiable"}))
             .send()
             .await
@@ -112,7 +112,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
 
     let del = client
         .delete(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -210,7 +210,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
     let created = json::parse_value(
         &client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "revokable"}))
             .send()
             .await
@@ -230,7 +230,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 
     let r = client
         .post(format!("{url}/{id}/revoke"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -240,7 +240,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 
     let read = client
         .get(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -258,7 +258,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 
     let again = client
         .post(format!("{url}/{id}/revoke"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -310,7 +310,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
             let created = json::parse_value(
                 &client
                     .post(&url)
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .json(&json::json!({"name": name}))
                     .send()
                     .await
@@ -334,7 +334,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     let patched = json::parse_value(
         &client
             .patch(format!("{url}/{disabled_id}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"enabled": false}))
             .send()
             .await
@@ -353,7 +353,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     let revoked = json::parse_value(
         &client
             .post(format!("{url}/{revoked_id}/revoke"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -366,7 +366,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
 
     let del = client
         .delete(format!("{url}/{tombstoned_id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -379,7 +379,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
             let body = json::parse_value(
                 &client
                     .get(format!("{url}/{id}"))
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .send()
                     .await
                     .unwrap()
@@ -448,7 +448,7 @@ async fn test_list_keys_include_tombstoned() {
     let created = json::parse_value(
         &client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "will-be-tombstoned"}))
             .send()
             .await
@@ -462,7 +462,7 @@ async fn test_list_keys_include_tombstoned() {
 
     let del = client
         .delete(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -471,7 +471,7 @@ async fn test_list_keys_include_tombstoned() {
     let plain = json::parse_value(
         &client
             .get(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -494,7 +494,7 @@ async fn test_list_keys_include_tombstoned() {
     let included = json::parse_value(
         &client
             .get(format!("{url}?include=tombstoned"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -513,7 +513,7 @@ async fn test_list_keys_include_tombstoned() {
 
     let bad = client
         .get(format!("{url}?include=bogus"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -606,7 +606,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     let no_group = json::parse_value(
         &client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "groupless"}))
             .send()
             .await
@@ -632,7 +632,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     let none_pools = json::parse_value(
         &client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "nopools", "allowed_pools": []}))
             .send()
             .await
@@ -687,7 +687,7 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     let mint = || {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "memory-271")
             .body(json::json!({"name": "k"}).to_string())
@@ -744,7 +744,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
 
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "acme-key", "issue_aws_credential": true}))
         .send()
         .await
@@ -765,7 +765,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let plain = json::parse_value(
         &client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "plain"}))
             .send()
             .await
@@ -783,7 +783,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     let listed = json::parse_value(
         &client
             .get(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()

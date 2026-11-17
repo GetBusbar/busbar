@@ -163,7 +163,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let before = json::parse_value(
         &admin(client.get(format!("http://{addr}/api/v1/admin/info")))
@@ -179,7 +179,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 
     let put = client
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .header("x-admin-token", &audit_token)
+        .header("authorization", format!("Bearer {}", &audit_token))
         .header("content-type", "application/json")
         .body(
             json::json!({
@@ -401,7 +401,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
@@ -588,7 +588,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
@@ -741,7 +741,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let before = json::to_value(
         &busbar_kernel::config::overlay::read_async(&overlay)
@@ -902,7 +902,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")

@@ -176,7 +176,7 @@ async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -372,7 +372,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
                 "providers": {}, "models": {},
-                "auth": {"chain": [], "admin_auth": []},
+                "auth": {"chain": []},
                 "store": {"module": module, "settings": settings},
                 "advanced": {},
             }),
@@ -684,7 +684,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -824,7 +824,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -951,7 +951,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1182,7 +1182,7 @@ async fn a_q71_node_replaying(
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": [], "admin_auth": []},
+            "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
@@ -1771,7 +1771,7 @@ async fn the_four_q71_verbs_are_served_and_refuse_by_name() {
 
 #[tokio::test]
 async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
-    const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
+    const DOOR: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer)"}}"#;
     let scope = |needed: &str| {
         format!(
             r#"{{"error":{{"code":"forbidden","message":"insufficient scope: this endpoint requires `{needed}`"}}}}"#

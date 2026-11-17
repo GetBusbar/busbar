@@ -42,8 +42,17 @@ fn deployment(tag: &str, body: &str) -> (PathBuf, PathBuf) {
 /// Run `test` as the child over `config`: the serve boot, or `--validate`. Returns whether it
 /// exited successfully and everything it printed.
 fn start(test: &str, config: &Path, validate: bool) -> (bool, String) {
+    let output = child_command(test, config, validate).output().unwrap();
+    let logs = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    (output.status.success(), logs)
+}
+
+/// The child process that runs `test`'s start over `config`: the serve boot, or `--validate`.
+fn child_command(test: &str, config: &Path, validate: bool) -> std::process::Command {
     let dir = config.parent().unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             &format!("root::boot::start_scan_tests::{test}"),
@@ -54,12 +63,43 @@ fn start(test: &str, config: &Path, validate: bool) -> (bool, String) {
         .env(VALIDATE, if validate { "1" } else { "0" })
         .env("BUSBAR_CONFIG", config)
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("BUSBAR_DATA_DIR", dir.join("state"))
-        .output()
+        .env("BUSBAR_DATA_DIR", dir.join("state"));
+    command
+}
+
+/// [`start`] for a start that may serve instead of exiting: `None` when the child is still running
+/// at `limit` (it booted and serves; it is killed), else whether it exited successfully and
+/// everything it printed.
+fn start_within(
+    test: &str,
+    config: &Path,
+    validate: bool,
+    limit: std::time::Duration,
+) -> Option<(bool, String)> {
+    let log_path = config
+        .parent()
+        .unwrap()
+        .join(format!("{test}-validate-{validate}.log"));
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = child_command(test, config, validate)
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
         .unwrap();
-    let logs = String::from_utf8_lossy(&output.stdout).into_owned()
-        + &String::from_utf8_lossy(&output.stderr);
-    (output.status.success(), logs)
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let logs = std::fs::read_to_string(&log_path).unwrap_or_default();
+    status.map(|status| (status.success(), logs))
 }
 
 /// An unsigned manifest-only archive of `kind`, named `name`: the scan skips it as unsigned.
@@ -196,6 +236,45 @@ fn core_text_names_no_secret_word() {
         for word in ["`env`", "`file`", "env:", "file:", "built-in (`env"] {
             assert!(!text.contains(word), "{word:?} in {text:?}");
         }
+    }
+}
+
+/// ADMIN-API-1.6-ONE-MODEL r3.1 §8.1.1: `auth.admin_auth: []`, the 1.5.5 open admin posture, is
+/// removed. Boot and `--validate` both refuse it with the design's remedy, in the migrate-on-boot
+/// refusal format (`CONFIG:` first, the upgrade line last); neither serves an open admin API.
+#[test]
+fn admin_auth_empty_refuses_boot_with_remedy() {
+    child();
+    let (config, _) = deployment("start-scan-open-admin", "auth:\n  admin_auth: []\n");
+    let remedy = format!(
+        "CONFIG: auth.admin_auth: [] (the open admin posture) is removed in 1.6.0; the admin API \
+         always needs a credential. Delete the auth.admin_auth line to use the default chain \
+         [<operator>, keys], where <operator> is the name of your identity-providers entry for \
+         the first-party operator credential plugin (module: admin-tokens). Give that entry \
+         `settings: {{sha256: \"<digest>\"}}`, where <digest> is the SHA-256 of your admin token \
+         as 64 lower-case hex characters. To mint a token and its digest: `token=$(openssl rand \
+         -base64 32); printf %s \"$token\" | openssl dgst -sha256 -r | cut -d' ' -f1`. Keep the \
+         token as a secret and send it as `Authorization: Bearer` followed by the token. Or list \
+         the admin providers you use in auth.admin_auth.\n{}",
+        busbar_contract::upgrade::UPGRADE_FIRST
+    );
+    for validate in [true, false] {
+        let Some((ok, logs)) = start_within(
+            "admin_auth_empty_refuses_boot_with_remedy",
+            &config,
+            validate,
+            std::time::Duration::from_secs(120),
+        ) else {
+            panic!("admin_auth: [] must refuse the start, not serve (validate: {validate})");
+        };
+        assert!(
+            !ok,
+            "admin_auth: [] must refuse (validate: {validate}): {logs}"
+        );
+        assert!(
+            logs.contains(&remedy),
+            "the refusal carries the design's remedy word for word (validate: {validate}): {logs}"
+        );
     }
 }
 

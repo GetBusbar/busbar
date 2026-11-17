@@ -106,7 +106,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, 1, None, None)
@@ -266,7 +266,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+    let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")

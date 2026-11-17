@@ -154,7 +154,7 @@ async fn fetch_double() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()
 async fn post(served: &Served, path: &str, token: &str, body: &json::Value) -> (u16, json::Value) {
     let response = reqwest::Client::new()
         .post(format!("http://{}/api/v1/admin/{path}", served.addr))
-        .header("x-admin-token", token)
+        .header("authorization", format!("Bearer {}", token))
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()

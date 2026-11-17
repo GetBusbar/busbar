@@ -21,7 +21,7 @@ fn assert_pending(body: &Value, path: &str) {
 async fn read(client: &reqwest::Client, addr: std::net::SocketAddr, path: &str) -> Value {
     let bytes = client
         .get(format!("http://{addr}/api/v1/admin{path}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()
@@ -192,7 +192,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
+        req.header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     };
 
@@ -408,7 +408,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
-    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
+    let admin = |req: reqwest::RequestBuilder| req.header("authorization", "Bearer admintok");
 
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/reload")))
         .send()

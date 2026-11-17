@@ -104,7 +104,7 @@ async fn test_admin_v1_list_keys_filters() {
             json::parse_value(
                 &client
                     .get(url)
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .send()
                     .await
                     .unwrap()
@@ -238,7 +238,7 @@ async fn test_admin_v1_list_keys_group_filter() {
             json::parse_value(
                 &client
                     .get(url)
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .send()
                     .await
                     .unwrap()
@@ -258,7 +258,7 @@ async fn test_admin_v1_list_keys_group_filter() {
 
     let ghost = client
         .get(format!("http://{addr}/api/v1/admin/keys?group=ghost"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -272,7 +272,7 @@ async fn test_admin_v1_list_keys_group_filter() {
 
     let patched = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", alpha.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": false}))
         .send()
         .await
@@ -371,7 +371,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
+        req.header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     };
 
@@ -571,7 +571,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
 
     let put_resp = client
         .put(format!("http://{addr}/api/v1/admin/hooks/{put_name}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(json::json!({"config": {"kind": "tap", "module": "test-hook"}}).to_string())
         .send()
@@ -583,7 +583,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         .patch(format!(
             "http://{addr}/api/v1/admin/hooks/{patch_name}/settings"
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(json::json!({"settings": {"k": "v"}}).to_string())
         .send()
@@ -601,7 +601,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
                 .get(format!(
                     "http://{addr}/api/v1/admin/audit?resource=hook:{name}"
                 ))
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .send()
                 .await
                 .unwrap()

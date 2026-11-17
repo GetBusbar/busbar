@@ -227,7 +227,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -374,7 +374,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://{addr}/api/v1/admin/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

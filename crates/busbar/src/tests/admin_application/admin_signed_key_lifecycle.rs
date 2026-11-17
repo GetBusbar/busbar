@@ -41,7 +41,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
     let admin = |req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", "admintok")
+        req.header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
     };
 
@@ -145,7 +145,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     let post = |body: &'static str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .header("content-type", "application/json")
             .header("idempotency-key", "reuse-key")
             .body(body)
@@ -249,7 +249,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "r"}))
         .send()
         .await
@@ -264,7 +264,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
         let (c, u, id) = (client.clone(), keys_url.clone(), id.clone());
         async move {
             c.post(format!("{u}/{id}/rotate"))
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .header("idempotency-key", k)
                 .send()
                 .await
@@ -369,7 +369,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 
     let created = client
         .post(&keys_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "victim"}))
         .send()
         .await
@@ -388,7 +388,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let victim_header = "b:c";
     let victim_resp = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
@@ -407,7 +407,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
     let colliding_header = "c";
     let colliding = client
         .post(format!("{keys_url}/{colliding_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", colliding_header)
         .send()
         .await
@@ -433,7 +433,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 
     let replay = client
         .post(format!("{keys_url}/{victim_id}/rotate"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("idempotency-key", victim_header)
         .send()
         .await
@@ -490,7 +490,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 
     let created = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "svc"}))
         .send()
         .await
@@ -515,7 +515,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 
     let read = client
         .get(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -572,7 +572,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     let post = |body: json::Value| {
         client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&body)
             .send()
     };
@@ -715,7 +715,7 @@ async fn signing_key_rotate_is_gone() {
 
     let r = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -822,7 +822,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 
     let minted = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(json::json!({"name": "audit_key_probe_z3"}).to_string())
         .send()
@@ -836,7 +836,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 
     let audit = client
         .get(format!("http://{addr}/api/v1/admin/audit"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap()

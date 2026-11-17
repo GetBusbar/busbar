@@ -309,6 +309,35 @@ reports its declared metrics and diagnostics through its kind-bound SDK. Core va
 series, labels and bounded retained storage before exposing an observation. Plugins do not
 mutate a shared recorder or create another instance's identity.
 
+## Network reach in 1.6.0
+
+A plugin reaches the network only through core. It asks core to open a connection, upgrade one to
+TLS in place (STARTTLS), or fetch over HTTP, and core runs the egress guard, the TLS policy and the
+dial itself. That covers most databases, directories and HTTP APIs. Four things that some
+enterprise protocols need are **not** provided in 1.6.0:
+
+- **DNS SRV or TXT lookups.** Core resolves only the A/AAAA records of the host it is asked to
+  dial, as part of the egress check. A plugin cannot discover servers from SRV or TXT records.
+- **TLS channel-binding data.** A plugin cannot read `tls-exporter` or `tls-server-end-point`
+  from a TLS connection, so it cannot offer LDAP channel binding or SCRAM-PLUS.
+- **TLS framed inside the plugin's protocol.** STARTTLS upgrades the whole connection after a
+  protocol exchange. Core cannot carry a TLS handshake whose records are wrapped in the plugin's
+  own packets, as TDS 7.x does during PRELOGIN.
+- **Kerberos / GSSAPI.** Core does not hold a keytab or ticket for a plugin or produce GSSAPI
+  tokens.
+
+For the enterprise plugins this means:
+
+| Plugin | 1.6.0 limit |
+|---|---|
+| Microsoft SQL Server Store | Strict TDS 8.0 (TLS before any TDS traffic) only: SQL Server 2022 or later on Windows, SQL Server 2025 or later on Linux, and Azure SQL Database (not yet verified live). SQL Server 2016 to 2019, and other servers that need TDS 7.x PRELOGIN encryption, are not supported. |
+| Active Directory auth | LDAP simple bind only, over LDAPS or StartTLS. No Kerberos/GSSAPI bind, no LDAP channel binding, and no domain-controller discovery through DNS: name the domain controllers explicitly. |
+| MongoDB Store | A seed list only (`mongodb://host1,host2,...`). `mongodb+srv://` is refused because it needs SRV and TXT lookups. No SCRAM-PLUS. |
+
+These are product limits, not configuration options: there is no setting that turns them on. The
+1.6.0 decision on the audit ask that requested them (A10, #352) is to decline all four for this
+release and take them as input for 1.7.
+
 ## Hook plugins (`kind: hook`)
 
 Hook plugins load over the same signed memory ABI as every other kind. They are in-process dlopen

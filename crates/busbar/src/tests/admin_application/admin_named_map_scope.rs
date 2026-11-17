@@ -113,7 +113,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
     let viewer = |r: reqwest::RequestBuilder| {
-        r.header("x-admin-token", &viewer_token)
+        r.header("authorization", format!("Bearer {}", &viewer_token))
             .header("content-type", "application/json")
     };
 

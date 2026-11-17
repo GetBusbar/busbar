@@ -228,23 +228,17 @@ fn signed_third_party_auth_and_hook_codes_cannot_join_the_catalogue() {
 }
 
 #[test]
-fn linked_auth_and_hook_declarations_need_neither_configuration_nor_an_open_instance() {
+fn linked_auth_declarations_need_neither_configuration_nor_an_open_instance() {
     const AUTHS: &[busbar_kernel::preflight::LinkedAuth] = &[(AUTH_NAME, AUTH_NAME, auth::door)];
-    const HOOKS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[hook::door];
     let linked = Linked {
         auths: AUTHS,
-        hook_doors: HOOKS,
         ..crate::LINKED
     };
     let declared = linked_declared_diagnostics(&linked, &[])
-        .expect("the build's auth and hook rows declare codes without configuration");
+        .expect("the build's auth rows declare codes without configuration");
     let catalogue = busbar_kernel::diagnostics::Catalogue::lent(declared.leak());
     assert_eq!(
         catalogue.by_code(AUTH_CODE).expect("the auth code").slug,
         "fixture-auth-declared"
-    );
-    assert_eq!(
-        catalogue.by_code(HOOK_CODE).expect("the hook code").slug,
-        "fixture-hook-declared"
     );
 }

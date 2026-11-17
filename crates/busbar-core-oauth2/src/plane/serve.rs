@@ -38,15 +38,6 @@ tokio::task_local! {
     /// The registration request this task is answering ([`AsPlane::handle`]), and whether it holds
     /// a share of the budget.
     static REGISTERING: Answering;
-    /// The device route's settled session/CSRF work, lent to synchronous library hooks for this
-    /// request only. No cross-request or node-local token cache.
-    static DEVICE_FORM: DeviceForm;
-}
-
-struct DeviceForm {
-    subject: String,
-    issued: String,
-    consumed: std::cell::RefCell<Option<String>>,
 }
 
 struct Answering {
@@ -101,24 +92,6 @@ impl Registrations {
         let mut w = self.window();
         w.in_flight = w.in_flight.saturating_sub(1);
     }
-}
-
-/// The device form's subject, for the library's subject hook while a device request is answered.
-pub(super) fn device_subject() -> Option<String> {
-    DEVICE_FORM.try_with(|form| form.subject.clone()).ok()
-}
-
-/// The device form's issued CSRF token, for the library's CSRF hook.
-pub(super) fn device_issued() -> Option<String> {
-    DEVICE_FORM.try_with(|form| form.issued.clone()).ok()
-}
-
-/// The device form's consumed CSRF token, taken once, for the library's CSRF hook.
-pub(super) fn device_consumed() -> Option<String> {
-    DEVICE_FORM
-        .try_with(|form| form.consumed.borrow_mut().take())
-        .ok()
-        .flatten()
 }
 
 impl AsPlane {
@@ -191,7 +164,6 @@ impl AsPlane {
         }
         let registering = request.method() == http::Method::POST
             && request.uri().path() == self.identity.register_path();
-        self.prepare(Seen::of(&request)).await;
 
         let answer = Box::pin(self.service.handle(request));
         if !registering {
@@ -203,6 +175,24 @@ impl AsPlane {
             held: std::cell::Cell::new(false),
         };
         REGISTERING.scope(answering, answer).await
+    }
+
+    /// The authorization endpoint, for the browser `/authorize` resolved: its consent session is
+    /// read from the store, any answer staked for this request WITH the browser's T is spent into
+    /// the hooks' cache, and the library answers with `browser` lent to its hooks.
+    pub(crate) async fn authorize<B>(
+        &self,
+        request: http::Request<B>,
+        browser: crate::consent::Browser,
+    ) -> oauth_as::http::Response
+    where
+        B: axum::body::HttpBody,
+    {
+        // The staked key is read before the first await: the request body is not Sync, so no borrow
+        // of the request may live across a suspension point.
+        let staked = staked_key(&request);
+        self.prepare(staked, &browser).await;
+        crate::consent::as_browser(browser, self.handle(request)).await
     }
 
     pub(crate) async fn granted_scope(
@@ -269,118 +259,123 @@ impl AsPlane {
             .unwrap_or(false)
     }
 
-    pub(crate) async fn issue_device_form(
+    /// Keep an operator form's CSRF token in the store, bound to form session `id` (the page's own
+    /// cookie), to `subject`, and to `key`, which names WHAT the form answers (the consent request
+    /// and the starting browser, or the device user code). Store-kept, so any node takes it back.
+    pub(crate) async fn issue_form(
         &self,
         id: &str,
-        csrf: &str,
+        key: &str,
         subject: &str,
     ) -> Result<(), oauth_as::store::StorageError> {
-        let key = format!("device-csrf:{csrf}");
         let store = self.carried.store();
         store
             .open_session(id, subject, crate::consent::SESSION_TTL)
             .await?;
         store
-            .stake(id, &key, true, crate::consent::SESSION_TTL)
+            .stake(id, key, true, crate::consent::SESSION_TTL)
             .await?;
         Ok(())
     }
 
-    pub(crate) async fn consume_device_form(
+    /// Take back an operator form's CSRF token: `true` once, for the session, subject and key it was
+    /// issued with, and never again.
+    pub(crate) async fn consume_form(
         &self,
         id: &str,
-        csrf: &str,
+        key: &str,
         subject: &str,
     ) -> Result<bool, oauth_as::store::StorageError> {
-        let key = format!("device-csrf:{csrf}");
         let store = self.carried.store();
         if store.session_subject(id).await?.as_deref() != Some(subject) {
             return Ok(false);
         }
-        Ok(store.spend(id, &key).await? == Some(true))
+        Ok(store.spend(id, key).await? == Some(true))
     }
 
-    pub(crate) async fn handle_device<B>(
+    /// The PENDING device grant an operator typed the user code of, for the confirm page: looked up
+    /// under the same RFC 8628 s5.1 throttle as an approval, and refused exactly as an approval of it
+    /// would be (unknown, expired, already decided).
+    pub(crate) async fn pending_device(
         &self,
-        request: http::Request<B>,
-        subject: &str,
-        issued: String,
-        consumed: Option<String>,
-    ) -> oauth_as::http::Response
-    where
-        B: axum::body::HttpBody,
-    {
-        DEVICE_FORM
-            .scope(
-                DeviceForm {
-                    subject: subject.to_string(),
-                    issued,
-                    consumed: std::cell::RefCell::new(consumed),
-                },
-                self.handle(request),
-            )
+        entered_user_code: &str,
+    ) -> Result<oauth_as::DeviceGrant, oauth_as::DeviceApprovalError> {
+        use oauth_as::store::Storage as _;
+        let attempt = oauth_as::Attempt::DeviceUserCodeEntry;
+        let limiter: &dyn oauth_as::RateLimiter = &*self.carried.limiter;
+        if limiter.check(attempt) == oauth_as::RateLimitDecision::Deny {
+            return Err(oauth_as::DeviceApprovalError::RateLimited);
+        }
+        let normalized = oauth_as::device::normalize_user_code(entered_user_code);
+        let outcome = match self
+            .server
+            .store()
+            .find_device_grant_by_user_code(&normalized)
             .await
+        {
+            Err(e) => Err(oauth_as::DeviceApprovalError::Storage(e)),
+            Ok(None) => Err(oauth_as::DeviceApprovalError::UnknownUserCode),
+            Ok(Some(grant)) if crate::shared::now_time() >= grant.expires_at => {
+                Err(oauth_as::DeviceApprovalError::Expired)
+            }
+            Ok(Some(grant)) if grant.state != oauth_as::DeviceGrantState::Pending => {
+                Err(oauth_as::DeviceApprovalError::NotPending)
+            }
+            Ok(Some(grant)) => Ok(grant),
+        };
+        limiter.record(
+            attempt,
+            if outcome.is_ok() {
+                oauth_as::AttemptOutcome::Succeeded
+            } else {
+                oauth_as::AttemptOutcome::Failed
+            },
+        );
+        outcome
     }
 
-    async fn prepare(&self, seen: Seen) {
+    async fn prepare(&self, staked: Option<String>, browser: &crate::consent::Browser) {
         let store = self.carried.store();
-        let Some(id) = seen.session else {
+        let id = &browser.session;
+        let Ok(Some(subject)) = store.session_subject(id).await else {
             return;
         };
-        let Ok(Some(subject)) = store.session_subject(&id).await else {
+        self.sessions.hydrate(id, &subject);
+        let (Some(key), Some(handle)) = (staked, browser.handle.as_deref()) else {
             return;
         };
-        self.sessions.hydrate(&id, &subject);
-        let Some(key) = seen.staked_key else {
-            return;
-        };
-        match store.spend(&id, &key).await {
-            Ok(Some(approve)) => self.sessions.plant(&id, key, approve),
+        let key = crate::consent::handled_key(&key, handle);
+        match store.spend(id, &key).await {
+            Ok(Some(approve)) => self.sessions.plant(id, key, approve),
             Ok(None) => {}
             Err(e) => tracing::debug!(error = %e, "oauth_as: the consent answer could not be read"),
         }
     }
 }
 
-struct Seen {
-    session: Option<String>,
-    staked_key: Option<String>,
-}
-
-impl Seen {
-    fn of<B>(request: &http::Request<B>) -> Self {
-        let session = crate::consent::session_id(request.headers());
-        let staked_key = request
-            .uri()
-            .path()
-            .ends_with("/authorize")
-            .then(|| {
-                let pairs = request
-                    .uri()
-                    .query()
-                    .map(crate::routes::form_urlencoded_pairs)
-                    .unwrap_or_default();
-                let param = |name: &str| {
-                    pairs
-                        .iter()
-                        .find(|(k, _)| k == name)
-                        .map(|(_, v)| v.clone())
-                };
-                let client_id = param("client_id")?;
-                Some(match param("request_uri") {
-                    Some(handle) => crate::consent::pushed_key(&client_id, &handle),
-                    None => crate::consent::request_key(
-                        &client_id,
-                        request.uri().path_and_query().map_or("", |p| p.as_str()),
-                    ),
-                })
-            })
-            .flatten();
-        Self {
-            session,
-            staked_key,
-        }
-    }
+/// The key an answer to this authorization request was staked under (before its T is bound in):
+/// [`crate::consent::pushed_key`] for a pushed request, else [`crate::consent::request_key`] over the
+/// request's exact bytes.
+fn staked_key<B>(request: &http::Request<B>) -> Option<String> {
+    let pairs = request
+        .uri()
+        .query()
+        .map(crate::routes::form_urlencoded_pairs)
+        .unwrap_or_default();
+    let param = |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    };
+    let client_id = param("client_id")?;
+    Some(match param("request_uri") {
+        Some(handle) => crate::consent::pushed_key(&client_id, &handle),
+        None => crate::consent::request_key(
+            &client_id,
+            request.uri().path_and_query().map_or("", |p| p.as_str()),
+        ),
+    })
 }
 
 fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeSet {

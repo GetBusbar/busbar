@@ -190,7 +190,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
     store.reset();
     let resp = client
         .get(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
             "http://{addr}/api/v1/admin/keys/{}/usage",
             key_b.id
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -242,7 +242,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
             "http://{addr}/api/v1/admin/keys/{}/revoke",
             key_c.id
         ))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -380,7 +380,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
     store.reset();
     let resp = client
         .patch(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": false}))
         .send()
         .await
@@ -404,7 +404,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
     store.reset();
     let resp = client
         .delete(format!("http://{addr}/api/v1/admin/keys/{}", key_b.id))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

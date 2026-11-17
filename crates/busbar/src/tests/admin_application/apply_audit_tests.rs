@@ -89,9 +89,9 @@ async fn admin_apply_parse_refusal_is_audited() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let refused = reqwest::Client::new()
+    let refused = crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(
             json::json!({
@@ -207,9 +207,9 @@ async fn admin_rows_seal_under_scheme4() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let refused = reqwest::Client::new()
+    let refused = crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("if-match", "*")
         .header("content-type", "application/json")
         .body(
@@ -349,7 +349,7 @@ async fn admin_rows_seal_the_request_correlation() {
     const TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
     const CALLER_SPAN: &str = "00f067aa0ba902b7";
     let refused_apply = |client_id: &str, key: &str| {
-        reqwest::Client::new()
+        crate::root::test_plugins::operator_client()
             .post(format!("http://{addr}/api/v1/admin/config/apply"))
             .header("authorization", "Bearer admintok")
             .header("if-match", "*")
@@ -438,7 +438,7 @@ async fn admin_rows_seal_the_request_correlation() {
         "an invalid client id is not an error itself"
     );
 
-    let operation = reqwest::Client::new()
+    let operation = crate::root::test_plugins::operator_client()
         .get(format!("http://{addr}/api/v1/admin/operations/corr-1"))
         .header("authorization", "Bearer admintok")
         .send()
@@ -495,122 +495,5 @@ async fn admin_rows_seal_the_request_correlation() {
     );
     assert_eq!(served["trace_id"].as_str(), Some(TRACE));
     handle.abort();
-    println!("{WITNESS}");
-}
-
-/// A dropped-in secret candidate the live axis answers to by `name` (no image behind it).
-fn dropped_secret(name: &str) -> busbar_plugin_loader::boot::Candidate {
-    busbar_plugin_loader::boot::Candidate {
-        kind: busbar_contract::abi::mechanism::KindCode::Secret,
-        name: name.into(),
-        version: "1.0.0".into(),
-        aliases: Vec::new(),
-        sugar: Vec::new(),
-        verbs: Vec::new(),
-        selecting: Vec::new(),
-        schemes: Vec::new(),
-        needs: Vec::new(),
-        stated: Vec::new(),
-        origin: busbar_plugin_loader::boot::Origin::Dropped {
-            file: format!("{name}.tar.gz"),
-            bytes: Arc::new(Vec::new()),
-        },
-        disk: false,
-        orders: true,
-    }
-}
-
-/// RA5 (F1): a build's admission puts its dropped-in secret set on the live axis before the
-/// generation is published. A transaction whose commit is then refused must put the set it found
-/// back: an unpublished generation's secret modules never answer for the serving one.
-#[tokio::test]
-async fn refused_commit_after_build_restores_the_secret_axis() {
-    use busbar_contract::secret::SecretAxis as _;
-    const CHILD: &str = "BUSBAR_SSB_SECRET_RESTORE_CHILD";
-    const WITNESS: &str =
-        "actual root case refused_commit_after_build_restores_the_secret_axis completed";
-    isolated!(CHILD, WITNESS);
-    let (module, directory, settings) = crate::distribution::rig::actual_store(
-        "refused_commit_after_build_restores_the_secret_axis-store",
-    );
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
-        &json::json!({
-            "providers": {},
-            "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
-            "store": { "module": module, "settings": settings },
-            "advanced": {  },
-        }),
-        &crate::root::boot::axis_test_grammar(),
-    )
-    .expect("the product deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the product deployment resolves");
-    let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
-        plugin_config,
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .await
-    .expect("the actual product builds");
-    limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .core_store_handle()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD
-        .keep_in_store(boot_calls, 101)
-        .expect("actual rate history binds once");
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .await
-        .expect("the actual rate history boots before rates are committed");
-    limits
-        .keep()
-        .await
-        .expect("the booted actual rates and limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
-
-    let rows = crate::root::linked::secret_rows();
-    let serving = dropped_secret("ssb-serving-vault");
-    let unpublished = dropped_secret("ssb-unpublished-vault");
-    rows.set_dropped([serving.clone()]);
-    let before = handle.load().config_version;
-    let refused = config_transaction::<_, (), AdminError>(&handle, |txn| {
-        // What a reload's build admission does before its generation is published.
-        rows.set_dropped([unpublished.clone()]);
-        let mut next = (**txn.app()).clone();
-        next.config_version = before.wrapping_add(1);
-        Ok(txn.commit(Arc::new(next), || Err("disk said no".to_string()), ()))
-    })
-    .await;
-    assert!(refused.is_err(), "the refused commit fails the transaction");
-    assert_eq!(
-        handle.load().config_version,
-        before,
-        "nothing was published"
-    );
-    assert!(
-        !rows.answers("ssb-unpublished-vault"),
-        "the unpublished generation's secret module stayed on the live axis"
-    );
-    assert!(
-        rows.answers("ssb-serving-vault"),
-        "the serving generation's secret module was not put back"
-    );
-    rows.set_dropped(std::iter::empty());
     println!("{WITNESS}");
 }

@@ -92,7 +92,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
     use base64::Engine as _;
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({
             "file": "candidate.tar.gz",
             "tarball_b64": base64::engine::general_purpose::STANDARD.encode(b"not a tarball at all"),
@@ -110,7 +110,7 @@ async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
 
     let resp = client
         .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"file":"x.tar.gz", "tarball_b64":"%%%"}))
         .send()
         .await

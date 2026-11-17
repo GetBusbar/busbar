@@ -31,11 +31,13 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -103,7 +105,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
         .expect("admin listener");
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let before = handle.load();
     let cfg = json::json!({"kind": "gate", "module": "test-hook", "timeout_ms": u64::MAX});
     let register = client
@@ -157,11 +159,13 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -236,7 +240,7 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         .expect("admin listener");
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
     let before = handle.load();
     let response = client
         .post(format!("http://{addr}/api/v1/admin/config/reload"))

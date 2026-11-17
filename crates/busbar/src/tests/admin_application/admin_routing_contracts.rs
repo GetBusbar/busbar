@@ -39,7 +39,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     for path in ["/api/v1/admin/nonexistent", "/api/junk"] {
         let r = client
             .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap();
@@ -54,7 +54,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
 
     let r = client
         .delete(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -100,7 +100,8 @@ async fn an_unmatched_admin_path_reads_no_body() {
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;
     let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let head = "POST /api/v1/admin/nonexistent HTTP/1.1\r\nhost: x\r\nx-admin-token: admintok\r\n\
+    let head =
+        "POST /api/v1/admin/nonexistent HTTP/1.1\r\nhost: x\r\nauthorization: Bearer admintok\r\n\
                 content-length: 64\r\n\r\n";
     conn.write_all(head.as_bytes()).await.unwrap();
     let mut answer = [0u8; 12];
@@ -149,7 +150,7 @@ async fn test_admin_v1_admin_auth_read() {
     let body = json::parse_value(
         &client
             .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()

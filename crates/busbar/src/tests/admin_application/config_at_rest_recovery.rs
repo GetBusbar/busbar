@@ -93,10 +93,12 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             settings.is_object(),
             "the actual store settings are an object"
         );
+        let operator = crate::root::test_plugins::bind_operator();
         let document = json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         });
@@ -264,7 +266,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
-        let client = reqwest::Client::new();
+        let client = crate::root::test_plugins::operator_client();
         store
             .fail_listing
             .store(failure == "listing", Ordering::SeqCst);

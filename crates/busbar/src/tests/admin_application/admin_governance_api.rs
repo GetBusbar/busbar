@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use busbar_contract::json::{self, JsonValueTrait as _};
 
-const X_ADMIN_TOKEN: &str = "x-admin-token";
-
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_D8D9A6536B47";
@@ -103,7 +101,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(X_ADMIN_TOKEN, "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(json::json!({"name": "minted-via-admin"}).to_string())
         .send()
@@ -117,7 +115,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
 
     let bad = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(X_ADMIN_TOKEN, "nope")
+        .header("authorization", "Bearer nope")
         .header("content-type", "application/json")
         .body(json::json!({"name": "x"}).to_string())
         .send()

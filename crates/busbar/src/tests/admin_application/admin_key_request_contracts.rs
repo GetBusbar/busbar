@@ -39,7 +39,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
 
     let created = client
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k1"}))
         .send()
         .await
@@ -60,7 +60,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
 
     let listed = client
         .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -74,7 +74,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
 
     let usage = client
         .get(format!("http://{addr}/api/v1/admin/keys/{id}/usage"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -127,7 +127,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
     for removed in ["total", "daily", "weekly", ""] {
         let resp = client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "k", "budget_period": removed}))
             .send()
             .await
@@ -147,7 +147,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k"}))
         .send()
         .await
@@ -203,7 +203,7 @@ async fn test_create_key_rejects_unsafe_labels() {
         async move {
             client
                 .post(&url)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&json::json!({"name": "k", "labels": labels}))
                 .send()
                 .await
@@ -321,7 +321,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
         async move {
             client
                 .post(&url)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&json::json!({"name": name}))
                 .send()
                 .await
@@ -396,7 +396,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
     for value in [-1_i64, 0, 100_000] {
         let resp = client
             .post(&url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "k", "max_budget_cents": value}))
             .send()
             .await
@@ -415,7 +415,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k"}))
         .send()
         .await
@@ -469,7 +469,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let created = json::parse_value(
         &client
             .post(&base)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&json::json!({"name": "k"}))
             .send()
             .await
@@ -492,7 +492,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
 
     let disabled = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": false}))
         .send()
         .await
@@ -508,7 +508,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     ] {
         let r = client
             .patch(&key_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .json(&bad)
             .send()
             .await
@@ -518,7 +518,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
 
     let missing = client
         .patch(format!("{base}/vk_nope"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": true}))
         .send()
         .await
@@ -529,14 +529,14 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     // audited as a rejected key.patch, and the key stays revoked.
     let revoked = client
         .post(format!("{key_url}/revoke"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
     assert_eq!(revoked.status().as_u16(), 200);
     let reenable = client
         .patch(&key_url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"enabled": true}))
         .send()
         .await
@@ -558,7 +558,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     let after = json::parse_value(
         &client
             .get(&key_url)
-            .header("x-admin-token", "admintok")
+            .header("authorization", "Bearer admintok")
             .send()
             .await
             .unwrap()
@@ -613,7 +613,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
         for value in [0, 5] {
             let resp = client
                 .post(&url)
-                .header("x-admin-token", "admintok")
+                .header("authorization", "Bearer admintok")
                 .json(&json::json!({"name": "k", field: value}))
                 .send()
                 .await
@@ -633,7 +633,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
 
     let resp = client
         .post(&url)
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .json(&json::json!({"name": "k"}))
         .send()
         .await

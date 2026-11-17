@@ -128,11 +128,11 @@ async fn list_groups_projects_the_limit_tree() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -245,11 +245,11 @@ async fn list_groups_is_cursor_paginated() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .send()
         .await
@@ -271,7 +271,7 @@ async fn list_groups_is_cursor_paginated() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .query(&[("cursor", c1)])
         .send()
@@ -287,7 +287,7 @@ async fn list_groups_is_cursor_paginated() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .query(&[("limit", "2")])
         .query(&[("cursor", c2)])
         .send()
@@ -386,11 +386,11 @@ async fn get_group_by_name_and_not_found() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let client = crate::root::test_plugins::operator_client();
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/acme"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -401,7 +401,7 @@ async fn get_group_by_name_and_not_found() {
 
     let response = client
         .get(format!("http://{addr}/api/v1/admin/groups/ghost"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();
@@ -445,12 +445,14 @@ async fn build_with_group_creates_leaf_and_rebuilds_cost() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -532,12 +534,14 @@ async fn build_with_group_rejects_dangling_parent() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -614,12 +618,14 @@ async fn build_with_group_rejects_empty_name() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -692,12 +698,14 @@ async fn build_with_group_name_length_boundary_is_exact() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
@@ -771,12 +779,14 @@ async fn healthz_returns_a_real_response_not_the_default() {
         settings.is_object(),
         "the actual store settings are an object"
     );
+    let operator = crate::root::test_plugins::bind_operator();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
-            "auth": { "chain": [], "admin_auth": [] },
+            "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
+            "auth": { "chain": [], "admin_auth": [operator] },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

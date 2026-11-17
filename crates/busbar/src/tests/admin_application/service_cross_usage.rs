@@ -331,7 +331,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let response = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/usage?window={bucket}"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .send()
         .await
         .unwrap();

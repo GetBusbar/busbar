@@ -40,7 +40,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),
