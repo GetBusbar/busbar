@@ -137,6 +137,20 @@ impl NativeAttempt {
         }
     }
 
+    pub(crate) fn accepts(&self, declaration: &RequestDeclaration) -> bool {
+        self.rate.as_ref().is_some_and(|rate| {
+            self.service
+                .request
+                .context()
+                .same_unit(declaration.context())
+                && declaration.accepts(&rate.prepared()._prepared)
+        })
+    }
+
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.rate.as_ref()?.prepared()._prepared.data()
+    }
+
     /// The immutable exchange retained by the same committed preparation.
     pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
         self.rate
