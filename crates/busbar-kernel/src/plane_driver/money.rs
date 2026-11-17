@@ -21,6 +21,8 @@ mod native_admission;
 pub(super) mod native_attempt;
 pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
+mod native_terminal;
+pub use native_terminal::SelectedTerminalReceipt;
 mod selected_view;
 pub use selected_view::UsageView;
 mod observations;

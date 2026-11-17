@@ -114,6 +114,7 @@ impl NativeRequestMoney {
         native.accepted = accepted;
         Ok(NativeAttempt::new(
             NativeRequestMoney {
+                terminal: self.terminal.clone(),
                 money: self.money.clone(),
                 request: self.request.clone(),
             },

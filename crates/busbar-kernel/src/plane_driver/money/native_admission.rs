@@ -31,6 +31,7 @@ impl From<ReasonCode> for NativeAdmissionError {
 pub struct AdmissionRollback {
     money: Arc<PlaneMoney>,
     request: Option<AdmittedRequest>,
+    selected: Option<Arc<super::native_terminal::TerminalSlot>>,
 }
 
 impl AdmissionRollback {
@@ -62,14 +63,24 @@ impl AdmissionRollback {
 impl Drop for AdmissionRollback {
     fn drop(&mut self) {
         if let Some(request) = self.request.take() {
-            let _ = self.money.settle_admitted(
-                &request,
-                UnitEnd {
-                    caller_status: 500,
-                    cut: false,
-                    refused_unspent: true,
-                },
-            );
+            if let Some(slot) = &self.selected {
+                if let Err(error) = self.money.abort_selected_startup(&request, slot) {
+                    // Refusal leaves the exact Open and checkpoint owner intact. Surface the
+                    // failure to the existing response confirmation rather than losing facts.
+                    slot.publish(Err(format!(
+                        "selected startup terminal transfer refused: {error:?}"
+                    )));
+                }
+            } else {
+                let _ = self.money.settle_admitted(
+                    &request,
+                    UnitEnd {
+                        caller_status: 500,
+                        cut: false,
+                        refused_unspent: true,
+                    },
+                );
+            }
             request.context().retire();
         }
     }
@@ -129,12 +140,30 @@ impl PlaneMoney {
         {
             return Err(NativeAdmissionError::NotLive);
         }
-        if open.native.is_some() {
-            return Err(NativeAdmissionError::SelectedTerminalRequired);
-        }
+        let selected = if let Some(native) = &open.native {
+            let parts = native
+                .checkpoint()
+                .partitions
+                .as_ref()
+                .ok_or(NativeAdmissionError::Declaration)?;
+            if parts.disposition
+                != crate::governance::unit_checkpoint::partitions::Disposition::Running
+                || !parts.attempts.is_empty()
+                || parts.session.is_some()
+                || parts.far_end_answered
+                || parts.caller_bytes_committed
+                || parts.final_target.is_some()
+            {
+                return Err(NativeAdmissionError::SelectedTerminalRequired);
+            }
+            Some(native.terminal.clone())
+        } else {
+            None
+        };
         Ok(AdmissionRollback {
             money: self.clone(),
             request: Some(request.clone()),
+            selected,
         })
     }
 
@@ -251,6 +280,12 @@ impl PlaneMoney {
                         )
                         .map_err(NativeAdmissionError::Phase)?;
                     Ok(native_attempt::NativeRequestMoney {
+                        terminal: open
+                            .native
+                            .as_ref()
+                            .expect("selected checkpoint installed")
+                            .terminal
+                            .clone(),
                         money: self.clone(),
                         request: admitted,
                     })
