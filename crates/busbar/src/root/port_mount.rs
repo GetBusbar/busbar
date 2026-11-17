@@ -178,7 +178,7 @@ pub(crate) fn render_kernel_refusal(
         path: path.to_owned(),
         query: query.to_owned(),
         headers: Vec::new(),
-        body: Vec::new(),
+        body: Bytes::new(),
         request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
     };
     match seat.driver.render_refusal_now(route, http, refusal.clone()) {
@@ -238,7 +238,7 @@ fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect(),
-        body: ctx.body.to_vec(),
+        body: ctx.body.clone(),
         request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
     }
 }
@@ -612,6 +612,7 @@ async fn answer(
         Seen::Anonymous | Seen::Rejected => (None, None),
     };
     let http = http_in(&ctx);
+    let request = ctx.request.clone();
     let signed = match ingress {
         Some(ingress) => {
             signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
@@ -647,6 +648,7 @@ async fn answer(
             signed,
         };
         let input = ServeIn {
+            request,
             invocation: invocation.as_ref().map(|owner| owner.context.clone()),
             route: route.route,
             http,
