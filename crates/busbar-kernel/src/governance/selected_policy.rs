@@ -448,6 +448,27 @@ fn compile_row(
 }
 
 impl PendingSelectedPolicy {
+    /// Install only on the owned initial App before AppHandle exists. Reload replacement
+    /// must use AppHandle's publication gate and the actual predecessor instead.
+    pub fn install_initial(self, app: &mut App) -> Result<(), &'static str> {
+        if app.selected_policy.is_some()
+            || self.previous.is_some()
+            || !Arc::ptr_eq(&self.cost, &app.cost)
+        {
+            return Err("initial selected policy does not belong to this unpublished App");
+        }
+        let governance = app
+            .governance
+            .as_ref()
+            .ok_or("initial selected policy requires the application's shared governance")?;
+        let minute = governance
+            .selected_rates()
+            .activation_minute()
+            .map_err(|_| "initial selected policy activation clock is unavailable")?;
+        app.selected_policy = Some(Arc::new(self.activate(None, 1, minute)?));
+        Ok(())
+    }
+
     /// O(1) move at the actual publication boundary, after sampling the shared governor clock.
     /// Root must use its admission gate and atomically publish the resulting complete App.
     pub fn activate(
