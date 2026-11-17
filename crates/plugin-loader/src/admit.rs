@@ -512,6 +512,8 @@ pub(crate) struct Verified {
     pub(crate) kind: KindCode,
     pub(crate) name: String,
     pub(crate) former_names: String,
+    /// This call's verdict and proof (DES-NATIVE-FIRST-PARTY r3 §2.1).
+    pub(crate) signer: Signer,
 }
 
 #[cfg(unix)]
@@ -537,7 +539,7 @@ fn admit_with(
             stamp: v.stamp,
             image: Arc::clone(&r.image),
             plugin: r.plugin,
-            signer: Signer::Linked,
+            signer: v.signer,
         });
     }
     let (opened, staged) = open_checked(&v)?;
@@ -562,7 +564,7 @@ fn admit_with(
         stamp: v.stamp,
         image,
         plugin,
-        signer: Signer::Linked,
+        signer: v.signer,
     })
 }
 
@@ -634,15 +636,19 @@ pub(crate) fn verify(
         )
         .named(manifest_name));
     }
-    if let Err(rejected) = crate::sign::evaluate(&bytes, manifest, trust) {
-        return Err(Refusal::new(
-            RefusalCode::Signature,
-            "signature",
-            rejected.reason,
-            "a signature plugins.trust accepts",
-        )
-        .named(manifest_name));
-    }
+    // The one evaluation over these bytes; its verdict and proof are this admission's signer (§2.1).
+    let (verdict, proof) = match crate::sign::evaluate_with_verification(&bytes, manifest, trust) {
+        Ok(judged) => judged,
+        Err(rejected) => {
+            return Err(Refusal::new(
+                RefusalCode::Signature,
+                "signature",
+                rejected.reason,
+                "a signature plugins.trust accepts",
+            )
+            .named(manifest_name));
+        }
+    };
     // 3: exactly one stamp, every field checked.
     let stamp = scan::stamp(&bytes).map_err(|e| e.refusal().named(manifest_name))?;
     let name = scan::text(&stamp.name).to_string();
@@ -657,6 +663,7 @@ pub(crate) fn verify(
         kind,
         name,
         former_names,
+        signer: Signer::Dropped { verdict, proof },
     })
 }
 

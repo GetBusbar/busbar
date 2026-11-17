@@ -108,7 +108,7 @@ impl ImagesBuilder {
         identity: &str,
         stamp_name: &[u8; 64],
         former_names: &[&str],
-        linked: bool,
+        signer: crate::admit::Signer,
         mut described: Described,
     ) -> Result<(), Refusal> {
         if let Some(refusal) = name_conflict(
@@ -165,7 +165,7 @@ impl ImagesBuilder {
         self.entries.push(ImageEntry {
             identity: Arc::from(identity),
             former_names: former_names.iter().map(|w| Box::from(*w)).collect(),
-            linked,
+            signer,
             described,
             errors,
             ceilings: row.row,
@@ -212,8 +212,13 @@ impl ImagesBuilder {
             .split(',')
             .filter(|w| !w.is_empty())
             .collect();
-        let linked = matches!(*admitted.image, Image::Linked);
-        self.admit_described(&identity, &admitted.stamp.name, &former, linked, described)?;
+        self.admit_described(
+            &identity,
+            &admitted.stamp.name,
+            &former,
+            admitted.signer().clone(),
+            described,
+        )?;
         if let Some(entry) = self.entries.last_mut() {
             entry.header = Some(header);
             entry.image = Some(Arc::clone(&admitted.image));
@@ -298,7 +303,7 @@ impl Images {
         self.entries
             .iter()
             .filter(|e| {
-                e.linked
+                matches!(e.signer, crate::admit::Signer::Linked)
                     && e.described.kind == KindCode::Store
                     && e.described.facts & busbar_plugin_abi::store::FB_EPHEMERAL != 0
             })
@@ -367,6 +372,34 @@ impl Images {
             .map(|(identity, _, _)| identity.to_owned())
     }
 
+    /// Who vouched for the admitted image with this verified identity (the admin view's publisher, verdict and
+    /// proof; DES-NATIVE-FIRST-PARTY r3 §2.5). None for an unknown identity.
+    pub fn signer(&self, identity: &str) -> Option<&crate::admit::Signer> {
+        self.entries
+            .iter()
+            .find(|e| &*e.identity == identity)
+            .map(|e| &e.signer)
+    }
+
+    /// Whether the image with this identity is compiled into this build. False for an unknown identity.
+    pub fn linked(&self, identity: &str) -> bool {
+        matches!(self.signer(identity), Some(crate::admit::Signer::Linked))
+    }
+
+    /// Whether the image with this identity is linked or verified against an embedded release key. False for
+    /// an unknown identity (fail closed, PRD-5).
+    pub fn first_party(&self, identity: &str) -> bool {
+        self.signer(identity)
+            .is_some_and(crate::admit::Signer::first_party)
+    }
+
+    /// Whether the image with this identity is linked or carries any verified `Trusted` verdict; never
+    /// `Allowed`. False for an unknown identity.
+    pub fn trusted(&self, identity: &str) -> bool {
+        self.signer(identity)
+            .is_some_and(crate::admit::Signer::trusted)
+    }
+
     /// Plugin describe facts for admin/health (never shown to another plugin).
     pub fn described(&self, identity: &str) -> Option<Described> {
         self.entries
@@ -417,7 +450,9 @@ pub struct Registry {
 pub(crate) struct ImageEntry {
     pub(crate) identity: Arc<str>,
     former_names: Vec<Box<str>>,
-    linked: bool,
+    /// Who vouched for this image in its admission (DES-NATIVE-FIRST-PARTY r3 §2.3): `linked`, `first_party`
+    /// and `trusted` are all read from it, so they cannot disagree.
+    signer: crate::admit::Signer,
     pub(crate) described: Described,
     pub(crate) errors: &'static ErrorBook,
     pub(crate) ceilings: [u32; 64],
@@ -682,7 +717,7 @@ impl Registry {
             .entries
             .iter()
             .filter(|e| {
-                e.linked
+                matches!(e.signer, crate::admit::Signer::Linked)
                     && e.described.kind == KindCode::Store
                     && e.described.facts & busbar_plugin_abi::store::FB_EPHEMERAL != 0
             })
@@ -2579,6 +2614,9 @@ pub mod plane_sections;
 
 #[cfg(test)]
 mod needs_tests;
+
+#[cfg(test)]
+mod signer_tests;
 
 /// The one describe sequence (DES-443 r3 §3.3), for an admitted image (`ImagesBuilder::admit`) and an opened one
 /// under inspection alike: a slot leased on the describe row, the crossing `cross` inside `entry::guard`, the
