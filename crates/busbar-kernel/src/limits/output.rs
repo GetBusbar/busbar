@@ -7,6 +7,7 @@
 
 use super::process_admission::{ByteCredit, RequestLease};
 use busbar_contract::secure::SecureVec;
+use busbar_contract::storage::{StorageCredit, StorageSource};
 use std::io;
 
 /// Capacity refusal is distinct from allocator failure and serializer failure.
@@ -138,14 +139,20 @@ impl<T> Captured<T> {
 pub struct OutputBuffer {
     // Rust drops fields in declaration order: wipe/free payload BEFORE releasing byte credit.
     bytes: SecureVec,
-    credit: ByteCredit,
+    credit: StorageCredit,
     failure: Option<OutputError>,
 }
 
 impl OutputBuffer {
     pub fn with_capacity(request: &RequestLease, capacity: usize) -> Result<Self, OutputError> {
-        let credit = request
-            .try_reserve_unreported(capacity)
+        Self::with_source(&request.storage(), capacity)
+    }
+
+    /// Stage output before a request exists, or from the exact original request's source.
+    /// This shares the process account; the source itself is not pre-reserved capacity.
+    pub fn with_source(source: &StorageSource, capacity: usize) -> Result<Self, OutputError> {
+        let credit = source
+            .try_reserve(capacity)
             .map_err(|_| OutputError::Capacity)?;
         let bytes = SecureVec::with_capacity(capacity).map_err(|_| OutputError::Allocation)?;
         Ok(Self {
@@ -180,8 +187,8 @@ impl OutputBuffer {
             });
             let credit = self
                 .credit
-                .request()
-                .try_reserve_unreported(capacity)
+                .source()
+                .try_reserve(capacity)
                 .map_err(|_| OutputError::Capacity)?;
             let mut next =
                 SecureVec::with_capacity(capacity).map_err(|_| OutputError::Allocation)?;

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! One boot-owned inbound budget. Data cannot consume the operator reserve. Storage custody
-//! retains both its byte charge and the original request count through detached consumption.
+//! One boot-owned account for inbound payload and covered output backing. Data cannot consume
+//! the operator reserve. Request-derived storage retains the original count; pre-request
+//! connection storage reserves actual bytes without manufacturing a request admission.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -10,9 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use busbar_contract::storage::{StorageAccount, StorageDenied, StorageSource};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
-/// Buffered inbound payload, not allocator slack, outbound payload, or process RSS.
+/// Shared inbound payload and covered output backing; not allocator overhead or process RSS.
 pub const BODY_BYTES: u32 = 256 * 1024 * 1024;
 /// The part of BODY_BYTES unavailable to data listeners.
 pub const OPERATOR_BODY_BYTES: u32 = 32 * 1024 * 1024;
@@ -59,6 +61,17 @@ impl ProcessAdmission {
     #[must_use]
     pub fn new(max_requests: usize) -> Arc<Self> {
         Self::build(max_requests, BODY_BYTES, OPERATOR_BODY_BYTES)
+    }
+
+    /// Create once for a trusted listener/origin and clone for its pre-request connections.
+    /// Class comes from boot assembly, never request contents. This reserves no bytes or count;
+    /// consumers must acquire credit before every included backing allocation.
+    #[must_use]
+    pub fn connection_storage(self: &Arc<Self>, class: AdmissionClass) -> StorageSource {
+        StorageSource::new(Arc::new(ConnectionAccount {
+            budget: Arc::clone(self),
+            class,
+        }))
     }
 
     fn build(max_requests: usize, byte_limit: u32, operator_bytes: u32) -> Arc<Self> {
@@ -282,11 +295,55 @@ struct LeaseInner {
     class: AdmissionClass,
 }
 
+struct ConnectionAccount {
+    budget: Arc<ProcessAdmission>,
+    class: AdmissionClass,
+}
+
+impl StorageAccount for ConnectionAccount {
+    fn try_reserve(&self, bytes: usize) -> Result<(), StorageDenied> {
+        self.budget
+            .reserve(self.class, bytes)
+            .map(|_| ())
+            .map_err(|_| StorageDenied)
+    }
+
+    fn release(&self, bytes: usize) {
+        self.budget.release(
+            self.class,
+            u32::try_from(bytes).expect("conserved process credit"),
+        );
+    }
+}
+
+impl StorageAccount for LeaseInner {
+    fn try_reserve(&self, bytes: usize) -> Result<(), StorageDenied> {
+        self.budget
+            .reserve(self.class, bytes)
+            .map(|_| ())
+            .map_err(|_| StorageDenied)
+    }
+
+    fn release(&self, bytes: usize) {
+        self.budget.release(
+            self.class,
+            u32::try_from(bytes).expect("conserved process credit"),
+        );
+    }
+}
+
 /// Clones share one admission; retain a share in every detached task and retained input owner.
 #[derive(Clone, Debug)]
 pub struct RequestLease(Arc<LeaseInner>);
 
 impl RequestLease {
+    /// Share the exact admitted count owner with output/storage credits, without allocating.
+    /// Repeated calls preserve origin identity; a different request cannot merge its credits.
+    #[must_use]
+    pub fn storage(&self) -> StorageSource {
+        StorageSource::new(self.0.clone())
+    }
+
     #[must_use]
     pub fn class(&self) -> AdmissionClass {
         self.0.class
