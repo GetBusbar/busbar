@@ -260,29 +260,37 @@ fn deferred_targets_never_call_the_locator_and_userinfo_is_refused_first() {
     assert!(!errors[0].contains("secret"));
 }
 
+/// SEC-2 (#297 model A): a service-account token_uri is https only; no private or loopback host is
+/// exempt, so 1.5.5's private/loopback plaintext admission is refused with a clear error.
 #[test]
-fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
+fn vet_token_uri_takes_https_only_and_exempts_no_private_or_loopback_host() {
     for uri in [
-        "http://\x310.0.0.5/token",
-        "http://\x3192.168.1.20/token",
-        "http://127.0.0.1:9000/token",
-        "http://[::1]/token",
         "https://oauth2.googleapis.com/token",
+        "https://\x310.0.0.5/token",
+        "https://127.0.0.1:9000/token",
     ] {
         assert_eq!(
             vet_token_uri(uri, &MetadataPosture::default()),
             Ok(()),
-            "token_uri {uri} must be accepted, as 1.5.5 did"
+            "token_uri {uri} must be accepted"
         );
     }
-    let uri = "http://oauth2.example.com/token";
-    assert_eq!(
-        vet_token_uri(uri, &MetadataPosture::default()),
-        Err(format!(
-            "service-account token_uri must use https for a public host (got '{uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
-        )),
-        "a public http token_uri must be refused in 1.5.5's words"
-    );
+    for uri in [
+        "http://oauth2.example.com/token",
+        "http://\x310.0.0.5/token",
+        "http://\x3192.168.1.20/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]/token",
+        "http://localhost/token",
+    ] {
+        assert_eq!(
+            vet_token_uri(uri, &MetadataPosture::default()),
+            Err(format!(
+                "service-account token_uri must use https (got '{uri}'); it receives the signed JWT assertion, and no private or loopback host is exempt"
+            )),
+            "an http token_uri must be refused whatever its host"
+        );
+    }
     let imds = vet_token_uri("http://169.254.169.254/token", &MetadataPosture::default());
     assert!(
         imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),

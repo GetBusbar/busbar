@@ -1949,7 +1949,7 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
 
 #[cfg(linked_section_pools)]
 #[test]
-fn validate_refuses_an_http_token_url_on_a_public_host() {
+fn validate_refuses_an_http_token_url_on_any_host() {
     let run = |token_url: &str| {
         let dir = fixture_dir("mint-scheme");
         std::fs::write(
@@ -1983,7 +1983,7 @@ models:
         out
     };
     let refused = |stdout: &str, stderr: &str| {
-        format!("{stdout}{stderr}").contains("token_url must use https for a public host")
+        format!("{stdout}{stderr}").contains("token_url must use https")
     };
     let (code, stdout, stderr) = run("http://token.example.com/oauth2/token");
     assert_ne!(code, 0, "stdout={stdout} stderr={stderr}");
@@ -1991,10 +1991,12 @@ models:
         refused(&stdout, &stderr),
         "an http token_url on a public host is refused at --validate: stdout={stdout} stderr={stderr}"
     );
-    let (_, stdout, stderr) = run("http://127.0.0.1:9/oauth2/token");
+    // SEC-2 (#297 model A): loopback is not exempt.
+    let (code, stdout, stderr) = run("http://127.0.0.1:9/oauth2/token");
+    assert_ne!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(
-        !refused(&stdout, &stderr),
-        "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
+        refused(&stdout, &stderr),
+        "an http token_url on loopback is refused at --validate: stdout={stdout} stderr={stderr}"
     );
 }
 

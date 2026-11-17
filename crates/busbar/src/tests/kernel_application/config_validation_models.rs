@@ -446,6 +446,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
     }
 
+    // SEC-2 (#297 model A): no private or loopback host is exempt from TLS for a token endpoint.
     for tu in [
         "http://\x310.0.0.5/oauth2/token",
         "http://\x3172.16.4.2/token",
@@ -453,20 +454,17 @@ fn test_validate_token_url_ssrf_and_scheme() {
         "http://127.0.0.1:9000/token",
         "http://[::1]:9000/token",
         "http://localhost:9000/token",
+        "http://example.com/token",
     ] {
         let errs = build(tu);
+        let want = format!(
+            "provider 'entra' token_url must use https (got '{tu}'); it carries the client secret, and no private or loopback host is exempt"
+        );
         assert!(
-            !errs.iter().any(|e| e.contains("token_url")),
-            "http token_url to a private/loopback host must be accepted, as 1.5.5 did ({tu}); got: {errs:?}"
+            errs.iter().any(|e| *e == want),
+            "an http token_url must be refused whatever its host ({tu}); got: {errs:?}"
         );
     }
-
-    let errs = build("http://example.com/token");
-    let want = "provider 'entra' token_url must use https for a public host (got 'http://example.com/token'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint";
-    assert!(
-        errs.iter().any(|e| e == want),
-        "public http token_url must be refused with the 1.5.5 text; got: {errs:?}"
-    );
 
     for host in ["169.254.169.254", "metadata.google.internal"] {
         let errs = build(&format!("https://{host}/token"));
