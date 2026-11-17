@@ -126,6 +126,8 @@ tracing = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+# C-DEPLOYMENT-ID includes the root boot walker and its deployment-ID decoder.
+hex = { workspace = true }
 # W1-K8B: the head-authority and card-redirect arms build URLs.
 url = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host

@@ -731,6 +731,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-test",
  "busbar-ports",
+ "hex",
  "http-body-util",
  "hyper",
  "hyper-util",

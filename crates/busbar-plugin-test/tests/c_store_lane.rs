@@ -39,7 +39,6 @@ fn lane_commits_block_no_worker_and_pass_their_declared_ceiling() {
         .build()
         .expect("a 2-worker runtime");
     let h = booted(lane::PLUGIN.plugin(), FakeNeeds::new());
-    h.registry().start_watchdog();
     let id = "c-store-lane-commit";
     let config = format!(r#"{{"id":"{id}","commit_sleep_ms":2000}}"#);
     let spec = h.spec("lane", config.as_bytes());
@@ -163,15 +162,14 @@ fn a_ceiling_above_the_lane_range_is_clamped_and_logged() {
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_loader::admit::admit_header;
 
-    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder, SlotTable};
+    use busbar_plugin_loader::instance::{Ceilings, ImagesBuilder};
 
     use crate::min3_store::{Capture, LANE_SCAN_CLAMPED_US, LANE_SCAN_US};
 
     let capture = Capture::default();
     let _tap = capture.install();
-    let slots = Arc::new(SlotTable::new());
-    busbar_plugin_loader::instance::install_sinks(&slots);
-    let mut images = ImagesBuilder::new(&HOST, slots, Ceilings::DEFAULT);
+    let process = crate::process_resources();
+    let mut images = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
     let admitted = admit_header(lane::PLUGIN.plugin()).expect("the lane image admits");
     images.admit(admitted).expect("the lane image is described");
     let clamps = capture.with_message("plugin ceiling clamped into its range");
