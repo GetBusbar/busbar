@@ -21,6 +21,186 @@ use busbar_plugin_abi::plugin::{Endpoints, Open, OPEN_DRY_RUN};
 use busbar_plugin_abi::records::{core_cfg, settled, tag, CoreCfgRec, FailRec, Full, Out, Records};
 use busbar_plugin_abi::types::Status;
 
+mod suite_fixture {
+    use super::*;
+    use busbar_contract::json::{self, JsonValueTrait, Value};
+    use busbar_plugin_abi::need::need::{self, Record};
+    use busbar_plugin_abi::plugin::Describe;
+
+    pub struct Fixture {
+        config: Vec<u8>,
+        mode: String,
+        phase: u64,
+    }
+    impl Open for Fixture {
+        async fn open(_h: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let config = config.to_vec();
+            let value: Value =
+                json::parse_typed(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            let mode = value.get("mode").and_then(Value::as_str).unwrap_or("echo");
+            let phase = value.get("phase").and_then(Value::as_u64).unwrap_or(0);
+            if value.get("v").and_then(Value::as_u64).unwrap_or(2) > 2 {
+                return Err(Fail::refused_because(
+                    refused::R_VERSION,
+                    "NEWER: fixture version",
+                ));
+            }
+            if mode == "write" && phase > 0 {
+                need::record(Record::Put {
+                    key: b"fixed-point",
+                    value: b"changed",
+                    ttl_s: 0,
+                })
+                .await?;
+            }
+            Ok(Self {
+                config,
+                mode: mode.to_owned(),
+                phase,
+            })
+        }
+        fn check(_h: &Host, _config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#);
+        }
+        fn settled(&self, w: &mut Out<'_>) -> Result<(), Full> {
+            if self.mode == "none" {
+                return Ok(());
+            }
+            let config = match self.mode.as_str() {
+                "echo" => br#"{"mode":"echo","v":2}"#.to_vec(),
+                "change" => {
+                    format!(r#"{{"mode":"change","phase":{},"v":2}}"#, self.phase + 1).into_bytes()
+                }
+                "core" | "write" => {
+                    format!(r#"{{"mode":"{}","phase":1,"v":2}}"#, self.mode).into_bytes()
+                }
+                _ => self.config.clone(),
+            };
+            settled::config(w, &config)?;
+            if self.mode == "core" && self.phase > 0 {
+                settled::core_cfg(w, core_cfg::LIMITS, "", br#"{"timeout_ms":42}"#)?;
+            }
+            Ok(())
+        }
+    }
+    impl busbar_plugin_abi::Auth for Fixture {}
+    busbar_plugin_abi::plugin!(Auth, Fixture, name: "fixture-migration-suite");
+}
+
+#[test]
+fn migration_suite_accepts_semantically_identical_canonical_echo() {
+    busbar_plugin_test::suites::migrate(
+        suite_fixture::PLUGIN.plugin(),
+        br#"{"v":2,"mode":"echo"}"#,
+        busbar_plugin_test::FakeNeeds::new(),
+        busbar_plugin_test::suites::MigrateExpect::Settled {
+            config: None,
+            core_cfg: &[],
+        },
+    );
+}
+
+fn suite_case(
+    mode: &str,
+    purpose: busbar_plugin_test::suites::harness::OpenPurpose,
+    config_expected: bool,
+) {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    let bag = format!(r#"{{"mode":"{mode}","v":2}}"#);
+    migrate_case(
+        suite_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: bag.as_bytes(),
+            purpose,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: config_expected.then_some(bag.as_bytes()),
+            core_cfg: &[],
+        },
+    );
+}
+
+#[test]
+fn migration_suite_canonical_case_allows_absent_config() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+        false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "open CONFIG or CORE_CFG violates its purpose")]
+fn migration_suite_conversion_still_requires_config() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+        false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "open answered no CONFIG; expected the converted settings")]
+fn migration_suite_explicit_config_expectation_requires_emission() {
+    suite_case(
+        "none",
+        busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+        true,
+    );
+}
+
+fn converted_case(mode: &str) {
+    let bag = format!(r#"{{"mode":"{mode}","phase":0,"v":2}}"#);
+    let converted = format!(r#"{{"mode":"{mode}","phase":1,"v":2}}"#);
+    busbar_plugin_test::suites::migrate(
+        suite_fixture::PLUGIN.plugin(),
+        bag.as_bytes(),
+        busbar_plugin_test::FakeNeeds::new(),
+        busbar_plugin_test::suites::MigrateExpect::Settled {
+            config: Some(converted.as_bytes()),
+            core_cfg: &[],
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "canonical settings are not a fixed point")]
+fn migration_suite_refuses_changed_fixed_point_config() {
+    converted_case("change");
+}
+
+#[test]
+#[should_panic(expected = "open CONFIG or CORE_CFG violates its purpose")]
+fn migration_suite_refuses_canonical_core_cfg() {
+    converted_case("core");
+}
+
+#[test]
+#[should_panic(expected = "opening current settings wrote records")]
+fn migration_suite_refuses_fixed_point_record_writes() {
+    converted_case("write");
+}
+
+#[test]
+fn migration_suite_refused_case_keeps_explicit_canonical_purpose() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    migrate_case(
+        suite_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: br#"{"mode":"none","v":3}"#,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::Canonical,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Refused(refused::R_VERSION),
+    );
+}
+
 busbar_plugin_abi::kind! {
     /// A secret-shaped kind for this case.
     pub trait Source: kind = 2, abi = 2 {

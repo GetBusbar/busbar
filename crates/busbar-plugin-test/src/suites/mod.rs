@@ -33,8 +33,17 @@ pub use busbar_ports::plane::PlaneIn;
 
 use crate::fake_needs::FakeNeeds;
 
-/// config: the converted bag in operator form (canonical JSON compare), None = canonical already; core_cfg:
-/// (section, name, value).
+/// An explicit initial migration input. Purpose is host intent, never inferred from the bag or expectation.
+/// Later fixed-point and newer probes use Canonical with these same limits.
+pub struct MigrateCase<'a> {
+    pub bag: &'a [u8],
+    pub purpose: harness::OpenPurpose,
+    pub limits: harness::InstanceLimits,
+}
+
+/// config: Some requires emitted CONFIG equal to the expected operator-form JSON tree; None requires
+/// unchanged settings (an equal CONFIG echo, or no CONFIG on an explicitly Canonical case). Conversion
+/// always requires CONFIG. core_cfg: (section, name, value).
 pub enum MigrateExpect<'a> {
     Settled {
         config: Option<&'a [u8]>,
@@ -181,8 +190,28 @@ pub fn transport_conns(plugin: &'static Plugin, config: &[u8], cases: &[Transpor
 
 /// Round 31, any kind: `open` an older `bag` (operator form) through the registry's `open_<kind>` (bind, inline
 /// steps, `decode_settled`, unbind_refs) and compare the settled answer; then `open` the returned CONFIG again and
-/// require no CONFIG back (canonical is a fixed point) and, for a store, one marker read and no write; then data
+/// require absent or semantically identical CONFIG (canonical is a fixed point) and no CORE_CFG or writes; then data
 /// marked newer than the plugin must give REFUSED R_VERSION (NEWER).
 pub fn migrate(plugin: &'static Plugin, bag: &[u8], needs: FakeNeeds, expect: MigrateExpect<'_>) {
-    migrate::run(plugin, bag, needs, expect);
+    migrate_case(
+        plugin,
+        MigrateCase {
+            bag,
+            purpose: harness::OpenPurpose::ConvertUnstamped,
+            limits: harness::InstanceLimits::default(),
+        },
+        needs,
+        expect,
+    );
+}
+
+/// Run the migration suite with explicit initial purpose and instance limits. Use Canonical for an
+/// already canonical input; ConvertUnstamped still requires CONFIG even when its contents are unchanged.
+pub fn migrate_case(
+    plugin: &'static Plugin,
+    case: MigrateCase<'_>,
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+) {
+    migrate::run(plugin, case, needs, expect);
 }
