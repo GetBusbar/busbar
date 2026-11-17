@@ -42,6 +42,34 @@ fn event(operation: u8, action: &str) -> PendingAudit {
 }
 
 #[tokio::test]
+async fn observer_publication_is_confined_to_its_exact_store_attachment() {
+    let (_, store, native, _) = fixture().await;
+    let (_, _, unrelated, _) = fixture().await;
+    let exports = Arc::new(crate::export::plugin::Exports::default());
+    let unrelated_exports = Arc::new(crate::export::plugin::Exports::default());
+    let unrelated = Arc::new(NativeAudit {
+        storage: Arc::clone(&unrelated.storage),
+        exports: Some(unrelated_exports.clone()),
+    });
+    let mut owners = [(1, native.clone()), (2, unrelated.clone())]
+        .into_iter()
+        .collect();
+
+    publish_export_observers_on(&mut owners, &store, &exports).unwrap();
+
+    assert!(Arc::ptr_eq(&owners[&1].storage, &native.storage));
+    assert!(Arc::ptr_eq(owners[&1].exports.as_ref().unwrap(), &exports));
+    assert!(
+        Arc::ptr_eq(&owners[&2], &unrelated),
+        "another attachment keeps its complete owner"
+    );
+    assert!(Arc::ptr_eq(
+        owners[&2].exports.as_ref().unwrap(),
+        &unrelated_exports
+    ));
+}
+
+#[tokio::test]
 async fn native_full_queue_refuses_the_new_event_and_preserves_the_accepted_original() {
     let (_, _, native, log) = fixture().await;
     let queue = PendingAuditQueue::new(1);

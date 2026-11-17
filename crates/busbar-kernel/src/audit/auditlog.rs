@@ -1814,14 +1814,28 @@ fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<Nat
 /// Publish completed audit observers without retargeting any durable original. Bootstrap
 /// owners and already-running drains retain the same storage, locks, heads and operation IDs.
 pub(crate) fn publish_export_observers(app: &crate::state::App) -> Result<(), String> {
+    let Some(governance) = &app.governance else {
+        return Ok(());
+    };
+    let store = governance
+        .core_store_handle()
+        .map_err(|error| error.to_string())?;
     let mut owners = native_owners()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
+    publish_export_observers_on(&mut owners, &store, &app.exports)
+}
+
+fn publish_export_observers_on(
+    owners: &mut std::collections::HashMap<u32, Arc<NativeAudit>>,
+    _store: &Arc<CoreStore>,
+    exports: &Arc<crate::export::plugin::Exports>,
+) -> Result<(), String> {
     for native in owners.values() {
         if native
             .exports
             .as_ref()
-            .is_some_and(|exports| !Arc::ptr_eq(exports, &app.exports))
+            .is_some_and(|held| !Arc::ptr_eq(held, exports))
         {
             return Err("audit export observers already belong to another serving registry".into());
         }
@@ -1829,7 +1843,7 @@ pub(crate) fn publish_export_observers(app: &crate::state::App) -> Result<(), St
     for native in owners.values_mut() {
         *native = Arc::new(NativeAudit {
             storage: Arc::clone(&native.storage),
-            exports: Some(Arc::clone(&app.exports)),
+            exports: Some(Arc::clone(exports)),
         });
     }
     Ok(())
