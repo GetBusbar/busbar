@@ -594,6 +594,35 @@ mod tests {
     }
 
     #[test]
+    fn flat_words_rollback_in_the_real_pooled_sink() {
+        let mut out = PooledOut {
+            buf: Some(OutBuf::zeroed(20, 20)),
+            pool: Some(pool(1)),
+        };
+        out.put(tag::TEXT, b"").unwrap();
+        let prefix = out.bytes().to_vec();
+        assert!(
+            out.put_u32s(0x101, |words| {
+                words.push(7)?;
+                assert!(words.push(8).is_err());
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = out.put_u32s(0x101, |words| {
+                words.push(9)?;
+                std::panic::panic_any(())
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(out.bytes(), prefix);
+        assert!(all_zero(&out.whole()[prefix.len()..]));
+    }
+
+    #[test]
     fn a_fresh_buffer_is_class_zero_empty_and_all_zero() {
         let pool = pool(4);
         let buf = pool.acquire(1 << 20);

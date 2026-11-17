@@ -897,3 +897,7 @@ impl Drop for Reply {
         self.buf.zeroize();
     }
 }
+
+#[cfg(test)]
+#[path = "records_buffer_tests.rs"]
+mod buffer_tests;
