@@ -226,6 +226,9 @@ pub struct Verdict {
     pub all_requested_records_authenticated: bool,
     /// Pages a certified notary key signed.
     pub certified_pages: usize,
+    /// The last position a checked page authenticates (its `to`); 0 when no page is checked. A
+    /// window ends at a sealed line when this reaches `to`.
+    pub last_sealed: u64,
     /// The seal row's outcome, when there is one.
     pub seal_row: Option<SealOutcome>,
 }
@@ -690,6 +693,7 @@ pub fn verify<R: LinkedRange, H: TrustedHead>(
         authenticated_records,
         all_requested_records_authenticated: complete,
         certified_pages: certified,
+        last_sealed: last_authenticated,
         seal_row,
     })
 }
