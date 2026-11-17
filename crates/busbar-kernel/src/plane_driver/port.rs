@@ -353,7 +353,7 @@ impl PortDriver {
         &self,
         mut input: ServeIn<'_>,
         data: Arc<crate::auth::native_data::NativeDataPending>,
-    ) -> Result<Served, ServeError> {
+    ) -> Result<NativeServed, ServeError> {
         let snapshot = data.snapshot();
         if !data.accepts(self, input.route)
             || input.unit.is_some()
@@ -387,7 +387,19 @@ impl PortDriver {
         input.invocation = Some(data.context().clone());
         input.admission = Some(Arc::clone(data.pending()));
         input.principal = Some(Arc::from(data.identity().subject()));
-        self.serve_inner(input, Some(data)).await
+        let served = self.serve_inner(input, Some(data.clone())).await?;
+        let decision = match &served {
+            Served::Refused(refused) => Some(refused.decision.clone()),
+            Served::Ran(_) => None,
+        };
+        Ok(NativeServed {
+            served,
+            retirement: NativeTaskRetirement {
+                pending: data,
+                decision,
+                refusal: None,
+            },
+        })
     }
 
     async fn serve_inner(
@@ -888,7 +900,7 @@ fn line_blocking(
     );
     match served {
         Ok(Served::Ran(ran)) => line_of(ran.client),
-        Ok(Served::Refused(items)) => line_of(items),
+        Ok(Served::Refused(refused)) => line_of(refused.items),
         Err(ServeError::Session(error)) => Err(LineRefused::Session(error)),
         Err(ServeError::NoRoute) => Err(LineRefused::NoLineRoute),
         Err(ServeError::Cancelled) => Err(LineRefused::Cancelled),
@@ -980,8 +992,59 @@ pub struct ServeIn<'a> {
 /// How a request ended, for the route layer.
 pub enum Served {
     /// Admission refused it, or the plane refused it: the client items are already rendered.
-    Refused(Vec<ToClient>),
+    Refused(Refused),
     Ran(Ran),
+}
+
+/// The decision and the very items rendered for that decision remain together.
+pub struct Refused {
+    pub decision: ClientRefusal,
+    pub items: Vec<ToClient>,
+}
+
+pub struct NativeServed {
+    served: Served,
+    retirement: NativeTaskRetirement,
+}
+impl NativeServed {
+    pub fn into_parts(self) -> (Served, NativeTaskRetirement) {
+        (self.served, self.retirement)
+    }
+}
+
+/// Minted only by the original native serving call after its blocking Task has joined.
+pub struct NativeTaskRetirement {
+    pending: Arc<crate::auth::native_data::NativeDataPending>,
+    decision: Option<ClientRefusal>,
+    refusal: Option<crate::auth::native_data::DataRefusalCustody>,
+}
+impl NativeTaskRetirement {
+    pub(crate) fn unit(&self) -> busbar_contract::UnitKey {
+        busbar_contract::UnitKey::new(self.pending.context().unit())
+    }
+    pub(crate) fn permits_refusal(
+        &self,
+        binding: &Arc<crate::inbound::native::RequestBinding>,
+    ) -> bool {
+        self.refusal
+            .as_ref()
+            .is_some_and(|custody| custody.matches(binding))
+            && Arc::ptr_eq(self.pending.binding(), binding)
+    }
+    pub fn refuse(
+        mut self,
+    ) -> Result<crate::inbound::native::PhysicalRefusal, crate::auth::native_data::DataRefused>
+    {
+        let decision = self
+            .decision
+            .as_ref()
+            .ok_or(crate::auth::native_data::DataRefused::Unit)?;
+        let (physical, custody) = self.pending.take_refusal(decision)?;
+        self.refusal = Some(custody);
+        physical
+            .refuse_data(self)
+            .map_err(|_| crate::auth::native_data::DataRefused::Cancelled)
+    }
 }
 
 /// Why a request got no answer.
@@ -1110,7 +1173,10 @@ fn serve_blocking(
         ServingAdmission::Credentials(Err(refusal)) => {
             let lowest = route.effective & route.effective.wrapping_neg();
             let req = build(lowest, &[], &[]);
-            return Ok(Served::Refused(refuse(port, &req, refusal, &effects)));
+            return Ok(Served::Refused(Refused {
+                items: refuse(port, &req, refusal, &effects),
+                decision: refusal.clone(),
+            }));
         }
     };
     if route.catalog {
@@ -1238,7 +1304,10 @@ fn drive_blocking(
         Ok(ran) => Ok(Served::Ran(ran)),
         Err(SessionError::CoreRefused(code)) => {
             let refusal = refusals.for_core(req.route, code);
-            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+            Ok(Served::Refused(Refused {
+                items: refuse(port, req, &refusal, effects),
+                decision: refusal,
+            }))
         }
         Err(SessionError::SelectedRefused(error)) => {
             use super::port_egress::SelectedFailure;
@@ -1269,14 +1338,23 @@ fn drive_blocking(
                     },
                 ),
             };
-            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+            Ok(Served::Refused(Refused {
+                items: refuse(port, req, &refusal, effects),
+                decision: refusal,
+            }))
         }
         Err(SessionError::HookRefused(refusal) | SessionError::AdmissionRefused(refusal)) => {
-            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+            Ok(Served::Refused(Refused {
+                items: refuse(port, req, &refusal, effects),
+                decision: refusal,
+            }))
         }
         Err(SessionError::Port(error)) => {
             let refusal = refusal_of(route, &error, refusals);
-            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+            Ok(Served::Refused(Refused {
+                items: refuse(port, req, &refusal, effects),
+                decision: refusal,
+            }))
         }
         Err(error) => {
             charge(port, &error);
