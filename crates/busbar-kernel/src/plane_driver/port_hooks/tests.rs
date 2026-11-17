@@ -395,3 +395,80 @@ async fn sync_native_calls_do_not_block_each_others_deadlines() {
     assert!(fast_result.is_ok());
     assert_eq!(spy.seen.lock().unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fallbacks_reapply_their_own_grants_and_report_their_configured_names() {
+    struct Unavailable;
+    impl HookPort for Unavailable {
+        fn points(&self) -> u32 {
+            1 << abi::POINT_ROUTE
+        }
+        fn facts(&self) -> u64 {
+            abi::FB_WANTS_PROMPT | abi::FB_WANTS_IDENTITY
+        }
+        fn on<'a>(&'a self, _: CallCx, _: u32, view: &'a HookView<'a>) -> HookCall<'a> {
+            assert!(view.conversation.is_none());
+            assert!(view.identity.is_none());
+            HookCall::Done(Err(busbar_ports::PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "unavailable".into(),
+                error: None,
+            }))
+        }
+    }
+    let mut fixture = Fixture::new();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    fixture.selected.reads = {
+        let reads = reads.clone();
+        Arc::new(move |names, _, _, identity| {
+            reads
+                .lock()
+                .unwrap()
+                .extend(names.iter().map(|name| (name.to_string(), identity)));
+            Box::pin(async { Ok(()) })
+        })
+    };
+    let spy = Arc::new(Spy {
+        facts: abi::FB_WANTS_PROMPT | abi::FB_WANTS_IDENTITY,
+        seen: Mutex::default(),
+    });
+    let mut fallback = configured(spy.clone(), PromptAccess::Ro, UserAccess::Ro);
+    Arc::get_mut(&mut fallback).unwrap().name = Arc::from("fallback-configured-name");
+    let mut primary = configured(Arc::new(Unavailable), PromptAccess::No, UserAccess::No);
+    Arc::get_mut(&mut primary).unwrap().fallbacks.push(fallback);
+    let projection = projection();
+    let selection = fixture.selection();
+    let input = call::Input {
+        projection: &projection,
+        selected: &fixture.selected,
+        selection: &selection,
+        identity: b"verified-identity",
+        candidates: &[],
+        quantities: &[],
+        stage: &[],
+        context: &fixture.context,
+    };
+    let mut ran = Vec::new();
+    let result = call::chain(&primary, abi::POINT_ROUTE, &input, &mut ran).await;
+    let Ok((called, answer)) = result else {
+        panic!("the bounded fallback should answer")
+    };
+    assert_eq!(&*called.name, "fallback-configured-name");
+    assert_eq!(answer.verb, abi::VERB_ABSTAIN);
+    assert_eq!(
+        *reads.lock().unwrap(),
+        vec![("fallback-configured-name".into(), true)]
+    );
+    assert_eq!(
+        ran.iter()
+            .map(|record| (record.hook.as_str(), record.failed))
+            .collect::<Vec<_>>(),
+        vec![
+            ("configured-name", true),
+            ("fallback-configured-name", false)
+        ]
+    );
+    let seen = spy.seen.lock().unwrap();
+    assert!(seen[0].prompt && seen[0].identity && seen[0].end_user);
+    assert!(!seen[0].body);
+}
