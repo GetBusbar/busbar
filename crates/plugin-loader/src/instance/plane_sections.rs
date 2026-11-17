@@ -10,6 +10,10 @@
 
 use std::collections::BTreeMap;
 
+use busbar_plugin_abi::plane::{tag as t, RouteRec, ROUTE_LINE};
+use busbar_plugin_abi::records::Rec;
+use busbar_plugin_abi::types::KindCode;
+
 use super::{Described, Images};
 
 /// The admitted planes' instance names, each with the identity that answers to it.
@@ -22,8 +26,7 @@ impl PlaneSections {
     /// The identity of the plane whose instance name is the top-level key `key`.
     #[must_use]
     pub fn identity_of_section(&self, key: &str) -> Option<&str> {
-        let _ = key;
-        None
+        self.by_name.get(key).map(String::as_str)
     }
 
     /// Every plane instance name, in order: what rule R's refusal lists.
@@ -89,14 +92,41 @@ pub fn plane_sections<'a>(
     planes: impl IntoIterator<Item = (&'a str, &'a str)>,
     is_core_key: impl Fn(&str) -> bool,
 ) -> Result<PlaneSections, InstanceNameRefusal> {
-    let _ = (planes.into_iter().count(), is_core_key(""));
-    Ok(PlaneSections::default())
+    let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+    for (identity, alias) in planes {
+        let (field, word) = if alias.is_empty() {
+            ("identity", identity)
+        } else {
+            ("alias", alias)
+        };
+        if is_core_key(word) {
+            return Err(InstanceNameRefusal::CoreKey {
+                field,
+                word: word.to_owned(),
+                identity: identity.to_owned(),
+            });
+        }
+        if let Some(first) = by_name.get(word) {
+            return Err(InstanceNameRefusal::Shared {
+                name: word.to_owned(),
+                first: first.clone(),
+                second: identity.to_owned(),
+            });
+        }
+        by_name.insert(word.to_owned(), identity.to_owned());
+    }
+    Ok(PlaneSections { by_name })
 }
 
 /// Whether an admitted image is a plane declaring a ROUTE_LINE route (r34 §12.23).
 pub(crate) fn declares_line_route(described: &Described) -> bool {
-    let _ = described;
-    false
+    described.kind == KindCode::Plane
+        && described
+            .items
+            .iter()
+            .filter(|(tag, _)| *tag == t::D_ROUTE)
+            .filter_map(|(tag, body)| Rec { tag: *tag, body }.pod_tail::<RouteRec>().ok())
+            .any(|(route, _)| route.flags & ROUTE_LINE != 0)
 }
 
 impl Images {
@@ -138,8 +168,20 @@ impl core::fmt::Display for StdioRefusal {
 pub fn stdio_instance<'a>(
     instances: impl IntoIterator<Item = (&'a str, bool)>,
 ) -> Result<&'a str, StdioRefusal> {
-    let _ = instances.into_iter().count();
-    Err(StdioRefusal::None)
+    let mut lines: Vec<&'a str> = instances
+        .into_iter()
+        .filter_map(|(name, serves)| serves.then_some(name))
+        .collect();
+    match lines.len() {
+        0 => Err(StdioRefusal::None),
+        1 => Ok(lines.remove(0)),
+        _ => {
+            lines.sort_unstable();
+            Err(StdioRefusal::Several(
+                lines.into_iter().map(str::to_owned).collect(),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
