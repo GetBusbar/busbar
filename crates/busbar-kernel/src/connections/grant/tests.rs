@@ -118,3 +118,41 @@ fn grant_ciphertext_relocation_and_metadata_tampering_are_refused() {
         .decode(&key, &busbar_contract::Secret::new(changed))
         .is_err());
 }
+
+#[test]
+fn recovery_key_decoder_rejects_truncation_trailing_bytes_and_invalid_digest_width() {
+    let key = key();
+    assert_eq!(
+        GrantKey::decode(key.encoded()).unwrap().encoded(),
+        key.encoded()
+    );
+    for length in 0..key.encoded().len() {
+        assert!(GrantKey::decode(&key.encoded()[..length]).is_err());
+    }
+    let mut trailing = key.encoded().to_vec();
+    trailing.push(0);
+    assert!(GrantKey::decode(&trailing).is_err());
+    let mut wrong = key.encoded().to_vec();
+    let digest_len_offset = 1 + 4 + "plane".len() + 4 + "instance".len();
+    wrong[digest_len_offset..digest_len_offset + 4].copy_from_slice(&31u32.to_be_bytes());
+    assert!(GrantKey::decode(&wrong).is_err());
+}
+
+#[test]
+fn neither_epoch_nor_revision_wraps_into_reusable_authority() {
+    let records = records();
+    let key = key();
+    let install = records.install(&key, None, b"grant").unwrap();
+    let mut snapshot = records.decode(&key, install.successor()).unwrap();
+    snapshot.version.revision = u64::MAX;
+    assert!(matches!(
+        records.start_mint(&snapshot, [3; 16]),
+        Err(GrantError::Overflow)
+    ));
+    snapshot.version.revision = 1;
+    snapshot.version.epoch = u64::MAX;
+    assert!(matches!(
+        records.revoke(&key, Some(&snapshot)),
+        Err(GrantError::Overflow)
+    ));
+}

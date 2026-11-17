@@ -158,11 +158,18 @@ async fn distinct_replicas_and_scopes_cannot_lend_the_same_rotating_grant() {
     let epoch = install(&a).await;
     let (first, second) = tokio::join!(a.acquire_mint(&epoch), b.acquire_mint(&epoch));
     assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    let winner = first.or(second).unwrap();
+    let port = Arc::new(Rotating::new(true, true));
+    let task_port = port.clone();
+    let mint = tokio::spawn(async move { winner.mint(task_port.as_ref(), cx(), request()).await });
+    port.entered.notified().await;
     assert!(a.load(&key()).await.is_err());
     assert!(b.load(&key()).await.is_err());
-    drop((first, second));
-    // Neither dropped ownership nor another scope permits timeout takeover.
+    // A second selected scope/replica cannot reach even a grace-period issuer.
     assert!(b.acquire_mint(&epoch).await.is_err());
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    port.release.notify_one();
+    assert!(mint.await.unwrap().is_ok());
 }
 
 #[tokio::test]
@@ -263,4 +270,49 @@ async fn explicit_revoke_of_absence_blocks_the_actual_pending_first_callback() {
         .await
         .is_err());
     assert!(a.load(&key()).await.is_err());
+}
+
+#[tokio::test]
+async fn restart_after_lost_remote_rotation_never_replays_mint_or_reuses_old_grant() {
+    use crate::persistence::caller_intents::fixture::Backend as NativeBackend;
+    let backend = Arc::new(NativeBackend::new());
+    let first = CallerGrantOwner::new(
+        backend.attach(1).await,
+        &AtRestKeys::new(&[7; 32], None),
+        Arc::new(WriterRetirements::default()),
+    )
+    .unwrap();
+    while !first.recover_page().await.unwrap() {}
+    let epoch = install(&first).await;
+    let permit = first.acquire_mint(&epoch).await.unwrap();
+    let port = Arc::new(Rotating::new(true, true));
+    let task_port = port.clone();
+    let task = tokio::spawn(async move { permit.mint(task_port.as_ref(), cx(), request()).await });
+    port.entered.notified().await;
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    drop(first);
+    let restarted = CallerGrantOwner::new(
+        backend.attach(2).await,
+        &AtRestKeys::new(&[7; 32], None),
+        Arc::new(WriterRetirements::default()),
+    )
+    .unwrap();
+    while !restarted.recover_page().await.unwrap() {}
+    assert!(restarted.load(&key()).await.is_err());
+    assert!(restarted.acquire_mint(&epoch).await.is_err());
+    assert!(restarted
+        .admit_delivery(&epoch, DeliveryIdentity::new())
+        .await
+        .is_err());
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+    let fresh = restarted
+        .begin_connection(key())
+        .await
+        .unwrap()
+        .complete(SecureVec::from(b"fresh-CONNECT".as_slice()))
+        .await
+        .unwrap();
+    assert!(fresh.epoch() > epoch.epoch());
+    assert_eq!(port.calls.load(Ordering::SeqCst), 1);
 }
