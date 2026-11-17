@@ -91,6 +91,20 @@ pub(crate) async fn admit_format(
     backend: busbar_contract::persistence::axis::OpenedBackend,
     initialize_empty: bool,
 ) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    admit_format_with(
+        backend,
+        initialize_empty,
+        busbar_migrate::records::RECORD_STEPS,
+    )
+    .await
+}
+
+/// [`admit_format`] converting older record formats with `steps` (#319 r4 §5).
+pub(crate) async fn admit_format_with(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+    initialize_empty: bool,
+    steps: &'static [busbar_migrate::records::RecordStep],
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
     use busbar_kernel::persistence::{
         facade::Limits,
         startup::{Progress, Startup},
@@ -109,7 +123,10 @@ pub(crate) async fn admit_format(
         // dataset. An existing legacy or incomplete dataset is never relabelled.
         initialize_empty,
     )
-    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    .map_err(|error| format!("Store format admission refused: {error:?}"))?
+    // An older record format this release converts is opened and converted here, before any
+    // ordinary admission, overlay read, hydration or listener (#319 r4 §5).
+    .with_format_chain(Arc::new(super::migrate_records::Chain(steps)));
     let mut waits = 0u32;
     loop {
         let advanced = match startup.advance().await {
@@ -141,6 +158,24 @@ pub(crate) async fn admit_format(
             Progress::Draining | Progress::Retired => {
                 return Err("Store admission entered an invalid boot state".into());
             }
+            Progress::Migrate => {
+                let owner = startup
+                    .migration()
+                    .ok_or("Store admission lost its record-format migration owner")?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "converting this store's records from format {} (the whole fleet must be stopped)",
+                    owner.format()
+                );
+                let rows = super::migrate_records::evolve(owner, steps).await?;
+                tracing::info!(
+                    target: "busbar::migrate",
+                    "the store's records were converted ({rows} rows); admitting"
+                );
+                startup
+                    .migration_finished()
+                    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+            }
         }
     }
 }
@@ -152,7 +187,8 @@ const _: () = assert!(
             + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
 );
 
-/// The first-start wait line (FIRST-START-TAKEOVER §2.2): on the first wait and every 10 s after.
+/// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
+/// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
     let owner = busbar_kernel::persistence::startup::writer_hex(&waiting.owner);
     let since = waiting.since_change.as_secs();
@@ -160,6 +196,18 @@ fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
         .window
         .saturating_sub(waiting.since_change)
         .as_secs();
+    if waiting.migrating {
+        tracing::warn!(
+            diag = %busbar_kernel::diagnostics::FORMAT_MIGRATION_WAITING.banner(),
+            owner = %owner,
+            since_change_s = since,
+            claim_in_s = left,
+            "waiting on the record-format conversion of this dataset by writer {owner}: last change \
+             {since} s ago, claimed in {left} s if it stays unchanged. A record-format upgrade \
+             needs the whole fleet stopped (docs/migration-1.6.md)."
+        );
+        return;
+    }
     tracing::warn!(
         diag = %busbar_kernel::diagnostics::FIRST_START_WAITING.banner(),
         owner = %owner,
@@ -183,8 +231,21 @@ static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::Once
 pub(crate) async fn bind_plugin_floor(
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
-    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
-    let host = super::durability::host_identity();
+    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core.clone())?;
+    // The floor is scoped to the deployment, not the host: a rollout's fresh pod name must find
+    // the floor its predecessors raised, and rows must not pile up per pod name (UPG-7).
+    let host = busbar_kernel::persistence::boot_identity::BootIdentity::new(core)?
+        .keep_deployment_id()
+        .await?;
+    // Migrate-on-boot (PRD-4/ARC-5): floors an earlier 1.6 build kept under host names move into
+    // the deployment slot, folding several hosts into the highest floor.
+    let carried = owner.adopt_host_floors(&host).await?;
+    if carried > 0 {
+        tracing::info!(
+            carried,
+            "carried host-keyed plugin floors into the deployment floor"
+        );
+    }
     let release_keys = owner.release_keys_floor(&host).await?;
     PLUGIN_FLOOR
         .set(PluginFloorAuthority {
@@ -504,7 +565,7 @@ fn listener_candidates_from(
             .transpose()?
             .unwrap_or_default(),
     );
-    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+    for door in linked.plane_doors {
         let candidate = Candidate::linked(*door)?;
         if !candidates
             .iter()
@@ -1292,7 +1353,7 @@ fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
 /// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
 /// outbound styles, and the start registry the dropped-in images and auth rows are read from.
 pub(crate) struct Registered<'a> {
-    pub(crate) planes: Vec<(String, Vec<String>, Option<String>)>,
+    pub(crate) planes: Vec<(String, Option<String>)>,
     pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
@@ -1308,7 +1369,7 @@ fn registered() -> Option<Registered<'static>> {
                 Origin::Linked(_) => None,
                 Origin::Dropped { file, .. } => Some(file.clone()),
             };
-            (c.name.clone(), c.verbs.clone(), file)
+            (c.name.clone(), file)
         })
         .collect();
     let linked_styles = crate::LINKED
@@ -1378,13 +1439,36 @@ pub(crate) fn classify_against(
             }
         };
     let mut known = std::collections::BTreeSet::new();
-    for (name, sections, file) in &registered.planes {
+    for (name, file) in &registered.planes {
         known.insert(name.clone());
         let (image, standing) = match file {
             None => ("linked".to_owned(), Standing::Counts),
             Some(file) => judged("plane", name, file),
         };
-        push(ItemKind::Section, sections.clone(), name, &image, &standing);
+        // The instance name this plane was bound under at its admission: the running registry's
+        // recorded manifest alias, else its identity (r34 section 12.23 rule 1). It is never
+        // guessed: a plane the running registry does not record is judged NotAdmitted, naming the
+        // missing field.
+        let recorded = registered.start.and_then(|start| {
+            start
+                .loadable()
+                .iter()
+                .find(|row| row.manifest.kind == "plane" && row.is_module(name))
+                .map(|row| match row.manifest.alias.as_str() {
+                    "" => name.clone(),
+                    alias => alias.to_owned(),
+                })
+        });
+        let (instance, standing) = match recorded {
+            Some(instance) => (instance, standing),
+            None => (
+                name.clone(),
+                Standing::NotAdmitted(format!(
+                    "the running registry records no instance name (manifest `alias`) for plane `{name}`"
+                )),
+            ),
+        };
+        push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
     for (module, styles) in &registered.linked_styles {
         push(
@@ -1426,11 +1510,14 @@ pub(crate) fn classify_against(
                 &image,
                 &Standing::Unregistered,
             );
-        } else if let Ok(Some(candidate)) = row.candidate() {
-            let sections = candidate.verbs;
+        } else if let Ok(Some(_)) = row.candidate() {
+            let instance = match row.manifest.alias.as_str() {
+                "" => row.manifest.name.clone(),
+                alias => alias.to_owned(),
+            };
             push(
                 ItemKind::Section,
-                sections,
+                vec![instance],
                 &row.manifest.name,
                 &image,
                 &Standing::Unregistered,
@@ -2015,8 +2102,16 @@ impl BookPreparation {
             node,
             deployment_id,
         );
-        // ADMIN-API-1.6 17: the node announces itself in the audit feed.
-        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(&[]));
+        // ADMIN-API-1.6 17: the node announces itself in the audit feed, naming the explicit open
+        // posture (`auth: { chain: [] }`) it booted in (#358).
+        let posture: &[&str] = if app.auth.is_open() {
+            &["open_relay"]
+        } else {
+            &[]
+        };
+        busbar_kernel::audit::events::engine_event(busbar_kernel::audit::events::node_boot(
+            posture,
+        ));
         // ADMIN-API-1.6 6.1: boot publishes through the same compare-and-set as every later
         // publication, so a restart never repeats a generation the previous process served.
         if let Some(live) = busbar_kernel::persistence::boot_identity::live() {

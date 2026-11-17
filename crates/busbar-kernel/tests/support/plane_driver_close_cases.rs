@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::hook_cases::Nobody;
 use super::*;
 
 use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
@@ -39,156 +38,6 @@ async fn drive_as<F: FarEnd>(
         Ended::Settled { end, .. } => end.outcome(),
         Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
     }
-}
-
-struct Stuck {
-    stuck: AtomicU32,
-    panics: bool,
-}
-
-#[async_trait::async_trait]
-impl busbar_contract::hooks::RoutingPolicy for Stuck {
-    async fn decide(
-        &self,
-        _req: &busbar_contract::hooks::RoutingRequest<'_>,
-        _candidates: &[busbar_contract::hooks::Candidate<'_>],
-        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
-        _budget: Duration,
-    ) -> busbar_contract::hooks::PolicyResult {
-        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
-    }
-
-    fn name(&self) -> &'static str {
-        "stuck-rewrite"
-    }
-
-    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
-    // MSRV floor is below 1.95, so keep the older name.
-    #[allow(deprecated)]
-    async fn transform(
-        &self,
-        _req: &busbar_contract::hooks::RoutingRequest<'_>,
-        _budget: Duration,
-    ) -> busbar_contract::hooks::TransformOutcome {
-        assert!(!self.panics, "the rewrite hook panicked");
-        let stuck = self
-            .stuck
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
-        if stuck {
-            std::future::pending::<()>().await;
-        }
-        busbar_contract::hooks::TransformOutcome::Abstain
-    }
-}
-
-struct Rewrites(Arc<Stuck>);
-
-impl busbar_kernel::plane_driver::HookBinder for Rewrites {
-    fn bind(
-        &self,
-        _bind: &busbar_kernel::plane_driver::Bind<'_>,
-    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
-        None
-    }
-
-    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
-        busbar_kernel::plane_driver::HookOrder::Gated
-    }
-
-    fn bind_gated(
-        &self,
-        _container: &str,
-        _principal: Option<&str>,
-    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
-        Some(busbar_kernel::plane_driver::GatedHooks {
-            request_id: 7,
-            gates: Vec::new(),
-            rewrites: vec![(
-                Duration::from_secs(5),
-                Arc::clone(&self.0) as Arc<dyn busbar_contract::hooks::RoutingPolicy>,
-            )],
-            key: None,
-            scan: None,
-            reads: Arc::new(|_: &[&str], _: Option<&str>, _: &str, _: bool| {
-                Box::pin(async { Ok(()) })
-            }),
-        })
-    }
-}
-
-fn screened(stuck: u32, panics: bool) -> (Arc<Double>, PlaneDriver) {
-    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-    let binder = Rewrites(Arc::new(Stuck {
-        stuck: AtomicU32::new(stuck),
-        panics,
-    }));
-    (r.plane, r.driver.with_hooks(Arc::new(binder)))
-}
-
-fn routed() -> (Arc<Double>, PlaneDriver) {
-    let stuck: Arc<dyn busbar_contract::hooks::RoutingPolicy> = Arc::new(Stuck {
-        stuck: AtomicU32::new(1),
-        panics: false,
-    });
-    let hooks = busbar_kernel::plane_driver::BoundHooks {
-        rewrites: vec![(Duration::from_secs(5), stuck)],
-        gates: Vec::new(),
-        pool_rewrites: Default::default(),
-        pool_gates: Default::default(),
-        pool_policies: Default::default(),
-        taps: busbar_kernel::plane_driver::StageTaps::default(),
-        requested: busbar_kernel::hooks::RequestedSignals::default(),
-        next_request_id: Arc::new(|| 1),
-        caller: Arc::new(Nobody),
-        dialects: vec!["test-dialect".to_string()],
-    };
-    let r = rig_with_hooks(
-        Way::Double,
-        BufferCaps::default(),
-        cases::Book::default(),
-        Some(hooks),
-    );
-    (r.plane, r.driver)
-}
-
-#[tokio::test]
-async fn a_unit_whose_caller_goes_away_at_the_gated_screen_is_closed_once() {
-    let (plane, driver) = screened(1, false);
-    let (steps, far, caller) = (
-        common::TestUnits::passing(),
-        cases::Far::new(&["ok"], cases::CHUNKS),
-        cases::Caller::default(),
-    );
-    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-    let gone = tokio::time::timeout(Duration::from_millis(30), drive_as(&units, 11)).await;
-    assert!(gone.is_err(), "the unit was still at its screen");
-    assert!(
-        !steps.called().contains(&StepName::Admit),
-        "it went away before the door"
-    );
-    drop(units);
-    assert_eq!(
-        closes(&plane, 11),
-        0,
-        "nothing crosses inside the drop: the close is owed"
-    );
-    assert_eq!(driver.owed_closes(), 1);
-    assert_eq!(caller.status(), None, "the caller was answered nothing");
-    assert_eq!(caller.text(), "");
-
-    let (steps, far, next) = (
-        common::TestUnits::passing(),
-        cases::Far::new(&["ok"], cases::CHUNKS),
-        cases::Caller::default(),
-    );
-    let units = driver.unit(&steps, &far, &next, cases::arrival("/v1", b"hi"), 0);
-    let outcome = drive_as(&units, 12).await;
-    assert!(matches!(outcome, UnitOutcome::Completed), "{outcome:?}");
-    assert_eq!(closes(&plane, 11), 1, "the gone unit is closed, once");
-    assert_eq!(driver.owed_closes(), 0);
-    assert_eq!(closes(&plane, 12), 1, "the next unit closed on its own");
-    assert_eq!(next.text(), "hello far end");
 }
 
 #[tokio::test]
@@ -263,14 +112,6 @@ enum Exit {
     RefusedAtAuthenticate,
     /// The door refused it (a spent budget).
     RefusedAtTheDoor,
-    /// The gate-first screen's hook vetoed it.
-    VetoedAtTheScreen,
-    /// Its caller went away during the gate-first screen.
-    GoneAtTheScreen,
-    /// A hook panicked during the gate-first screen, unwinding the unit.
-    PanickedAtTheScreen,
-    /// Its caller went away during the routed request stage, admitted, before its pump existed.
-    GoneAtTheRoutedHookStage,
     /// The plane faulted before any byte of its answer.
     FailedBeforeTheAnswer,
     /// A record write failed after its answer began (the store out).
@@ -303,16 +144,12 @@ enum Exit {
     SessionEnded,
 }
 
-const EXITS: [Exit; 23] = [
+const EXITS: [Exit; 19] = [
     Exit::Completed,
     Exit::AnsweredLocally,
     Exit::RefusedAtArrive,
     Exit::RefusedAtAuthenticate,
     Exit::RefusedAtTheDoor,
-    Exit::VetoedAtTheScreen,
-    Exit::GoneAtTheScreen,
-    Exit::PanickedAtTheScreen,
-    Exit::GoneAtTheRoutedHookStage,
     Exit::FailedBeforeTheAnswer,
     Exit::FailedAfterTheAnswerBegan,
     Exit::FailedOverThenFailedAfterTheAnswerBegan,
@@ -335,71 +172,6 @@ async fn closed_by(exit: Exit) -> u32 {
     let passing = common::TestUnits::passing;
     let unit_on = |far: &'static str| (cases::Far::new(&[far], cases::CHUNKS), "/call");
     match exit {
-        Exit::GoneAtTheScreen | Exit::PanickedAtTheScreen | Exit::GoneAtTheRoutedHookStage => {
-            let panics = matches!(exit, Exit::PanickedAtTheScreen);
-            let (plane, driver) = if matches!(exit, Exit::GoneAtTheRoutedHookStage) {
-                routed()
-            } else {
-                screened(1, panics)
-            };
-            let (steps, far, caller) = (
-                passing(),
-                cases::Far::new(&["ok"], &[]),
-                cases::Caller::default(),
-            );
-
-            let arrival = cases::arrival("/call", b"user:hello");
-            let units = driver.unit(&steps, &far, &caller, arrival, 0);
-            {
-                let mut unit = Box::pin(drive_as(&units, KEY));
-                let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut cx = Context::from_waker(Waker::noop());
-                    unit.as_mut().poll(&mut cx).is_pending()
-                }));
-                match polled {
-                    Ok(pending) => assert!(pending && !panics, "{exit:?}: waits at its hook"),
-                    Err(_) => assert!(panics, "{exit:?}: only the panicking hook unwinds"),
-                }
-            }
-            drop(units);
-            assert_eq!(
-                closes(&plane, KEY),
-                0,
-                "{exit:?}: nothing crosses inside the drop"
-            );
-            assert_eq!(
-                caller.text(),
-                "",
-                "{exit:?}: the caller was written nothing"
-            );
-            driver.sweep();
-            closes(&plane, KEY)
-        }
-        Exit::VetoedAtTheScreen => {
-            let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
-            let binder = GateFirst {
-                gate: Arc::new(Refuses::default()),
-                asked: Mutex::new(Vec::new()),
-            };
-            let driver = r.driver.with_hooks(Arc::new(binder));
-            let (steps, far, caller) = (
-                passing(),
-                cases::Far::new(&["ok"], &[]),
-                cases::Caller::default(),
-            );
-            let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
-            let outcome = drive_as(&units, KEY).await;
-            assert!(
-                matches!(
-                    outcome,
-                    UnitOutcome::Refused(StepName::Approve, ReasonCode::HookVeto)
-                ),
-                "{exit:?}: {outcome:?}"
-            );
-            drop(units);
-            driver.sweep();
-            closes(&r.plane, KEY)
-        }
         Exit::Drained => {
             let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
             let (plane, driver) = (r.plane, Arc::new(r.driver));

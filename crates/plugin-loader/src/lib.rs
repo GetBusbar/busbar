@@ -164,23 +164,6 @@ pub mod highwater;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod hook_door;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 #[deny(unsafe_code)]
 mod host;
 pub mod migration_secrets;
@@ -227,7 +210,8 @@ mod artifact_verifier_parity;
 #[cfg(feature = "pack")]
 #[deny(unsafe_code)]
 pub mod integer_token;
-#[cfg(feature = "pack")]
+// Ungated (no `pack` dependency: it reads the stamp and header only): the root's admission and inspect
+// judge whether an upload is a native image with `is_native`. `jsonschema` stays behind `pack`.
 #[deny(unsafe_code)]
 pub mod pack_native;
 #[deny(unsafe_code)]
@@ -481,8 +465,8 @@ mod transport_door_conformance_tests;
 mod transport_door_tests;
 
 #[cfg(test)]
-#[path = "tests/hook_door_conformance_tests.rs"]
-mod hook_door_conformance_tests;
+#[path = "../tests/fixtures/hook_door_plugin.rs"]
+pub(crate) mod hook_door_plugin;
 
 #[cfg(test)]
 #[path = "tests/conformance_auth_form_tests.rs"]

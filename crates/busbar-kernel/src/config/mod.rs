@@ -36,6 +36,7 @@ pub mod parse;
 pub mod patch;
 
 pub mod prepass;
+pub mod recognizer;
 pub mod secret;
 
 pub mod settings_public;
@@ -51,7 +52,7 @@ pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-use crate::config::plane_sections::{DeclaredSections, EndpointSection};
+use crate::config::plane_sections::DeclaredSections;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
@@ -378,7 +379,7 @@ pub struct RootCfg {
     /// plane's own module downcasts its entry back to its concrete resource; read it via
     /// [`RootCfg::endpoint_resource`] keyed by the plane's config section — never a per-plane field.
     ///
-    /// A plane section the kernel carries RAW ([`DeployCfg::plane_raw`] — a plane with no typed
+    /// A plane section the kernel carries RAW ([`DeployCfg::instance_sections`] — a plane with no typed
     /// grammar of its own, such as one that states itself over the C ABI) is its plane's resource too,
     /// as `(section, value)`: its plane's `build` reads it through the same `BuildCtx::endpoint_slot`.
     pub endpoint_resources:
@@ -529,6 +530,19 @@ impl RootCfg {
         section: &str,
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         self.endpoint_resources.get(section).cloned()
+    }
+
+    /// Each recognized plane section by instance name, as the recognizer carried it (raw, with the
+    /// core-owned pricing words lifted off).
+    pub fn instance_sections(
+        &self,
+    ) -> std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value> {
+        self.endpoint_resources
+            .values()
+            .filter_map(|r| r.downcast_ref::<(&'static str, busbar_contract::yaml::Value)>())
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (*k, v.clone()))
+            .collect()
     }
 }
 
@@ -686,95 +700,6 @@ pub use busbar_kernel::config::pools::{
 };
 
 pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_names};
-
-#[allow(clippy::too_many_arguments)]
-fn check_failover_pool(
-    errors: &mut Vec<String>,
-    section: &str,
-    pool: &str,
-    def: &pools::CandidatePoolCfg,
-    on_this_plane: impl Fn(&str) -> bool,
-    elsewhere: impl Fn(&str) -> Option<&'static str>,
-    this_registry: &str,
-) {
-    if def.members.len() < 2 {
-        errors.push(
-            coded::config_plane_pool_invalid(format!(
-            "{section}.{pool}: a failover pool needs at least TWO members (it has {}). A pool with \
-             one member has nowhere to fail over to, so it changes nothing; remove it or add the \
-             second registration.",
-            def.members.len()
-        ))
-            .into(),
-        );
-    }
-
-    if def.members.len() > crate::store::MAX_POOL_MEMBERS {
-        errors.push(
-            coded::config_plane_pool_invalid(format!(
-            "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
-             (the breaker's per-member lane table is fixed at process start). Split the pool or \
-             drop members.",
-            def.members.len(),
-            crate::store::MAX_POOL_MEMBERS
-        ))
-            .into(),
-        );
-    }
-
-    if on_this_plane(pool) {
-        errors.push(
-            coded::config_plane_pool_invalid(format!(
-            "{section}.{pool}: `{pool}` is also the id of a `{this_registry}:` registration. A \
-             pool's name shares the breaker keyspace with registration ids on its plane, so it \
-             must not collide with one; rename the pool."
-        ))
-            .into(),
-        );
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    for member in &def.members {
-        if !seen.insert(member.as_str()) {
-            errors.push(
-                coded::config_plane_pool_invalid(format!(
-                "{section}.{pool}: `{member}` is named twice. A repeated member would be tried \
-                 twice against the same upstream, which is a retry wearing a failover's clothes."
-            ))
-                .into(),
-            );
-        }
-        if on_this_plane(member) {
-            continue;
-        }
-        if let Some(other_registry) = elsewhere(member) {
-            errors.push(coded::config_plane_pool_invalid(format!(
-                "{section}.{pool}: `{member}` is an entry in the top-level `{other_registry}:` \
-                 section, not `{this_registry}:`. A failover pool may not straddle two planes — the \
-                 section a pool is written in IS which plane it is on."
-            )).into());
-        } else {
-            errors.push(
-                coded::config_plane_pool_invalid(format!(
-                "{section}.{pool}: `{member}` is not defined in the top-level `{this_registry}:` \
-                 map. Define it there, or remove it from the pool."
-            ))
-                .into(),
-            );
-        }
-    }
-
-    for op in &def.repeatable {
-        if op.trim().is_empty() {
-            errors.push(
-                coded::config_plane_pool_invalid(format!(
-                    "{section}.{pool}: `repeatable:` holds an empty entry. Every entry names ONE \
-                 operation that may be performed twice; an empty one names nothing."
-                ))
-                .into(),
-            );
-        }
-    }
-}
 
 /// The top-level `pools:` map (1.5.3), which carries the two reserved section keys
 /// ([`busbar_contract::section::RESERVED_SECTION_KEYS`]) alongside the
@@ -940,15 +865,6 @@ pub struct DeployCfg {
     /// references.
     #[serde(default)]
     pub providers_file: Option<String>,
-    /// The top-level `mcp:` block (1.6.0): this section's owning plane's own endpoint, as an OAuth 2.1
-    /// resource server. Its PRESENCE is what mounts that plane's endpoint — absent, the deployment
-    /// carries no ingress for it and no `.well-known` document, and nothing joins the route table.
-    /// See that plane's own endpoint config type.
-    ///
-    /// The document reader routes the registered plane's section into this carrier. Its wire
-    /// key comes from the plane registry (`EndpointSection::OWNER`).
-    #[serde(skip)]
-    pub endpoint: EndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -1024,18 +940,12 @@ pub struct DeployCfg {
     /// lifted like its card. The pools plane's fee is `per_request_fee:`.
     #[serde(skip)]
     pub plane_fees: PlaneFeesMap,
-    /// THE GENERIC CARRIER: every REGISTERED plane's declaring section that no other carrier holds
-    /// (a named one, or the generic singular one) and core does not own — lifted by the pre-pass off
-    /// the plane registry, card and fees stripped, the remainder kept RAW for the plane to read.
-    /// [`resolve`] hands each present one to its plane's `build` as its section-keyed resource. A
-    /// section no registered plane declares is still refused as an unknown field.
+    /// THE RECOGNIZER MAP: each admitted plane instance's section by instance name
+    /// ([`recognizer`], WP1-GAP-plane-sections r3), with its core-owned `rate_card` and `fees`
+    /// lifted off into [`DeployCfg::plane_rate_cards`] and [`DeployCfg::plane_fees`]. The
+    /// remainder is carried RAW for the plane to read over the ABI.
     #[serde(skip)]
-    pub plane_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    /// Every declaring section its plane owns the grammar of ([`DeployCfg::declared`]), AS WRITTEN
-    /// (card and fees stripped): the settings that plane's door opens with when it is served through
-    /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
-    #[serde(skip)]
-    pub declared_raw: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    pub instance_sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The durable store as `{ module, settings }`. Required: absent is refused at validation
     /// ([`store_required`], Q-STORE = (B)).
     #[serde(default)]
@@ -1103,9 +1013,8 @@ impl DeployCfg {
     pub fn door_sections(
         &self,
     ) -> std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value> {
-        self.plane_raw
+        self.instance_sections
             .iter()
-            .chain(&self.declared_raw)
             .map(|(k, v)| (*k, v.clone()))
             .filter(|(_, v)| !v.is_null())
             .collect()
@@ -1720,35 +1629,6 @@ pub fn resolve_with_provider_planes(
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
 
-    let mut plane_pools: std::collections::BTreeMap<
-        &'static str,
-        std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
-    > = std::collections::BTreeMap::new();
-    for (&section, written) in &deploy.declared_raw {
-        let Some(stated) = busbar_contract::yaml::ValueExt::get(
-            written,
-            busbar_contract::section::RESERVED_POOLS_KEY,
-        )
-        .filter(|v| !v.is_null()) else {
-            continue;
-        };
-        match busbar_contract::yaml::from_value::<
-            std::collections::BTreeMap<String, pools::CandidatePoolCfg>,
-        >(stated.clone())
-        {
-            Ok(stated) => {
-                plane_pools.insert(section, stated);
-            }
-            Err(e) => errors.push(
-                coded::config_plane_pool_invalid(format!(
-                    "{section}.{}: {e}",
-                    busbar_contract::section::RESERVED_POOLS_KEY
-                ))
-                .into(),
-            ),
-        }
-    }
-
     for pool in pools.values_mut() {
         for m in pool.members.iter_mut() {
             if let Some(&w) = pool.weights.get(&m.model) {
@@ -1765,49 +1645,6 @@ pub fn resolve_with_provider_planes(
         }
     }
 
-    for (&section, pools) in &plane_pools {
-        let at = format!("{section}.{}", busbar_contract::section::RESERVED_POOLS_KEY);
-        let this = deploy.plane_section(section);
-        let on_this_plane = |m: &str| this.is_some_and(|c| c.contains_def(m));
-        let elsewhere = |m: &str| -> Option<&'static str> {
-            deploy
-                .declared
-                .0
-                .iter()
-                .find(|(s, c)| **s != section && c.contains_def(m))
-                .map(|(s, _)| *s)
-        };
-        for (pool, def) in pools {
-            check_failover_pool(
-                &mut errors,
-                &at,
-                pool,
-                def,
-                on_this_plane,
-                elsewhere,
-                section,
-            );
-        }
-
-        let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
-        for (pool, def) in pools {
-            for member in &def.members {
-                if let Some(first) = owner.insert(member.as_str(), pool.as_str()) {
-                    if first != pool.as_str() {
-                        errors.push(
-                            coded::config_plane_pool_invalid(format!(
-                                "{at}: `{member}` is a member of both `{first}` and `{pool}`. A \
-                             registration belongs to at most ONE failover pool — its learned \
-                             health lives in that pool's breaker cells, and two pools would keep \
-                             two contradictory histories for one upstream."
-                            ))
-                            .into(),
-                        );
-                    }
-                }
-            }
-        }
-    }
     for (name, def) in &deploy.hooks {
         if is_reserved_hook_name(name) {
             errors.push(
@@ -1829,35 +1666,44 @@ pub fn resolve_with_provider_planes(
 
     let global_hook_names: Vec<String> = deploy.pools.all_pool_hooks.clone();
 
-    let raw_judged: Vec<(
-        &'static str,
-        Box<dyn crate::config::plane_sections::PlaneCfg>,
-    )> = deploy
-        .plane_raw
-        .iter()
-        .filter(|(_, v)| !v.is_null())
-        .filter_map(|(&section, value)| {
-            let decl = crate::plane_driver::registry::plane_decls()
-                .iter()
-                .find(|d| d.config_section == section)?;
-            let parse = decl.parse_section?;
-            parse(decl, value)
-                .map_err(|e| {
-                    errors.push(
-                        coded::config_section_invalid(format!("`{section}:` is not valid: {e}"))
+    // A-C2: the section-level `hooks` of every recognized plane section is core vocabulary, so
+    // core judges its references against the top-level `hooks:` map. Per-entry `hooks` stay with
+    // the plane's own check over the ABI.
+    let instance_names: Vec<&'static str> = deploy.instance_sections.keys().copied().collect();
+    for (section, written) in &deploy.instance_sections {
+        let Some(listed) = busbar_contract::yaml::ValueExt::get(written, "hooks") else {
+            continue;
+        };
+        match busbar_contract::yaml::from_value::<Vec<String>>(listed.clone()) {
+            Ok(listed) => {
+                if let Err(e) = crate::config::plane_sections::validate_section_hooks(
+                    &format!("`{section}.hooks`"),
+                    &listed,
+                    &instance_names,
+                ) {
+                    errors.push(coded::config_section_invalid(e).into());
+                }
+                for hook in &listed {
+                    if !deploy.hooks.contains_key(hook) {
+                        errors.push(
+                            coded::config_hook_invalid(format!(
+                                "{section}.hooks: names `{hook}`, which is not defined in the \
+                                 top-level `hooks:` map. Define it there, or remove the reference."
+                            ))
                             .into(),
-                    )
-                })
-                .ok()
-                .map(|cfg| (section, cfg))
-        })
-        .collect();
-    let judged = deploy
-        .declared
-        .0
-        .iter()
-        .map(|(s, c)| (*s, c))
-        .chain(raw_judged.iter().map(|(s, c)| (*s, c)));
+                        );
+                    }
+                }
+            }
+            Err(e) => errors.push(
+                coded::config_section_invalid(format!(
+                    "`{section}.hooks:` must be a list of hook names: {e}"
+                ))
+                .into(),
+            ),
+        }
+    }
+    let judged = deploy.declared.0.iter().map(|(s, c)| (*s, c));
     for (section, cfg) in judged {
         let g = cfg.container_gates();
 
@@ -1892,12 +1738,7 @@ pub fn resolve_with_provider_planes(
         }
     }
 
-    let declared = deploy
-        .declared
-        .0
-        .values()
-        .chain(raw_judged.iter().map(|(_, c)| c))
-        .map(AsRef::as_ref);
+    let declared = deploy.declared.0.values().map(AsRef::as_ref);
     for section in declared {
         for (path, provider_name) in section.model_provider_refs() {
             match resolved_providers.get(&provider_name) {
@@ -1993,30 +1834,16 @@ pub fn resolve_with_provider_planes(
         Default::default()
     });
 
-    let endpoint_block = deploy.endpoint.0.as_ref();
-
-    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-    let lower = crate::plane_driver::registry::plane_decl_for_config_section(endpoint_section)
-        .and_then(|d| d.lower_endpoint);
-
-    if endpoint_block.is_some_and(|ep| ep.is_present()) {
-        plane_sections.insert(endpoint_section);
-    }
-    let lowered_endpoint = endpoint_block.zip(lower).and_then(|(ep, lower)| {
-        lower(&**ep)
-            .map_err(|e| errors.push(coded::config_section_invalid(e).into()))
-            .ok()
-    });
-
     let mut endpoint_resources: std::collections::HashMap<
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    > = lowered_endpoint
-        .map(|resource| (endpoint_section, resource))
-        .into_iter()
-        .collect();
+    > = std::collections::HashMap::new();
 
-    for (&section, value) in deploy.plane_raw.iter().filter(|(_, v)| !v.is_null()) {
+    for (&section, value) in deploy
+        .instance_sections
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+    {
         plane_sections.insert(section);
         let raw: std::sync::Arc<dyn std::any::Any + Send + Sync> =
             std::sync::Arc::new((section, value.clone()));
@@ -2071,11 +1898,13 @@ pub fn resolve_with_provider_planes(
                 endpoint_resources,
                 oauth_as,
 
-                plane_defs: raw_judged
-                    .into_iter()
-                    .chain(deploy.declared.0.iter().map(|(s, c)| (*s, c.clone_box())))
+                plane_defs: deploy
+                    .declared
+                    .0
+                    .iter()
+                    .map(|(s, c)| (*s, c.clone_box()))
                     .collect(),
-                plane_pools,
+                plane_pools: Default::default(),
                 tls: deploy.tls.clone(),
                 admin_listen: deploy.admin_listen.clone(),
                 admin_tls: deploy.admin_tls.clone(),
@@ -2276,7 +2105,6 @@ impl std::fmt::Debug for DeployCfg {
             .field("admin_listen", &self.admin_listen)
             .field("config", &self.config)
             .field("providers_file", &self.providers_file)
-            .field("endpoint", &self.endpoint)
             .field("oauth_as", &self.oauth_as)
             .field("admin_tls", &self.admin_tls)
             .field("admin_require_mtls", &self.admin_require_mtls)
@@ -2291,8 +2119,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("per_request_fee", &self.per_request_fee)
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)
-            .field("plane_raw", &self.plane_raw)
-            .field("declared_raw", &self.declared_raw)
+            .field("instance_sections", &self.instance_sections)
             .field("store", &self.store)
             .field("secrets", &self.secrets)
             .field("advanced", &self.advanced)

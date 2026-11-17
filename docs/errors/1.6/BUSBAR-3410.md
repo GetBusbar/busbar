@@ -6,13 +6,15 @@ slug: docs/1.6/errors/BUSBAR-3410
 
 **Area:** Config (3xxx) · **Severity:** actionable · **Since:** 1.6.0
 
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
+
 ## What it means
 
-An MCP server (`tools.<server>`) or A2A agent (`agents.<agent>`) set the retired `allow_private`. The migration removed the key and listed exactly the hosts that registration dials in `advanced.allow_destinations` (never a wildcard or a network, never a cloud-metadata host). A plaintext `http://` registration to a non-loopback host is refused at 1.6.0: the planes admit `http://` to loopback only.
+RETIRED. Nothing emits this code. A registration's `allow_private` is kept: it is core's own boolean at the declared registration and grants private reach to that registration's selected route alone. `advanced.allow_destinations` was removed, and the migration writes no entries to it.
 
 ## How to fix it
 
-Review the listed hosts. Move a non-loopback `http://` registration to `https://`; busbar has no per-destination plaintext switch.
+Nothing to do. Keep `allow_private: true` only on a registration that must reach a private target; cloud metadata stays refused whatever is written.
 
 ---
 

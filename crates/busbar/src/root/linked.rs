@@ -33,8 +33,6 @@ pub struct Linked {
 
     pub stores: &'static std::sync::LazyLock<Vec<LinkedStore>>,
 
-    pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
-
     pub auths: &'static [LinkedAuth],
 
     pub transports: &'static [LinkedTransport],
@@ -310,8 +308,7 @@ pub fn register_stores(linked: &Linked) {
         registry_build: Some(crate::root::boot::registry_rows),
         endpoint_locate: Some(crate::root::boot::locate_provider_destination),
         plugins_fetch: Some(crate::root::boot::plugins_fetch),
-        hook_axis: Some(crate::root::hooks::axis),
-        hook_names: crate::LINKED_HOOK_NAMES,
+        // WP3 hook step: native hooks open only in the serving walk; the kernel opens none.
         // WP3 step 2: the native secret images, through custody; their set is the images prepare's.
         secret_axis: Some(&crate::root::native_secrets::NATIVE),
 
@@ -320,7 +317,7 @@ pub fn register_stores(linked: &Linked) {
         export_axis: Some(&crate::root::exports::EXPORTS),
         admission: Some(&crate::root::admission::ADMISSION),
         durable: Some(&crate::root::admission::DURABLE),
-        hook_answers: Some(crate::root::admission::hook_answers),
+        hook_facts: Some(&crate::root::hooks::NATIVE),
         auth_chain_module: Some(crate::root::admission::auth_chain_module),
         dispatch_latched: Some(crate::root::admission::dispatch_latched),
         auth_axis: Some(crate::root::dispatch::auth_axis),
@@ -667,17 +664,6 @@ fn catalogue_registry(
             ))
         })
         .collect();
-    for door in linked.hook_doors {
-        let stated =
-            crate::root::loader::dispatch::LinkedRow::of(*door).map_err(|e| e.to_string())?;
-        let statement = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
-            .map_err(|e| format!("invalid linked hook Statement: {e:?}"))?;
-        rows.push(LinkedPlugin::door_of_kind(
-            busbar_contract::abi::mechanism::kind::HOOK,
-            &statement.name,
-            *door,
-        ));
-    }
     scanned
         .cloned()
         .unwrap_or_else(PluginRegistry::empty)

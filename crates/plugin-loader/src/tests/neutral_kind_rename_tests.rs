@@ -36,10 +36,7 @@ macro_rules! renamed {
 }
 renamed!(store, crate::neutral_store::door);
 renamed!(auth, crate::neutral_auth::door);
-renamed!(
-    hook,
-    crate::hook_door_conformance_tests::hook_door_plugin::conforming::door
-);
+renamed!(hook, crate::hook_door_plugin::conforming::door);
 renamed!(export, crate::neutral_export::door);
 renamed!(transport, crate::neutral_transport::door);
 renamed!(plane, crate::neutral_plane::door);
@@ -115,11 +112,9 @@ fn renaming_neutral_implementations_preserves_every_kind_capability_and_lifecycl
     };
     compare::<StoreV4>(crate::neutral_store::door, store, lifecycle);
     compare::<Auth>(crate::neutral_auth::door, auth, lifecycle);
-    compare::<Hook>(
-        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
-        hook,
-        |plugin| lifecycle_with_settings(plugin, br#"{"reject_over_messages":3}"#),
-    );
+    compare::<Hook>(crate::hook_door_plugin::conforming::door, hook, |plugin| {
+        lifecycle_with_settings(plugin, br#"{"reject_over_messages":3}"#)
+    });
     compare::<Export>(crate::neutral_export::door, export, lifecycle);
     compare::<Transport>(crate::neutral_transport::door, transport, lifecycle);
     compare::<Plane>(crate::neutral_plane::door, plane, |plugin| {

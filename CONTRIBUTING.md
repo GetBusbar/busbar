@@ -23,8 +23,9 @@ cargo nextest run --locked --workspace --features busbar-kernel/openapi-schema,b
 cargo test --locked --workspace --doc --features busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema
 ```
 
-The last two are what CI's `test` job runs. [What CI checks](docs/ci.md) lists every check a change
-is held to, on every change and on a release.
+The last two are what CI's `test` job runs. [Testing](docs/testing.md) says where each kind of test
+lives, and [What CI checks](docs/ci.md) lists every check a change is held to, on every change and on
+a release.
 
 ## How a change lands
 

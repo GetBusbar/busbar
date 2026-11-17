@@ -515,16 +515,6 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
-                    plugins.push(PluginView::basic(
-                        name.to_string(),
-                        "hooks",
-                        "compiled-in",
-                        None,
-                        None,
-                    ));
-                }
-
                 let mut externals: Vec<PluginView> = self
                     .app
                     .hook_registry
@@ -546,8 +536,7 @@ impl AdminService {
             PluginQuery::Secret => {
                 plugins.extend(
                     self.app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .linked()
                         .into_iter()
                         .filter(|row| row.kind == "secret")
@@ -558,8 +547,7 @@ impl AdminService {
             PluginQuery::Catalog(kind) => {
                 plugins.extend(
                     self.app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .linked()
                         .into_iter()
                         .filter(|row| row.kind == kind)
@@ -587,26 +575,25 @@ impl AdminService {
             }
         }
         for view in &mut plugins {
-            if let Some(row) = self.app.hook_env.registry.resolve(&view.name) {
+            if let Some(row) = self.app.plugin_registry.resolve(&view.name) {
                 let verdict = match row.trust {
                     busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
                     busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
                 };
                 view.trust = Some(crate::v1::contract::PluginTrustView::from_verification(
-                    self.app.hook_env.registry.signature_present(&row.name),
+                    self.app.plugin_registry.signature_present(&row.name),
                     verdict,
                     &self
                         .app
-                        .hook_env
-                        .registry
+                        .plugin_registry
                         .verification(&row.name)
                         .unwrap_or_default(),
                 ));
             }
             if view.configuration.is_none() {
-                let row = self.app.hook_env.registry.resolve(&view.name);
+                let row = self.app.plugin_registry.resolve(&view.name);
                 let declaration = admission(&self.app).ok().and_then(|admission| {
-                    admission.loaded_configuration(self.app.hook_env.registry.as_ref(), &view.name)
+                    admission.loaded_configuration(self.app.plugin_registry.as_ref(), &view.name)
                 });
                 view.configuration = Some(crate::v1::plugin_configuration::configuration(
                     row.as_ref().map_or(view.r#type, |row| row.kind.as_str()),
@@ -624,8 +611,7 @@ impl AdminService {
             }
             if let Some(row) = self
                 .app
-                .hook_env
-                .registry
+                .plugin_registry
                 .resolve(&view.name)
                 .filter(|row| row.linked)
             {
@@ -1375,9 +1361,9 @@ impl AdminService {
 
     pub(crate) async fn hook_health(&self, name: &str) -> Result<HookHealthView, AdminError> {
         let cfg = self.app.hook_registry.get(name);
-        let loadable = cfg.and_then(|cfg| self.app.hook_env.registry.resolve(&cfg.plugin));
+        let loadable = cfg.and_then(|cfg| self.app.plugin_registry.resolve(&cfg.plugin));
         let skipped = if loadable.is_none() {
-            cfg.and_then(|cfg| self.app.hook_env.registry.unresolved_reason(&cfg.plugin))
+            cfg.and_then(|cfg| self.app.plugin_registry.unresolved_reason(&cfg.plugin))
         } else {
             None
         };

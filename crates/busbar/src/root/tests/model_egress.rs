@@ -86,7 +86,6 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         app: LiveApp::fixed(Arc::clone(&app)),
         names: Arc::default(),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
-        reservoirs: Arc::default(),
     };
     let previous = make();
     let current = make();
@@ -351,13 +350,11 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         app: cells.live.clone(),
         names: Arc::clone(&cells.plan.names),
         permits: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
-        reservoirs: Arc::default(),
     };
     let telemetry = ModelTelemetry {
         app: cells.live.clone(),
         names: Arc::clone(&cells.plan.names),
         queued: crate::root::egress_ports::WalkTelemetry::default(),
-        reservoirs: Arc::default(),
     };
     let token = busbar_kernel::test_hooks::tokens::pass();
     let destination = DestinationId::new(0);

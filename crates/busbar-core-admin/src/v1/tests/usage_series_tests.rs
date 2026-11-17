@@ -272,7 +272,6 @@ static SERIES_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,
-        reresolve_gates: None,
         openapi_schemas: None,
         on_swap: None,
         parse_section: None,

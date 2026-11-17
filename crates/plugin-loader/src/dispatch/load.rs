@@ -842,21 +842,6 @@ impl<K: Kind> AdmittedImage<K> {
     }
 }
 
-impl AdmittedImage<super::kinds::hook::Hook> {
-    pub(crate) fn routes(
-        &self,
-    ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
-        Ok(self
-            .validated
-            .context
-            .as_deref()
-            .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
-            .map_or_else(Vec::new, |context| {
-                crate::cold::dispatch::load::routes(&context.routes)
-            }))
-    }
-}
-
 fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
     let facts = ManifestFacts::read(stated)?;
     if facts.mechanism_version != MECHANISM_VERSION {

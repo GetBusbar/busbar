@@ -115,17 +115,21 @@ The thousands digit is the area.
 | [BUSBAR-3132](/docs/1.6/errors/BUSBAR-3132/) | An outbound destination is refused by the egress policy | 1.6.0 |
 | [BUSBAR-3133](/docs/1.6/errors/BUSBAR-3133/) | A login attempt limit setting is invalid | 1.6.0 |
 | [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
-| [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch | 1.6.0 |
+| [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch *(retired)* | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
 | [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
 | [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An advanced.tls trust anchor was accepted | 1.6.0 |
 | [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An advanced.tls trust anchor expires within 30 days | 1.6.0 |
 | [BUSBAR-3140](/docs/1.6/errors/BUSBAR-3140/) | No trust anchor applies to a TLS destination | 1.6.0 |
+| [BUSBAR-3141](/docs/1.6/errors/BUSBAR-3141/) | Plaintext is not admitted to this destination | 1.6.0 |
 | [BUSBAR-3144](/docs/1.6/errors/BUSBAR-3144/) | A plaintext destination entry is not an exact host or IP | 1.6.0 |
 | [BUSBAR-3145](/docs/1.6/errors/BUSBAR-3145/) | A destination wildcard is too wide | 1.6.0 |
 | [BUSBAR-3147](/docs/1.6/errors/BUSBAR-3147/) | System CA bundle entries were not used | 1.6.0 |
 | [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
+| [BUSBAR-3160](/docs/1.6/errors/BUSBAR-3160/) | A plugin instance would connect without TLS | 1.6.0 |
+| [BUSBAR-3162](/docs/1.6/errors/BUSBAR-3162/) | A plugin instance runs with insecure_transport accepted | 1.6.0 |
+| [BUSBAR-3163](/docs/1.6/errors/BUSBAR-3163/) | An insecure_transport acceptance is invalid | 1.6.0 |
 | [BUSBAR-3170](/docs/1.6/errors/BUSBAR-3170/) | A configuration word, section or style changed its owner after it was read | 1.6.0 |
 | [BUSBAR-3401](/docs/1.6/errors/BUSBAR-3401/) | The retired migration command was given no file to migrate — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3402](/docs/1.6/errors/BUSBAR-3402/) | The retired migration command could not read the file it was given — RETIRED *(retired)* | 1.6.0 |
@@ -136,7 +140,7 @@ The thousands digit is the area.
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |
 | [BUSBAR-3408](/docs/1.6/errors/BUSBAR-3408/) | Migration added a binding that keeps 1.5.5's ungoverned access | 1.6.0 |
 | [BUSBAR-3409](/docs/1.6/errors/BUSBAR-3409/) | BUSBAR_WORKER_THREADS was not a positive integer and was not captured | 1.6.0 |
-| [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries | 1.6.0 |
+| [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries *(retired)* | 1.6.0 |
 | [BUSBAR-3411](/docs/1.6/errors/BUSBAR-3411/) | A retired cloud-metadata carve-out key was removed | 1.6.0 |
 
 ## 4xxx: Auth & identity
@@ -345,6 +349,7 @@ The thousands digit is the area.
 | [BUSBAR-9022](/docs/1.6/errors/BUSBAR-9022/) | A writer lease or host assignment row does not decode (never closed) | 1.6.0 |
 | [BUSBAR-9023](/docs/1.6/errors/BUSBAR-9023/) | An expired writer was not closed (the next start retries) | 1.6.0 |
 | [BUSBAR-9024](/docs/1.6/errors/BUSBAR-9024/) | More expired writers remain than one start closes (the next start continues) | 1.6.0 |
+| [BUSBAR-9025](/docs/1.6/errors/BUSBAR-9025/) | Waiting on another owner's record-format conversion of this dataset (no listener bound yet) | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |

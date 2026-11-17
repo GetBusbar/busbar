@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 fn witness() -> &'static Door {
-    crate::hook_door_conformance_tests::hook_door_plugin::conforming::door()
+    crate::hook_door_plugin::conforming::door()
 }
 
 static PENDING_ENTRIES: AtomicUsize = AtomicUsize::new(0);

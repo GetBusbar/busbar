@@ -1206,7 +1206,7 @@ async fn money_book(
                 )],
                 ..busbar_kernel::config::AuthCfg::default_none()
             },
-            &app.hook_env.registry,
+            &app.plugin_registry,
             &app.secret_resolver,
         )
         .expect("the actual root constructs the keys middleware"),
@@ -5396,7 +5396,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
                 )],
                 ..busbar_kernel::config::AuthCfg::default_none()
             },
-            &app.hook_env.registry,
+            &app.plugin_registry,
             &app.secret_resolver,
         )
         .expect("the actual root constructs the keys middleware"),

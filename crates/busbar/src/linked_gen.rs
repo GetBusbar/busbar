@@ -42,7 +42,6 @@ pub const AXES: &[(&str, &str, &str)] = &[
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("stores", "stores", "STORE"),
-    ("hooks", "hook_doors", "door"),
 ];
 
 const TRANSPORT_AXIS: &str = "transport";
@@ -132,7 +131,6 @@ pub const CFG_AXES: &[&str] = &[
     EXPORT_DOOR_AXIS,
     AUTH_AXIS,
     "stores",
-    "hooks",
     "protocols",
 ];
 

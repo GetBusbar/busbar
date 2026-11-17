@@ -726,31 +726,6 @@ pub(crate) fn registry_contains(
         .is_some_and(|s| s.section.contains_def(name))
 }
 
-pub(crate) fn reresolve_gates(
-    decl: &PlaneDecl,
-    next: &mut dyn crate::plane_driver::slots::ContainerGateSink,
-) {
-    let Some(d) = row(decl) else {
-        return;
-    };
-    let gates = next
-        .plane_slot(d.reg.key)
-        .and_then(|slot| slot.downcast_ref::<DoorSlot>())
-        .map_or(
-            ContainerGateInputs {
-                section_hooks: Vec::new(),
-                containers: Vec::new(),
-            },
-            |s| s.section.container_gates(),
-        );
-    let containers: Vec<(&str, &[String])> = gates
-        .containers
-        .iter()
-        .map(|(n, h)| (n.as_str(), h.as_slice()))
-        .collect();
-    next.reresolve_container_gates(d.reg.key, &containers, &gates.section_hooks);
-}
-
 /// Whether `e` already names the definition, as `` `<section>.<name>` ``.
 pub(crate) fn names_definition(e: &str, section: &str, name: &str) -> bool {
     e.strip_prefix('`')
@@ -1026,7 +1001,6 @@ pub(crate) fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
         named_def_list: named.then_some(named_def_list as _),
         named_def_get: named.then_some(named_def_get as _),
         registry_contains: named.then_some(registry_contains as _),
-        reresolve_gates: Some(reresolve_gates),
         openapi_schemas: crate::plane_driver::registry::stated_schemas_hook().filter(|_| admin),
         on_swap: None,
         parse_section: Some(parse_section),

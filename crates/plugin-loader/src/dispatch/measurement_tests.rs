@@ -129,10 +129,7 @@ macro_rules! fixture {
 }
 fixture!(store, crate::neutral_store::door);
 fixture!(auth, crate::neutral_auth::door);
-fixture!(
-    hook,
-    crate::hook_door_conformance_tests::hook_door_plugin::conforming::door
-);
+fixture!(hook, crate::hook_door_plugin::conforming::door);
 fixture!(export, crate::neutral_export::door);
 fixture!(plane, crate::neutral_plane::door);
 fixture!(transport, crate::neutral_transport::door);
