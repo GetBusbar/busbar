@@ -674,3 +674,91 @@ fn artifact_file(row: &json::Value) -> Option<&str> {
         ),
     }
 }
+
+/// #359 SEC-L9 (DES-359 r3): the plugin catalog reads never enter the mutation fence. While a
+/// mutation holds the effect lock, `GET /plugins` and the installed archive's schema read both
+/// answer, from a pinned generation under the shared scan gate. A dropped-in archive changes the
+/// catalog's ETag with no generation change.
+#[tokio::test]
+async fn catalog_reads_answer_while_a_mutation_holds_the_effect_lock() {
+    if isolated() {
+        return;
+    }
+    let (app, scratch) = application().await;
+    let router = busbar_core_admin::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap();
+    let origin = format!("http://{addr}");
+    let base = format!("{origin}/api/v1/admin");
+    const SCHEMA: &[u8] =
+        br#"{"type":"object","properties":{"held":{"type":"boolean"}},"additionalProperties":false}"#;
+    use base64::Engine as _;
+    let archive = schema_candidate(SCHEMA, None);
+    let digest = busbar_contract::redacted::sha256_hex(&archive);
+    body(client.post(format!("{base}/plugins")).bearer_auth(TOKEN)
+        .json(&json::json!({"file":"held.tar.gz","tarball_b64":base64::engine::general_purpose::STANDARD.encode(&archive)}))
+        .send().await.unwrap(),201).await;
+
+    let held = busbar_kernel::config::transaction::effect_lock().await;
+    let first = client
+        .get(format!("{base}/plugins?type=store"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        first.status().as_u16(),
+        200,
+        "the catalog GET answers while a mutation holds the effect lock"
+    );
+    let first_etag = first.headers()[reqwest::header::ETAG].clone();
+    let listed = body(first, 200).await;
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| artifact_file(row) == Some("held.tar.gz"))
+        .unwrap();
+    assert_eq!(row["archive_sha256"], digest);
+    let url = row["schema_url"].as_str().unwrap().to_string();
+    let read = body(
+        client
+            .get(format!("{origin}{url}"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap(),
+        200,
+    )
+    .await;
+    assert_eq!(read["archive_sha256"], digest);
+    assert_eq!(read["schema"], json::parse_value(SCHEMA).unwrap());
+
+    // An archive dropped into the directory (no admin write, so no new generation) changes the
+    // catalog's ETag: the same ETag never names two bodies.
+    std::fs::write(
+        scratch.0.join("dropped.tar.gz"),
+        schema_candidate(SCHEMA, Some(r#"{"type":"object"}"#)),
+    )
+    .unwrap();
+    let second = client
+        .get(format!("{base}/plugins?type=store"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status().as_u16(), 200);
+    assert_ne!(
+        second.headers()[reqwest::header::ETAG],
+        first_etag,
+        "a dropped-in archive changes the catalog ETag"
+    );
+    drop(held);
+    server.abort();
+    let _ = server.await;
+}
