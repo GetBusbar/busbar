@@ -21,6 +21,9 @@ use crate::registry::Generation;
 const NOW: u64 = 1_700_000_000;
 const INPUT: u32 = 0;
 
+#[path = "../money/selected_view_tests.rs"]
+mod selected_views;
+
 fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
