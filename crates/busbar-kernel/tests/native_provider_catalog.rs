@@ -17,6 +17,51 @@ fn configured_model_accepts_its_adopted_dialect_override() {
 }
 
 #[test]
+fn selected_resource_is_shared_by_actual_direct_and_pool_targets() {
+    let deployment = DEPLOY.replace(
+        "upstream_model: wire-model-a",
+        "upstream_model: wire-model-a\n    resource: shared",
+    );
+    let result = resolved(
+        CATALOG,
+        &deployment,
+        &[plane("chat", &["wire-a", "wire-b"], SCHEMA)],
+    );
+    let plan = &result.catalogs["chat"];
+    for selector in ["fast", "slow", "m0"] {
+        assert_eq!(
+            plan.target(plan.select(selector).unwrap(), "chat\u{1f}m0")
+                .unwrap()
+                .resource
+                .as_deref(),
+            Some("shared")
+        );
+    }
+    assert!(plan
+        .target(plan.select("fast").unwrap(), "chat\u{1f}m1")
+        .unwrap()
+        .resource
+        .is_none());
+    for value in [
+        "''".to_owned(),
+        "x".repeat(129),
+        "é".repeat(65),
+        "\"bad\\nlabel\"".to_owned(),
+    ] {
+        let invalid = DEPLOY.replace(
+            "upstream_model: wire-model-a",
+            &format!("upstream_model: wire-model-a\n    resource: {value}"),
+        );
+        assert!(refused(
+            CATALOG,
+            &invalid,
+            &[plane("chat", &["wire-a", "wire-b"], SCHEMA)]
+        )
+        .contains("resource"));
+    }
+}
+
+#[test]
 fn both_model_dialect_spellings_are_not_two_independent_overrides() {
     let source = "provider: deployment\nprotocol: first\ndialect: second\n";
     assert!(busbar_contract::yaml::from_str::<ModelCfg>(source).is_err());
