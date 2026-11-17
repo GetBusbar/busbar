@@ -324,6 +324,7 @@ impl PhysicalConnection {
             streams.insert(stream, Arc::downgrade(&state));
         }
         let binding = Arc::new(RequestBinding {
+            handle: self.listener.handle.clone(),
             app,
             prepared,
             route,
@@ -436,6 +437,7 @@ impl Drop for StreamOwner {
 /// Immutable physical input identity retained by native preparation and completed proofs.
 /// Public accessors project facts only; none constructs execution authority.
 pub struct RequestBinding {
+    handle: Arc<AppHandle>,
     app: Arc<App>,
     prepared: Arc<PreparedListener>,
     route: Arc<RouteBinding>,
@@ -456,6 +458,10 @@ struct PhysicalBody {
     _credit: ByteCredit,
 }
 impl RequestBinding {
+    /// The originating publication handle; an equal App in another handle is not equivalent.
+    pub fn handle(&self) -> &Arc<AppHandle> {
+        &self.handle
+    }
     pub fn app(&self) -> &Arc<App> {
         &self.app
     }
@@ -603,4 +609,4 @@ impl Drop for CompletingPhysicalRequest {
 
 #[cfg(test)]
 #[path = "../tests/native_physical_admission.rs"]
-mod tests;
+pub(crate) mod tests;
