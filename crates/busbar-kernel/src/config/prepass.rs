@@ -436,3 +436,7 @@ mod document_metadata_tests;
 #[cfg(test)]
 #[path = "tests/prepass_tests.rs"]
 mod source_declarations_tests;
+
+#[cfg(test)]
+#[path = "tests/reserved_key_tests.rs"]
+mod reserved_key_tests;
