@@ -223,7 +223,8 @@ close_fds = { workspace = true }
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
 
 [features]
-test-harness = []
+# The harness build (never shipped): HARNESS-SIGN's first-party key hook and `--store-kit`.
+test-harness = ["busbar-kernel/store-kit"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
