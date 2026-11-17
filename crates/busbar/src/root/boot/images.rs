@@ -92,6 +92,20 @@ pub(crate) struct BootImages {
 }
 
 impl FileImages {
+    /// Preserve the admitted executable owners alongside the metadata from this same read.
+    pub(crate) fn prepared_read(
+        &self,
+        input: &PhaseOneIn<'_>,
+    ) -> Result<busbar_kernel::config::grammar::PreparedConfigRead, GrammarRefusal> {
+        let planes = crate::root::min3_provider_plan::descriptors(self).map_err(GrammarRefusal)?;
+        Ok(
+            busbar_kernel::config::grammar::PreparedConfigRead::new(self.grammar.clone())
+                .with_provider_planes(planes)
+                .with_context(Arc::new(self.clone()))
+                .for_input(input),
+        )
+    }
+
     pub(crate) fn protect(
         &self,
         cfg: &busbar_kernel::config::RootCfg,
