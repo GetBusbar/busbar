@@ -183,16 +183,23 @@ pub(crate) fn upstream_need(url: &str) -> ReadNeed {
 /// Whether `url` may be dialled under `accept` (`transport_verdict` with the URL's scheme as its TLS mode).
 #[must_use]
 pub(crate) fn admitted(accept: Accept, url: &str) -> bool {
-    let named = |prefix: &str| {
-        url.get(..prefix.len())
-            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
-    };
-    let tls = if named("https://") || named("wss://") {
+    let tls = if names_tls(url) {
         TLS_REQUIRED
     } else {
         TLS_NONE
     };
     !matches!(transport_verdict(accept, tls, url), Verdict::Refuse)
+}
+
+/// Whether `url` names TLS from its first byte (`https://`, `wss://`). An [`admitted`] URL that does
+/// not was admitted by the seat's PLAINTEXT acceptance, which its open carries to the connector
+/// (`OpenDesc::plaintext_accepted`, #297 model A).
+fn names_tls(url: &str) -> bool {
+    let named = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    named("https://") || named("wss://")
 }
 
 /// The `accept` words as the audit row and the warning print them.
@@ -402,6 +409,7 @@ impl HeldHttp for UpstreamHttp {
                         method: request.method.as_bytes(),
                         head_target: head_target(&target).as_bytes(),
                         member: &upstream.name,
+                        plaintext_accepted: !names_tls(&target),
                         ..OpenDesc::default()
                     },
                 )

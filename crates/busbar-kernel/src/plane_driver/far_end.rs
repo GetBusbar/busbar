@@ -288,11 +288,22 @@ pub struct UnitRoute {
     /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
     /// A walk still moves on before anything was answered.
     pub once: bool,
-    /// The plane instance's core-held `insecure_transport.accept` (TRANSPORT-SECURITY-POLICY §3). `Some` = every
-    /// dial this unit makes is judged by `transport_verdict` before the connector sees it (a plaintext target is
-    /// refused unless the set holds PLAINTEXT); `None` = the legacy path, judged by the connector's guard alone
-    /// (O1, owner undecided).
-    pub accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+    /// The core-held `insecure_transport.accept` of the registration that owns this unit's exchanges
+    /// (TRANSPORT-SECURITY-POLICY §3; #297 model A). Every dial this unit makes is judged by
+    /// `transport_verdict` before the connector sees it: a plaintext target is refused unless the set
+    /// holds PLAINTEXT, and an admitted plaintext dial carries that acceptance to the connector
+    /// ([`OpenDesc::plaintext_accepted`]). A unit with no owning registration holds the empty set:
+    /// verified TLS only. No loopback address or name is exempt.
+    pub accept: busbar_plugin_abi::host_side::caller::Accept,
+}
+
+/// Whether `url` names TLS from its first byte (`https://`, `wss://`); every other scheme does not.
+fn url_is_tls(url: &str) -> bool {
+    let named = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    };
+    named("https://") || named("wss://")
 }
 
 /// Whether `url` may be dialled under `accept`: `transport_verdict` with the TLS mode the URL's scheme states
@@ -300,19 +311,12 @@ pub struct UnitRoute {
 /// connector's open takes no unverified mode, which is stricter than the acceptance allows, never looser.
 #[must_use]
 pub(super) fn dial_admitted(
-    accept: Option<busbar_plugin_abi::host_side::caller::Accept>,
+    accept: busbar_plugin_abi::host_side::caller::Accept,
     url: &str,
 ) -> bool {
     use busbar_plugin_abi::host_side::caller::{transport_verdict, Verdict};
     use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
-    let Some(accept) = accept else {
-        return true;
-    };
-    let named = |prefix: &str| {
-        url.get(..prefix.len())
-            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
-    };
-    let tls = if named("https://") || named("wss://") {
+    let tls = if url_is_tls(url) {
         TLS_REQUIRED
     } else {
         TLS_NONE
@@ -335,7 +339,7 @@ impl Default for UnitRoute {
             leg: 0,
             caller_credential: None,
             once: false,
-            accept: None,
+            accept: busbar_plugin_abi::host_side::caller::Accept::default(),
         }
     }
 }
@@ -765,7 +769,7 @@ impl EgressFarEnd<'_> {
     /// Judges every dial of this far end under the plane instance's core-held `accept` ([`UnitRoute::accept`]).
     #[must_use]
     pub fn accepting(mut self, accept: busbar_plugin_abi::host_side::caller::Accept) -> Self {
-        self.route.accept = Some(accept);
+        self.route.accept = accept;
         self
     }
 
@@ -1957,6 +1961,7 @@ impl EgressFarEnd<'_> {
                 member: &route.provider,
 
                 unit: self.route.unit.get(),
+                plaintext_accepted: !url_is_tls(&url),
             },
             head,
             require_secure,

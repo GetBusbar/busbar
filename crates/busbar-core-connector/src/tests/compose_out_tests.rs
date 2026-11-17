@@ -58,6 +58,7 @@ fn writes(carrier: &TestDoor) -> usize {
 
 fn dial(target: &str) -> Dial {
     Dial {
+        plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
         alpn: Vec::new(),

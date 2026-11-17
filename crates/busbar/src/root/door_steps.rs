@@ -1997,6 +1997,10 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         self.inner.hold_authority(owner);
     }
 
+    fn accept_plaintext(&self, owner: busbar_contract::conn::InstanceId) {
+        self.inner.accept_plaintext(owner);
+    }
+
     fn request_head(
         &self,
         owner: busbar_contract::conn::InstanceId,

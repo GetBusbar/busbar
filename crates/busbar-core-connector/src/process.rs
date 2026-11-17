@@ -264,13 +264,6 @@ impl DestJudge for GuardJudge {
         self.named(dest, class, refuse_private, false).map(|_| ())
     }
 
-    fn plaintext_admitted(&self, dest: &str) -> bool {
-        let host: Cow<'_, str> =
-            busbar_contract::net::url_host(dest).map_or(Cow::Borrowed(dest), Cow::Owned);
-        let bare = crate::tls::store::host_only(&host);
-        names_loopback(&bare) || bare.parse::<IpAddr>().is_ok_and(is_loopback)
-    }
-
     fn judge(
         &self,
         dest: &str,

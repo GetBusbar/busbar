@@ -71,6 +71,12 @@ pub struct OpenDesc<'a> {
     /// applies to this open and to no other; an open whose transport needs no such registration
     /// ignores it.
     pub unit: u64,
+    /// HOST-ONLY, never accepted from a plugin ABI descriptor: the opener judged this open under its
+    /// owner's core-held `insecure_transport.accept` (`transport_verdict`) and the acceptance
+    /// admits PLAINTEXT to `target` (SEC-2, #297 model A). The connector admits a dial that is not
+    /// secured from its first byte only so, or by an exact `advanced.tls.destinations` plaintext
+    /// entry; no loopback address or name is exempt.
+    pub plaintext_accepted: bool,
 }
 
 impl std::fmt::Debug for OpenDesc<'_> {
@@ -85,6 +91,7 @@ impl std::fmt::Debug for OpenDesc<'_> {
             .field("within", &self.within)
             .field("member", &self.member)
             .field("unit", &self.unit)
+            .field("plaintext_accepted", &self.plaintext_accepted)
             .finish()
     }
 }
@@ -489,6 +496,16 @@ pub trait DeclaredConns: Conns {
 
     /// THE HOST WRITES THE AUTHORITY of every connection `owner` opens: an open whose head
     fn hold_authority(&self, owner: InstanceId) {
+        let _ = owner;
+    }
+
+    /// THE OWNER'S CORE-HELD `insecure_transport.accept` HOLDS `plaintext` (SEC-2, #297 model A):
+    /// the host registers it when it binds `owner`, after the acceptance was logged and audited
+    /// (BUSBAR-3162), and every open `owner` makes may then dial without TLS from the first byte.
+    /// No other open is admitted plaintext but by its own [`OpenDesc::plaintext_accepted`] or an
+    /// exact `advanced.tls.destinations` entry; no loopback address or name is exempt. The default
+    /// registers nothing: plaintext stays refused. [`DeclaredConns::forget`] drops it.
+    fn accept_plaintext(&self, owner: InstanceId) {
         let _ = owner;
     }
 
