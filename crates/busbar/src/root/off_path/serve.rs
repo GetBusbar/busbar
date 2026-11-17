@@ -339,11 +339,9 @@ impl Served {
             tokio::spawn(async move { driver.drives().await });
         }
 
-        if let Some(post) = &self.post {
-            let lease = LeaseTick {
-                node: Arc::clone(post.node()),
-            };
-            tokio::spawn(lease.ticks());
+        // The post holds the Node weakly; a Node already gone has no lease to tick.
+        if let Some(node) = self.post.as_ref().and_then(|post| post.node()) {
+            tokio::spawn(LeaseTick { node }.ticks());
         }
     }
 }

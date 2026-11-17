@@ -1357,7 +1357,7 @@ async fn run(
     let observation_reservation = export_observers
         .reserve(serving_ready.export_names())
         .unwrap_or_else(|error| die(error));
-    let (store_admission, generation_workers, exports, native, selected_policy) =
+    let (store_admission, mut generation_workers, exports, native, selected_policy) =
         root::min3_boot::finish(
             serving_ready,
             store_admission,
