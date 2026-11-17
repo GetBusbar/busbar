@@ -30,18 +30,34 @@ struct NativeExport {
 }
 
 fn stage_image(directory: &Path, kind: &str, path: &Path) -> String {
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(path)
-        .expect("the installed native image describes itself")
-        .expect("the image has its signed statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the actual image statement parses")
-        .name;
-    let mut manifest = crate::root::test_plugins::manifest(
-        kind,
-        &module,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    manifest.statement = Some(hex::encode(statement));
+    // A MIN-3 image (the application Store) is named by its stamp; a door image by its Statement.
+    let native = busbar_plugin_loader::pack_native::read_image(path)
+        .and_then(|bytes| busbar_plugin_loader::pack_native::is_native(&bytes))
+        .expect("the separately built actual image reads");
+    let (module, manifest) = if native {
+        (
+            crate::root::test_plugins::native_image(path).name,
+            crate::root::test_plugins::native_manifest(
+                kind,
+                path,
+                crate::root::test_plugins::FIXTURE_PUBLISHER,
+            ),
+        )
+    } else {
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(path)
+            .expect("the installed image describes itself")
+            .expect("the image has its signed statement");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual image statement parses")
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            kind,
+            &module,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        (module, manifest)
+    };
     let bytes = std::fs::read(path).expect("read the separately built actual image");
     let archive =
         crate::root::test_plugins::signed(&crate::root::test_plugins::key(0x5a), manifest, &bytes);

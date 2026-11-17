@@ -19,10 +19,72 @@ pub(super) fn resolve_admission(
         .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
 }
 
-fn refused(refusal: Refusal) -> AdminError {
+pub(crate) fn refused(refusal: Refusal) -> AdminError {
     match refusal {
         Refusal::Validation(m) => AdminError::Validation(m),
         Refusal::Conflict(m) => AdminError::Conflict(m),
+        Refusal::Unavailable {
+            text,
+            retry_after_s,
+        } => AdminError::RetryLater {
+            text,
+            retry_after_s,
+        },
+    }
+}
+
+/// Record one `plugin.inspect` audit row for an operator inspection (DES-443 r3 §5): the actor, the plugin, the
+/// image's sha256, the verdict, how it ended and why. An inspection that reports no load is `manifest` (shown from
+/// its manifest alone) or `refused`.
+fn audited_inspection(
+    inspection: busbar_kernel::admission::Inspection,
+    tarball: &[u8],
+    actor: &str,
+) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
+    let (answer, load) = inspection;
+    let (outcome, sha256, opened, reason) = match (&answer, load) {
+        (_, Some(load)) => (load.outcome, load.sha256, load.opened, load.reason),
+        (Ok(_), None) => ("manifest", String::new(), false, None),
+        (Err(refusal), None) => ("refused", String::new(), false, Some(refusal_text(refusal))),
+    };
+    let (plugin, verdict) = match &answer {
+        Ok((stated, judged, _)) => (
+            stated.name.clone(),
+            match judged {
+                Judged::Trusted { .. } => "trusted",
+                Judged::Allowed => "allowed",
+                Judged::Rejected { .. } => "rejected",
+            },
+        ),
+        Err(_) => (String::new(), "unknown"),
+    };
+    let archive = busbar_contract::redacted::sha256_hex(tarball);
+    let mut message = format!("verdict={verdict} opened={opened} archive_sha256={archive}");
+    if !sha256.is_empty() {
+        message.push_str(" sha256=");
+        message.push_str(&sha256);
+    }
+    if let Some(reason) = reason {
+        message.push_str(" reason=");
+        message.push_str(&reason);
+    }
+    busbar_kernel::audit_ring::AUDIT.record_row(busbar_kernel::audit::auditlog::AuditRowInput {
+        action: "plugin.inspect".into(),
+        resource: format!("plugin:{plugin}"),
+        outcome: outcome.into(),
+        principal: actor.into(),
+        kind: Some("plugin".into()),
+        message,
+        ..Default::default()
+    });
+    answer
+}
+
+fn refusal_text(refusal: &Refusal) -> String {
+    match refusal {
+        Refusal::Validation(text) | Refusal::Conflict(text) | Refusal::Unavailable { text, .. } => {
+            text.clone()
+        }
     }
 }
 
@@ -858,14 +920,21 @@ impl AdminService {
     ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
-    pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
+    pub(crate) fn inspect_plugin(
+        &self,
+        tarball: &[u8],
+        actor: &str,
+    ) -> Result<serde_json::Value, AdminError> {
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
         let cap = admission.max_tarball_bytes();
         check_inspect_tarball_size(tarball.len(), cap)?;
 
-        let (manifest, judged, verification) = admission
-            .inspect_with_verification(tarball, &self.app.plugins_cfg)
-            .map_err(refused)?;
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(tarball, &self.app.plugins_cfg, false, actor),
+            tarball,
+            actor,
+        )
+        .map_err(refused)?;
         let trust = image_trust(&manifest, &judged, &verification);
         let mut view =
             inspect_plugin_view(manifest, judged, |kind| admission.restart_default(kind));
@@ -879,6 +948,7 @@ impl AdminService {
         &self,
         file: &str,
         expected: Option<&str>,
+        actor: &str,
     ) -> Result<serde_json::Value, AdminError> {
         let file = validate_plugin_filename(&self.app, file)?;
         let admission = admission(&self.app).map_err(AdminError::Validation)?;
@@ -890,9 +960,12 @@ impl AdminService {
         )?;
         check_archive_preimage(expected, &bytes)?;
         let digest = busbar_contract::redacted::sha256_hex(&bytes);
-        let (manifest, judged, verification) = admission
-            .inspect_installed_with_verification(&bytes, &self.app.plugins_cfg)
-            .map_err(refused)?;
+        let (manifest, judged, verification) = audited_inspection(
+            admission.inspect_audited(&bytes, &self.app.plugins_cfg, true, actor),
+            &bytes,
+            actor,
+        )
+        .map_err(refused)?;
         let configuration = crate::v1::plugin_configuration::configuration(
             &manifest.kind,
             manifest.configuration.as_ref(),

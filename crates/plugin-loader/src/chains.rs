@@ -243,9 +243,15 @@ pub(crate) fn decode_described(
                 }
             }
             tag::D_SCHEMA => {
-                let text = rec
-                    .text()
-                    .map_err(|_| invalid("describe.schema", "not UTF-8", "UTF-8 JSON"))?;
+                // IF r29 l.2764: core's D_SCHEMA validator holds the schema to the authoritative-schema rules.
+                let text = crate::settings_schema::authoritative_schema(rec.body, "D_SCHEMA")
+                    .map_err(|why| {
+                        invalid(
+                            "describe.schema",
+                            why,
+                            "a JSON Schema object or boolean of at most 262144 bytes",
+                        )
+                    })?;
                 if schema.replace(Box::<str>::from(text)).is_some() {
                     return Err(invalid("describe.schema", "a second schema", "at most one"));
                 }
@@ -978,6 +984,35 @@ mod tests {
             m.label_keys.iter().map(|k| &**k).collect::<Vec<_>>(),
             ["op"]
         );
+    }
+
+    /// IF r29 l.2764 ("core's D_SCHEMA validator"): the describe's D_SCHEMA meets the authoritative-schema rules
+    /// a Statement settings_schema met (public JSON within 262144 bytes, an object or boolean), so a pathological
+    /// schema is DescribeInvalid at admission, naming D_SCHEMA and the parser's reason.
+    #[test]
+    fn a_pathological_or_non_schema_d_schema_is_describe_invalid() {
+        let schema = |text: &str| {
+            let mut r = Reply::new();
+            mask(&mut r, tag::D_METHODS, st::REQUIRED);
+            r.put_text(tag::D_SCHEMA, text).unwrap();
+            decode_described(KindCode::Store, Records::new(r.as_bytes()))
+        };
+        let bomb = format!("{}true{}", "{\"allOf\":[".repeat(500), "]}".repeat(500));
+        let e = schema(&bomb).err().expect("a recursion bomb is refused");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert_eq!(e.field, "describe.schema");
+        assert!(
+            e.have.contains("D_SCHEMA") && e.have.contains("recursion limit exceeded"),
+            "{e:?}"
+        );
+        let e = schema("[1]").err().expect("an array is not a schema");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let e = schema("{").err().expect("not JSON");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        let big = format!("{{\"description\":\"{}\"}}", "x".repeat(256 * 1024));
+        let e = schema(&big).err().expect("over the cap");
+        assert_eq!(e.code, RefusalCode::DescribeInvalid);
+        assert!(schema("true").is_ok() && schema(r#"{"type":"object"}"#).is_ok());
     }
 
     #[test]
