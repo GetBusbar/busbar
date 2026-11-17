@@ -241,3 +241,17 @@ impl GovState {
         })
     }
 }
+
+#[cfg(test)]
+impl GovState {
+    /// Test-only stale-flush hook: change the exact pending entry while its flushed snapshot is
+    /// at the sink, so the successful R must refuse to confirm the original receipt.
+    pub(crate) fn stale_pending_checkpoint_for_test(&self, id: [u8; 16]) -> bool {
+        let mut pending = self.unit_checkpoints.pending.lock();
+        let Some(mut entry) = pending.edit(&id) else {
+            return false;
+        };
+        entry.stale_for_test();
+        true
+    }
+}
