@@ -4,6 +4,40 @@
 use super::*;
 
 #[test]
+fn pack_refuses_unstamped_images_without_a_native_flag_or_output() {
+    let dir = std::env::temp_dir().join(format!("plugin-pack-unstamped-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let library = dir.join("legacy.so");
+    let output = dir.join("legacy.tar.gz");
+    std::fs::write(&library, b"not a native image").unwrap();
+    let _ = std::fs::remove_file(&output);
+    let args = [
+        "--lib",
+        library.to_str().unwrap(),
+        "--name",
+        "legacy",
+        "--alias",
+        "old",
+        "--kind",
+        "secret",
+        "--version",
+        "1.6.0",
+        "--publisher",
+        "fixture",
+        "--out",
+        output.to_str().unwrap(),
+        "--allow-unsigned",
+    ]
+    .map(str::to_owned);
+    assert_eq!(pack(&args), ExitCode::FAILURE);
+    assert!(
+        !output.exists(),
+        "an unstamped image must never be packaged"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pack_refuses_unknown_and_duplicate_scalar_flags() {
     for args in [
         vec!["--needs-promt", "rw"],
