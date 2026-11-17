@@ -31,6 +31,7 @@ mod catalog;
 pub mod counted;
 mod files;
 mod legacy_credentials;
+pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
 mod listen;
 mod lock;
@@ -301,9 +302,18 @@ pub struct Plan {
     ignore_overlay: bool,
     /// The styles `resolve_styles` resolved the deferred bindings with, re-applied by the write's re-run.
     styles: Vec<(String, Vec<String>)>,
+    /// The 1.5.5 credential slots core marks at the migrating bind (LEGACY-KEYFILE-MARKER r2 §3).
+    marks: Vec<Mark>,
 }
 
 impl Plan {
+    /// The 1.5.5 credential slots core marks at the migrating bind: `(instance path, pointer)`,
+    /// never a value (LEGACY-KEYFILE-MARKER r2 §3). The written text never carries the marker.
+    #[must_use]
+    pub fn legacy_marks(&self) -> &[Mark] {
+        &self.marks
+    }
+
     /// `config::resolve_styles` (IF §12.10 item 3, §12.18): after every image is admitted and before
     /// `boot_plan`, the gateway hands the styles the admitted auth images declared
     /// (`Registry::outbound_styles`); each deferred `{"$style": w}` binding of the plan becomes the
@@ -486,6 +496,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         overlay: selected,
         ignore_overlay: inputs.ignore_overlay,
         styles: Vec::new(),
+        marks: chained.marks,
     })
 }
 
@@ -618,7 +629,7 @@ pub fn write_attempted(
         let (resolved, _) = plan.with_styles(|styles| styles::resolve(&again.text, styles))?;
         again.text = resolved;
     }
-    if again.text != plan.planned || again.catalog != plan.catalog {
+    if again.text != plan.planned || again.catalog != plan.catalog || again.marks != plan.marks {
         return Err(Refusal::Config(format!(
             "the upgrade of {} did not plan the same document twice from the same bytes ({}); \
              nothing was written",
@@ -724,6 +735,7 @@ pub fn write_back(
 struct Chained {
     text: String,
     catalog: Option<catalog::Planned>,
+    marks: Vec<Mark>,
 }
 
 /// `STEPS[from..CONFIG_FORMAT]` over the source text, then the stamp.
@@ -742,6 +754,7 @@ fn chain(
         overlay,
         report,
         catalog: None,
+        marks: Vec::new(),
     };
     let mut text = source.to_owned();
     for step in steps::STEPS.iter().skip(first) {
@@ -750,6 +763,7 @@ fn chain(
     Ok(Chained {
         text: patch::stamp(&text, CONFIG_FORMAT)?,
         catalog: work.catalog,
+        marks: work.marks,
     })
 }
 
