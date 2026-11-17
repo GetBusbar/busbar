@@ -23,14 +23,21 @@ fn native_plan_retains_exact_suppliers_and_configured_binds() {
     let port = supplier.port.clone();
     let needs = ListenerNeeds {
         root_required: true,
-        binds: vec![bind("listen", 8080), bind("listen", 8082), bind("admin_listen", 8081)],
+        binds: vec![
+            bind("listen", 8080),
+            bind("listen", 8082),
+            bind("admin_listen", 8081),
+        ],
         needs: vec![],
     };
     let expected = needs.binds.clone();
     let plan = NativeListenerPlan::new(needs, &NativeFramers::new(vec![supplier])).unwrap();
     assert_eq!(plan.binds(), expected);
     assert!(Arc::ptr_eq(&plan.supplier("listen").unwrap().port, &port));
-    assert!(Arc::ptr_eq(&plan.supplier("admin_listen").unwrap().port, &port));
+    assert!(Arc::ptr_eq(
+        &plan.supplier("admin_listen").unwrap().port,
+        &port
+    ));
     assert!(plan.supplier("LISTEN").is_none());
     assert!(plan.supplier("http").is_none());
 }
@@ -52,7 +59,10 @@ fn native_plan_refuses_missing_or_ambiguous_declared_slot() {
 
 #[test]
 fn native_plan_refuses_need_routes_unknown_slots_and_duplicate_addresses() {
-    let framers = NativeFramers::new(vec![initial("server", &["listen", "admin_listen", "other"])]);
+    let framers = NativeFramers::new(vec![initial(
+        "server",
+        &["listen", "admin_listen", "other"],
+    )]);
     let needs = ListenerNeeds {
         binds: vec![bind("listen", 8080)],
         needs: vec![ListenerNeed {
@@ -71,18 +81,33 @@ fn native_plan_refuses_need_routes_unknown_slots_and_duplicate_addresses() {
         vec![bind("other", 8080)],
         vec![bind("listen", 8080), bind("admin_listen", 8080)],
         vec![InboundBind {
-            owner: BindOwner::Need { instance: "export/one".into(), kind: KindCode::Export, need: 0 },
+            owner: BindOwner::Need {
+                instance: "export/one".into(),
+                kind: KindCode::Export,
+                need: 0,
+            },
             ..bind("listen", 8080)
         }],
     ] {
-        assert!(NativeListenerPlan::new(ListenerNeeds { binds, ..Default::default() }, &framers).is_err());
+        assert!(NativeListenerPlan::new(
+            ListenerNeeds {
+                binds,
+                ..Default::default()
+            },
+            &framers
+        )
+        .is_err());
     }
 }
 
 #[test]
 fn an_explicit_root_bind_cannot_disappear_from_native_plan() {
     assert!(NativeListenerPlan::new(
-        ListenerNeeds { root_required: true, ..Default::default() },
+        ListenerNeeds {
+            root_required: true,
+            ..Default::default()
+        },
         &NativeFramers::new(vec![]),
-    ).is_err());
+    )
+    .is_err());
 }

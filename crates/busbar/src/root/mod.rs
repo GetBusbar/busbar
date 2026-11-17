@@ -209,6 +209,7 @@ pub(crate) mod migrate_records;
 pub(crate) mod min3_boot;
 pub(crate) mod min3_candidate_secrets;
 pub(crate) mod min3_framers;
+pub(crate) mod min3_listener_plan;
 pub(crate) mod min3_physical;
 pub(crate) mod min3_provider_catalog;
 pub(crate) mod min3_provider_plan;
