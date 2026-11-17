@@ -8,10 +8,15 @@
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::auth;
-use busbar_plugin_abi::fail::{refused::R_CONFIG, Fail};
+use busbar_plugin_abi::fail::{
+    failed::{F_TIMEOUT, F_UNAVAILABLE},
+    refused::R_CONFIG,
+    Fail,
+};
 use busbar_plugin_abi::host::{Host, HostExt};
 use busbar_plugin_abi::host_side::needs::NeedErr;
-use busbar_plugin_abi::need::{self, ChainBytes, Commit, Mut, Pred, Record, RecordOut};
+use busbar_plugin_abi::need::need::{self, Commit, Mut, Pred, Record, RecordOut};
+use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
 use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
 use busbar_plugin_test::fake_needs::RecordStep;
@@ -36,6 +41,7 @@ impl Open for RecordAuth {
     }
     fn describe(d: &mut Describe<'_>) {
         d.schema(r#"{"type":"object"}"#);
+        d.methods(auth::M_LOGIN);
         d.facts(auth::FB_LOGIN_CREDENTIAL);
     }
 }
@@ -175,8 +181,27 @@ fn auth_record_host_preserves_atomic_state_and_observations() {
     assert_eq!(call(&h, other.as_ref(), "get"), "absent");
     h.needs()
         .script_record(RecordStep::Error(NeedErr::Unavailable));
-    assert!(h.block_on(request(port.as_ref(), "get")).is_err());
+    assert!(matches!(
+        h.block_on(request(port.as_ref(), "get")),
+        Err(PortError::Failed {
+            code: F_UNAVAILABLE,
+            ..
+        })
+    ));
     assert_eq!(h.records(), before);
+    h.needs()
+        .script_record(RecordStep::Error(NeedErr::Unavailable));
+    assert!(matches!(
+        h.block_on(request(
+            port.as_ref(),
+            &format!("equals/{winner}/unavailable")
+        )),
+        Err(PortError::Failed {
+            code: F_UNAVAILABLE,
+            ..
+        })
+    ));
+    assert_eq!(h.records(), before, "unavailable commit leaves no effect");
 
     h.needs().script_record(RecordStep::BeforeCommit {
         key: KEY.to_vec(),
@@ -189,9 +214,13 @@ fn auth_record_host_preserves_atomic_state_and_observations() {
     assert_eq!(call(&h, port.as_ref(), "get"), "racer");
     h.needs()
         .script_record(RecordStep::CommitThenError(NeedErr::Timeout));
-    assert!(h
-        .block_on(request(port.as_ref(), "equals/racer/terminal"))
-        .is_err());
+    assert!(matches!(
+        h.block_on(request(port.as_ref(), "equals/racer/terminal")),
+        Err(PortError::Failed {
+            code: F_TIMEOUT,
+            ..
+        })
+    ));
     assert_eq!(
         call(&h, port.as_ref(), "get"),
         "terminal",
