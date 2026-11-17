@@ -5,6 +5,9 @@
 //! route-classes K2 amendment, PM option B). The 1.5.5 door read the same pools.
 use super::*;
 
+/// Core's built-in scope kind (`ScopeRef::pool`), the only kind R5 applies to.
+const POOL_KIND: &str = "pool";
+
 /// One section pool: its member entries in configured order, its `on_exhausted.fallback_pool`
 /// and its `member_granted` flag. Root reads it from the plane's section; it grants nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -57,14 +60,28 @@ impl RequestRoutes {
         Ok(self)
     }
 
-    /// Whether `key` may route over section pool `name`.
+    /// R5 gates a pool on its members only for the core kind `pool` (errata §2.3 R5).
+    fn member_gated(&self, pool: &SectionPool) -> bool {
+        pool.member_granted && self.scope_kind.as_deref() == Some(POOL_KIND)
+    }
+
+    /// Whether `key` may route over section pool `name` (`DoorPools::pool_granted`): an ordinary
+    /// pool on its own name; a member-granted pool on any member the key grants, never on its
+    /// name (#108, R5).
     fn section_pool_admits(
         &self,
         key: &VirtualKey,
         selection: Option<&SelectedResources>,
         name: &str,
     ) -> bool {
-        self.section_pools.contains_key(name) && self.scope_admits(key, selection, name)
+        match self.section_pools.get(name) {
+            Some(pool) if self.member_gated(pool) => pool
+                .members
+                .iter()
+                .any(|member| self.scope_admits(key, selection, member)),
+            Some(_) => self.scope_admits(key, selection, name),
+            None => false,
+        }
     }
 
     /// The selected pool and its fallback must both be granted (`DoorPools::granted_known`).
@@ -83,7 +100,9 @@ impl RequestRoutes {
             .all(|pool| self.section_pool_admits(key, selection, pool))
     }
 
-    /// Whether `key` may reach `member` (an entry name) of section pool `name`.
+    /// Whether `key` may reach `member` (an entry name) of section pool `name`
+    /// (`DoorPools::granted_members`): every member of an ordinary pool it may walk; of a
+    /// member-granted pool only the members the key grants (#108, R5).
     pub(super) fn section_member_admits(
         &self,
         key: &VirtualKey,
@@ -91,10 +110,17 @@ impl RequestRoutes {
         name: &str,
         member: &str,
     ) -> bool {
-        self.section_pools
-            .get(name)
-            .is_some_and(|pool| pool.members.iter().any(|listed| listed == member))
-            && self.section_pool_admits(key, selection, name)
+        let Some(pool) = self.section_pools.get(name) else {
+            return false;
+        };
+        if !pool.members.iter().any(|listed| listed == member) {
+            return false;
+        }
+        if self.member_gated(pool) {
+            self.scope_admits(key, selection, member)
+        } else {
+            self.scope_admits(key, selection, name)
+        }
     }
 
     /// Each section pool the key may walk, with only the members it may reach.

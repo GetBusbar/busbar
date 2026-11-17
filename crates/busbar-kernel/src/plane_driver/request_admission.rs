@@ -152,8 +152,8 @@ impl RequestRoutes {
         }
     }
 
-    // These resolved producers describe ordinary pool/direct scope. A descriptor requiring
-    // member-granted semantics needs its typed producer before root can assemble this path.
+    // Catalog and registration walks are ordinary pool/direct scope. Member-granted pools are
+    // the section pools, granted per member in `section_grants` (#108, R5).
     fn member_grants(
         &self,
         key: &VirtualKey,
