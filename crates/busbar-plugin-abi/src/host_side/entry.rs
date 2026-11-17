@@ -120,7 +120,7 @@ impl Drop for MigrationScope {
 }
 
 pub(crate) fn migration_admitted(count: u64) -> bool {
-    if busbar_ffi::host::teardown_active() || owner().is_none() {
+    if deny_service() || busbar_ffi::host::teardown_active() || owner().is_none() {
         return false;
     }
     MIGRATION
