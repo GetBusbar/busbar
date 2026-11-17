@@ -185,7 +185,9 @@ impl SessionSignals for Signals {
         flags: u32,
         bytes: &[u8],
     ) -> u32 {
-        assert!(authority.is_live());
+        if !authority.is_live() {
+            return 0;
+        }
         self.signal(instance, key, None, flags, bytes)
     }
     fn signal(
