@@ -1474,6 +1474,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         self.proxy.instance().facts
     }
 
+    fn has_demux(&self) -> bool {
+        self.proxy.instance().methods & p::M_DEMUX != 0
+    }
+
     fn tick_s(&self) -> Option<u64> {
         self.describe.tick_s
     }
