@@ -30,21 +30,6 @@ impl<I: InFrame, O: OutFrame> Ticketed<I, O> {
         })
     }
 
-    pub(crate) fn bind_child(
-        &self,
-        caller: &busbar_contract::services::Caller,
-        child: Arc<dyn busbar_contract::services::HookChildInvocation>,
-    ) {
-        self.dispatcher
-            .services()
-            .bind_child(self.ticket, caller, child);
-    }
-
-    pub(crate) fn watched(mut self, watch: Duration) -> Self {
-        self.watch = watch;
-        self
-    }
-
     pub(crate) fn submit<K: Kind>(
         &mut self,
         plugin: &Plugin<K>,
@@ -93,7 +78,6 @@ impl<I: InFrame, O: OutFrame> Future for Ticketed<I, O> {
 impl<I, O> Drop for Ticketed<I, O> {
     fn drop(&mut self) {
         drop(self.reply.take());
-        self.dispatcher.services().unbind_child(self.ticket);
         self.dispatcher.recycle(self.ticket);
     }
 }

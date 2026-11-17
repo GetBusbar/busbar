@@ -184,3 +184,40 @@ async fn t13_a_signal_after_the_handoff_leaves_the_exit_to_the_listener() {
     // Nothing was retired: the writer row still admits this owner.
     assert_eq!(first_start.abandon().await, Ok(Abandoned::Retired));
 }
+
+/// DES-334 D1: docs/operations.md "Exit statuses" lists exactly the statuses the process exits
+/// with, each bound to its named constant: 0 (retired), 75, 70 and 143, in that order.
+#[test]
+fn operations_doc_exit_statuses_match_the_exit_constants() {
+    use busbar_kernel::governance::drain::{EXIT_SPEND_SAVED_STREAMS_CUT, EXIT_SPEND_UNSAVED};
+    const OPERATIONS: &str = include_str!("../../../../../docs/operations.md");
+    let section = OPERATIONS
+        .split_once("\n### Exit statuses\n")
+        .expect("docs/operations.md has an \"Exit statuses\" section")
+        .1;
+    let section = section.split("\n#").next().unwrap_or(section);
+    let rows: Vec<(i32, &str)> = section
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.strip_prefix('|')?.split('|').map(str::trim);
+            let status = cells.next()?.parse().ok()?;
+            Some((status, cells.next()?))
+        })
+        .collect();
+    let want: [(i32, &str); 4] = [
+        (0, "Clean: the writer retired"),
+        (
+            EXIT_SPEND_SAVED_STREAMS_CUT,
+            "Spend saved; open streams were cut; the writer was not retired",
+        ),
+        (
+            EXIT_SPEND_UNSAVED,
+            "Spend not persisted (`unpersisted` or `in_doubt` non-empty at the cut)",
+        ),
+        (EXIT_SIGNALLED, "Signalled before the listener came up"),
+    ];
+    assert_eq!(
+        rows, want,
+        "the documented exit statuses drifted from the code"
+    );
+}

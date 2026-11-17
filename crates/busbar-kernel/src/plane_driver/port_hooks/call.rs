@@ -149,15 +149,9 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
                 context: &context,
             };
             let result = handle.block_on(async {
-                tokio::time::timeout_at(
-                    deadline.into(),
-                    crate::hook_child::SCOPE.scope(
-                        crate::hook_child::Scope::new(context.clone()),
-                        invoke(&call, point, &input, deadline),
-                    ),
-                )
-                .await
-                .map_err(|_| Failed::Port)?
+                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
+                    .await
+                    .map_err(|_| Failed::Port)?
             });
             let _ = sent.send(result);
         }))
@@ -278,7 +272,11 @@ async fn invoke(
                 rec.flags |= abi::C_HAS_BUDGET;
                 rec.budget_remaining_micros = value;
             }
-            if let Some(value) = facts.error_rate {
+            // Opt-in: encoded only when this Call requested it (DES-NATIVE-HOOKS-PARITY r3 §E).
+            if let Some(value) = facts.error_rate.filter(|_| {
+                call.signals
+                    .wants(busbar_contract::signal::Signal::CandidateErrorRate)
+            }) {
                 rec.flags |= abi::C_HAS_ERROR_RATE;
                 rec.error_rate_ppm = ppm(value);
             }

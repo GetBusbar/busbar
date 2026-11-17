@@ -1835,3 +1835,172 @@ async fn a_client_opening_learns_its_stream_and_its_later_pieces_go_on_it() {
         bytes: Vec::new(),
     }));
 }
+
+// ---- #102: the native listener's output-stall bound ----
+
+/// A peer that stopped reading: reads never arrive, writes never progress.
+struct StoppedReader;
+
+impl AsyncRead for StoppedReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for StoppedReader {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Pending
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+/// A slow-read peer: it accepts one byte per tick, forever, so every write makes progress.
+struct Trickle {
+    tick: std::pin::Pin<Box<tokio::time::Sleep>>,
+}
+
+impl Trickle {
+    const EVERY: Duration = Duration::from_millis(20);
+
+    fn new() -> Self {
+        Self {
+            tick: Box::pin(tokio::time::sleep(Self::EVERY)),
+        }
+    }
+}
+
+impl AsyncRead for Trickle {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for Trickle {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if bytes.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        match std::future::Future::poll(self.tick.as_mut(), cx) {
+            Poll::Ready(()) => {
+                let next = tokio::time::Instant::now() + Self::EVERY;
+                self.tick.as_mut().reset(next);
+                Poll::Ready(Ok(1))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+const STALL_BOUND: Duration = Duration::from_millis(300);
+/// Scheduling slack only; the bound itself is asserted from below.
+const STALL_SLACK: Duration = Duration::from_secs(3);
+
+fn assert_stall_closed<S>(
+    outcome: &Outcome<S>,
+    elapsed: Duration,
+    bound: Duration,
+    dropped: &AtomicU64,
+) {
+    assert!(
+        matches!(outcome, Outcome::Lost(e) if e.kind() == std::io::ErrorKind::TimedOut),
+        "a stalled peer loses the connection with TimedOut"
+    );
+    assert!(elapsed >= bound, "the bound is not cut short: {elapsed:?}");
+    assert!(
+        elapsed < bound + STALL_SLACK,
+        "the output stall is bounded: {elapsed:?}"
+    );
+    assert_eq!(
+        dropped.load(Ordering::Relaxed),
+        1,
+        "the connection handle, and with it the connection slot, is released"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_that_stops_reading_is_closed_at_the_write_timeout() {
+    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let mut r = rig();
+    r.wiring.write_timeout = STALL_BOUND;
+    let started = tokio::time::Instant::now();
+    let outcome = drive(
+        s.conn,
+        vec![Act::Write(vec![0x5a; 4096].as_slice().into())],
+        StoppedReader,
+        r.wiring,
+    )
+    .await;
+    assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
+}
+
+#[tokio::test]
+async fn a_slow_reader_cannot_extend_the_write_deadline_with_partial_progress() {
+    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let mut r = rig();
+    r.wiring.write_timeout = STALL_BOUND;
+    let started = tokio::time::Instant::now();
+    // 4096 bytes at one byte per 20 ms would take over 80 s; every write makes progress, but
+    // the deadline is absolute for the whole answer.
+    let outcome = drive(
+        s.conn,
+        vec![Act::Write(vec![0x5a; 4096].as_slice().into())],
+        Trickle::new(),
+        r.wiring,
+    )
+    .await;
+    assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
+}
+
+#[tokio::test]
+async fn a_core_drain_close_to_a_stopped_reader_is_bounded_by_the_drain_grace() {
+    let s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
+    let mut r = rig();
+    r.wiring.drain_grace = STALL_BOUND;
+    r.close.send(CR_DRAIN).expect("drain");
+    let started = tokio::time::Instant::now();
+    let outcome = drive(s.conn, Vec::new(), StoppedReader, r.wiring).await;
+    assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
+}

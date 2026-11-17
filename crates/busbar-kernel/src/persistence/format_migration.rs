@@ -157,9 +157,13 @@ impl MigrationOwner {
         mutations.push(busbar_contract::persistence::Mutation::Put {
             address: manifest,
             value: Secret::new(
-                Manifest { dataset, registrar }
-                    .encode_at(format, 0)
-                    .to_vec(),
+                Manifest {
+                    dataset,
+                    registrar,
+                    format,
+                }
+                .encode_at(format, 0)
+                .to_vec(),
             ),
         });
         mutations.extend(registrar_rows);

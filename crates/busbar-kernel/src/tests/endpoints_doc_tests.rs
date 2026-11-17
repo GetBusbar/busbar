@@ -59,3 +59,24 @@ fn stats_lane_has_no_limit_alias() {
         "the `limit` alias is removed in 1.6.0: {body}"
     );
 }
+
+/// DES-331 §B10.4: in restore quarantine `/readyz` is 503 with a JSON body naming
+/// `store_restored` first, and `not_ready` too when the ordinary checks also fail.
+#[tokio::test]
+async fn readyz_in_restore_quarantine_names_its_reasons() {
+    for (otherwise_ready, reasons) in [
+        (true, vec!["store_restored"]),
+        (false, vec!["store_restored", "not_ready"]),
+    ] {
+        let response = super::restore_quarantined(otherwise_ready);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let expected = busbar_contract::json::json!({ "ready": false, "reasons": reasons });
+        assert_eq!(busbar_contract::json::parse_value(&body).unwrap(), expected);
+    }
+}

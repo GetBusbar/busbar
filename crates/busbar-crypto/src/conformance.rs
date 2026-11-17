@@ -2,13 +2,40 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The conformance suite every backend must pass (CRYPTO-SEAM §6 T2). It lives in this public crate
-//! (feature `test-support`) so a private build runs the identical source against its swapped-in
-//! backend (decision 152). Each check asserts the published known answer or, where the backend
-//! refuses the algorithm, an explained [`Error::Unsupported`] and `supports(..) == false`.
+//! (feature `conformance`, which `test-support` includes) so a private build runs the identical source
+//! against its swapped-in backend (decision 152). `conformance` forces neither `tls` nor the backend's
+//! `test-support`; `tls_handshake` is built only under `tls`. Each check asserts the published known
+//! answer or, where the backend refuses the algorithm, an explained [`Error::Unsupported`] and
+//! `supports(..) == false`.
 
 #![allow(clippy::missing_panics_doc, clippy::unwrap_used)]
 
 use crate::*;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// The contract this suite was written against: ci/crypto-api.pin's last line, verbatim (DES-3
+/// sign-off; tests/fips_gate.rs holds the two equal). A conformance record carries it, and a release
+/// matches it against the engine tag's pin.
+pub const CONTRACT_PIN: &str = "backend 3 0xec41a215a08bc2fb";
+
+/// The optional refusal sites (DES crypto-seam r3 §5.2), numbered 1 to 8: algorithms a FIPS
+/// boundary may exclude, where a refusal is accepted instead of the known answer.
+/// 1 HMAC-SHA256 short key (MAC), 2 the same at key construction, 3 PBKDF2 c = 1 / 4-byte salt,
+/// 4 AES-GCM caller nonce, 5 SHA-1, 6 MD5, 7 RSA-OAEP-SHA1, 8 HMAC-SHA384 short key.
+const SITES: usize = 8;
+
+/// Refusals per site, process-global: a harness that runs each check as its own test reads the
+/// same counts as one that runs [`all`].
+static REFUSALS: [AtomicU32; SITES] = [const { AtomicU32::new(0) }; SITES];
+
+/// The optional sites (1..=8, ascending) at which the linked backend refused at least once in this
+/// process. Read it after [`all`]: the record's refusal set, compared with the expected list.
+pub fn refusals() -> Vec<u8> {
+    (1..=SITES)
+        .filter(|&site| REFUSALS[site - 1].load(Ordering::Relaxed) > 0)
+        .map(|site| u8::try_from(site).unwrap())
+        .collect()
+}
 
 fn h(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -24,13 +51,15 @@ fn a<const N: usize>(s: &str) -> [u8; N] {
     h(s).try_into().unwrap()
 }
 
-/// Whether `r` is a refusal by the linked backend naming `alg`.
-fn refused<T: core::fmt::Debug>(r: &Result<T, Error>, alg: &str) -> bool {
+/// Whether `r`, at optional site `site` (1..=8), is a refusal by the linked backend naming `alg`;
+/// a refusal is counted in [`refusals`].
+fn refused<T: core::fmt::Debug>(site: usize, r: &Result<T, Error>, alg: &str) -> bool {
     match r {
         Err(Error::Unsupported(u)) => {
             assert_eq!(u.backend, BACKEND);
             assert!(u.alg.contains(alg), "{u:?}");
             assert!(!u.reason.is_empty());
+            REFUSALS[site - 1].fetch_add(1, Ordering::Relaxed);
             true
         }
         _ => false,
@@ -52,6 +81,10 @@ pub fn backend_const() {
     }
     // One answer for the external-plugin gate: the backend's required const (IF §5.2 round 13).
     assert_eq!(supports("EXTERNAL_PLUGINS"), EXTERNAL_PLUGINS);
+    // The one validated-mode answer (ADMIN-API-1.6-ONE-MODEL §10.1): `VALIDATED_MODE` is
+    // `VALIDATION.is_some()` and nothing else, and a stated validation says something.
+    assert_eq!(VALIDATED_MODE, VALIDATION.is_some());
+    assert!(VALIDATION.is_none_or(|v| !v.is_empty()));
 }
 
 /// SHA-2, the audit link, constant-time comparison.
@@ -121,8 +154,8 @@ pub fn hmac() {
             a::<32>("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
         );
     } else {
-        assert!(refused(&jefe, "HMAC"));
-        assert!(refused(&HmacSha256Key::new(b"Jefe").map(|_| ()), "HMAC"));
+        assert!(refused(1, &jefe, "HMAC"));
+        assert!(refused(2, &HmacSha256Key::new(b"Jefe").map(|_| ()), "HMAC"));
     }
 }
 
@@ -145,7 +178,7 @@ pub fn kdf() {
     // RFC 7914 §11 (c = 1, a 4-byte salt): outside SP 800-132, so a FIPS backend refuses it.
     let mut dk = [0_u8; 64];
     let r = pbkdf2_hmac_sha256(b"passwd", b"salt", 1, &mut dk);
-    if !refused(&r, "PBKDF2") {
+    if !refused(3, &r, "PBKDF2") {
         r.unwrap();
         assert_eq!(
             dk,
@@ -207,7 +240,7 @@ pub fn aead() {
     assert_eq!(c, [0; 16]);
     let mut buf = [0_u8; 16];
     let r = k128.seal_in_place(&[0; 12], b"", &mut buf);
-    if refused(&r, "GCM") {
+    if refused(4, &r, "GCM") {
         assert_eq!(buf, [0; 16], "a refused seal must not touch the buffer");
     } else {
         assert_eq!(r.unwrap(), a::<16>("ab6e47d42cec13bdf53a67b21257bddf"));
@@ -431,7 +464,7 @@ pub fn signatures() {
 /// MD5 (RFC 1321), SHA-1 (FIPS 180-4), HMAC-SHA1 (RFC 2202), RSA-OAEP-SHA1.
 pub fn legacy_algs() {
     let sha1 = legacy::sha1(b"abc");
-    if !refused(&sha1, "SHA") {
+    if !refused(5, &sha1, "SHA") {
         assert_eq!(
             sha1.unwrap(),
             a::<20>("a9993e364706816aba3e25717850c26c9cd0d89d")
@@ -445,7 +478,7 @@ pub fn legacy_algs() {
     if supports(alg::MD5) {
         assert_eq!(md5.unwrap(), a::<16>("900150983cd24fb0d6963f7d28e17f72"));
     } else {
-        assert!(refused(&md5, "MD5"));
+        assert!(refused(6, &md5, "MD5"));
     }
     let pubk = rsa::SigningKey::from_pkcs8(include_bytes!("../fixtures/rsa2048.pk8.der"))
         .unwrap()
@@ -461,7 +494,7 @@ pub fn legacy_algs() {
         legacy::rsa_oaep_public_key_check(&pubk).unwrap();
         assert!(legacy::rsa_oaep_public_key_check(b"not a key").is_err());
     } else {
-        assert!(refused(&c, "OAEP"));
+        assert!(refused(7, &c, "OAEP"));
     }
 }
 
@@ -482,7 +515,7 @@ pub fn host_algs() {
             a::<48>("af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649")
         );
     } else {
-        assert!(refused(&jefe, "HMAC"));
+        assert!(refused(8, &jefe, "HMAC"));
     }
 
     // AES-CTR: four blocks under AES-128 and AES-256, back again, and a partial final block.

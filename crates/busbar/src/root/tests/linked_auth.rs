@@ -59,7 +59,7 @@ async fn probe(
         req = req.bearer_auth(b);
     }
     if let Some(h) = header {
-        req = req.header("authorization", format!("Bearer {}", h));
+        req = req.header("x-admin-token", h);
     }
     let resp = req.send().await.unwrap();
     let status = resp.status().as_u16();
@@ -268,7 +268,7 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     );
     assert_eq!(
         axis.carriers(config::operator_provider()),
-        vec!["authorization".to_string(), "x-admin-token".to_string()]
+        vec!["authorization".to_string()]
     );
 }
 
@@ -276,19 +276,21 @@ include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(linked_auth);
 
 #[tokio::test]
-async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
+async fn the_admin_door_answers_only_the_bearer_through_the_linked_row() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(10));
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
         (None, None, 401),
         (Some(TOKEN), None, 200),
-        (None, Some(TOKEN), 200),
+        // x-admin-token is no carrier (ADMIN-API-1.6-ONE-MODEL §8.1, busbar#314): it never
+        // identifies and never rescues a wrong Bearer.
+        (None, Some(TOKEN), 401),
         (Some("wrong"), None, 401),
         (None, Some("wrong"), 401),
-        (Some("wrong"), Some(TOKEN), 200),
+        (Some("wrong"), Some(TOKEN), 401),
         (Some(TOKEN), Some("wrong"), 200),
-        (Some(jws), Some(TOKEN), 200),
+        (Some(jws), Some(TOKEN), 401),
         (Some(jws), None, 401),
     ];
     for (bearer, header, want) in cases {
@@ -858,7 +860,7 @@ async fn an_empty_admin_chain_admits_no_one_on_the_loop() {
 }
 
 #[tokio::test]
-async fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
+async fn the_loop_judges_the_operator_token_on_the_bearer_only() {
     let op = op();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(
         app(&[op], Vec::new()).await,
@@ -867,12 +869,14 @@ async fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
     let cases: [(Option<&str>, Option<&str>, u16); 9] = [
         (None, None, 401),
         (Some(TOKEN), None, 200),
-        (None, Some(TOKEN), 200),
+        // x-admin-token is no carrier (ADMIN-API-1.6-ONE-MODEL §8.1, busbar#314): it never
+        // identifies and never rescues a wrong Bearer.
+        (None, Some(TOKEN), 401),
         (Some("wrong"), None, 401),
         (None, Some("wrong"), 401),
-        (Some("wrong"), Some(TOKEN), 200),
+        (Some("wrong"), Some(TOKEN), 401),
         (Some(TOKEN), Some("wrong"), 200),
-        (Some(jws), Some(TOKEN), 200),
+        (Some(jws), Some(TOKEN), 401),
         (Some(jws), None, 401),
     ];
     for (bearer, header, want) in cases {
@@ -1260,10 +1264,10 @@ fn env_ref(var: &str) -> SecretRef {
         .reference(var)
 }
 
-/// The fixture request's presented credential: an `authorization` value (a `Bearer` scheme
-/// stripped) or else the `x-admin-token` value; empty values present nothing.
+/// The fixture request's presented credential: the `authorization` value (a `Bearer` scheme
+/// stripped); an empty value presents nothing. `x-admin-token` is no carrier (busbar#314).
 fn fixture_credential(headers: &axum::http::HeaderMap) -> Option<String> {
-    let authorization = headers
+    headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .map(|value| {
@@ -1275,12 +1279,5 @@ fn fixture_credential(headers: &axum::http::HeaderMap) -> Option<String> {
                 _ => trimmed.to_string(),
             }
         })
-        .filter(|credential| !credential.is_empty());
-    authorization.or_else(|| {
-        headers
-            .get(crate::root::units_admin::ADMIN_TOKEN_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string)
-            .filter(|credential| !credential.is_empty())
-    })
+        .filter(|credential| !credential.is_empty())
 }
