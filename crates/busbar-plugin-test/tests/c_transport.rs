@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! C-TRANSPORT (ABI-MIN3-INTERFACE §14): TRANSPORT-SECURITY-POLICY §8 tests 1-15 (replaces C-TLS-REFUSED, rule
-//! 14). Test 11 is W1-X1's source check. The generic ENDPOINT match is `FakeNeeds::undeclared`, run by every suite.
+//! 14). Test 11 is W1-X1's source check, busbar-ci-checks `c-transport` (core_src.rs) and the plugin
+//! repos' loopback lint (plugin_rules.rs). The generic ENDPOINT match is `FakeNeeds::undeclared`, run by every
+//! suite.
 //!
 //! WBS rule 10: each arm is ignored for the task that lands the last piece it needs; that task writes
 //! the arm's body and un-ignores it in its own MR (red first, then green).
@@ -523,12 +525,6 @@ fn transport_need_time_authoritative() {
 #[ignore = "owner: W1-C1A. Remaining: the BUSBAR-3161 refusal is rendered nowhere on dev (only named in plugin-loader instance.rs `judge_endpoints`' doc); the self-signed server dial with `trust_anchors` / `destinations[].verify: pin` (kernel config/tls.rs `TlsDestinationCfg.verify`) is the connector's TLS dial (`HostNeeds::open` over `ConnectorIo`), with no harness here"]
 fn transport_verify_options() {
     todo!("owner: W1-C1A (C-TRANSPORT)")
-}
-
-#[test]
-#[ignore = "owner: W1-X1 (blocked: the source check has no scanner in this crate for `is_loopback`/`names_loopback`/`plaintext` field/`limits.plaintext` across core and every plugin repo (busbar-core-connector guard.rs still defines `is_loopback` and `names_loopback`; which call sites are admission paths is the scanner's judgement); the plugin-repo half is the fleet lint)"]
-fn transport_source_checks() {
-    todo!("owner: W1-X1 (C-TRANSPORT)")
 }
 
 #[test]
