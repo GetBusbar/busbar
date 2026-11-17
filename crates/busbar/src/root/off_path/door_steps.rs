@@ -718,6 +718,27 @@ pub(crate) fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn prepare_read(
+        &self,
+        input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
+    ) -> Result<
+        busbar_kernel::config::grammar::PreparedConfigRead,
+        busbar_kernel::config::GrammarRefusal,
+    > {
+        self.reader.prepare_read(input)
+    }
+
+    fn prepare_candidate<'a>(
+        &'a self,
+        cfg: &'a busbar_kernel::config::RootCfg,
+        plugins: &'a busbar_kernel::config::PluginsCfg,
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
+        'a,
+        Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+    > {
+        self.reader.prepare_candidate(cfg, plugins)
+    }
+
     fn grammar(
         &self,
         input: &busbar_kernel::config::grammar::PhaseOneIn<'_>,
