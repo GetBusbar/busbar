@@ -1065,6 +1065,9 @@ pub struct AuthorizedPhysicalData {
     physical: PhysicalExecutionOwner,
 }
 impl AuthorizedPhysicalData {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        self.physical.binding()
+    }
     pub(crate) fn into_parts(self) -> (DataAuthorization, PhysicalExecutionOwner) {
         (self.authorization, self.physical)
     }
