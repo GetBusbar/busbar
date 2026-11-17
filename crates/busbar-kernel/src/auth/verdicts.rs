@@ -697,4 +697,92 @@ mod tests {
         .checked()
         .is_err());
     }
+
+    /// #359 SEC-L12 (DES-359 r3): a lookup still in flight never takes room from a cached identity. A
+    /// flood of unknown credentials leaves every cached identity answering from the cache.
+    #[test]
+    fn unknown_credential_leads_never_evict_a_cached_identity() {
+        let cache = book(2);
+        lead(cache.start(key(1, 1), 0)).settle(&Ok((Who(1), Some(600))), 0);
+        lead(cache.start(key(1, 2), 0)).settle(&Ok((Who(2), Some(600))), 0);
+        let flood: Vec<_> = (10..110u8)
+            .map(|byte| cache.start(key(1, byte), 1))
+            .collect();
+        assert!(flood.iter().all(|get| !matches!(get, VerdictGet::Hit(_))));
+        assert_eq!(hit(cache.start(key(1, 1), 2)), Some(Who(1)), "still cached");
+        assert_eq!(hit(cache.start(key(1, 2), 2)), Some(Who(2)), "still cached");
+        drop(flood);
+    }
+
+    /// #359 SEC-L12 B-R1: a lead is keyed by (auth instance, policy epoch, credential): the same credential
+    /// on two instances leads twice, never follows the other instance.
+    #[test]
+    fn the_same_credential_on_two_instances_leads_on_each() {
+        let cache = book(4_096);
+        let _first = lead(cache.start(key(1, 5), 0));
+        let _second = lead(cache.start(key(2, 5), 0));
+        let _other_epoch = lead(cache.start(
+            VerdictKey {
+                policy_epoch: 1,
+                ..key(1, 5)
+            },
+            0,
+        ));
+    }
+
+    /// #359 SEC-L12: at capacity a positive fill evicts the least recently referenced identity, not the
+    /// one with the soonest expiry: a referenced identity survives.
+    #[test]
+    fn a_positive_fill_at_capacity_evicts_the_least_recently_referenced() {
+        let cache = book(2);
+        lead(cache.start(key(1, 1), 0)).settle(&Ok((Who(1), Some(50))), 0);
+        lead(cache.start(key(1, 2), 0)).settle(&Ok((Who(2), Some(100))), 0);
+        assert_eq!(hit(cache.start(key(1, 1), 1)), Some(Who(1)));
+        lead(cache.start(key(1, 3), 2)).settle(&Ok((Who(3), Some(100))), 2);
+        assert_eq!(
+            hit(cache.start(key(1, 1), 3)),
+            Some(Who(1)),
+            "referenced: kept"
+        );
+        assert_eq!(hit(cache.start(key(1, 3), 3)), Some(Who(3)), "filled");
+        assert!(
+            hit(cache.start(key(1, 2), 3)).is_none(),
+            "unreferenced: evicted"
+        );
+        assert_eq!(cache.keys(1), 2);
+    }
+
+    /// #359 SEC-L12: the eviction sweep is bounded. With every identity recently referenced, a fill looks
+    /// at no more than 16 slots and then does not fill; the sweep resumes where it stopped.
+    #[test]
+    fn the_eviction_sweep_stops_after_sixteen_steps_and_resumes_where_it_stopped() {
+        let cache = book(32);
+        for byte in 0..32u8 {
+            lead(cache.start(key(1, byte), 0)).settle(&Ok((Who(u32::from(byte)), Some(600))), 0);
+        }
+        for byte in 0..32u8 {
+            assert!(hit(cache.start(key(1, byte), 1)).is_some());
+        }
+        lead(cache.start(key(1, 100), 2)).settle(&Ok((Who(100), Some(600))), 2);
+        assert!(
+            hit(cache.start(key(1, 100), 3)).is_none(),
+            "16 referenced slots: no fill"
+        );
+        assert_eq!(cache.keys(1), 32);
+        lead(cache.start(key(1, 101), 3)).settle(&Ok((Who(101), Some(600))), 3);
+        assert!(
+            hit(cache.start(key(1, 101), 4)).is_none(),
+            "the next 16: no fill"
+        );
+        lead(cache.start(key(1, 102), 4)).settle(&Ok((Who(102), Some(600))), 4);
+        assert_eq!(
+            hit(cache.start(key(1, 102), 5)),
+            Some(Who(102)),
+            "the sweep wrapped to a cleared slot"
+        );
+        assert!(
+            hit(cache.start(key(1, 0), 5)).is_none(),
+            "slot 0 was the victim"
+        );
+    }
 }
