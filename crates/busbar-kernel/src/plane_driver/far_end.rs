@@ -435,7 +435,11 @@ impl Egress {
             .get(pool)?
             .members
             .iter()
-            .find(|member| member.name == qualified_member && member.destination == destination)?
+            .find(|member| {
+                member.name == qualified_member
+                    && member.destination == destination
+                    && !member.passthrough
+            })?
             .clone();
         Some(self.probe_member(pool.to_owned(), member, timeout))
     }
@@ -1754,6 +1758,11 @@ impl EgressFarEnd<'_> {
         }
         let mut native = None;
         if let Some(AuthBinding::Native(bindings)) = route.auth.as_ref().filter(|_| !bound) {
+            if self.live_passthrough() {
+                self.lock().refused = Some(ReasonCode::CredentialUnavailable);
+                self.settle_attempt(&record);
+                return false;
+            }
             let result = match bindings.select(&selected_pool, &qualified_member, destination) {
                 Ok(crate::auth_bindings::native::SelectedCredential::None) => Ok(None),
                 Ok(crate::auth_bindings::native::SelectedCredential::Required(binding)) => self
