@@ -945,6 +945,9 @@ pub(crate) struct ServedPlane {
     pub(crate) kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
     pub(crate) dialects: Vec<&'static str>,
+    /// The instance's core-held `insecure_transport.accept` (#297 model A): every exchange its units
+    /// make carries it ([`DoorFar`] sets `UnitRoute::accept`); empty = verified TLS only.
+    pub(crate) accept: busbar_plugin_abi::host_side::caller::Accept,
 }
 
 pub(crate) struct BoundConns {
@@ -1835,6 +1838,7 @@ impl DataRoutes {
                 Arc::clone(&live.ticket_nonce),
             );
             let far = DoorFar {
+                accept: served.accept,
                 observations: Some(observations::UnitBinding {
                     served,
                     live: &live,
@@ -2487,6 +2491,7 @@ impl DataRoutes {
                 .with_child_constraints(n.constraints.clone());
         }
         let far = DoorFar {
+            accept: served.accept,
             observations: Some(observations::UnitBinding {
                 served,
                 live: &live,
@@ -2682,6 +2687,8 @@ pub(crate) fn report_of(
 }
 
 pub(crate) struct DoorFar<'d, 's> {
+    /// The owning plane instance's core-held acceptance ([`ServedPlane::accept`], #297 model A).
+    pub(crate) accept: busbar_plugin_abi::host_side::caller::Accept,
     pub(crate) observations: Option<observations::UnitBinding<'d>>,
     pub(crate) egress: Option<&'d Egress>,
 
@@ -2715,6 +2722,7 @@ impl<'d> DoorFar<'d, '_> {
 
                     wants_stream: self.steps.streamed(),
                     affinity: self.steps.affinity(),
+                    accept: self.accept,
                     ..UnitRoute::default()
                 });
                 if let Some(described) = described {

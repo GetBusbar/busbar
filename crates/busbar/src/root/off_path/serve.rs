@@ -1145,6 +1145,11 @@ pub(crate) async fn compose_planes_over(
             live,
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
+            // #297 model A: the instance's `InstanceSpec.limits.accept`, the same value its native seat
+            // is opened with. A plane instance is never an `insecure_transport` block
+            // (`config::min3::blocks`), so its spec carries the default limits (`min3_boot` plane
+            // specs) and its acceptance is empty: verified TLS only.
+            accept: busbar_plugin_abi::host_side::caller::InstanceLimits::default().accept,
         });
     }
     served

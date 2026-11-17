@@ -171,6 +171,7 @@ async fn the_caller_secret_is_shared_from_the_door_to_the_far_ends_route() {
     let pool_name = egress_pool("p", &steps.routed().expect("the unit is routed to `e`"));
     let egress = egress_over(&pool_name);
     let far = DoorFar {
+        accept: Default::default(),
         observations: None,
         authorization: Arc::clone(&records),
         egress: Some(&egress),
