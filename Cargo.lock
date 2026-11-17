@@ -1540,7 +1540,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.11.1"
-source = "git+https://github.com/MattJackson/hyper?rev=5b1c5189a69c701c70221b04ff0f0a2fbcb4574c#5b1c5189a69c701c70221b04ff0f0a2fbcb4574c"
+source = "git+https://github.com/MattJackson/hyper?rev=c140435f43477ca3ffbdb2078a5994e9dfb11969#c140435f43477ca3ffbdb2078a5994e9dfb11969"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2504,7 +2504,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.46"
-source = "git+https://github.com/MattJackson/rustls?rev=a33d40bc1e034c617f566a7e2d70fef8422f43ba#a33d40bc1e034c617f566a7e2d70fef8422f43ba"
+source = "git+https://github.com/MattJackson/rustls?rev=02181ad51e81f9cb33a0648117b03039274716a3#02181ad51e81f9cb33a0648117b03039274716a3"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
