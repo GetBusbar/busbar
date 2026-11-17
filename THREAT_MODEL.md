@@ -198,6 +198,20 @@ Timeouts bound connect and overall duration (`upstream_request_timeout_secs`, de
 **Limit:** a per-attempt time-to-first-byte bound applies only where a pool member sets
 `attempt_timeout_ms`; otherwise the first byte is bounded by the remaining overall budget.
 
+The Hyper HTTP listener has an absolute 30-second first-complete-header deadline after
+plaintext IO becomes available, including protocol detection. After the first request,
+HTTP/2 connections close after 30 seconds with no active handler or unfinished request/response
+body. Control frames cannot extend either deadline. Owned deadline closure drops transport IO
+directly, including when writes block. Normal shutdown and read-drain share a 30-second total
+budget; admission capacity follows actual IO through that drain. These policies do not change
+plugin-framed session upgrades or datagram lifetimes.
+
+**Remaining active-stall limitation (#102):** HTTP/2 keepalive uses a 30-second interval and
+10-second acknowledgement timeout, but the library initiates protocol shutdown rather than a
+guaranteed hard socket close. An active peer that stops reading can block GOAWAY and retain its
+connection slot indefinitely. No hard active-stall or per-stream incomplete-header bound is
+claimed; a live request exempts its connection from the zero-active timer.
+
 ### T8: Supply-chain tampering (boundary 7)
 A backdoored binary, image or plugin must be detectable. **Mitigation in this tree:** release artifacts are signed by the release pipeline, never by a GitHub workflow or a CI-held key (a source
 rule, `crates/busbar-contract/tests/source_rules/workflows.rs`, prevents GitHub Actions from returning);
