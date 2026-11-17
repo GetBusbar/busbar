@@ -8,16 +8,19 @@ use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 
 fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
     PortRoutes {
-        data: entries.iter().map(|(route, pattern, methods)| Mounted {
-            route: *route,
-            methods: *methods,
-            flags: 0,
-            auth: AUTH_PRINCIPAL,
-            effective: AUTH_PRINCIPAL,
-            pattern: (*pattern).into(),
-            cred_header: None,
-            catalog: false,
-        }).collect(),
+        data: entries
+            .iter()
+            .map(|(route, pattern, methods)| Mounted {
+                route: *route,
+                methods: *methods,
+                flags: 0,
+                auth: AUTH_PRINCIPAL,
+                effective: AUTH_PRINCIPAL,
+                pattern: (*pattern).into(),
+                cred_header: None,
+                catalog: false,
+            })
+            .collect(),
         ..Default::default()
     }
 }
@@ -26,8 +29,12 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
 fn native_selection_uses_guest_precedence_and_the_data_mounts_verbs() {
     let generic = routes(&[(9, "/jobs/{id}", METHOD_GET)]);
     let exact = routes(&[(4, "/jobs/current", METHOD_GET), (5, "/head", METHOD_HEAD)]);
-    let selected = NativeNests::seal(Vec::new(), &[("generic", &generic), ("exact", &exact)]).unwrap();
-    assert_eq!(selected.selected("GET", "/jobs/current?cursor=2"), Some((1, 4)));
+    let selected =
+        NativeNests::seal(Vec::new(), &[("generic", &generic), ("exact", &exact)]).unwrap();
+    assert_eq!(
+        selected.selected("GET", "/jobs/current?cursor=2"),
+        Some((1, 4))
+    );
     assert_eq!(selected.selected("GET", "/jobs/other"), Some((0, 9)));
     assert_eq!(selected.selected("POST", "/jobs/current"), None);
     assert_eq!(selected.selected("HEAD", "/head"), None);
@@ -43,9 +50,18 @@ fn equal_precedence_native_destinations_refuse_before_publication() {
 #[test]
 fn a_core_claim_cannot_fall_through_to_a_broader_native_destination() {
     let core = Line {
-        route: Route { methods: METHOD_GET, path_form: PATH_EXACT, path: "/jobs/core".into(), fields: Vec::new(), rung: 0 },
-        claimant: Claimant::Clean("core".into()), dialect: 0, auth: LineAuth::None,
-        upgrade: None, offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        route: Route {
+            methods: METHOD_GET,
+            path_form: PATH_EXACT,
+            path: "/jobs/core".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Clean("core".into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
     };
     let native = routes(&[(1, "/jobs/{id}", METHOD_GET | METHOD_POST)]);
     let selected = NativeNests::seal(vec![core], &[("native", &native)]).unwrap();
@@ -54,21 +70,47 @@ fn a_core_claim_cannot_fall_through_to_a_broader_native_destination() {
 }
 
 fn reply(bound: usize) -> Reply {
-    Reply { state: Mutex::default(), bound, owner: None }
+    Reply {
+        state: Mutex::default(),
+        bound,
+        owner: None,
+    }
 }
 
 #[test]
 fn bounded_reply_preserves_status_fields_and_body_order() {
     let reply = reply(8);
-    assert!(reply.items(vec![ToClient::Head { status: 201, fields: vec![(b"x".to_vec(), b"y".to_vec())] }, ToClient::Body(b"ab".to_vec())]));
-    assert!(reply.items(vec![ToClient::Msg { flags: 0, bytes: b"cd".to_vec() }, ToClient::End]));
-    assert_eq!(reply.answer(), NestReply::Answered { status: 201, fields: vec![(b"x".to_vec(), b"y".to_vec())], body: b"abcd".to_vec() });
+    assert!(reply.items(vec![
+        ToClient::Head {
+            status: 201,
+            fields: vec![(b"x".to_vec(), b"y".to_vec())]
+        },
+        ToClient::Body(b"ab".to_vec())
+    ]));
+    assert!(reply.items(vec![
+        ToClient::Msg {
+            flags: 0,
+            bytes: b"cd".to_vec()
+        },
+        ToClient::End
+    ]));
+    assert_eq!(
+        reply.answer(),
+        NestReply::Answered {
+            status: 201,
+            fields: vec![(b"x".to_vec(), b"y".to_vec())],
+            body: b"abcd".to_vec()
+        }
+    );
 }
 
 #[test]
 fn reply_bound_covers_headers_and_body_and_cannot_recover_after_overflow() {
     let reply = reply(4);
-    assert!(reply.items(vec![ToClient::Head { status: 200, fields: vec![(b"x".to_vec(), b"y".to_vec())] }]));
+    assert!(reply.items(vec![ToClient::Head {
+        status: 200,
+        fields: vec![(b"x".to_vec(), b"y".to_vec())]
+    }]));
     assert!(!reply.items(vec![ToClient::Body(b"abc".to_vec())]));
     assert!(!reply.items(vec![ToClient::End]));
     assert_eq!(reply.answer(), NestReply::Failed(NEST_UNREAD));
