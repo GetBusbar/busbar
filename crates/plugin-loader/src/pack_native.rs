@@ -90,6 +90,20 @@ struct Inspection {
 }
 
 #[cfg(unix)]
+impl Inspection {
+    fn finish(mut self) -> Result<(), &'static str> {
+        let Some(custody) = self.custody.take() else {
+            return Ok(());
+        };
+        if crate::stage::close_on_worker(custody) {
+            Ok(())
+        } else {
+            Err("native pack teardown is uncertain; image backing retained")
+        }
+    }
+}
+
+#[cfg(unix)]
 impl Drop for Inspection {
     fn drop(&mut self) {
         if let Some(custody) = self.custody.take() {
@@ -142,6 +156,7 @@ fn inspect_names(bytes: &[u8], name: &str) -> Result<Vec<String>, String> {
             names.push(word.to_owned());
         }
     }
+    inspection.finish()?;
     Ok(names)
 }
 
