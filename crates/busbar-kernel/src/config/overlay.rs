@@ -704,8 +704,22 @@ pub async fn persist_async(
             if let Some(name) = deleted_remove {
                 doc.deleted.retain(|n| n != name);
             }
-            doc.hooks.clone_from(hooks);
-            doc.global_hooks = global_hooks.to_vec();
+            // The installed registry includes base definitions. Preserve old durable overlaps
+            // from this transaction's document, but never promote new base entries into it.
+            doc.hooks
+                .retain(|name, _| base_hook_names.contains(name) && hooks.contains_key(name));
+            doc.hooks.extend(
+                hooks
+                    .iter()
+                    .filter(|(name, _)| !base_hook_names.contains(*name))
+                    .map(|(name, hook)| (name.clone(), hook.clone())),
+            );
+            doc.global_hooks = persisted_global_hooks(
+                &doc.global_hooks,
+                global_hooks,
+                &doc.hooks,
+                base_hook_names,
+            );
             doc.deleted
                 .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
         })
@@ -729,11 +743,53 @@ pub async fn persist_groups_async(
             if let Some(name) = deleted_remove {
                 doc.deleted_groups.retain(|n| n != name);
             }
-            doc.groups = groups.clone();
+            doc.groups
+                .retain(|name, _| base_group_names.contains(name) && groups.contains_key(name));
+            doc.groups.extend(
+                groups
+                    .iter()
+                    .filter(|(name, _)| !base_group_names.contains(*name))
+                    .map(|(name, group)| (name.clone(), group.clone())),
+            );
             doc.deleted_groups
                 .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
         })
         .await
+}
+
+/// Keep durable base membership in its old slots, fill surviving API slots in current API order,
+/// then append additional API entries. Current file wiring never supplies membership or order.
+fn persisted_global_hooks(
+    old: &[String],
+    current: &[String],
+    hooks: &HashMap<String, HookCfg>,
+    base: &HashSet<String>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let api: Vec<_> = current
+        .iter()
+        .filter(|name| {
+            !base.contains(*name) && hooks.contains_key(*name) && seen.insert(name.as_str())
+        })
+        .collect();
+    let members: HashSet<_> = api.iter().map(|name| name.as_str()).collect();
+    let mut next_api = api.iter();
+    let mut old_seen = HashSet::new();
+    let mut result = Vec::new();
+    for name in old {
+        if !old_seen.insert(name.as_str()) {
+            continue;
+        }
+        if base.contains(name) && hooks.contains_key(name) {
+            result.push(name.clone());
+        } else if members.contains(name.as_str()) {
+            if let Some(next) = next_api.next() {
+                result.push((*next).clone());
+            }
+        }
+    }
+    result.extend(next_api.map(|name| (*name).clone()));
+    result
 }
 
 pub async fn persist_root_async(
