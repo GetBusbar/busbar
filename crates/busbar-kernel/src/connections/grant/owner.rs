@@ -187,10 +187,34 @@ impl CallerGrantOwner {
     }
     /// Explicit revoke creates a tombstone even if the initial grant was absent.
     pub async fn revoke(&self, key: &GrantKey) -> Result<(), GrantError> {
-        let prior = self.current(key).await?;
-        self.apply(self.records.revoke(key, prior.as_ref())?)
-            .await?;
-        Ok(())
+        let mut draft = self
+            .intents
+            .begin_operation()
+            .map_err(|_| GrantError::Unavailable)?;
+        // The keyed draft owns the shared local fence before its first Store
+        // read; it may read through its own fence, but no competing call may.
+        let row = draft
+            .read_current(key)
+            .await
+            .map_err(|_| GrantError::Unavailable)?;
+        let prior = row
+            .as_ref()
+            .map(|row| self.records.decode(key, row))
+            .transpose()?;
+        let change = self.records.revoke(key, prior.as_ref())?;
+        let mut operation = draft
+            .prepare(change)
+            .await
+            .map_err(|_| GrantError::Unavailable)?;
+        match operation
+            .drive()
+            .await
+            .map_err(|_| GrantError::Unavailable)?
+        {
+            Outcome::Applied => Ok(()),
+            Outcome::NoEffect | Outcome::Superseded => Err(GrantError::Stale),
+            Outcome::Pending | Outcome::Reconcile => Err(GrantError::Unavailable),
+        }
     }
     pub async fn acquire_mint(
         self: &Arc<Self>,
