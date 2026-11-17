@@ -3,6 +3,11 @@
 
 use super::*;
 
+type RetainedAnswer = (
+    AdminAnswer,
+    Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
+);
+
 pub(crate) struct AdminNode {
     pub(super) kernel: busbar_kernel::teller::Kernel,
     pub(super) units: crate::root::kernel::ProductionUnits,
@@ -23,42 +28,45 @@ impl AdminNode {
 
     #[cfg(test)]
     pub(crate) async fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        self.answer_with_admission(request, None).await
+        self.answer_with_admission(request, None, None).await.0
     }
 
     async fn answer_with_admission(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
-        let (answer, publication) = busbar_kernel::audit::auditlog::confirmed_request(
-            self.answer_confirmed(request, admission),
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> RetainedAnswer {
+        let ((answer, retained), publication) = busbar_kernel::audit::auditlog::confirmed_request(
+            self.answer_confirmed(request, admission, physical),
         )
         .await;
         if publication.is_err() {
-            return bound::journal_unavailable(
+            return (bound::journal_unavailable(
                 "the administrative result's audit publication is unconfirmed; do not re-submit",
-            );
+            ), retained);
         }
-        answer
+        (answer, retained)
     }
 
     async fn answer_confirmed(
         &self,
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
-    ) -> AdminAnswer {
+        physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    ) -> RetainedAnswer {
         if admission
             .as_ref()
             .is_some_and(|admission| !admission.begin_execution())
         {
-            return unavailable_answer();
+            return (unavailable_answer(), None);
         }
         let key = UnitKey::new(request.unit);
 
-        let arrived_at = request.at;
+        let arrived_at = request.at();
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
+        walk.physical_pending = physical;
         let ended = decide(&self.units, &mut walk).await;
         let facts = audit(&walk, &ended);
         let answer = walk
@@ -66,7 +74,8 @@ impl AdminNode {
             .take()
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
-        if self
+        let retained = walk.request.physical.clone();
+        let answer = if self
             .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
             .await
         {
@@ -75,7 +84,8 @@ impl AdminNode {
             bound::journal_unavailable(
                 "the administrative result's audit publication is unconfirmed; do not re-submit",
             )
-        }
+        };
+        (answer, retained)
     }
 
     async fn seal(
@@ -225,7 +235,8 @@ pub(crate) fn rate_limited_answer() -> AdminAnswer {
 }
 
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
+    let needed =
+        busbar_kernel::admin::scope::admin_required_scope(request.method(), request.path());
     error_answer_with_message(
         403,
         "forbidden",
@@ -317,8 +328,8 @@ pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Opti
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason)
             if class_of(reason) == RefusalClass::Unreadable
     );
-    let path = request.path.split('?').next().unwrap_or("");
-    (unreadable && request.method == "POST" && path == AMEND_RATE_HISTORY_PATH)
+    let path = request.path().split('?').next().unwrap_or("");
+    (unreadable && request.method() == "POST" && path == AMEND_RATE_HISTORY_PATH)
         .then(|| error_answer_with_message(400, "invalid_request", AMEND_RATE_HISTORY_SHAPE))
 }
 
@@ -375,18 +386,36 @@ async fn call(
     use tower::ServiceExt;
 
     let mut builder = axum::http::Request::builder()
-        .method(request.method.as_str())
-        .uri(request.path.as_str());
-    for (name, value) in &request.headers {
-        builder = builder.header(name.as_str(), value.as_str());
+        .method(request.method())
+        .uri(request.path());
+    for (name, value) in request.headers() {
+        builder = builder.header(name, value);
     }
-    builder = builder.extension(Arc::clone(replays));
+    builder = builder
+        .extension(Arc::clone(replays))
+        .extension(Arc::clone(request.snapshot()))
+        .extension(request.snapshot().request().clone());
     if let Some(admission) = admission {
         builder = builder.extension(admission);
     }
+    if let Some(physical) = &request.physical {
+        if physical.check_executing().is_err() {
+            return door_answer();
+        }
+        if !execution
+            .as_ref()
+            .is_some_and(|execution| Arc::ptr_eq(execution, physical.admission()))
+        {
+            return door_answer();
+        }
+        builder = builder.extension(physical.clone());
+    }
     if let Some(execution) = execution {
-        if let Some((lease, _)) = execution.native() {
-            if lease.invocation().request_id().get() != request.unit {
+        if let Some((lease, prepared)) = execution.native() {
+            if request.physical.is_none()
+                || lease.invocation().request_id().get() != request.unit
+                || !Arc::ptr_eq(prepared.request(), request.snapshot())
+            {
                 return door_answer();
             }
             builder = builder
@@ -394,7 +423,7 @@ async fn call(
                 .extension(execution);
         }
     }
-    let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
+    let Ok(http) = builder.body(axum::body::Body::from(request.snapshot().body_bytes())) else {
         return error_answer(400, "invalid_request");
     };
 
@@ -579,11 +608,11 @@ pub(crate) fn mount(
             async move {
                 use tower::ServiceExt;
 
-                let path = req.uri().path().to_string();
+                let path = req.uri().path();
                 let claimed = path.starts_with(busbar_contract::surface::ADMIN_PREFIX);
 
                 let declared =
-                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
+                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), path)
                         .is_some_and(|resolved| served_here(&resolved));
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
@@ -594,55 +623,121 @@ pub(crate) fn mount(
                     .get(axum::http::header::CONTENT_LENGTH)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.parse::<usize>().ok());
-                if declared.is_some_and(|len| len > request_body_max_bytes) {
+                if declared.is_some_and(|len| len > request_body_max_bytes)
+                    && req
+                        .extensions()
+                        .get::<busbar_kernel::inbound::native::AdminPhysicalRequest>()
+                        .is_none()
+                {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
-                let (parts, body) = req.into_parts();
+                let (mut parts, body) = req.into_parts();
+                let physical = match parts
+                    .extensions
+                    .remove::<busbar_kernel::inbound::native::AdminPhysicalRequest>(
+                ) {
+                    Some(carrier) => match carrier.take() {
+                        Ok(pending) => Some(pending),
+                        Err(_) => return http_response(door_answer()),
+                    },
+                    None => None,
+                };
                 let admission = parts
                     .extensions
                     .get::<busbar_kernel::inbound::RequestAdmission>()
                     .cloned();
 
-                let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
-                    if let Some(admission) = &admission {
-                        admission.refuse(
-                            busbar_contract::caps::StepName::Decode,
-                            ReasonCode::DecodeFailed,
-                        );
+                use busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot;
+                use busbar_kernel::limits::{input_body, process_admission::RequestLease};
+                // The transport owns the original admission and complete peer/TLS/head facts.
+                // Neither a new count permit nor a reconstructed empty transport view can replace it.
+                let Some(lease) = parts.extensions.get::<RequestLease>().cloned() else {
+                    return http_response(unavailable_answer());
+                };
+                let Some(snapshot) = parts
+                    .extensions
+                    .get::<Arc<ChargedRequestSnapshot>>()
+                    .cloned()
+                else {
+                    return http_response(unavailable_answer());
+                };
+                if !snapshot.request().same_request(&lease)
+                    || physical.as_ref().is_some_and(|pending| {
+                        admission.is_some()
+                            || !pending.binding().request().same_request(&lease)
+                            || !pending
+                                .binding()
+                                .snapshot()
+                                .is_ok_and(|original| Arc::ptr_eq(&original, &snapshot))
+                    })
+                {
+                    return http_response(unavailable_answer());
+                }
+                let bytes = match input_body::gather(body, &lease, request_body_max_bytes).await {
+                    Ok(bytes) => bytes,
+                    Err(input_body::GatherError::Capacity(_)) => {
+                        return http_response(unavailable_answer())
                     }
+                    Err(error) => {
+                        if let Some(admission) = &admission {
+                            admission.refuse(
+                                busbar_contract::caps::StepName::Decode,
+                                ReasonCode::DecodeFailed,
+                            );
+                        }
+                        let _ = error;
+                        let status = 400;
+                        return http_response(error_answer(status, "invalid_request"));
+                    }
+                };
+                let target = parts
+                    .uri
+                    .path_and_query()
+                    .map_or(parts.uri.path(), |v| v.as_str());
+                if !busbar_kernel::auth::native_admin::snapshot_matches_http(
+                    &snapshot,
+                    parts.method.as_str(),
+                    target,
+                    &parts.headers,
+                    &bytes,
+                ) {
                     return http_response(error_answer(400, "invalid_request"));
+                }
+                drop(bytes);
+                let request = match physical.as_ref() {
+                    Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
+                        Ok(request) => request,
+                        Err(_) => return http_response(unavailable_answer()),
+                    },
+                    None => {
+                        let unit = admission.as_ref().map_or_else(
+                            || node.next_unit(),
+                            |admission| admission.unit_key().get(),
+                        );
+                        AdminRequest::from_snapshot(snapshot, unit)
+                    }
                 };
-
-                let unit = admission
-                    .as_ref()
-                    .map_or_else(|| node.next_unit(), |admission| admission.unit_key().get());
-                let request = AdminRequest {
-                    method: parts.method.as_str().to_string(),
-                    path: parts
-                        .uri
-                        .path_and_query()
-                        .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
-                    credential: presented_credential(&parts.headers),
-                    headers: header_pairs(&parts.headers),
-                    body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
-                    unit,
-                };
+                let unit = request.unit;
 
                 let exit = ExitPath { unit };
                 // The operation keeps custody through client cancellation, including
                 // publishing its durable replay receipt after a native write.
-                let answer =
-                    tokio::spawn(
-                        async move { node.answer_with_admission(request, admission).await },
-                    )
-                    .await
-                    .unwrap_or_else(|_| unavailable_answer());
+                let answer = tokio::spawn(async move {
+                    node.answer_with_admission(request, admission, physical)
+                        .await
+                })
+                .await
+                .unwrap_or_else(|_| (unavailable_answer(), None));
 
+                let (answer, physical) = answer;
                 let response = http_response(answer);
+                let response = match physical {
+                    Some(physical) => busbar_kernel::auth::native_admin::retain_physical_response(
+                        response, physical,
+                    ),
+                    None => response,
+                };
 
                 drop(exit);
                 response

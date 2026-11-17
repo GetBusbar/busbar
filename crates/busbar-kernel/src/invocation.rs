@@ -97,6 +97,7 @@ impl ServingGeneration {
 /// Retaining a numeric request ID alone never constructs this authority.
 #[derive(Clone)]
 pub struct InvocationContext {
+    data_gate: Option<Arc<crate::auth::native_data::NativeDataEffectGate>>,
     generation: Arc<ServingGeneration>,
     caller: Caller,
     unit: u64,
@@ -123,7 +124,14 @@ impl InvocationContext {
             .units()
             .invocation_phase(unit, &caller, &record)
             .ok_or(NEST_NO_UNIT)?;
+        let data_gate = generation
+            .core
+            .units()
+            .invocation_data_gate(unit, &caller, &record)
+            .ok_or(NEST_NO_UNIT)?;
         Ok(Self {
+            data_gate,
+
             generation,
             caller,
             unit,
@@ -164,7 +172,12 @@ impl InvocationContext {
 
     /// Required before effectful host services; pre-admission keeps only read prerequisites.
     pub fn effects_allowed(&self) -> bool {
-        self.is_live() && self.phase.effects_allowed()
+        self.is_live()
+            && self.phase.effects_allowed()
+            && self
+                .data_gate
+                .as_ref()
+                .is_none_or(|gate| gate.effects_allowed())
     }
 
     pub(crate) fn admission_phase(

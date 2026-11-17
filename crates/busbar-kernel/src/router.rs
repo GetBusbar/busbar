@@ -1202,6 +1202,7 @@ pub fn build_data_router_on(
 }
 
 pub struct PreparedListener {
+    pub(crate) physical: Option<std::sync::Arc<crate::inbound::native::PhysicalPlan>>,
     pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     pub(crate) router: Router<std::sync::Arc<state::AppHandle>>,
     pub(crate) core_routes: crate::core_routes::CoreRouteTable,
