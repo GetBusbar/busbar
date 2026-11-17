@@ -357,7 +357,8 @@ impl Plan {
         then(&view)
     }
 
-    /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin).
+    /// The lines the boot logs at WARN (an overlay that is not folded, each dropped plugin pin, each root
+    /// listener left without TLS and its remedy, #359 SEC-L1).
     #[must_use]
     pub fn warnings(&self) -> &[String] {
         &self.warnings
@@ -481,6 +482,7 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
         &mut report,
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
+    warnings.extend(plaintext_listener_lines(&chained.text));
     if let Some(catalog) = &chained.catalog {
         catalog::check_destination(catalog)?;
     }
@@ -837,6 +839,30 @@ fn where_plans_differ(
         first.len(),
         second.len()
     )
+}
+
+/// #359 SEC-L1 (owner ruling L1): the upgrade writes no plaintext acceptance. For each root listener the
+/// planned document leaves with neither TLS nor its acceptance, the plan warns with the one-line remedy (a
+/// change the chain did not make); the stamped boot then refuses it with BUSBAR-3172. The planned text
+/// is the post-fold document, so a 1.5.5 overlay `tls` the upgrade folded counts.
+fn plaintext_listener_lines(planned: &str) -> Vec<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(planned) else {
+        return Vec::new();
+    };
+    let written = |key: &str| doc.get(key).is_some_and(|value| !value.is_null());
+    busbar_kernel::config::listener_acceptance::ROOT_LISTENERS
+        .iter()
+        .filter(|listener| !written(listener.tls) && !written(listener.acceptance))
+        .map(|listener| {
+            format!(
+                "`{setting}` has no TLS and the upgrade writes no plaintext acceptance, so the boot refuses it \
+                 (BUSBAR-3172): {remedy}",
+                setting = listener.setting,
+                remedy = listener.remedy(),
+            )
+        })
+        .collect()
 }
 
 /// Proof three (§A7 "Authored text"): the planned document and catalog, interpolated as every later

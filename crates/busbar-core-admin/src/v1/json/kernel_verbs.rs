@@ -826,7 +826,7 @@ fn doc_for(
         KernelVerb::GetWhoami => VerbDoc {
             summary: "Who the admin chain says the caller is, and what the caller may do",
             description: "The caller's principal, the credential behind it (`operator`, `key`, \
-                `identity_provider` or `open`), its scope, and every verb of the closed table it \
+                `identity_provider`), its scope, and every verb of the closed table it \
                 may call, computed with the gate's own predicate. Any identified admin credential \
                 may read its own identity, whatever verbs it holds. A read: it mutates nothing. \
                 `rate.read.limit` is `0`: reads are not metered."
@@ -1645,7 +1645,7 @@ pub(crate) fn operations(
         let mut op = json!({
             "summary": doc.summary,
             "description": doc.description,
-            "security": [{"adminToken": []}, {"bearerAuth": []}],
+            "security": [{"bearerAuth": []}],
             "x-busbar-required-scope": scope.as_str(),
             "x-busbar-since": SINCE,
             RESPONSES_KEY: by_status,

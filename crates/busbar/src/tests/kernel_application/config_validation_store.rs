@@ -8,9 +8,11 @@ use busbar_kernel::config_validate::validate;
 #[test]
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
+    // Bind the linked operator: the config takes the closed default admin chain.
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
 
     let deploy: config::DeployCfg = yaml::from_str(
-        "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: [], admin_auth: []}\n",
+        "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: []}\n",
     )
     .expect("host-only fixture parses");
     let mut cfg = config::resolve(&deploy, &std::collections::HashMap::new())

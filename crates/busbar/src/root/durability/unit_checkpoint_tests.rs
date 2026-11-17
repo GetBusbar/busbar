@@ -78,7 +78,7 @@ impl ActualStore {
         .expect("stage the actual Store");
         let deploy = busbar_kernel::config::deploy_from_deserializer(
             serde_json::json!({
-                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "providers": {}, "models": {}, "auth": {"chain": []},
                 "store": {"module": module, "settings": {
                     "db_path": self.path.join("application.sqlite"),
                     "input_budget_bytes": 16 * 1024 * 1024,

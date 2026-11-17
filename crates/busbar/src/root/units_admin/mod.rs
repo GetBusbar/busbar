@@ -1903,12 +1903,17 @@ pub(crate) type AdminDoorFuture =
     busbar_plugin_abi::host_side::caller::BoxFut<'static, busbar_kernel::auth::AdminVerdict>;
 pub(crate) type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> AdminDoorFuture + Send + Sync>;
 
+/// A test door that identifies every request as the operator, holding `Full`: the door of a test
+/// whose subject is not the credential (1.6.0 has no anonymous admin door).
 #[cfg(test)]
-pub(crate) fn open_door() -> AdminDoorFn {
-    Arc::new(|_: &AdminRequest| {
-        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
-            busbar_kernel::auth::AdminDoor::Open,
-        )))
+pub(crate) fn operator_door() -> AdminDoorFn {
+    door_of(|_| {
+        busbar_kernel::auth::AdminDoor::Identified(
+            busbar_contract::auth::Principal::from_id(
+                busbar_kernel::config::operator_principal_id(),
+            ),
+            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+        )
     })
 }
 
@@ -2131,11 +2136,6 @@ pub(crate) async fn authenticate(
         });
     }
     let (principal, grants, listed) = match verdict.door {
-        busbar_kernel::auth::AdminDoor::Open => (
-            busbar_kernel_identity::principal::ANONYMOUS.to_string(),
-            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
-            None,
-        ),
         busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
             if walk.admission.is_none() && revoked() {
                 return Err(ReasonCode::Revoked);

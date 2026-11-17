@@ -35,7 +35,7 @@ async fn test_1_5_2_keys_arm_resolves_the_vkey() {
         serde_json::json!({
             "providers": {},
             "models": {},
-            "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": { "file": signing } },
+            "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
             "store": { "module": module, "settings": settings },
             "advanced": {  },
         }),

@@ -88,9 +88,9 @@ async fn admin_apply_parse_refusal_is_audited() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let refused = reqwest::Client::new()
+    let refused = crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -206,9 +206,9 @@ async fn admin_rows_seal_under_scheme4() {
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let refused = reqwest::Client::new()
+    let refused = crate::root::test_plugins::operator_client()
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
+        .header("authorization", "Bearer admintok")
         .header("if-match", "*")
         .header("content-type", "application/json")
         .body(
@@ -348,7 +348,7 @@ async fn admin_rows_seal_the_request_correlation() {
     const TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
     const CALLER_SPAN: &str = "00f067aa0ba902b7";
     let refused_apply = |client_id: &str, key: &str| {
-        reqwest::Client::new()
+        crate::root::test_plugins::operator_client()
             .post(format!("http://{addr}/api/v1/admin/config/apply"))
             .header("authorization", "Bearer admintok")
             .header("if-match", "*")
@@ -437,7 +437,7 @@ async fn admin_rows_seal_the_request_correlation() {
         "an invalid client id is not an error itself"
     );
 
-    let operation = reqwest::Client::new()
+    let operation = crate::root::test_plugins::operator_client()
         .get(format!("http://{addr}/api/v1/admin/operations/corr-1"))
         .header("authorization", "Bearer admintok")
         .send()

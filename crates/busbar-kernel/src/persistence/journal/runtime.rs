@@ -6,14 +6,19 @@
 //! the configured backend's declared durability; an ephemeral backend remains
 //! explicitly ephemeral after Applied.
 
+use super::base::Pins;
 use super::*;
-use busbar_kernel_wal::Entry;
+use busbar_kernel_wal::{Entry, RecordClass};
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 #[path = "conditional.rs"]
 mod conditional;
 pub use conditional::{ConditionalAppend, ConditionalOutcome};
+#[path = "cut.rs"]
+mod cut;
+pub use cut::{CutProgress, JournalCut};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BufferBudget {
@@ -33,10 +38,16 @@ pub enum RuntimeError {
     Conflict,
     Closed,
     Backend(Failure),
+    /// The rows asked for were cut below this Ephemeral journal's replay base (SEALING-FIX §3.9):
+    /// unavailable, never corrupt. A same-holder re-take of a cut journal is refused with it.
+    Truncated,
 }
 impl From<Error> for RuntimeError {
     fn from(error: Error) -> Self {
         match error {
+            Error::Truncated => Self::Truncated,
+            // A walk that kept meeting cuts is retried as any busy store is.
+            Error::Rebased | Error::Busy => Self::Pending,
             Error::Budget | Error::Overflow => Self::Budget,
             Error::Authority => Self::Authority,
             Error::Invalid => Self::Invalid,
@@ -59,10 +70,20 @@ pub struct StagedRun {
     /// The chain hash this process sealed for each record, in order (SHUTDOWN-HANG F1).
     hashes: Arc<[[u8; 32]]>,
     bytes: usize,
+    /// On an Ephemeral journal, the hold on this run's rows taken where its seqs were reserved
+    /// (SEALING-FIX §3.9 floor (d)): no cut passes them while any handle to the run lives. One pin
+    /// at the run's first seq covers every row of it, the floor being a minimum.
+    pin: Option<Pin>,
 }
 impl StagedRun {
     pub fn records(&self) -> &[Record] {
         &self.records
+    }
+    /// Another hold on this run's rows that outlives the run (§3.9 floor (d)), for a caller that
+    /// keeps naming them after `confirm` (`carried`). `None` on a journal that is never cut.
+    #[must_use]
+    pub fn pin(&self) -> Option<Pin> {
+        self.pin.clone()
     }
     /// The evidence this process holds for each original of the run: its sequence and the chain
     /// hash it sealed. It is evidence of a journal original only once `confirm` returned Ok.
@@ -148,6 +169,8 @@ type Group = (Arc<VerifiedHead>, Vec<Arc<StagedRun>>, Head, [u8; 32]);
 struct PendingRun {
     run: Arc<StagedRun>,
     attempt: Option<Attempt>,
+    /// The audit line this run carries, if it is one (§3.9: the boundary's audit tail).
+    line: Option<AuditTail>,
 }
 struct State {
     accepting: bool,
@@ -164,6 +187,8 @@ struct State {
     /// contiguous sequences, built by the open replay (one segment per custody bridge, usually
     /// one). Live appends are contiguous, so the last segment covers them (W1 step 2).
     seq_map: Vec<(u64, u64)>,
+    /// The Ephemeral journal cut's state (SEALING-FIX §3.9); unused on a journal never cut.
+    cut: cut::CutState,
 }
 
 /// Publication progress mirrored from `State` for confirm waiters, so a
@@ -185,6 +210,12 @@ pub struct RuntimeJournal {
     progress: tokio::sync::watch::Sender<Progress>,
     /// Confirmations that fell back to the publication driver (SHUTDOWN-HANG F1, counted).
     lane_fallbacks: std::sync::atomic::AtomicU64,
+    /// `Some` only on an Ephemeral journal, the only kind a cut ever touches (§3.9 floor (d)).
+    pins: Option<Arc<Pins>>,
+    /// Whether the one [`JournalCut`] has been handed out.
+    cut_taken: AtomicBool,
+    /// Lookups of a live original that fell below the replay base; a pin invariant violation.
+    locate_truncated: std::sync::atomic::AtomicU64,
     /// Test probe: acquisitions of the publication driver, the journal lane (SHUTDOWN-HANG 8.3).
     #[cfg(test)]
     lane_holds: std::sync::atomic::AtomicU64,
@@ -201,11 +232,24 @@ impl RuntimeJournal {
             return Err(RuntimeError::Invalid);
         }
         let journal = StoreJournal::new(&store, node).map_err(RuntimeError::from)?;
+        let ephemeral =
+            store.info().durability == busbar_contract::persistence::Durability::Ephemeral;
         let mut replay = journal
             .historical_replay()
             .await
             .map_err(RuntimeError::from)?;
+        // Taking a node rebuilds from every row (`build_on_store`), so a journal a cut has moved
+        // the base of is refused (SEALING-FIX §3.9 "The re-take"); product code never re-takes
+        // in-process, and an Ephemeral store's data ends with its process.
+        if replay.floor > 0 {
+            return Err(RuntimeError::Truncated);
+        }
         let mut seq_map: Vec<(u64, u64)> = Vec::new();
+        let mut cut = if ephemeral {
+            cut::CutState::ephemeral()
+        } else {
+            cut::CutState::default()
+        };
         let mut ordinal = 0u64;
         let mut previous: Option<u64> = None;
         while let Some(record) = replay.next().await.map_err(RuntimeError::from)? {
@@ -215,6 +259,12 @@ impl RuntimeJournal {
                 seq_map.push((ordinal, record.node_seq));
             }
             previous = Some(record.node_seq);
+            if ephemeral
+                && JournalRecord::decode(&record.body)
+                    .is_ok_and(|frame| frame.class == RecordClass::Bootstrap)
+            {
+                cut.note_kept(&record);
+            }
         }
         let proof = replay.finish().map_err(RuntimeError::from)?;
         journal
@@ -239,10 +289,14 @@ impl RuntimeJournal {
                 failed: None,
                 conditional: None,
                 seq_map,
+                cut,
             }),
             driving: tokio::sync::Mutex::new(()),
             progress: tokio::sync::watch::Sender::new(Progress::default()),
             lane_fallbacks: std::sync::atomic::AtomicU64::new(0),
+            pins: ephemeral.then(|| Arc::new(Pins::default())),
+            cut_taken: AtomicBool::new(false),
+            locate_truncated: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             lane_holds: std::sync::atomic::AtomicU64::new(0),
         }))
@@ -400,25 +454,51 @@ impl RuntimeJournal {
         node: u64,
         budget: BufferBudget,
     ) -> std::result::Result<Vec<JournalRecord>, RuntimeError> {
+        Ok(self.read_node_walk(node, budget).await?.rows)
+    }
+
+    /// [`Self::read_node_records`] with the base's kept copies (SEALING-FIX §3.9 "Kept rows
+    /// first"): `kept` is context only (a `Bootstrap` copy sets `keyed` exactly as the row would)
+    /// and is empty without a base; `rows` are the verified rows after the base. One walk, which
+    /// restarts from a newer base when a cut passes it.
+    pub async fn read_node_walk(
+        &self,
+        node: u64,
+        budget: BufferBudget,
+    ) -> std::result::Result<NodeRecords, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
-        let mut replay = journal
-            .historical_replay()
+        let (walked, _) = journal
+            .walk_from_base(
+                |base_tail| {
+                    (
+                        NodeRecords {
+                            base_tail,
+                            ..NodeRecords::default()
+                        },
+                        0usize,
+                    )
+                },
+                |(records, bytes): &mut (NodeRecords, usize), original, kept| {
+                    let decoded =
+                        JournalRecord::decode(&original.body).map_err(|_| Error::Corrupt)?;
+                    if kept {
+                        records.kept.push(decoded);
+                        return Ok(());
+                    }
+                    *bytes = bytes
+                        .checked_add(original.body.len())
+                        .ok_or(Error::Budget)?;
+                    if records.rows.len() >= budget.records || *bytes > budget.bytes {
+                        return Err(Error::Budget);
+                    }
+                    records.rows.try_reserve(1).map_err(|_| Error::Budget)?;
+                    records.rows.push(decoded);
+                    Ok(())
+                },
+            )
             .await
             .map_err(RuntimeError::from)?;
-        let mut records = Vec::new();
-        let mut bytes = 0usize;
-        while let Some(original) = replay.next().await.map_err(RuntimeError::from)? {
-            bytes = bytes
-                .checked_add(original.body.len())
-                .ok_or(RuntimeError::Budget)?;
-            if records.len() >= budget.records || bytes > budget.bytes {
-                return Err(RuntimeError::Budget);
-            }
-            records.try_reserve(1).map_err(|_| RuntimeError::Budget)?;
-            records.push(JournalRecord::decode(&original.body).map_err(|_| RuntimeError::Corrupt)?);
-        }
-        replay.finish().map_err(RuntimeError::from)?;
-        Ok(records)
+        Ok(walked.0)
     }
 
     /// Synchronous hot sealing reserves one node's original sequence/hash chain.
@@ -427,6 +507,26 @@ impl RuntimeJournal {
     pub fn stage_run(
         &self,
         entries: &[Entry],
+    ) -> std::result::Result<Arc<StagedRun>, RuntimeError> {
+        self.stage(entries, None)
+    }
+
+    /// [`Self::stage_run`] for a run whose first record carries the audit line `(chain_seq, fp)`
+    /// (SEALING-FIX §3.9): the line's `node_seq` is the seq reserved here, and once its group is
+    /// Applied it becomes the journal's audit tail, which a cut writes into the base.
+    pub fn stage_audit_run(
+        &self,
+        entries: &[Entry],
+        chain_seq: u64,
+        fp: [u8; 32],
+    ) -> std::result::Result<Arc<StagedRun>, RuntimeError> {
+        self.stage(entries, Some((chain_seq, fp)))
+    }
+
+    fn stage(
+        &self,
+        entries: &[Entry],
+        line: Option<(u64, [u8; 32])>,
     ) -> std::result::Result<Arc<StagedRun>, RuntimeError> {
         if entries.is_empty() || entries.len() > self.store.limits().scan_items {
             return Err(RuntimeError::Budget);
@@ -484,16 +584,33 @@ impl RuntimeJournal {
             .pending
             .try_reserve(1)
             .map_err(|_| RuntimeError::Budget)?;
+        let first = records.first().map_or(0, |record| record.node_seq);
+        // Pinned in the critical section that reserves the seqs, before any group holding them
+        // can apply (§3.9 floor (d)), so no row is ever cuttable unpinned.
+        let pin = self.pins.as_ref().map(|pins| pins.pin(first));
+        if self.pins.is_some() {
+            for (entry, record) in entries.iter().zip(&records) {
+                if entry.class == RecordClass::Bootstrap {
+                    state.cut.note_kept(record);
+                }
+            }
+        }
         let run = Arc::new(StagedRun {
             owner: self.owner.clone(),
             ticket: state.next_ticket,
             records: records.into(),
             hashes: hashes.into(),
             bytes,
+            pin,
         });
         state.pending.push_back(PendingRun {
             run: run.clone(),
             attempt: None,
+            line: line.map(|(chain_seq, fp)| AuditTail {
+                chain_seq,
+                node_seq: first,
+                fp,
+            }),
         });
         state.reserved = head;
         state.next_ticket = next_ticket;
@@ -598,7 +715,20 @@ impl RuntimeJournal {
         {
             return Err(RuntimeError::Invalid);
         }
+        // A row at or below an Ephemeral journal's base was cut (SEALING-FIX §3.9): unavailable.
+        if ordinal <= state.cut.base_count() {
+            self.locate_truncated
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(RuntimeError::Truncated);
+        }
         Ok(ordinal)
+    }
+
+    /// Number of original lookups refused below the base (`locate_truncated`, test 30(c)).
+    #[must_use]
+    pub fn locate_truncated(&self) -> u64 {
+        self.locate_truncated
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn flush(&self) -> std::result::Result<(), RuntimeError> {
@@ -1109,16 +1239,23 @@ impl RuntimeJournal {
                             state.seq_map.push((ordinal, first.node_seq));
                         }
                     }
+                    let mut line = None;
                     for run in &group {
                         let pending = state.pending.pop_front().ok_or(RuntimeError::Corrupt)?;
                         if !Arc::ptr_eq(&pending.run, run) {
                             return Err(self.fail(&mut state, RuntimeError::Corrupt));
                         }
+                        line = pending.line.or(line);
                         state.completed = run.ticket;
                         state.records -= run.records.len();
                         state.bytes -= run.bytes;
                     }
                     state.verified = verified;
+                    // On an Ephemeral journal the group's head, seal and audit tail are a possible
+                    // cut point (§3.9 "Cut points come from group commit"): one compare per group.
+                    if self.pins.is_some() {
+                        state.cut.applied(head, records_seal, line);
+                    }
                     self.publish(&state);
                 }
                 super::super::commit::SubmitResult::Decided(_) => {

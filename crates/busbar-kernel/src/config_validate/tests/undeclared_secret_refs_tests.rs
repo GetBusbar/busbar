@@ -23,7 +23,7 @@ fn reference(slot: &str) -> serde_json::Value {
 
 fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
     let deploy: crate::config::DeployCfg = busbar_contract::yaml::from_str(
-        "providers: {}\nstore: {module: fixture-owner}\nauth: {chain: [], admin_auth: []}\n",
+        "providers: {}\nstore: {module: fixture-owner}\nauth: {chain: []}\n",
     )
     .expect("the kernel-owned config parses");
     let mut cfg = crate::config::resolve(&deploy, &Default::default())
