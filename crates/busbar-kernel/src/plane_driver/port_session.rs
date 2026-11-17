@@ -37,6 +37,7 @@ use super::{CallerEnd, HeadFields};
 #[path = "port_prepared.rs"]
 mod prepared;
 pub(crate) use prepared::PreparedExchange;
+pub use prepared::RequestDeclaration;
 use prepared::{FrozenUsage, PreparationFacts};
 
 /// The plane's calls on one session, as a driver sees them. The port implements it; a test implements it over a
