@@ -118,12 +118,6 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
     }
     let app = Arc::new(app);
     let host: Arc<dyn EngineHost> = busbar_kernel::plane_driver::engine_host(&app);
-    use axum::extract::FromRequestParts;
-    let (mut parts, ()) = axum::http::Request::new(()).into_parts();
-    let headers =
-        busbar_kernel::inbound::http_projection::AdminHeaders::from_request_parts(&mut parts, &())
-            .await
-            .expect("the legacy test request supplies its owning Admin headers");
     let ctx = AdminReqCtx {
         host,
         name: "anything".to_string(),

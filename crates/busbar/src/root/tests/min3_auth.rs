@@ -1096,11 +1096,30 @@ async fn physical_admin_router_observing(
     f: &AdminPhysicalFixture,
     header_pointer: Option<Arc<AtomicUsize>>,
 ) -> axum::Router {
+    physical_admin_router_on_book(f, header_pointer, None).await
+}
+
+async fn physical_admin_router_on_book(
+    f: &AdminPhysicalFixture,
+    header_pointer: Option<Arc<AtomicUsize>>,
+    book: Option<&crate::root::durability::NodeBook>,
+) -> axum::Router {
     use crate::root::units_admin::{AdminBinding, RefusingDispatch};
     let door = crate::root::units_admin::bound::live_admin_door(f.handle.clone());
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), door.clone())
-            .await;
+    let mut units = match book {
+        Some(book) => crate::root::kernel::ProductionUnits::admin_over_book(
+            Arc::new(RefusingDispatch),
+            door.clone(),
+            book,
+        ),
+        None => {
+            crate::root::kernel::ProductionUnits::admin_only(
+                Arc::new(RefusingDispatch),
+                door.clone(),
+            )
+            .await
+        }
+    };
     let mut inner = busbar_kernel::router::build_admin_router_on(&f.handle, 1024, false);
     if let Some(observed) = header_pointer {
         inner = inner.layer(axum::middleware::from_fn(
@@ -1254,6 +1273,46 @@ async fn physical_admin_replay_duplicate_and_unknown_have_distinct_output_author
             assert!(Arc::ptr_eq(refusal.binding(), &f.binding));
         }
     }
+}
+
+#[tokio::test]
+async fn physical_admin_lost_audit_ack_never_grants_refusal_output() {
+    use busbar_kernel::inbound::native::PhysicalRefusalCarrier;
+    use tower::ServiceExt;
+    let journal = crate::root::durability::tests::NativeFixture::new(781).await;
+    let book = crate::root::durability::node_book(
+        journal.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
+    let mut f = admin_physical_fixture_with_body(
+        true,
+        "/api/v1/admin/info",
+        Vec::new(),
+        b"wrong credential",
+    )
+    .await;
+    let router = physical_admin_router_on_book(&f, None, Some(&book)).await;
+    journal.faults.clear_observations();
+    journal.faults.lose_acks.store(true, Ordering::Release);
+    let (request, _) = physical_admin_http(&mut f);
+    let response = router.oneshot(request).await.unwrap();
+    assert!(response
+        .extensions()
+        .get::<PhysicalRefusalCarrier>()
+        .is_none());
+    assert!(f.binding.check_executing().is_err());
+    assert_eq!(f.owners.0.load(Ordering::SeqCst), 0);
+    assert!(
+        journal.journal.pending_records() > 0,
+        "the unconfirmed original audit remains pending, not a refusal receipt"
+    );
+    let sent = journal.faults.requests.lock().unwrap();
+    assert!(
+        !sent.is_empty(),
+        "the actual Store candidate must have been attempted"
+    );
 }
 
 #[tokio::test]
