@@ -135,6 +135,10 @@ pub(crate) struct SeatWiring {
     pub(crate) request_routes: Arc<RequestRoutes>,
     /// Shared with the channel driver; original unit admission derives its account exactly once.
     pub(crate) channel_budget: InstanceBudget,
+    /// Actual registration table shared with CHANNEL and the physical inventory builder.
+    pub(crate) inventory_upstreams: Arc<dyn Upstreams>,
+    /// Actual exact-pair resolver shared with egress and the physical inventory builder.
+    pub(crate) inventory_targets: Targets,
     /// `None` = no connection table: a FORWARD fails `NotDriven`.
     pub(crate) upstream: Option<Arc<dyn PortUpstream>>,
     pub(crate) carrier: Arc<PortCarrier>,
@@ -834,6 +838,8 @@ pub(crate) fn compose(
         }
         None => registrations,
     };
+    let inventory_upstreams = Arc::clone(&table_upstreams);
+    let inventory_targets = Arc::clone(&targets);
     let (upstream, held, probes) = match &shared.table {
         Some(table) => {
             let egress = egress_of(instance, owner, table, &pool, catalog.map(Arc::as_ref))?;
@@ -872,6 +878,8 @@ pub(crate) fn compose(
     Ok(SeatWiring {
         request_routes,
         channel_budget,
+        inventory_upstreams,
+        inventory_targets,
         upstream,
         carrier: Arc::new(carrier),
         probes,
