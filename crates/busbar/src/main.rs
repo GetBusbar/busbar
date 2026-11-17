@@ -1109,6 +1109,12 @@ async fn run(
     let max_inbound = cfg.limits.max_inbound_concurrent;
     let request_admission =
         busbar_kernel::limits::process_admission::ProcessAdmission::new(max_inbound);
+    // STORAGE-JOIN-r2: the Node's terminal book is funded from this boot admission before any
+    // plane, book, listener or recovery exists. No fallback account: refusal fails the boot.
+    if let Err(why) = root::plane_node::node().bind_terminal_storage(&request_admission) {
+        tracing::error!(error = why, "terminal custody storage binding failed");
+        die(format!("terminal custody storage binding failed: {why}"));
+    }
     use busbar_kernel::limits::process_admission::AdmissionClass;
 
     root::registry::check_or_exit(LINKED.claims);
@@ -1280,14 +1286,13 @@ async fn run(
         .iter()
         .map(|d| &d.declaration)
         .collect();
-    let services = root::serve::compose(
-        dest.clone(),
-        &app,
+    let record_maintenance = root::serve::record_maintenance(
         store_admission
             .store()
             .unwrap_or_else(|| die("S7 has no admitted Store")),
-        &planes,
     );
+    let services =
+        root::serve::compose(dest.clone(), &app, Arc::clone(&record_maintenance), &planes);
     let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
@@ -1348,7 +1353,7 @@ async fn run(
     let observation_reservation = export_observers
         .reserve(serving_ready.export_names())
         .unwrap_or_else(|error| die(error));
-    let (store_admission, mut generation_workers, exports, native, selected_policy) =
+    let (store_admission, generation_workers, exports, native, selected_policy) =
         root::min3_boot::finish(
             serving_ready,
             store_admission,
@@ -1444,11 +1449,13 @@ async fn run(
         store_admission
             .store()
             .unwrap_or_else(|| die("native candidate factory has no admitted Store")),
+        Arc::clone(&record_maintenance),
         &native,
         Arc::clone(&listener_plan),
         root::plane_node::node(),
         Arc::clone(&export_observers),
-    );
+    )
+    .unwrap_or_else(|error| die(error));
     let root_rules = Arc::new(
         root_rules
             .with_native_listeners(Arc::clone(&listener_plan))
@@ -1508,7 +1515,6 @@ async fn run(
     let _export_generation = observation_reservation.commit();
     // Reload carries this exact owner, including captures accepted by a retiring App.
     let export_captures = Arc::clone(&app_handle.load().exports);
-    services.prepare_workers(&mut generation_workers);
     let probes = Arc::new(busbar_kernel::endpoints::ProbeState::new(
         book.as_ref().map(|book| book.runtime_journal.clone()),
     ));
@@ -1531,7 +1537,6 @@ async fn run(
             .unwrap_or_else(|e| die(e));
     }
     // Start serving maintenance only after the physical routes and application owner exist.
-    recovery_served.spawn_ticks();
     export::plugin::start(&app_handle.load().exports)
         .unwrap_or_else(|e| die_list("config errors", [e]));
     let export_observer_retry = root::shutdown::ExportRetry::start(Arc::clone(&export_observers));
@@ -1544,9 +1549,13 @@ async fn run(
             spawn(host);
         }
     }
-    let generation_workers =
-        root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
-            .unwrap_or_else(|error| die(error));
+    let generation_workers = root::min3_candidate::Workers::start(
+        &app_handle.load(),
+        generation_workers,
+        Arc::clone(&record_maintenance),
+        root::plane_node::node(),
+    )
+    .unwrap_or_else(|error| die(error));
     generation_workers.bind(&app_handle);
     app_handle.on_apply(Box::new(|app| {
         stage_native_inbound(app);
@@ -1841,6 +1850,7 @@ async fn run(
     }
 
     let post = root::shutdown::PostServe {
+        app: Arc::clone(&app_handle),
         admin,
         lines,
         threads,

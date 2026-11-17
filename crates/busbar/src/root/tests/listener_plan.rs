@@ -246,6 +246,7 @@ async fn projection_boundary_app(
         sections: Ok(Default::default()),
         providers: Default::default(),
         model_pools: Default::default(),
+        native_generation: None,
     }));
     Arc::new(candidate)
 }

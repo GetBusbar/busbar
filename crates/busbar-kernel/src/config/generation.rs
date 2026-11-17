@@ -501,4 +501,112 @@ mod tests {
         assert_eq!(persisted.load(Ordering::Acquire), 0);
         assert!(Arc::ptr_eq(&prior, &handle.load()));
     }
+    #[tokio::test]
+    async fn shutdown_closes_admission_and_waits_for_detached_publication_callbacks() {
+        let handle = handle();
+        let prior = handle.load();
+        let callback_entered = Arc::new(tokio::sync::Notify::new());
+        let release_callback = Arc::new(tokio::sync::Notify::new());
+        let callback_finished = Arc::new(AtomicUsize::new(0));
+        let entered = callback_entered.clone();
+        let release = release_callback.clone();
+        let finished = callback_finished.clone();
+        handle.on_apply_async(Box::new(move |_| {
+            let entered = entered.clone();
+            let release = release.clone();
+            let finished = finished.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+                finished.fetch_add(1, Ordering::AcqRel);
+            })
+        }));
+        let request_handle = handle.clone();
+        let waiter = tokio::spawn(async move {
+            config_transaction(&request_handle, |txn| {
+                Ok::<_, TxnError>(Outcome::commit(
+                    Arc::new((**txn.app()).clone()),
+                    || Ok(()),
+                    (),
+                ))
+            })
+            .await
+        });
+        callback_entered.notified().await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        let shutdown_handle = handle.clone();
+        let closing = Arc::new(tokio::sync::Notify::new());
+        let closing_started = closing.clone();
+        let closed = Arc::new(AtomicUsize::new(0));
+        let closed_observed = closed.clone();
+        let shutdown = tokio::spawn(async move {
+            let mut close = Box::pin(shutdown_handle.close_config_publication());
+            let first = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(std::future::Future::poll(close.as_mut(), cx))
+            })
+            .await;
+            assert!(
+                first.is_pending(),
+                "retained callback still owns the actual effect guard"
+            );
+            closing_started.notify_one();
+            close.await;
+            closed_observed.fetch_add(1, Ordering::AcqRel);
+        });
+        closing.notified().await;
+        assert_eq!(closed.load(Ordering::Acquire), 0);
+        assert_eq!(callback_finished.load(Ordering::Acquire), 0);
+        release_callback.notify_one();
+        shutdown.await.unwrap();
+        assert_eq!(callback_finished.load(Ordering::Acquire), 1);
+        assert_eq!(closed.load(Ordering::Acquire), 1);
+        assert!(
+            !Arc::ptr_eq(&prior, &handle.load()),
+            "already-admitted publication completed"
+        );
+        let body_calls = Arc::new(AtomicUsize::new(0));
+        let observed = body_calls.clone();
+        let rejected: Result<(), TxnError> = config_transaction(&handle, move |_| {
+            observed.fetch_add(1, Ordering::AcqRel);
+            Ok(Outcome::Value(()))
+        })
+        .await;
+        assert!(matches!(rejected, Err(TxnError::Unavailable(_))));
+        assert_eq!(body_calls.load(Ordering::Acquire), 0);
+        let persist_calls = AtomicUsize::new(0);
+        assert!(handle
+            .commit_and_swap(Arc::new((*handle.load()).clone()), || {
+                persist_calls.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            })
+            .await
+            .is_err());
+        assert_eq!(persist_calls.load(Ordering::Acquire), 0);
+        assert_eq!(callback_finished.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn interrupted_shutdown_wait_keeps_admission_closed_and_can_resume() {
+        let handle = handle();
+        let admitted = crate::config::transaction::admit_effect(&handle, None)
+            .await
+            .unwrap();
+        {
+            let mut close = Box::pin(handle.close_config_publication());
+            let first = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(std::future::Future::poll(close.as_mut(), cx))
+            })
+            .await;
+            assert!(first.is_pending());
+        }
+        assert!(!handle.config_admission_open());
+        drop(admitted);
+        let while_closing = crate::config::transaction::admit_effect(&handle, None).await;
+        assert!(matches!(while_closing, Err(TxnError::Unavailable(_))));
+        handle.close_config_publication().await;
+        let result = crate::config::transaction::admit_effect(&handle, None).await;
+        assert!(matches!(result, Err(TxnError::Unavailable(_))));
+        handle.close_config_publication().await;
+    }
 }

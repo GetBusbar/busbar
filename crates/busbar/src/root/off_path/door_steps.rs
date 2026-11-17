@@ -440,6 +440,8 @@ pub(crate) struct DoorConfig {
     pub(crate) providers: BTreeMap<String, ProviderRoute>,
     /// The model-serving pools' bounds.
     pub(crate) model_pools: crate::root::model_egress::ModelPools,
+    /// Complete native owners retained with this exact candidate, installed before publication.
+    pub(crate) native_generation: Option<Arc<crate::root::min3_candidate::NativeGeneration>>,
 }
 
 #[must_use]
@@ -472,6 +474,7 @@ pub(crate) fn door_config(
             &busbar_kernel::config_validate::MetadataPosture::global(cfg),
         ),
         model_pools: crate::root::model_egress::ModelPools::of(cfg),
+        native_generation: None,
     };
     Arc::new(config)
 }
