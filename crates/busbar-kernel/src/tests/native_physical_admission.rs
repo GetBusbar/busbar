@@ -397,6 +397,8 @@ fn native_physical_pending_claim_is_not_an_execution_capability() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
     let (request, owner) = arrive(&f, &conn, 1);
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    let request = request.finish_input(SecureVec::new(), credit).unwrap();
     let pending = request.begin_completion().unwrap();
     assert!(pending.binding().check_live().is_ok());
     assert!(conn.cancel(&owner));
@@ -406,4 +408,47 @@ fn native_physical_pending_claim_is_not_an_execution_capability() {
     );
     // No final admission constructor is exposed by a physical pending value.
     drop(pending);
+}
+
+#[test]
+fn native_physical_body_is_frozen_under_its_original_lease() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let credit = request.binding().request().try_reserve(4).unwrap();
+    let request = request
+        .finish_input(SecureVec::from(&b"body"[..]), credit)
+        .unwrap();
+    assert_eq!(request.binding().body(), Some(&b"body"[..]));
+    assert_eq!(f.budget.used(), (12, 12));
+    let retained = request.binding().clone();
+    drop(request);
+    assert_eq!(f.budget.used(), (12, 12));
+    drop(retained);
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
+fn native_physical_foreign_body_credit_never_enters_the_request() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let other = f.budget.try_enter(AdmissionClass::Data).unwrap();
+    let credit = other.try_reserve(4).unwrap();
+    assert!(matches!(
+        request.finish_input(SecureVec::from(&b"body"[..]), credit),
+        Err(ArrivalRefusal::ForeignInput)
+    ));
+    assert_eq!(f.budget.used(), (0, 0));
+}
+
+#[test]
+fn native_physical_incomplete_body_cannot_enter_completion() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    assert!(matches!(
+        request.begin_completion(),
+        Err(ArrivalRefusal::BodyIncomplete)
+    ));
 }
