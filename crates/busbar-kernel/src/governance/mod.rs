@@ -748,6 +748,8 @@ pub struct GovState {
 
     budget: Sharded<BudgetCell>,
 
+    selected_rates: Arc<selected_resource::SelectedRates>,
+
     recovery_book: recovery::RecoveryBook,
 
     unit_checkpoints: unit_checkpoint::UnitCheckpointBook,
