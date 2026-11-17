@@ -37,6 +37,7 @@ macro_rules! mechanism {
 #[doc(hidden)]
 pub mod bridge;
 pub mod fail;
+pub mod fallback_usage;
 pub mod fp;
 pub mod host;
 #[cfg(feature = "host")]
