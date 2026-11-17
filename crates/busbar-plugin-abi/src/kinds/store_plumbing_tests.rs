@@ -509,13 +509,6 @@ impl Writer for FailingRowWriter {
     ) -> Result<(), crate::records::Full> {
         unreachable!()
     }
-    fn put_u32s(
-        &mut self,
-        _: u16,
-        _: impl FnOnce(&mut crate::records::U32s<'_>) -> Result<(), crate::records::Full>,
-    ) -> Result<(), crate::records::Full> {
-        unreachable!()
-    }
     fn put(&mut self, _: u16, _: &[u8]) -> Result<(), crate::records::Full> {
         unreachable!()
     }

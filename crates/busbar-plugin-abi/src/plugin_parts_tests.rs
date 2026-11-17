@@ -32,7 +32,7 @@ impl Open for Fx {
         let port_bytes = [b'5', b'4', b'3', b'2'];
         let port = std::str::from_utf8(&port_bytes).unwrap();
         let parts = ["db.test", ":", port];
-        let _ = crate::need::need::open_parts(&parts, crate::need::Tls::None, 2).await?;
+        let _ = crate::need::need::open_parts(&parts, crate::need::need::Tls::None, 2).await?;
         Ok(Fx)
     }
     fn check(_: &Host, config: &[u8], ends: &mut Endpoints<'_>) -> Result<(), Fail> {
@@ -55,7 +55,6 @@ impl Open for Fx {
         let prefix = auth::IssuedShapeRec {
             id_len: 20,
             secret_len: 40,
-            ..auth::IssuedShapeRec::ZERO
         };
         d.item_pod_nested(auth::tag::D_ISSUED_SHAPE, &prefix, |nested| {
             for text in ["AKIA", "ABC", "XYZ"] {
