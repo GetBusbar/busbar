@@ -14,6 +14,9 @@ pub mod proxy;
 pub mod scrub;
 pub mod watch;
 
+/// The shared permanent native lifecycle owner, including scoped Send borrowing.
+pub use busbar_ffi::lifecycle;
+
 pub use answer::*;
 pub use caller::*;
 pub use driver::*;
