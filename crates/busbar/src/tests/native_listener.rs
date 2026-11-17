@@ -27,8 +27,10 @@ pub(super) async fn assert_real_http() {
     let cfg = config::resolve(&deploy, &Default::default())
         .expect("the actual native fixture configuration resolves");
     assert!(
-        cfg.plane_sections.is_empty() && cfg.min3.provisioning.is_empty(),
-        "the public-listener fixture must not omit configured plane or provisioning consumers"
+        cfg.plane_sections.is_empty()
+            && cfg.min3.provisioning.is_empty()
+            && cfg.identity_providers.is_empty(),
+        "the public-listener fixture must not omit configured plane, auth or provisioning consumers"
     );
     let store = cfg
         .store

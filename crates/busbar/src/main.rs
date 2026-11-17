@@ -746,7 +746,7 @@ async fn run(
             let conversion = root::min3_boot::prepare_serving(
                 bootstrap_ready, &plugin_process, conversion_images, &base_cfg,
                 &Default::default(), boot_guard,
-            ).unwrap_or_else(|error| die(error));
+            ).await.unwrap_or_else(|error| die(error));
             let observation_reservation = export_observers.reserve(conversion.export_names())
                 .unwrap_or_else(|error| die(error));
             let _ = root::min3_boot::finish(
@@ -1184,6 +1184,7 @@ async fn run(
         &provider_catalogs,
         root::connector::dest_judge(&cfg).guard().clone(),
     )
+    .await
     .unwrap_or_else(|error| die(error));
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
