@@ -11,7 +11,11 @@ use busbar_kernel::config::{Grammar, SecretModuleCfg};
 use super::{bound_read_grammar, new_binder};
 
 fn admitted() -> Grammar {
-    let mut grammar = Grammar::empty().with_secret_sources(BTreeMap::from([(
+    admitted_with_report(Vec::new())
+}
+
+fn admitted_with_report(report: Vec<String>) -> Grammar {
+    let mut grammar = Grammar::new(Default::default(), BTreeMap::new(), report).with_secret_sources(BTreeMap::from([(
         "native-secret".into(),
         SecretSource {
             identity: "native-secret".into(),
@@ -102,4 +106,15 @@ fn candidate_binders_preserve_named_reference_schemas_without_sharing_handles() 
             &[],
         )
         .is_err());
+}
+
+#[test]
+fn diagnostic_reports_do_not_change_candidate_read_authority() {
+    let read = admitted();
+    let configured = named("vault");
+    let reported = admitted_with_report(vec!["pending fetch diagnostic".into()])
+        .bind_secret_instances(&configured)
+        .unwrap();
+    assert!(bound_read_grammar(&read, &configured, &reported).is_ok());
+    assert!(bound_read_grammar(&read, &configured, &reported.trimmed()).is_ok());
 }
