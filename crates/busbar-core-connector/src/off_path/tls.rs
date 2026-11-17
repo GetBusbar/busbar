@@ -137,7 +137,7 @@ pub(crate) fn build_server_config(
     tls: &TlsCfg,
     resolver: &SecretResolver,
 ) -> Result<Arc<ServerConfig>, String> {
-    build_server_config_for_alpn(tls, resolver, ALPN_OFFER)
+    build_server_config_for_alpn(tls, resolver, &ALPN_OFFER)
 }
 
 pub(crate) fn build_server_config_for_alpn(
@@ -212,7 +212,7 @@ pub(crate) fn prepare(
     resolver: &SecretResolver,
     transport_capable: bool,
 ) -> Result<Arc<dyn ConnectionSecurity>, FailClosed> {
-    prepare_for_alpn(label, tls_cfg, resolver, transport_capable, ALPN_OFFER)
+    prepare_for_alpn(label, tls_cfg, resolver, transport_capable, &ALPN_OFFER)
 }
 
 pub(crate) fn prepare_for_alpn(

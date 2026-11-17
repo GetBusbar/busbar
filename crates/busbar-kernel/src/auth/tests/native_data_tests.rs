@@ -461,11 +461,12 @@ fn arrival_with_fields(
         .connection
         .head(
             stream,
-            crate::inbound::Head {
-                method: "POST".into(),
-                target: "/resource".into(),
-                fields,
-                ..Default::default()
+            {
+                let mut head = crate::inbound::Head::default();
+                head.method = "POST".into();
+                head.target = "/resource".into();
+                head.fields = fields;
+                head
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
             Some(deadline),
