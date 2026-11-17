@@ -241,7 +241,7 @@ const BYTES: usize = size_of::<Bytes<'static>>();
 const PAIRS: usize = size_of::<Slice<'static, Pair<'static>>>();
 const _: () = assert!(size_of::<AuthReq<'static>>() == 8 + 5 * STR + PAIRS + 3 * BYTES + 8);
 const _: () = assert!(size_of::<PlaneReq<'static>>() == 16 + 4 * STR + PAIRS + 2 * BYTES + 16);
-const _: () = assert!(size_of::<Target<'static>>() == 8 + 5 * STR + PAIRS);
+const _: () = assert!(size_of::<Target<'static>>() == 8 + 5 * STR + PAIRS + BYTES);
 const _: () = assert!(size_of::<ConnInfo<'static>>() == 8 + 5 * STR + 3 * BYTES + 8);
 
 impl seal::Sealed for AuthReq<'_> {}
