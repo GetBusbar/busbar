@@ -2052,3 +2052,7 @@ pub mod test_support {
         super::evaluate_against(bytes, manifest, policy, retired)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/sign_tests.rs"]
+mod tests;

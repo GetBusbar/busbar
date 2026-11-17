@@ -575,6 +575,7 @@ version = "1.6.0"
 dependencies = [
  "axum-core",
  "busbar-count",
+ "futures",
  "http",
  "jsonschema",
  "serde",
