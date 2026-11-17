@@ -316,6 +316,7 @@ pub const AUDIT_ACTIONS: &[&str] = &[
     "node.drain",
     "overlay.reset",
     "plugin.health",
+    "plugin.inspect",
     "plugin.install",
     "plugin.need",
     "plugin.op",

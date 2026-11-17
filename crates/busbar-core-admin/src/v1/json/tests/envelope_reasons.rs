@@ -212,6 +212,34 @@ async fn algorithmic_errors_carry_the_envelope() {
     assert!(body["error"]["reason"].is_string());
 }
 
+/// DES-443 r3: a plugin inspection that is busy, past its deadline or at its cap is a 503 `unavailable`, retryable,
+/// with a numeric `Retry-After`; 409 stays for state conflicts. The kernel admission's `Refusal::Unavailable`
+/// carries the delay.
+#[tokio::test]
+async fn a_retry_later_refusal_is_a_503_with_retry_after() {
+    let refused = busbar_kernel::admission::Refusal::Unavailable {
+        text: "another plugin inspection is loading an image; retry when it finishes".into(),
+        retry_after_s: 10,
+    };
+    let error = crate::v1::service::admission_refused(refused);
+    let (status, headers, body) = parts(err_json(&error)).await;
+    assert_envelope(status, &headers, &body, "unavailable");
+    assert_eq!(status.as_u16(), 503);
+    assert_eq!(body["error"]["retryable"], true);
+    let retry_after = headers
+        .get(axum::http::header::RETRY_AFTER)
+        .expect("Retry-After is present")
+        .to_str()
+        .expect("Retry-After is text");
+    assert_eq!(
+        retry_after.parse::<u32>().expect("Retry-After is numeric"),
+        10
+    );
+    assert!(body["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("another plugin inspection")));
+}
+
 #[cfg(feature = "openapi-schema")]
 fn admin_error_of(kind: crate::v1::contract::taxonomy::ErrKind) -> AdminError {
     use crate::v1::contract::taxonomy::ErrKind;

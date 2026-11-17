@@ -198,6 +198,12 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
+/// Plugin inspections refused because the process opened its cap of distinct images for inspection (DES-443 r3).
+pub const PLUGIN_INSPECT_CAP_REFUSALS_TOTAL: &str = "busbar_plugin_inspect_cap_refusals_total";
+
+/// How long the one plugin inspection slot has been held, in seconds (0 when free; DES-443 r3).
+pub const PLUGIN_INSPECT_SLOT_HELD_SECONDS: &str = "busbar_plugin_inspect_slot_held_seconds";
+
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total";
 
 /// Terminal audit originals refused before native confirmation (no labels).

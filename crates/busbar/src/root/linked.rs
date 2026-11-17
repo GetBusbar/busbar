@@ -638,6 +638,8 @@ pub(crate) const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::BILLING_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_TEXT_CUT_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_CAP_REFUSALS_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_INSPECT_SLOT_HELD_SECONDS,
     busbar_kernel::snapshot::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::snapshot::STORE_SLOTS,
     busbar_kernel::snapshot::UNIT_CHECKPOINTS_TERMINAL,

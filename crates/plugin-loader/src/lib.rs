@@ -280,6 +280,9 @@ pub mod admit;
 #[deny(unsafe_code)]
 pub mod answer;
 mod chains;
+#[cfg(target_os = "linux")]
+#[deny(unsafe_code)]
+pub mod inspect;
 #[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod instance;

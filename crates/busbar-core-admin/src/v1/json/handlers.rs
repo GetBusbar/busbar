@@ -262,8 +262,13 @@ pub(crate) struct InspectPluginReq {
 
 pub(crate) async fn inspect_plugin(
     State(handle): State<Arc<AppHandle>>,
+    principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
     body: axum::body::Bytes,
 ) -> Response {
+    let actor = principal.map_or_else(
+        || "anonymous".to_string(),
+        |axum::Extension(p)| p.actor_id().to_string(),
+    );
     use base64::Engine as _;
     let req: InspectPluginReq = ok_or_respond!(boxed json_body(&body, "plugin"));
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
@@ -277,7 +282,7 @@ pub(crate) async fn inspect_plugin(
     };
 
     let service = service(&handle);
-    inspect_candidate(move || service.inspect_plugin(&tarball)).await
+    inspect_candidate(move || service.inspect_plugin(&tarball, &actor)).await
 }
 
 pub(super) async fn inspect_candidate(
@@ -3264,6 +3269,7 @@ pub(crate) async fn patch_hook_settings(
 
 pub(crate) async fn plugin_schema(
     State(handle): State<Arc<AppHandle>>,
+    principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
     Path(name): Path<String>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -3293,13 +3299,20 @@ pub(crate) async fn plugin_schema(
                 "expected_archive_sha256 must be 64 lowercase hexadecimal characters".into(),
             ));
         }
+        let actor = principal.map_or_else(
+            || "anonymous".to_string(),
+            |axum::Extension(p)| p.actor_id().to_string(),
+        );
         let out =
             busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
                 let snapshot = txn.app().clone();
                 Ok(txn.store_write_async(async move {
                     Ok(Outcome::Value(
-                        AdminService::new(snapshot)
-                            .installed_plugin_schema(&name, expected.as_deref())?,
+                        AdminService::new(snapshot).installed_plugin_schema(
+                            &name,
+                            expected.as_deref(),
+                            &actor,
+                        )?,
                     ))
                 }))
             })
