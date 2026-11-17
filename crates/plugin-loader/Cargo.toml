@@ -45,21 +45,6 @@ path = "tests/fixtures/neutral_plane_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "neutral_secret_door"
-path = "tests/fixtures/neutral_secret_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_rotating_secret_door"
-path = "tests/fixtures/neutral_rotating_secret_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "secret_broken_door"
-path = "tests/fixtures/secret_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
 crate-type = ["cdylib"]

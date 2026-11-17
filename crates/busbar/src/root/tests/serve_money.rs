@@ -1542,6 +1542,84 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
     }
 }
 
+/// #105 (Aikido 1074607025): ordinary nesting (`unit.nest`, no hook grant) carries the parent's
+/// key, never a credential the destination line verified. A protected destination refuses the child
+/// exactly as it refuses an unkeyed arrival (401 at Authenticate, audited, nothing charged to the
+/// parent's key); an open destination still admits it keyed.
+#[tokio::test]
+async fn nested_ordinary_child_never_spends_the_parent_key_on_a_protected_claim() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let _one = PUBLISHING.lock().await;
+    for (instance, keys, expected) in [
+        ("nested-keyed-closed-pools", true, 401),
+        ("nested-keyed-open-pools", false, 200),
+    ] {
+        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, true).await;
+        let key = g
+            .gov
+            .lookup_by_sub(&g.key.id)
+            .expect("the rig's key resolves");
+        let routes = session_custody_routes(&mut g, true);
+        let bound = Arc::new(std::sync::Mutex::new(None));
+        let capture = Arc::clone(&bound);
+        let node = Arc::clone(g.post.node());
+        let app = Arc::clone(&g.app);
+        let attach = super::Attach {
+            answered: 101,
+            admitted: Some(Box::new(move |unit| {
+                let parent = node
+                    .parent(busbar_contract::UnitKey::new(unit))
+                    .expect("live parent");
+                *capture.lock().expect("unpoisoned") = Some((app, parent));
+                Err("finish the parent after binding its continuation".to_string())
+            })),
+            ended: None,
+        };
+        let (door, arrival, _) = routes.arrived(0, 1, session_custody_request(&g, "/open"));
+        let (verdict, _said) = tokio::sync::oneshot::channel();
+        Arc::clone(&routes)
+            .session(door, session_custody_caller(), arrival, verdict, attach)
+            .await;
+        let bound = bound
+            .lock()
+            .expect("unpoisoned")
+            .take()
+            .expect("parent bound while live");
+        let mut nest = session_custody_nest(bound.1.key().get(), "/call/local");
+        nest.principal = Some(key);
+        let reply = Arc::clone(&routes).nested(nest, bound).await;
+        let busbar_kernel::host_services::NestReply::Answered { status, body, .. } = reply else {
+            panic!("fixture claim is served");
+        };
+        assert_eq!(
+            status,
+            expected,
+            "{instance}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        if expected == 401 {
+            assert_eq!(
+                g.requests().await,
+                0,
+                "{instance}: the parent's key is never charged on a destination it was not admitted to"
+            );
+            let book = g.book.lock().expect("unpoisoned");
+            assert!(
+                book.audit_records()
+                    .iter()
+                    .any(|record| record.outcome.unit_end
+                        == Outcome::Refused(StepName::Authenticate, ReasonCode::Unauthenticated)),
+                "{instance}: the refused child is audited"
+            );
+        } else {
+            assert_eq!(body, b"ping");
+        }
+        assert_eq!(g.post.open_units(), 0);
+        assert_eq!(g.money.open_units(), 0);
+        assert!(routes.frames_lock().is_empty());
+    }
+}
+
 /// A real governor admission and matching admitted cell, kept separate from the custody state
 struct ReservedSource {
     owner: super::TicketSourceOwner,

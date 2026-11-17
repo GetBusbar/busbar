@@ -326,6 +326,14 @@ impl RuntimeJournal {
         self.store
             .settle_in_doubt(crate::persistence::facade::SETTLE_PER_TICK)
             .await?;
+        // DES-264: open the next receipt generation in the background and sweep drained ones.
+        // A failed step leaves its custody retained for the next tick; the slot report stands.
+        if let Err(error) = self.store.maintain_record_ops().await {
+            tracing::warn!(
+                ?error,
+                "receipt generation maintenance did not finish this tick"
+            );
+        }
         self.store.slot_states()
     }
 

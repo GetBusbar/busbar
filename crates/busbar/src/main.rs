@@ -304,6 +304,12 @@ fn register_planes() {
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
+    // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before
+    // the start scan, so --validate, --list-plugins and the start grammar read the native secret words.
+    if let Err(refusal) = root::boot::images::publish_start() {
+        eprintln!("busbar: {refusal}");
+        root::exit::exit(2);
+    }
     let scan = root::boot::start_scan();
     let dropped = root::boot::install_start(scan, &LINKED);
     busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
@@ -576,9 +582,8 @@ async fn run(
     trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
 ) {
     let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
-    let plugin_process = std::sync::Arc::new(
-        busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
-    );
+    // The start stage made the process's one ProcessResources (a process installs its plugin sinks once).
+    let plugin_process = root::boot::images::process().unwrap_or_else(|error| die(error));
     root::admission::install_process(&plugin_process);
     let export_observers = root::export_observer::ExportObservers::new();
     root::observe::install(catalogue);
@@ -663,6 +668,10 @@ async fn run(
         &config::grammar::PhaseOneIn::of(&file_plugins),
     )
     .unwrap_or_else(|error| die(error.0));
+    // The boot's images are the serving set: their secret grammar is the native secret axis.
+    file_images.publish_secrets();
+    // ... and their hook facts are what config validation reads of hooks (WP3 hook step).
+    file_images.publish_hooks();
     let loaded = raw
         .typed(&file_images.grammar)
         .unwrap_or_else(|error| die(error));

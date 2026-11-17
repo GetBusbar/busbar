@@ -2317,7 +2317,7 @@ async fn native_guard_validates_exact_baseline_and_refuses_missing_or_changed_id
             .unwrap();
     assert!(matches!(
         rows.conditional_native(&NativeRequest {
-            op_id: [91; 16],
+            op: rows.record_op().await.unwrap(),
             predicates: Vec::new(),
             mutations,
         })

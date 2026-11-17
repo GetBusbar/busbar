@@ -4630,11 +4630,6 @@ fn a_store_door_built_against_another_layout_is_refused() {
 }
 
 #[test]
-fn a_secret_door_built_against_another_layout_is_refused() {
-    another_layout_is_refused::<crate::dispatch::kinds::secret::Secret>(KindCode::Secret);
-}
-
-#[test]
 fn an_auth_door_built_against_another_layout_is_refused() {
     another_layout_is_refused::<crate::dispatch::kinds::auth::Auth>(KindCode::Auth);
 }

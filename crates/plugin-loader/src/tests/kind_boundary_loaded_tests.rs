@@ -144,11 +144,6 @@ fn well_formed_raw_callbacks_refuse_wrong_kinds_before_provider_in_both_loading_
         "neutral_store_door",
         false,
     );
-    exercise::<crate::dispatch::kinds::secret::Secret>(
-        crate::neutral_secret::door,
-        "neutral_secret_door",
-        false,
-    );
     exercise::<crate::dispatch::kinds::export::Export>(
         crate::neutral_export::door,
         "neutral_export_door",

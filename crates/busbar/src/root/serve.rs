@@ -2318,10 +2318,6 @@ impl DataRoutes {
             .constraints
             .as_ref()
             .map_or(NEST_REPLY_MAX, |c| c.grant.max_output_bytes);
-        let principal = match nest.principal.as_deref() {
-            Some(key) => PrincipalId::new(key.id.as_str()),
-            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
-        };
         let pools_plane = self.served.planes[plane].live.served_facts.section
             == busbar_contract::section::RESERVED_POOLS_KEY;
         let open = (pools_plane && app.auth.is_open())
@@ -2330,6 +2326,21 @@ impl DataRoutes {
                 .claims
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        // #105: the parent's key is not a credential the destination line verified (its auth
+        // chain, its plane's audience, its sender proof). Ordinary nesting carries it only to a
+        // destination that takes no credential; a protected destination is reached only under a
+        // hook grant, the host-issued delegation scoped to that exact plane, verb and target
+        // (checked above). Without one the child arrives unkeyed, so the destination's arrival
+        // rule refuses it (401 at Authenticate, audited) exactly as it refuses an unkeyed caller.
+        let key = if open || nest.constraints.is_some() {
+            nest.principal
+        } else {
+            None
+        };
+        let principal = match key.as_deref() {
+            Some(key) => PrincipalId::new(key.id.as_str()),
+            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
+        };
         let body = match request.adopt_input(nest.ask.body) {
             Ok(body) => body.into_bytes(),
             Err(_) => return NestReply::Unserved(NEST_INPUT_FULL),
@@ -2348,7 +2359,6 @@ impl DataRoutes {
             ancestry: nest.ancestry,
             constraints: nest.constraints,
         };
-        let key = nest.principal;
         let (caller, reply) = IngressCaller::new();
         let routes = Arc::clone(&self);
         let unit = async move {
