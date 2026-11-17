@@ -19,7 +19,6 @@ pub(crate) mod inbound;
 pub(crate) mod plane_dispatch;
 pub(crate) mod plane_door;
 pub(crate) mod plane_driver;
-pub(crate) mod plane_hooks;
 pub(crate) mod plane_needs;
 pub(crate) mod plane_registry;
 pub(crate) mod plane_route_tables;

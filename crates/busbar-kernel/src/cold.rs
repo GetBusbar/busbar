@@ -25,23 +25,6 @@ pub(crate) fn first_text_cut(
 pub(crate) mod auth;
 pub(crate) mod governance;
 pub(crate) mod host;
-// --- plane_driver::hooks::policy ---
-
-/// `plane_driver::hooks::policy`: a hook past its deadline.
-#[cold]
-pub(crate) fn hook_policy_deadline_exceeded(budget: std::time::Duration) -> String {
-    format!("hook plugin deadline ({budget:?}) exceeded")
-}
-
-/// `plane_driver::hooks::policy`: a hook that could not answer.
-#[cold]
-pub(crate) fn hook_policy_could_not_answer(name: &str, error: Option<String>) -> String {
-    format!(
-        "hook {name} could not answer: {}",
-        error.unwrap_or_default()
-    )
-}
-
 // --- plane_driver::far_end ---
 
 /// `plane_driver::far_end`: a provider's credential refusal, keyed once, on its first refusal.

@@ -178,10 +178,6 @@ pub struct RootInstall {
     pub endpoint_locate: Option<EndpointLocate>,
     /// The root's `plugins.fetch`.
     pub plugins_fetch: Option<PluginsFetch>,
-    /// The hook axis the root builds over a registry: every `kind:
-    /// hook` row, compiled in or dropped in, opened on the
-    /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
-    pub hook_axis: Option<HookAxisBuild>,
     /// The printed name of each hook row this build LINKS, in manifest order (the root's
     /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
     /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
@@ -258,11 +254,6 @@ pub type SecretRestoreFn = Box<dyn FnOnce() + Send>;
 pub type SecretSnapshotTake = fn() -> SecretRestoreFn;
 
 pub type AuthChainModule = fn(busbar_contract::abi::mechanism::door::DoorFn) -> bool;
-
-pub type HookAxisBuild =
-    fn(
-        &std::sync::Arc<dyn PluginRows>,
-    ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 static ROOT_ROWS: std::sync::RwLock<Option<RootInstall>> = std::sync::RwLock::new(None);
 
@@ -386,11 +377,6 @@ pub fn linked_rows() -> Vec<LinkedRow> {
     rows.chain(auths.copied().map(LinkedRow::Auth)).collect()
 }
 
-fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>> {
-    let build = root_rows().hook_axis?;
-    build(&linked().ok()?).ok()
-}
-
 /// The admitted native hook images' facts (WP3 hook step).
 fn hook_facts() -> Option<&'static dyn busbar_contract::hook_calls::HookImageFacts> {
     root_rows().hook_facts
@@ -399,86 +385,6 @@ fn hook_facts() -> Option<&'static dyn busbar_contract::hook_calls::HookImageFac
 /// Whether `name` is a ranking strategy: a D_WORD some admitted native hook image declares.
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
     hook_facts().is_some_and(|facts| facts.declares_word(name))
-}
-
-fn ranking_settings(
-    axis: &dyn busbar_contract::hook_calls::HookAxis,
-    name: &str,
-) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
-    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
-        serde_json::json!({ "policy": name }),
-    );
-    ranking_settings_from(name, axis.probe(name, name, &settings))
-}
-
-pub(crate) fn ranking_settings_from(
-    name: &str,
-    probed: Option<busbar_contract::hook_calls::Probed>,
-) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
-    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
-        serde_json::json!({"policy":name}),
-    );
-    let (facts, problems) =
-        probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
-    let Some(facts) = facts else {
-        return Err(if problems.is_empty() {
-            format!("ranking strategy '{name}' has no hook metadata")
-        } else {
-            format!("ranking strategy '{name}': {}", problems.join("; "))
-        });
-    };
-    if facts.class != busbar_contract::abi::hook::CLASS_GATE
-        || !facts.words.iter().any(|word| word == name)
-    {
-        return Err(format!(
-            "ranking strategy '{name}' must be a declared word of a gate hook"
-        ));
-    }
-    if !problems.is_empty() {
-        return Err(format!(
-            "ranking strategy '{name}': {}",
-            problems.join("; ")
-        ));
-    }
-    Ok(settings)
-}
-
-pub(crate) fn ranking_on_axis(
-    axis: &dyn busbar_contract::hook_calls::HookAxis,
-    name: &str,
-) -> Result<
-    (
-        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
-        std::time::Duration,
-    ),
-    String,
-> {
-    let settings = ranking_settings(axis, name)?;
-    let budget = axis.call_budget();
-    let (calls, _) = open_ranked(
-        name,
-        &settings,
-        budget,
-        |module, label, settings, budget| axis.open(module, label, settings, budget),
-    )?;
-    Ok((
-        crate::plane_driver::hooks::policy::HookPolicy::ranking(calls, name),
-        budget,
-    ))
-}
-
-pub(crate) fn open_ranked<T>(
-    name: &str,
-    settings: &busbar_contract::plugin_settings::ResolvedSettings,
-    budget: std::time::Duration,
-    open: impl FnOnce(
-        &str,
-        &str,
-        &busbar_contract::plugin_settings::ResolvedSettings,
-        std::time::Duration,
-    ) -> Result<T, String>,
-) -> Result<(T, std::time::Duration), String> {
-    open(name, name, settings, budget).map(|opened| (opened, budget))
 }
 
 /// Every pool ranking strategy is a D_WORD of an admitted native hook image.
@@ -498,16 +404,6 @@ pub(crate) fn validate_pool_strategies(cfg: &config::RootCfg) -> Result<(), Stri
 /// Whether `module` names a linked native hook image.
 pub(crate) fn linked_hook_answers(module: &str) -> bool {
     hook_facts().is_some_and(|facts| facts.linked(module))
-}
-
-pub(crate) fn builtin_ranking(
-    name: &str,
-) -> Option<(
-    std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
-    std::time::Duration,
-)> {
-    let axis = linked_hook_axis()?;
-    ranking_on_axis(axis.as_ref(), name).ok()
 }
 
 /// Operator remedy shared by the store refusals.

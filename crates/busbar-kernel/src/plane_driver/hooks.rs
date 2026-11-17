@@ -13,8 +13,6 @@ use busbar_kernel_audit::record::HookApplied;
 
 use crate::config::PolicyOnError;
 
-pub(crate) mod policy;
-
 /// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
 /// it ran, by the key the deployment configured it under (never the instance serving it), with its
 /// decision head and whether it failed.
