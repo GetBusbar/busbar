@@ -7910,13 +7910,6 @@
         },
         "noun": "key"
       },
-      "keyset.rotated": {
-        "data_schema": {
-          "additionalProperties": true,
-          "type": "object"
-        },
-        "noun": "keyset"
-      },
       "node.boot": {
         "data_schema": {
           "additionalProperties": true,
