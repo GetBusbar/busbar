@@ -5,8 +5,8 @@
 //! queue (frames in arrival order, drained by the carrier's writer task), the CH_READY tail and the greet
 //! hand-off. The carrier driver builds one `Link` per generation and hands each attach an `Attachment`.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,7 @@ pub struct Link {
     writer: mpsc::Sender<GuardedWrite>,
     budget: LinkBudget,
     framing: Framing,
+    alive: Arc<AtomicBool>,
     ready: watch::Sender<Option<Box<[u8]>>>,
     greet_free: Notify,
     greet: Mutex<Greet>,
@@ -59,7 +60,7 @@ pub struct Link {
 
 struct State {
     line: AskLine<GuardedWrite, Charge>,
-    slots: HashSet<u64>,
+    slots: HashMap<u64, Arc<AtomicBool>>,
     ended: bool,
 }
 
@@ -76,12 +77,13 @@ impl Link {
         let link = Self {
             state: Mutex::new(State {
                 line: AskLine::new(serial),
-                slots: HashSet::new(),
+                slots: HashMap::new(),
                 ended: false,
             }),
             writer,
             budget,
             framing,
+            alive: Arc::new(AtomicBool::new(true)),
             ready,
             greet_free: Notify::new(),
             greet: Mutex::new(Greet::Open),
@@ -115,9 +117,11 @@ impl Link {
             return Err(ChannelGone);
         }
         let mut state = self.lock();
-        if state.ended || !state.slots.contains(&slot) {
+        if state.ended {
             return Err(ChannelGone);
         }
+        let live = state.slots.get(&slot).ok_or(ChannelGone)?.clone();
+        message.bind_liveness(self.alive.clone(), Some(live));
         let permit = self.writer.try_reserve().map_err(|_| ChannelGone)?;
         self.touch();
         let ask = message.take_ask();
@@ -177,9 +181,10 @@ impl Link {
     /// `slot` detached: its asks leave the line, what that frees is written, a pending greet moves on.
     pub(super) fn detach(&self, slot: u64, greet: bool) {
         let mut state = self.lock();
-        if !state.slots.remove(&slot) {
+        let Some(alive) = state.slots.remove(&slot) else {
             return;
-        }
+        };
+        alive.store(false, Ordering::Release);
         self.touch();
         self.attached.fetch_sub(1, Ordering::AcqRel);
         let freed = state.line.detached(slot);
@@ -204,9 +209,10 @@ impl Link {
     /// An attachment was built on this generation.
     pub(super) fn attach(&self, slot: u64) -> bool {
         let mut state = self.lock();
-        if slot == 0 || state.ended || state.slots.len() >= 256 || !state.slots.insert(slot) {
+        if slot == 0 || state.ended || state.slots.len() >= 256 || state.slots.contains_key(&slot) {
             return false;
         }
+        state.slots.insert(slot, Arc::new(AtomicBool::new(true)));
         self.touch();
         self.attached.fetch_add(1, Ordering::AcqRel);
         true
@@ -236,11 +242,12 @@ impl Link {
     }
 
     /// Writes `bytes` to the channel now, outside the ask line (the plane's DX_OUTSTANDING fallback).
-    pub fn write(&self, message: GuardedWrite) -> Result<(), ChannelGone> {
+    pub fn write(&self, mut message: GuardedWrite) -> Result<(), ChannelGone> {
         let state = self.lock();
         if !message.destination(&self.budget, self.framing) || state.ended {
             return Err(ChannelGone);
         }
+        message.bind_liveness(self.alive.clone(), None);
         self.touch();
         self.writer.try_send(message).map_err(|_| ChannelGone)
     }
@@ -248,7 +255,7 @@ impl Link {
     /// DX_FINAL to `slot`: its oldest ask leaves the line and the next serial ask is written.
     pub fn finished(&self, slot: u64) {
         let mut state = self.lock();
-        if state.ended || !state.slots.contains(&slot) {
+        if state.ended || !state.slots.contains_key(&slot) {
             return;
         }
         let freed = state.line.finished(slot);
@@ -261,6 +268,10 @@ impl Link {
     pub fn ended(&self) -> Vec<u64> {
         let mut state = self.lock();
         state.ended = true;
+        self.alive.store(false, Ordering::Release);
+        for alive in state.slots.values() {
+            alive.store(false, Ordering::Release);
+        }
         state.line.ended()
     }
 
