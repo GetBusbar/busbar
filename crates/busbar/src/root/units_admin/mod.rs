@@ -311,9 +311,9 @@ pub(crate) trait AuditView: Send + Sync {
             return Err(busbar_core_admin::GovernanceError::Validation);
         }
         let mut answer = Err(busbar_core_admin::GovernanceError::Store);
-        self.read_window(from, to, &mut |chain, records| {
+        self.read_window(from, to, &mut |_chain, records| {
             answer = records
-                .map(|records| expose::range_body(chain, records, from, to).into_bytes())
+                .map(|records| expose::range_body(records, from, to).into_bytes())
                 .ok_or(busbar_core_admin::GovernanceError::NotFound);
         })
         .await;
