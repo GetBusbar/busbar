@@ -79,9 +79,19 @@ impl Effects for LineEffects<'_> {
 struct ServeEffects<'a> {
     lines: LineEffects<'a>,
     client: Option<Arc<dyn ClientSink>>,
+    invocation: Option<crate::host_services::InvocationContext>,
+    hooks: Option<super::port_hooks::Invocation>,
 }
 
 impl Effects for ServeEffects<'_> {
+    fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
+        self.hooks.as_ref()
+    }
+
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.invocation.as_ref()
+    }
+
     fn emit(&self, carrier: u64, bytes: &[u8]) {
         self.lines.emit(carrier, bytes);
     }
@@ -194,6 +204,7 @@ pub struct PortDriver {
     tickets: Arc<dyn TicketDoor>,
     /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
     usage: Arc<[String]>,
+    hooks: Option<Arc<dyn super::port_hooks::Binder>>,
 }
 
 impl PortDriver {
@@ -221,7 +232,37 @@ impl PortDriver {
             routes,
             tickets: Arc::new(NoTickets),
             usage,
+            hooks: None,
         })
+    }
+
+    /// The exact instance owner admitted by root; callers must never mint a lookalike.
+    pub fn caller(&self) -> &Caller {
+        &self.caller
+    }
+
+    /// Complete core owned by this seat, for root's same-generation assembly check.
+    pub fn core(&self) -> &Arc<KernelServices> {
+        &self.services
+    }
+
+    /// Bind execution to this driver's core and exact registered instance/unit.
+    pub fn invocation(
+        &self,
+        generation: Arc<crate::host_services::ServingGeneration>,
+        unit: u64,
+    ) -> Result<crate::host_services::InvocationContext, &'static str> {
+        if !Arc::ptr_eq(&self.services, generation.core()) {
+            return Err("the native seat belongs to a different core generation");
+        }
+        crate::host_services::InvocationContext::new(generation, self.caller.clone(), unit)
+    }
+
+    /// Consume a complete immutable hook binding before this driver is published in a seat.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn super::port_hooks::Binder>) -> Self {
+        self.hooks = Some(hooks);
+        self
     }
 
     /// The instance's declared usage classes, in the order a unit count's class indexes them.
@@ -280,6 +321,19 @@ impl PortDriver {
     /// # Errors
     /// [`ServeError`]; a refusal is not an error, it is [`Served::Refused`].
     pub async fn serve(&self, input: ServeIn<'_>) -> Result<Served, ServeError> {
+        if let Some(context) = &input.invocation {
+            if !Arc::ptr_eq(&self.services, context.generation().core())
+                || !context.accepts(&self.caller)
+                || input
+                    .unit
+                    .as_ref()
+                    .is_none_or(|unit| unit.ctx.key.get() != context.unit())
+            {
+                return Err(ServeError::Invocation(
+                    "the invocation does not own this native unit",
+                ));
+            }
+        }
         let route = self
             .routes
             .data
@@ -299,6 +353,8 @@ impl PortDriver {
             input.now_s,
         )
         .await;
+        let hook_binder = self.hooks.clone();
+        let arrived = input.now_s;
         let ServeIn {
             http,
             principal,
@@ -308,6 +364,7 @@ impl PortDriver {
             carrier,
             intents,
             models,
+            invocation,
             ..
         } = input;
         let port = Arc::clone(&self.port);
@@ -332,10 +389,57 @@ impl PortDriver {
                 carrier,
                 &*intents,
                 &models,
+                invocation,
+                hook_binder,
+                arrived,
             )
         })
         .await
         .map_err(|_| ServeError::Cancelled)?
+    }
+
+    /// Render a core refusal in this exact admitted route's dialect without opening a unit.
+    pub fn render_refusal_now(
+        &self,
+        route: u32,
+        http: HttpIn,
+        refusal: ClientRefusal,
+    ) -> Result<Vec<ToClient>, ServeError> {
+        let auth = self.refusal_auth(route)?;
+        Ok(render_native_refusal(
+            &*self.port,
+            route,
+            auth,
+            http,
+            refusal,
+        ))
+    }
+
+    pub async fn render_refusal(
+        &self,
+        route: u32,
+        http: HttpIn,
+        refusal: ClientRefusal,
+    ) -> Result<Vec<ToClient>, ServeError> {
+        let auth = self.refusal_auth(route)?;
+        let port = Arc::clone(&self.port);
+        tokio::task::spawn_blocking(move || {
+            render_native_refusal(&*port, route, auth, http, refusal)
+        })
+        .await
+        .map_err(|_| ServeError::Cancelled)
+    }
+
+    fn refusal_auth(&self, route: u32) -> Result<u32, ServeError> {
+        let mounted = self
+            .routes
+            .data
+            .iter()
+            .chain(&self.routes.upgrade)
+            .chain(&self.routes.admin)
+            .find(|mounted| mounted.route == route)
+            .ok_or(ServeError::NoRoute)?;
+        Ok(mounted.effective & mounted.effective.wrapping_neg())
     }
 
     /// D_TICK_S: the period core calls [`tick`](Self::tick) at, if the plane declares one.
@@ -407,6 +511,42 @@ impl PortDriver {
             tracing::warn!(?error, carrier = carrier.get(), "plane carrier end failed");
         }
     }
+}
+
+fn render_native_refusal(
+    port: &dyn PlanePort,
+    route: u32,
+    auth: u32,
+    http: HttpIn,
+    refusal: ClientRefusal,
+) -> Vec<ToClient> {
+    struct RenderOnly;
+    impl Effects for RenderOnly {
+        fn emit(&self, _: u64, _: &[u8]) {}
+    }
+    let headers = http
+        .headers
+        .iter()
+        .map(|(name, value)| Pair {
+            name: Str::new(name),
+            value: Bytes::new(value),
+        })
+        .collect::<Vec<_>>();
+    let req = PlaneIn {
+        route,
+        flags: 0,
+        auth,
+        method: &http.method,
+        path: &http.path,
+        query: &http.query,
+        headers: &headers,
+        identity: &[],
+        request_id: http.request_id,
+        carrier: 0,
+        work: "",
+        ticket_record: &[],
+    };
+    refuse(port, &req, &refusal, &RenderOnly)
 }
 
 /// The carrier's own binding, as its lines see it: the principal its session was bound as, and whether that was a
@@ -481,6 +621,8 @@ impl Seated {
                 owner: &self.owner,
             },
             client: None,
+            invocation: None,
+            hooks: None,
         }
     }
 }
@@ -527,6 +669,14 @@ impl PortSeat {
             .line
             .clone()
             .ok_or(LineRefused::NoLineRoute)?;
+        if self
+            .driver
+            .hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.active(route.route))
+        {
+            return Err(LineRefused::Session(SessionError::HookPrerequisite));
+        }
         let admission =
             admit_line(route.route, route.effective, from, &*self.driver.refusals).await;
         // Caller-scoped records, WORK and audit rows take a verified principal only.
@@ -565,6 +715,16 @@ impl PortSeat {
         let route = recovery_route(&self.driver.routes, work.target())
             .cloned()
             .ok_or(RecoverRefused::NoRecoveryRoute)?;
+        if self
+            .driver
+            .hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.active(route.route))
+        {
+            return Err(RecoverRefused::Session(ServeError::Invocation(
+                "recovery hook invocation requires an admitted unit",
+            )));
+        }
         let reference = work.reference();
         let target = Box::<str>::from(work.target());
         let subject = Box::<str>::from(subject);
@@ -633,6 +793,7 @@ fn line_blocking(
         Err(ServeError::Session(error)) => Err(LineRefused::Session(error)),
         Err(ServeError::NoRoute) => Err(LineRefused::NoLineRoute),
         Err(ServeError::Cancelled) => Err(LineRefused::Cancelled),
+        Err(ServeError::Invocation(_)) => Err(LineRefused::Session(SessionError::HookPrerequisite)),
     }
 }
 
@@ -685,6 +846,8 @@ pub struct Unit {
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
 pub struct ServeIn<'a> {
+    /// Checked root dispatch authority for the exact selected seat, unit and serving generation.
+    pub invocation: Option<crate::host_services::InvocationContext>,
     /// The mounted route's id (`PortRoutes`).
     pub route: u32,
     pub http: HttpIn,
@@ -720,6 +883,7 @@ pub enum Served {
 /// Why a request got no answer.
 #[derive(Debug)]
 pub enum ServeError {
+    Invocation(&'static str),
     /// The id names no data or upgrade route of this instance.
     NoRoute,
     Session(SessionError),
@@ -745,10 +909,33 @@ fn serve_blocking(
     carrier: Option<Arc<PortCarrier>>,
     intents: &dyn IntentHost,
     models: &[String],
+    invocation: Option<crate::host_services::InvocationContext>,
+    hook_binder: Option<Arc<dyn super::port_hooks::Binder>>,
+    now_s: u64,
 ) -> Result<Served, ServeError> {
+    let hook_binder = hook_binder.filter(|binder| binder.active(route.route));
+    if hook_binder.is_some() && (invocation.is_none() || unit.is_none()) {
+        return Err(ServeError::Invocation(
+            "native hooks need the admitted unit and generation",
+        ));
+    }
+    let hooks =
+        hook_binder
+            .zip(unit.as_ref())
+            .map(|(binder, unit)| super::port_hooks::Invocation {
+                binder,
+                principal: principal.clone(),
+                now_s,
+                classes: port.usage_classes().to_vec(),
+                journal: unit.journal.clone(),
+                unit: unit.ctx.key,
+            });
     let effects = ServeEffects {
+        hooks,
         lines: LineEffects { carriers, owner },
+
         client,
+        invocation,
     };
     let headers: Vec<Pair<'_>> = http
         .headers
@@ -759,10 +946,11 @@ fn serve_blocking(
         })
         .collect();
     // `records.user`: a node that keeps the end user asks the plane for its projection (PJ_END_USER).
-    let project = unit
-        .as_ref()
-        .and_then(|u| u.journal.as_deref())
-        .is_some_and(|journal| journal.keeps_end_user());
+    let project = effects.hooks.is_some()
+        || unit
+            .as_ref()
+            .and_then(|u| u.journal.as_deref())
+            .is_some_and(|journal| journal.keeps_end_user());
     let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
         route: route.route,
         flags: if project { RQ_PROJECT } else { 0 },
@@ -890,6 +1078,9 @@ fn drive_blocking(
     };
     match ran {
         Ok(ran) => Ok(Served::Ran(ran)),
+        Err(SessionError::HookRefused(refusal)) => {
+            Ok(Served::Refused(refuse(port, req, &refusal, effects)))
+        }
         Err(SessionError::Port(error)) => {
             let refusal = refusal_of(route, &error, refusals);
             Ok(Served::Refused(refuse(port, req, &refusal, effects)))

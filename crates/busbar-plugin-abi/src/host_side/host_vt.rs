@@ -540,16 +540,24 @@ pub mod vt {
     use super::*;
 
     pub fn now() -> u64 {
-        contain(0, now_ns)
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, now_ns)
+        }
     }
 
     pub fn mono() -> u64 {
-        contain(0, mono_ns)
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, mono_ns)
+        }
     }
 
     pub fn random(ctx: Ctx<'_>, len: usize) -> CryptoRet<'_> {
         contain(CryptoRet::empty(ctx, status::RNG), || {
-            if entry::owner().is_none() {
+            if entry::deny_service() || entry::owner().is_none() {
                 return CryptoRet::empty(ctx, status::RNG);
             }
             lend(ctx, &random_body(len))
@@ -558,7 +566,7 @@ pub mod vt {
 
     pub fn crypto<'e>(ctx: Ctx<'e>, req: &CryptoReq<'_>) -> CryptoRet<'e> {
         contain(CryptoRet::empty(ctx, status::RNG), || {
-            if entry::owner().is_none() {
+            if entry::deny_service() || entry::owner().is_none() {
                 return CryptoRet::empty(ctx, status::RNG);
             }
             lend(
@@ -578,11 +586,17 @@ pub mod vt {
 
     /// Round 34: `error` reaches the sink as the raw `u32` it arrived as.
     pub fn log(level: u32, error: u32, msg: &str) {
-        contain((), || log_body(level, error, msg));
+        if !entry::deny_service() {
+            contain((), || log_body(level, error, msg));
+        }
     }
 
     pub fn log_level() -> u32 {
-        contain(0, || LOG_LEVEL.load(Relaxed))
+        if entry::deny_service() {
+            0
+        } else {
+            contain(0, || LOG_LEVEL.load(Relaxed))
+        }
     }
 
     /// Grows this thread's ACTIVE out buffer by `need` (I10, §10.1); false on any refusal or a caught panic.
@@ -591,7 +605,11 @@ pub mod vt {
     }
 
     pub fn deployment() -> DeploymentId {
-        contain(DeploymentId([0; 16]), deployment_body)
+        if entry::deny_service() {
+            DeploymentId([0; 16])
+        } else {
+            contain(DeploymentId([0; 16]), deployment_body)
+        }
     }
 }
 

@@ -2623,6 +2623,32 @@ impl FarEnd for EgressFarEnd<'_> {
         })
     }
 
+    fn scope(&self, _token: &Pass<Route>) -> Option<super::RoutedScope> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        Some(super::RoutedScope {
+            pool: pool.name.clone(),
+            container: String::new(),
+        })
+    }
+
+    fn candidate_lane(&self, token: &Pass<Route>, index: usize) -> Option<String> {
+        // Indexes are stable positions in this exact admissible pool, including filtered gaps.
+        let candidates = self.candidates(token)?;
+        if !candidates
+            .members
+            .iter()
+            .any(|candidate| candidate.idx == index)
+        {
+            return None;
+        }
+        self.egress
+            .pools
+            .get(&self.route.pool)?
+            .admissible_members()
+            .get(index)
+            .map(|member| member.name.clone())
+    }
+
     fn remaining(&self, _token: &Pass<Route>) -> Option<usize> {
         let w = self.lock();
         let Some((name, primary)) = w.walk.walking() else {
