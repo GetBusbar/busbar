@@ -714,7 +714,6 @@ fn structural_validation_names_each_failure() {
 
 #[test]
 fn unknown_manifest_field_fails_parse() {
-    use busbar_contract::json::JsonValueMutTrait as _;
     let key = test_key(1);
     let m = sign(&key, manifest("acme-p", "p", "acme"), b"bytes");
     let mut v = json::to_value(&m).unwrap();

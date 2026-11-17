@@ -1537,14 +1537,15 @@ impl GovState {
             .chain_carried(key, chain)
             .map_err(crate::cold::governance::state::state_missing_group)
             .map_err(super::fee_debt::ObservedAdmission::Blocked)?;
+        // The observer may walk the applicable buckets more than once; `prepare` takes a
+        // cloneable iterator, which the carried chain's own iterator is not.
+        let applicable: Vec<&str> = resolved
+            .iter()
+            .filter(|b| b.applies_to_pool(lane_pool))
+            .map(|b| b.bucket_id)
+            .collect();
         observer
-            .prepare(
-                self,
-                resolved
-                    .iter()
-                    .filter(|b| b.applies_to_pool(lane_pool))
-                    .map(|b| b.bucket_id),
-            )
+            .prepare(self, applicable.iter().copied())
             .map_err(super::fee_debt::ObservedAdmission::Observer)?;
         self.admit_checked(cost, key, pool, now, chain, Some(observer))
             .map_err(super::fee_debt::ObservedAdmission::Blocked)

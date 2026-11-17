@@ -966,7 +966,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .as_deref()
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
         if verb == KernelVerb::GetAuditKeys {
-            return audit_keys_page(&self.request.path, view).await;
+            return audit_keys_page(self.request.path(), view).await;
         }
         if verb == KernelVerb::GetRecords {
             return Ok(records::records_answer(view, &*self.planes, self.request.path()).await);

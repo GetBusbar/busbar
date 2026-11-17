@@ -71,7 +71,7 @@ const MIN_BODY_THROUGHPUT_BYTES_PER_SEC: u64 = 1024;
 
 const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
 
-fn total_body_deadline() -> Duration {
+pub(crate) fn total_body_deadline() -> Duration {
     let cap_bytes = busbar_kernel_egress::upstream::max_translate_body_bytes() as u64;
     Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
 }
@@ -644,7 +644,7 @@ impl std::error::Error for BodyReadTimeout {}
 /// because a dribbling client that polls at least once per byte keeps resetting that timer forever.
 /// Same discipline as `BodyReadTimeout`: generic message, no client bytes.
 #[derive(Debug)]
-enum BodyBoundExceeded {
+pub(crate) enum BodyBoundExceeded {
     Total,
     Throughput,
 }
@@ -662,7 +662,7 @@ impl std::fmt::Display for BodyBoundExceeded {
 }
 impl std::error::Error for BodyBoundExceeded {}
 
-fn check_body_bounds(started: u64, now: u64, bytes: u64) -> Option<BodyBoundExceeded> {
+pub(crate) fn check_body_bounds(started: u64, now: u64, bytes: u64) -> Option<BodyBoundExceeded> {
     let elapsed = Duration::from_nanos(now.saturating_sub(started));
     if elapsed > total_body_deadline() {
         return Some(BodyBoundExceeded::Total);
