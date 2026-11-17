@@ -826,12 +826,12 @@ fn no_late() -> Late {
 
 fn late_of(report: Report) -> Late {
     Box::new(move || {
-        Some((
+        Some(Reported::Legacy((
             report.usage,
             report.fee_count,
             report.lane,
             report.attribution,
-        ))
+        )))
     })
 }
 

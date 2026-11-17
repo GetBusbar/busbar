@@ -238,39 +238,13 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 }
 
 #[cfg(unix)]
+#[path = "native_listener.rs"]
+pub(crate) mod native_listener;
+
+#[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
-    let addr = listener.local_addr();
-    let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver = Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-
-    let serve_handle = tokio::spawn(serve_listener(
-        listener,
-        router,
-        None,
-        secret_resolver,
-        "test",
-        recv_shutdown(shutdown_rx),
-        None,
-        true,
-        None,
-    ));
-
-    let resp = reqwest::Client::new()
-        .get(format!("http://{addr}/probe"))
-        .send()
-        .await
-        .expect("serve_listener must actually accept and answer a real HTTP request");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
-
-    shutdown_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
-        .await
-        .expect("serve_listener must actually stop once shutdown fires")
-        .unwrap();
+    native_listener::assert_real_http().await;
 }
 
 #[test]
@@ -971,7 +945,7 @@ fn no_dead_code_escape_outside_the_listed_test_only_sites() {
 }
 
 /// BOOT-130: the `store.module` plugin-preflight refusal, built once in
-/// `busbar-kernel` preflight, as `prepare_config_store` returns it.
+/// `busbar-kernel` preflight, as `bootstrap_store_inputs` returns it.
 const STORE_MODULE_SQLITE_REFUSAL: &str = "store.module: 'sqlite' requires the plugin subsystem, \
      but plugins.enabled is false (the default). Set plugins.enabled: true and place the signed \
      'sqlite' store plugin tarball in the plugins directory ('plugins'). The published binary links no store of its own: store.module selects a plugin of kind store by name.";

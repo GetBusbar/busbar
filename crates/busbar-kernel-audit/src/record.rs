@@ -5,6 +5,8 @@
 
 use busbar_contract::caps::{Abort, Origin, Outcome, ReasonCode, StepName, UnitKey};
 
+pub mod billing;
+
 #[cfg(any(test, feature = "test-support"))]
 mod test_support;
 
@@ -251,6 +253,8 @@ pub const ATTEMPT_SLOTS: usize = 4;
 /// apart by [`AuditRecord::recipe`], never by these values.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UnitFacts {
+    /// Complete selected billing evidence; present only in the V9 linked recipe.
+    pub billing: Option<billing::PartitionedBillingV1>,
     /// The arrival, in milliseconds since the epoch (the reading `wall` is the seconds of).
     pub wall_ms: u64,
     /// `group`, `pool` and `provider` of the unit's metering, joined by U+001F, each empty when
@@ -708,6 +712,12 @@ impl AuditChain {
             Anchor::Window => (&first.prev_hash, first.seq),
         };
         for (i, record) in records.iter().enumerate() {
+            if !billing::record_valid(record) {
+                return Err(AuditBreak {
+                    at_index: i + 1,
+                    kind: AuditBreakKind::DigestMismatch,
+                });
+            }
             if let Some(kind) =
                 link_break(&record.prev_hash, record.seq, expected_prev, expected_seq)
             {
@@ -771,6 +781,10 @@ impl AuditChain {
         _token: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         stage: impl FnOnce(&AuditRecord) -> Result<T, E>,
     ) -> Result<(AuditRecord, T), E> {
+        assert!(
+            inputs.unit.billing.is_none(),
+            "selected billing uses prepare/link, never the legacy test signer"
+        );
         // One recipe for every new seal: v7 frames every quantity as exact decimal text, whole
         // or fractional, so there is no choice left to make (ADMIN-API-1.6 §3.2).
         let recipe = crate::recipe::Recipe::V7;

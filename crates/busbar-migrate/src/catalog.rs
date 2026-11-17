@@ -65,6 +65,22 @@ fn source(dir: &Path, resolved: &Value, facts: &Facts) -> (PathBuf, Selected) {
     }
 }
 
+/// The resolved catalog 1.5.5 read (the same source as [`plan`]), for the passes that read its
+/// entries (the jwt-bearer binding, LEGACY-KEYFILE-MARKER r2 §7).
+///
+/// # Errors
+/// The source's read or template refusal, as [`plan`] gives it.
+pub(crate) fn resolved(config: &Path, resolved: &Value, facts: &Facts) -> Result<Value, Refusal> {
+    let dir = match config.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let (source, _) = source(&dir, resolved, facts);
+    let shown = source.display().to_string();
+    let raw = read(&source)?;
+    Ok(Template::read(&raw, facts.env, &shown)?.resolved().clone())
+}
+
 /// 1k over the document `root` (R) with its resolved twin.
 pub(crate) fn plan(
     config: &Path,

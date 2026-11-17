@@ -13,6 +13,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+pub mod protected_reply;
+
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -217,6 +219,11 @@ pub fn decode_describe(
     {
         return Err(DescribeInvalid("describe.route_resources"));
     }
+    if facts & p::FB_CHANNEL_OPEN != 0
+        && methods & (p::M_CHANNEL | p::M_DEMUX) != (p::M_CHANNEL | p::M_DEMUX)
+    {
+        return Err(DescribeInvalid("describe.channel"));
+    }
     for (route, kinds) in resource_routes {
         let route = d
             .routes
@@ -282,6 +289,7 @@ fn route_rules(r: &p::RouteRec) -> Result<(), DescribeInvalid> {
 pub enum Call {
     Request,
     Upstream,
+    Channel,
     Piece(u32),
     End,
     Rewrite,
@@ -313,6 +321,7 @@ struct Seen {
     attempt_end: bool,
     selected: bool,
     prepared: bool,
+    channel: bool,
 }
 
 /// A misplaced record: FAULT BadRecords naming the tag.
@@ -347,7 +356,9 @@ pub fn decode_answer(
         recs,
         &mut |_: PlaneOut<'_>| {},
     )?;
-    if call == Call::Upstream {
+    if call == Call::Upstream
+        && declaration.facts() & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+    {
         declaration
             .validate_preparation(selected, recs)
             .map_err(fault)?;
@@ -369,7 +380,7 @@ fn walk(
     };
     for rec in recs {
         let rec = rec.map_err(fault)?;
-        if rec.tag == g::METRIC {
+        if rec.tag == g::METRIC && call != Call::Channel {
             continue;
         }
         if rec.tag == t::CHANNEL && !demux {
@@ -392,6 +403,11 @@ fn walk(
         }
         place(call, &mut s, &rec)?;
         let out = item(&rec).map_err(fault)?;
+        if call == Call::Channel
+            && matches!(&out, PlaneOut::Channel { carrier, .. } if *carrier != p::CARRIER_STDIO)
+        {
+            return Err(misplaced(rec.tag));
+        }
         if let PlaneOut::AttemptUsage(usage) = &out {
             if !declaration.is_attempt_class(usage.class) {
                 return Err(misplaced(rec.tag));
@@ -413,6 +429,9 @@ fn walk(
     if call == Call::Render && s.render != 4 {
         return Err(misplaced(t::END));
     }
+    if call == Call::Channel && !s.channel {
+        return Err(misplaced(t::CHANNEL));
+    }
     Ok(())
 }
 
@@ -420,6 +439,13 @@ fn walk(
 fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
     let tag = rec.tag;
     let bad = Err(misplaced(tag));
+    if call == Call::Channel {
+        match tag {
+            t::CHANNEL if !core::mem::replace(&mut s.channel, true) => {}
+            g::FACT | g::FACT_TEXT => {}
+            _ => return bad,
+        }
+    }
     // After TRAILERS only the trailer PAIRs and END may come (§8.6, round 8).
     if s.trailers && s.render == 3 && tag != g::PAIR && tag != t::END {
         return bad;
@@ -463,7 +489,7 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::UP_BODY | t::UP_MSG | t::UP_END | t::UP_NEW | t::EX_MSG | t::UP_CUT => upstream || flow,
         g::CONVERSATION => call == Call::Request,
         t::ATTEMPT => call == Call::Upstream || call == Call::Piece(p::FROM_UPSTREAM),
-        t::CHANNEL => flow || call == Call::Probe,
+        t::CHANNEL => flow || call == Call::Probe || call == Call::Channel,
         t::LOOKUP | t::ENTITLE | t::JUDGE | t::MINT | t::SIGN | t::CONNECT | t::TRUST => flow,
         t::WORK | t::RENDEZVOUS | t::OBS_SCOPE | t::CH_READY => flow,
         t::DEMUX => call == Call::Demux && !core::mem::replace(&mut s.demux, true),
@@ -1451,6 +1477,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         self.proxy.instance().facts
     }
 
+    fn has_demux(&self) -> bool {
+        self.proxy.instance().methods & p::M_DEMUX != 0
+    }
+
     fn tick_s(&self) -> Option<u64> {
         self.describe.tick_s
     }
@@ -1488,6 +1518,11 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             });
         }
         let max_out = self.live()?.min(byte_limit);
+        let max_out = if mode == p::RESOURCE_SELECT {
+            max_out.min(resources::MAX_SELECTION_BYTES)
+        } else {
+            max_out
+        };
         let req = plane_req(req);
         sync_bufs(max_out, |_, out| {
             let answer = self
@@ -1544,10 +1579,14 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
-        let selected = attempt_wire::selected_from_admission(tgt.admission)
-            .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?;
         let enabled =
             self.proxy.instance().facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0;
+        let selected = if enabled {
+            attempt_wire::selected_from_admission(tgt.admission)
+                .map_err(|r| PortError::Call(CallError::Fault(fault(r))))?
+        } else {
+            None
+        };
         if (enabled && selected.is_none())
             || selected.is_some_and(|selected| selected.attempt != tgt.attempt)
         {
@@ -1558,6 +1597,33 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_bufs(max_out, |_, out| {
             let answer = s.upstream(out, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
+        })
+    }
+
+    fn channel(
+        &self,
+        s: &mut PlaneSession,
+        tgt: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if self.facts() & p::FB_CHANNEL_OPEN == 0
+            || self.proxy.instance().methods & (p::M_CHANNEL | p::M_DEMUX)
+                != (p::M_CHANNEL | p::M_DEMUX)
+        {
+            return Err(PortError::Refused {
+                code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+                text: "selected channel preparation is unavailable".into(),
+                error: None,
+            });
+        }
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let view = target(tgt);
+        sync_bufs(max_out, |_, out| {
+            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+            self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
 
@@ -1577,6 +1643,53 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
+    }
+
+    fn piece_fixed(
+        &self,
+        s: &mut PlaneSession,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, PortError> {
+        self.live()?;
+        if !Arc::ptr_eq(self.proxy.instance(), s.instance()) {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
+        }
+        let (answer, len) = s
+            .piece_fixed(out, from, exchange, flags, bytes)
+            .map_err(PortError::Call)?;
+        // Same whole-answer validation and failure translation as pooled piece. No effect escapes
+        // until the caller classifies the validated fixed backing and admits its complete answer.
+        self.finish(
+            Call::Piece(from),
+            &answer,
+            &mut |_| {},
+            None,
+            Some(exchange),
+        )?;
+        Ok(len)
+    }
+
+    fn decode_fixed_piece(
+        &self,
+        from: u32,
+        exchange: u32,
+        bytes: &[u8],
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        let max_out = self.live()?;
+        if bytes.len() > max_out || Records::new(bytes).any(|r| r.is_ok_and(|r| r.tag == g::TOKEN))
+        {
+            return Err(PortError::Call(CallError::Fault(FaultReason::BadRecords(
+                RecErr::Reserved,
+            ))));
+        }
+        let answer = Answer::parse(Status::OK, bytes)
+            .map_err(|reason| PortError::Call(CallError::Fault(reason)))?;
+        self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
     }
 
     fn rewrite(
@@ -2281,6 +2394,72 @@ mod tests {
         assert_eq!((retry_after_s, backend_status), (Some(30), Some(503)));
         let e = port_error(&scrub, false, 4, "no", (None, None), None);
         assert!(matches!(e, PortError::Refused { code: 4, .. }));
+    }
+
+    #[test]
+    fn selected_channel_requires_one_complete_channel_and_only_facts() {
+        let channel = |out: &mut Reply| {
+            let mut key = Reply::new();
+            key.put_text(g::TEXT, "member").unwrap();
+            out.put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                key.as_bytes(),
+            )
+            .unwrap();
+        };
+        let mut valid = Reply::new();
+        channel(&mut valid);
+        assert!(run(Call::Channel, &valid).is_ok());
+        assert!(run(Call::Upstream, &valid).is_err());
+        assert!(run(Call::Channel, &Reply::new()).is_err());
+        for extra in [
+            t::CHANNEL,
+            t::EX_MSG,
+            g::METRIC,
+            t::UP_BODY,
+            t::ATTEMPT,
+            t::STORE,
+        ] {
+            let mut answer = Reply::new();
+            channel(&mut answer);
+            if extra == t::CHANNEL {
+                channel(&mut answer);
+            } else {
+                answer.put(extra, b"").unwrap();
+            }
+            let mut delivered = 0;
+            assert!(decode_answer(
+                Call::Channel,
+                true,
+                Declaration::legacy(),
+                None,
+                None,
+                Records::new(answer.as_bytes()),
+                &mut |_| delivered += 1
+            )
+            .is_err());
+            assert_eq!(delivered, 0, "whole-answer validation precedes publication");
+        }
+        let mut malformed = Reply::new();
+        malformed
+            .put_pod_tail(
+                t::CHANNEL,
+                &p::ChanRec {
+                    exchange: 7,
+                    flags: 0,
+                    carrier: p::CARRIER_STDIO,
+                    framing: p::CH_FRAME_NDJSON,
+                },
+                b"member",
+            )
+            .unwrap();
+        assert!(run(Call::Channel, &malformed).is_err());
     }
 
     #[test]

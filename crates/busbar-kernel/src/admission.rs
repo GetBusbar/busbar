@@ -90,7 +90,36 @@ pub enum Refusal {
     Validation(String),
     /// The request conflicts with the running posture or the installed set (`409`).
     Conflict(String),
+    /// The admission cannot answer now and the caller may retry (`503` with `Retry-After`): a plugin inspection
+    /// is busy, past its deadline, or at its cap (DES-443 r3).
+    Unavailable {
+        /// What the operator reads.
+        text: String,
+        /// The `Retry-After` delay, in seconds.
+        retry_after_s: u32,
+    },
 }
+
+/// What one plugin inspection did, for its `plugin.inspect` audit row (DES-443 r3 §5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InspectOutcome {
+    /// The image's sha256, hex.
+    pub sha256: String,
+    /// Whether this inspection opened the image.
+    pub opened: bool,
+    /// `cached`, `unloaded`, `pinned`, `late`, `refused`, or `manifest` (shown from its manifest alone, never
+    /// loaded).
+    pub outcome: &'static str,
+    /// Why, for a refusal, a pin or a late completion.
+    pub reason: Option<String>,
+}
+
+/// One inspection: its answer, and the audit facts of the load it made (none for an implementation that never
+/// loads an image).
+pub type Inspection = (
+    Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal>,
+    Option<InspectOutcome>,
+);
 
 /// One tarball of the plugins directory, as the manifest-only inventory reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -196,6 +225,25 @@ pub trait PluginAdmission: Send + Sync {
         cfg: &crate::config::PluginsCfg,
     ) -> Result<(Stated, Judged, busbar_contract::plugin_rows::Verification), Refusal> {
         self.inspect_with_verification(tarball, cfg)
+    }
+
+    /// Inspect for an operator request by `principal` (DES-443 r3 §5): the answer and the audit facts of the
+    /// load it made. `installed` selects the installed-artifact policy. An inspection that finishes after its
+    /// request answered 503 is audited by the implementation, with the same principal and outcome `late`.
+    fn inspect_audited(
+        &self,
+        tarball: &[u8],
+        cfg: &crate::config::PluginsCfg,
+        installed: bool,
+        principal: &str,
+    ) -> Inspection {
+        let _ = principal;
+        let answer = if installed {
+            self.inspect_installed_with_verification(tarball, cfg)
+        } else {
+            self.inspect_with_verification(tarball, cfg)
+        };
+        (answer, None)
     }
 
     fn rollback_target(

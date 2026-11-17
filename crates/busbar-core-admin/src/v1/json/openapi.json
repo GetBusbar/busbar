@@ -3531,10 +3531,6 @@
               "representation": "json-integer-token"
             }
           },
-          "config_persistence": {
-            "description": "Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable\n`config.overlay` backend: `true` = API-applied config changes are durable across restarts;\n`false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are\nrefused. Lets tooling tell an operator whether runtime changes are accepted and durable.",
-            "type": "boolean"
-          },
           "deployment_id": {
             "description": "This deployment's identity (`dep_` + 32 hex, opaque): kept once in the Store, the same\nfor every node and every restart. Absent only before the process has booted its Store.",
             "pattern": "^dep_[0-9a-f]{32}$",
@@ -3590,7 +3586,6 @@
           "incarnation",
           "started_at_ms",
           "config_generation",
-          "config_persistence",
           "warnings"
         ],
         "type": "object"
@@ -7662,6 +7657,27 @@
           "signature_present",
           "verdict"
         ]
+      },
+      "CoreState_durability": {
+        "description": "The core/durability instance's state.",
+        "properties": {
+          "store": {
+            "properties": {
+              "persistence": {
+                "description": "Whether configuration changes made through the admin API are kept in the Store and survive a restart; false when the configuration is locked and those changes are refused.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "persistence"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "store"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -7923,6 +7939,13 @@
         "noun": "overlay"
       },
       "plugin.health": {
+        "data_schema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "noun": "plugin"
+      },
+      "plugin.inspect": {
         "data_schema": {
           "additionalProperties": true,
           "type": "object"

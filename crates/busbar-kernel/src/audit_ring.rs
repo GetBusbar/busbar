@@ -99,6 +99,18 @@ pub struct AuditEntry {
     /// mutation; absent on older schemes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unconditional: Option<bool>,
+    /// Scheme 4: the caller's own `X-Request-Id`, kept beside the minted `request_id`; absent when
+    /// the request sent none (or an invalid one), and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
+    /// Scheme 4: the W3C trace id the request arrived in (32 lowercase hex digits); absent when it
+    /// arrived in none, and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Scheme 4: the operation the request created (`GET /operations/{key}` serves the same id);
+    /// absent when it created none, and on older schemes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// TRUE only for entries THIS process appended live (the seam's live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
     /// explicitly. It carries no ring logic now that the durable rebase is retired; the boot-verify
@@ -149,6 +161,9 @@ impl Default for AuditEntry {
             data: AuditData::default(),
             at_ms: None,
             unconditional: None,
+            client_request_id: None,
+            trace_id: None,
+            operation_id: None,
             recorded_here: false,
         }
     }

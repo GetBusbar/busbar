@@ -1864,6 +1864,30 @@ diagnostics! {
         "`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.",
         "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default).";
 
+    /// A cleartext write past the negotiation window on a connection to a destination plaintext is not admitted to.
+    CONFIG_PLAINTEXT_NOT_ADMITTED = 3141, Config, Actionable, "config-plaintext-not-admitted", "1.6.0", false,
+        "Plaintext is not admitted to this destination",
+        "A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `advanced.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.",
+        "Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `advanced.tls.destinations` with `plaintext: true`.";
+
+    /// A plugin instance declares an endpoint that would be dialled without TLS and has no `insecure_transport` acceptance.
+    CONFIG_PLAINTEXT_ENDPOINT_REFUSED = 3160, Config, Fatal, "config-plaintext-endpoint-refused", "1.6.0", false,
+        "A plugin instance would connect without TLS",
+        "At `check`, a plugin instance declared an endpoint busbar would dial without TLS (a TCP, `http://` or unix-socket destination with no TLS) and the instance has no `insecure_transport` acceptance for it. busbar 1.6.0 connects only over verified TLS and nothing is exempt, not loopback and not unix sockets. The configuration is refused before any connection is opened.",
+        "Turn on TLS for the connection and make the server's certificate verifiable (a CA under `advanced.tls.trust_anchors`, or a pin under `advanced.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: \"<why this is acceptable>\" }` to the instance's block.";
+
+    /// A plane seat or plugin instance runs with an `insecure_transport` acceptance.
+    CONFIG_INSECURE_TRANSPORT_ACCEPTED = 3162, Config, Actionable, "config-insecure-transport-accepted", "1.6.0", false,
+        "A plugin instance runs with insecure_transport accepted",
+        "An instance's `insecure_transport` acceptance admits plaintext, unverified TLS or both to the destinations the line names. Anything sent to them, credentials included, can be read and altered by anyone who can intercept the network path. The acceptance is recorded as a `config.insecure_transport_accepted` audit row.",
+        "Remove the instance's `insecure_transport` once the server offers verifiable TLS.";
+
+    /// An `insecure_transport` acceptance is malformed, names an unknown key, or covers nothing the instance declares.
+    CONFIG_INSECURE_TRANSPORT_INVALID = 3163, Config, Fatal, "config-insecure-transport-invalid", "1.6.0", false,
+        "An insecure_transport acceptance is invalid",
+        "An `insecure_transport` block was refused at load: it is not a map, its `accept` list is empty, repeated or names an unknown value (the values are `plaintext` and `unverified_tls`), it names a key other than `accept` and `reason`, its `reason` is missing or unusable, or none of the instance's declared endpoints needs the acceptance. The line names the path and the key.",
+        "Fix or delete the block. `accept` takes `plaintext`, `unverified_tls` or both, once each, with a `reason`; an acceptance an instance does not need is refused, so remove it.";
+
     /// An `advanced.tls.destinations` wildcard covers a single label.
     CONFIG_WILDCARD_OVER_PUBLIC_SUFFIX = 3145, Config, Fatal, "config-wildcard-over-public-suffix", "1.6.0", false,
         "A destination wildcard is too wide",
@@ -1976,6 +2000,12 @@ diagnostics! {
         "More expired writers remain than one start closes (the next start continues)",
         "The start-up pass closes at most 256 expired writers per start, so its cost stays bounded. More remained; the next start of any gateway on this store continues with them.",
         "None if starts continue. Many expired writers point at many processes that did not retire: check why shutdowns are not completing.";
+
+    /// A waiting process sees another owner converting this dataset's record format and waits for it.
+    FORMAT_MIGRATION_WAITING = 9025, Boot, Actionable, "format-migration-waiting", "1.6.0", false,
+        "Waiting on another owner's record-format conversion of this dataset (no listener bound yet)",
+        "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
+        "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
 
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,

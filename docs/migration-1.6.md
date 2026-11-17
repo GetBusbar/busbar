@@ -12,15 +12,9 @@ the upgrade.
 
 > This guide is being checked against development builds. The release-candidate check must
 > finish before it is used as the final 1.6.0 upgrade procedure. Approved changes still awaiting
-> integration are listed under [release-candidate checks](#release-candidate-checks). This guide
-> does not qualify any Store backend without complete, direct CI migration evidence. A
+> integration are listed under [release-candidate checks](#release-candidate-checks). No Store
+> backend is yet qualified for this upgrade by complete, direct CI migration evidence. A
 > successful build or ordinary Store test run does not establish upgrade or rollback safety.
-
-The migration-specific behavior below is checked against core source
-`04b89c2eb6680f5230577a605bb4a57936c54e81`; see [source notes](#source-notes).
-This source snapshot is not a released or qualified artifact cohort. The supported upgrade
-keeps a released 1.5.5 deployment's configuration through migrate-on-boot; it does not keep
-removed CLI flags, administrative paths or pre-release configuration aliases.
 
 ## Before you start
 
@@ -53,17 +47,13 @@ removed CLI flags, administrative paths or pre-release configuration aliases.
    Take the whole set in the documented order, with the Store backup and the exported audit
    stream taken at the same point in time: see
    [backup set and order](operations.md#backup-set-and-order).
-3. Install the intended 1.6.0 executable and compatible external artifacts. A native artifact
-   used before Store-backed admission, including an early grammar/check callback, requires
-   its complete archive SHA-256 in the operator base `plugins.fetch` entry matching that
-   archive's filename. A missing, conflicting or mismatched pin refuses loading. This is in
-   addition to ordinary artifact integrity and publisher admission; a downloaded release
-   index or an unread Store overlay cannot authorize its own bootstrap dependency. Linked
-   implementations do not need an archive pin. See [plugin security](plugins.md#how-plugins-are-secured).
+3. Install the intended 1.6.0 executable and compatible external artifacts. Where native
+   bootstrap, check or migration code requires authorization, put the selected archive's
+   complete SHA-256 in the operator base `plugins.fetch` entry. A downloaded release index
+   does not authorize execution; see [plugin security](plugins.md#how-plugins-are-secured).
 4. Start 1.6.0 with the deployment's config path, secret sources and working directory.
    Do not add `--ignore-overlay` to bypass an old overlay that still needs folding.
-   For an unstamped config, do not use `--providers`: migration selects the catalog that
-   1.5.5 selected, including a nonempty `BUSBAR_PROVIDERS`. See [environment inputs](#environment-inputs).
+   For an unstamped config, do not use `--providers`: set `providers_file:` in the document.
 5. Read the migration reports and refusals. The first boot plans configuration changes,
    initializes the configured instances (each brings its own supported settings and data to
    its current format), migrates core-owned records through the opened Store, writes the
@@ -74,25 +64,16 @@ removed CLI flags, administrative paths or pre-release configuration aliases.
    particularly the wildcard role bindings described below. Remove retired launch variables
    once their intended settings are represented in configuration.
 
-Use the installed executable with the deployment's actual paths and environment for the
-first boot:
-
-```sh
-busbar --config /deployment/config.yaml
-```
-
-After conversion has produced a stamped configuration, an offline check is available:
+Use the installed executable with the deployment's actual paths and environment:
 
 ```sh
 busbar --config /deployment/config.yaml --validate
+busbar --config /deployment/config.yaml
 ```
 
-`--validate` judges the authored configuration; it does not run migrate-on-boot. It checks
-configuration and artifact preflight and may execute authorized native grammar/check callbacks.
-It does not start a server, open the application Store or recover its overlay, and it does not
-prove backend reachability or serving readiness. After startup, check `GET /readyz` on the
-configured listener and verify the application flows above. `GET /livez` reports liveness;
-`GET /healthz` is observational.
+Validation checks configuration and plugin preflight; it does not prove backend reachability
+or serving readiness. After startup, check `GET /readyz` on the configured listener and verify
+the application flows above. `GET /livez` reports liveness; `GET /healthz` is observational.
 Listener TLS and mTLS still apply. See [health and readiness](operations.md#health--readiness).
 
 The original config is retained as `<config>.1.5.5`; the accepted config is stamped
@@ -100,15 +81,9 @@ The original config is retained as `<config>.1.5.5`; the accepted config is stam
 the executable supports is refused. The config stamp does not skip a Store's own initialization
 or data-version checks. Do not add a stamp yourself to bypass migration.
 
-**A startup refusal does not mean the Store or configuration directory is unchanged.**
-Planning checks existing configuration and overlay backup conflicts before instances open.
-The final write repeats those checks under the directory lock; concurrent changes, a lock
-failure or a later write failure can still refuse after a Store data conversion. The writer
-can already have created protected secret files, a converted catalog or an overlay guard
-before the new configuration is installed. A message about an unchanged YAML file, or
-"nothing was written" for one failed operation, does not establish that the whole upgrade
-had no effects. Fix the reported prerequisite and retry 1.6.0. Do not restart 1.5.5 against
-that Store.
+**A startup refusal does not mean the Store is unchanged.** Planning refusals happen before
+instances open, but a later failure can follow a Store data conversion or an overlay guard
+write. Fix the reported prerequisite and retry 1.6.0. Do not restart 1.5.5 against that Store.
 If a backup or generated catalog already exists with different bytes, preserve it and
 investigate the conflict; do not overwrite it to force the upgrade through.
 
@@ -169,8 +144,8 @@ are folded into `config.yaml`; subsequent administrative changes use the configu
 `config.overlay` is retired; `config.locked` remains the switch for an immutable deployment.
 See [overlay migration](migration-overlay-1.6.md).
 
-The upgrade selects the old overlay as 1.5.5 did: `config.overlay.file`, otherwise a nonempty
-`BUSBAR_CONFIG_OVERLAY` when the selector is absent or null, otherwise `busbar-overlay.json` beside
+The upgrade selects the old overlay as 1.5.5 did: `config.overlay.file`, otherwise
+`BUSBAR_CONFIG_OVERLAY` when no selector was supplied, otherwise `busbar-overlay.json` beside
 the config. A locked config has no overlay. A file that 1.5.5 could not write was not read by
 that version and is not folded. Read the report naming the selected absolute path and whether
 it was folded, absent or not writable. An unexpected absence needs investigation before you
@@ -196,29 +171,14 @@ to apply the stored configuration again.
 ### Every configuration names its Store
 
 A current configuration requires `store.module`; an omitted Store is not a default selection.
-The current production migration writes `store: { module: memory }` for a store-less 1.5.5
-config, naming the Store that release implied. If that implementation is not installed and
-admitted, boot refuses; it does not silently choose another Store.
+When upgrading a store-less 1.5.5 config, migration names the build's single linked ephemeral
+Store. A standard build with that implementation produces `store: { module: memory }`.
+A build with no such implementation, or several, refuses and asks you to name one.
 An ephemeral Store loses its state on restart; the migration does not make it durable.
 
 The local `.wal` segments and quarantine files are retired as persistence inputs.
 Persistence belongs to the configured Store. Do not use a host journal directory as your
 backup or recovery procedure.
-
-### Publisher trust and native artifacts
-
-Use `plugins.trust.allow_untrusted`, default off, for an explicit decision to admit unsigned
-or unknown-publisher artifacts. A verified artifact from the installed Busbar root or a
-configured publisher scoped to that plugin needs no separate third-party switch. Integrity
-failures, invalid signatures from known publishers, revoked keys and incompatible ABI remain
-refusals even with the opt-in; trust does not grant runtime permission.
-
-The unstamped conversion rewrites old `allow_unsigned` and `allow_third_party` fields only
-when both resolve to the same boolean (an omitted old field counts as false). A single enabled
-old permission, a mix with `allow_untrusted`, or a publisher without explicit `plugins` and
-`keys` scope refuses rather than broadening trust. Follow the refusal to make the operator's
-trust decision explicit. Keep artifact enablement, publisher trust and the early archive pin
-as separate requirements. See [plugin security](plugins.md#how-plugins-are-secured).
 
 ### Environment inputs
 
@@ -232,13 +192,11 @@ on upgrade; exact-artifact upgrade qualification remains required.
 
 | Retired variable | Current configuration |
 |---|---|
-| `BUSBAR_PROVIDERS` | Captured on an unstamped upgrade boot; serving uses `providers_file:` or `--providers` |
+| `BUSBAR_PROVIDERS` | `providers_file:` |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-
-`BUSBAR_CONFIG_OVERLAY` is a separate one-time old-overlay selector, described above; a stamped
-boot does not read it. It is not one of the four `BUSBAR-3029` launch-warning entries.
+| `BUSBAR_CONFIG_OVERLAY` | One-time old-overlay selection only; no serving equivalent |
 
 The 1.6.0 container no longer sets `BUSBAR_PROVIDERS`. Put `providers.yaml` beside the selected
 config or name it with `providers_file:`. `BUSBAR_CONFIG` and `-c`/`--config` still select the
@@ -378,6 +336,10 @@ Errors have a top-level diagnostic `code` and an `error` object containing `code
 `error.message` can continue to do so. Core diagnostic codes use `BUSBAR-NNNN`; implementation
 codes use `BUSBAR-<implementation>-NNNN`. Update log matching to accept the diagnostic prefix.
 
+The engine always mints `X-Request-Id`, whatever the client sends. A valid
+client id (1 to 128 of `[A-Za-z0-9._:-]`) comes back in `X-Client-Request-Id` and is kept on the
+audit rows as `client_request_id`. Join on that, or on `trace_id` when you send a W3C `traceparent`.
+
 `POST /restart` answers `{restarting, note}`; `supervisor_detected` is removed. `POST /adjust` answers carry the outcome in the body (`effect`, `receipt_durable`); the `x-busbar-adjust-effect` and `x-busbar-receipt-durable` response headers are removed.
 
 Instance names must be unique across configuration sections and must not collide with core
@@ -393,6 +355,7 @@ instance IDs. Resolve a reported collision and update clients that select by ins
 | `process_boot_nonce` | `incarnation` (same value) |
 | `started_at`, `uptime_seconds` | `started_at_ms` |
 | `config_version` | `config_generation` |
+| `config_persistence` | The `core/durability` instance's `state.store.persistence` (`/kinds/core/instances/durability`) |
 | `kinds_revision` | The `/kinds` ETag |
 | `overlay_ignored` | A `warnings[]` entry with `code: "overlay_ignored"` |
 
@@ -422,8 +385,8 @@ rely on the retired host journal for rate-card recovery.
 This section records required checks while 1.6.0 is in development. These are **not instructions
 to add pre-release keys**. Replace this section with verified final behavior before release:
 
-- Exercise the declared upstream registration and private-reach rules below with the selected
-  plane artifacts; a schema or source correction does not establish through-boot migration.
+- Confirm the removal of core `upstreams` and `advanced.allow_destinations`, and the restored
+  per-registration `allow_private` shape, including automatic migration and private-host policy.
 - `auth.require_if_match` is the 1.6.0 spelling; `auth.policy.require_if_match` is refused as an
   unknown field (the kernel parser and the admin config form both place it at the auth level). List
   the removed `auth.policy` keys and fixed engine constants against the final strict schema.
@@ -432,9 +395,9 @@ to add pre-release keys**. Replace this section with verified final behavior bef
   rewrites from required operator edits.
 - Recheck optional rate-card units and the final unpriced-unit behavior; an old requirement to
   populate every `units` map must not be carried into the release procedure.
-- Verify the first-boot providers-catalog capture and preservation or an explained refusal for
-  each remaining retired launch variable. A warning followed by different worker-count or
-  upstream-protocol behavior is not sufficient.
+- Reconcile first-boot providers-catalog selection with the removal of serving environment
+  overrides. Verify preservation or an explained refusal for each retired launch variable;
+  a warning followed by different worker-count or upstream-protocol behavior is not sufficient.
 - Recheck the final administrative resource model; a proposed replacement for `/config/settings`,
   `/config/apply`, RPC roots and instance `ops` must not be documented as implemented before it lands.
 
@@ -492,54 +455,3 @@ keys are refused. The current startup Store frame bound is fixed at 64 MiB;
 datagram LINE pairings retain their former unlimited default. The shutdown drain
 budget is fixed at 20 seconds and the governed settlement backlog cap at 20,000.
 Released 1.5.5 configurations do not contain these pre-release settings.
-
-### Audit verifying-key pages
-
-`GET /api/v1/admin/audit/keys` now returns public keys under `items` with
-`next_cursor`, while retaining its algorithm, signature domain and recipe metadata.
-Pass `limit` (default 200, maximum 1000) and follow `next_cursor` until it is null.
-Keys are ordered by `key_id`; only public verifying material is returned.
-
-## Source notes
-
-The links below are pinned to the inspected core snapshot
-`04b89c2eb6680f5230577a605bb4a57936c54e81`. They support the migration-specific distinctions
-in this guide and the [overlay guide](migration-overlay-1.6.md). They establish source behavior,
-not execution results. An installed artifact, a plugin backend and a complete deployment each
-need their own evidence; the release-candidate checks above remain open until that evidence
-exists for the final cohort.
-
-| Migration claim | Pinned source |
-|---|---|
-| No-stamp conversion, current/newer stamp admission, `--providers` refusal and re-execution | [Root migration seam][source-root-migrate], [format stamp][source-format] |
-| Offline validation reads authored input, can run authorized callbacks, and does not run the migration/server | [CLI parser, help and validation path][source-cli] |
-| Retired launch-warning table, empty providers-variable behavior and no value logging | [Launch environment handling][source-env] |
-| First-boot providers precedence, captured absolute path, stripped catalog and retained source | [Catalog planner/writer][source-catalog] |
-| Literal implied Store in the production facts path versus optional declaration-based selection | [Production facts][source-root-migrate], [facts defaults][source-migrate], [step dispatch][source-steps], [absent-Store pass][source-store] |
-| Base archive filename/hash authorization, linked exemption and retained native admission proof | [Bootstrap archive checks][source-bootstrap], [native load guard][source-boot] |
-| Single untrusted opt-in, hard integrity/signature/revocation refusals and scoped publisher trust | [Artifact trust policy and verification][source-trust], [config conversion/refusals][source-conversions] |
-| Overlay selector, writability, fold/refusal rules, size bound, recovery files and marker guard | [Overlay migration][source-overlay], [hook conversion][source-overlay-hooks] |
-| Plan-time backup checks, repeated locked checks, secret/catalog/guard writes before YAML replacement | [Migration plan and writer][source-migrate], [secret writer][source-settle] |
-| Core-owned metadata, wildcard-role and opening-price conversions | [Core config conversion passes][source-conversions] |
-| Plugin-settled settings and protected literal-secret files | [Settled settings and secret writer][source-settle], [root write-back integration][source-root-migrate] |
-
-Shared core record-format maintenance, the final administrative resource model and the selected
-plugins' own upgrade behavior must be rechecked with their integrated producers and consumers.
-The operator preconditions in this guide do not assert that those pending protocols are active.
-In particular, a library helper, a draft design or a successful build is not a shipped upgrade path.
-
-[source-root-migrate]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar/src/root/migrate.rs
-[source-format]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-contract/src/upgrade.rs
-[source-cli]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar/src/root/cli.rs
-[source-env]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar/src/root/retired_env.rs
-[source-catalog]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/catalog.rs
-[source-migrate]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/lib.rs
-[source-steps]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/steps.rs
-[source-store]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/absent_store.rs
-[source-bootstrap]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-kernel/src/appbuild.rs
-[source-boot]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar/src/root/boot.rs
-[source-trust]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/plugin-loader/src/sign.rs
-[source-conversions]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/migrate_1_6.rs
-[source-overlay]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/overlay.rs
-[source-overlay-hooks]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/overlay_hooks.rs
-[source-settle]: https://github.com/GetBusbar/busbar/blob/04b89c2eb6680f5230577a605bb4a57936c54e81/crates/busbar-migrate/src/settle.rs

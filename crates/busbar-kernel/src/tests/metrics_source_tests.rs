@@ -4,6 +4,118 @@
 use super::*;
 use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
+#[test]
+fn budgeted_projection_keeps_real_families_and_retires_its_own_credit() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = identity_source();
+    metrics::with_local_recorder(&source, || {
+        metrics::counter!("budgeted_counter", "pool" => "p").increment(7);
+        metrics::gauge!("budgeted_gauge", "pool" => "p").set(4.0);
+    });
+    let process = ProcessAdmission::with_limits(0, 4 * 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let captured = source.snapshot_budgeted(&request).unwrap().unwrap();
+    assert!(process.used().0 > 0);
+    assert_eq!(
+        ordered_families(captured.value()),
+        ordered_families(&source.snapshot().unwrap())
+    );
+    let used = process.used();
+    let second = source.snapshot_budgeted(&request).unwrap().unwrap();
+    assert!(process.used().0 > used.0);
+    drop(second);
+    assert_eq!(process.used(), used);
+    drop(captured);
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[test]
+fn first_denial_in_the_visited_counter_shard_is_reported_only_after_capture() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = identity_source();
+    let denied = Key::from_parts(
+        crate::snapshot::ADMISSION_DENIED_TOTAL,
+        vec![metrics::Label::new("gate", "inbound_body_bytes")],
+    );
+    // Pinned metrics-util registry chooses the low hash bits with this exact shard count.
+    let mask = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .next_power_of_two()
+        - 1;
+    let target = (0..100_000)
+        .map(|i| Key::from_name(format!("projection_probe_{i}")))
+        .find(|key| (key.get_hash() as usize & mask) == (denied.get_hash() as usize & mask))
+        .unwrap();
+    metrics::with_local_recorder(&source, || {
+        source
+            .register_counter(
+                &target,
+                &metrics::Metadata::new("output-test", metrics::Level::INFO, None),
+            )
+            .increment(1);
+    });
+    assert!(!source.registry.get_counter_handles().contains_key(&denied));
+    let process = ProcessAdmission::with_limits(0, 1, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        metrics::with_local_recorder(&source, || {
+            let error = match source.snapshot_budgeted(&request) {
+                Err(error) => error,
+                Ok(_) => panic!("one byte cannot fund the retained handle vector"),
+            };
+            assert_eq!(error, OutputError::Capacity);
+            assert_eq!(process.used(), (0, 0));
+            assert!(!source.registry.get_counter_handles().contains_key(&denied));
+            error.report();
+            let counter = source
+                .registry
+                .get_counter_handles()
+                .remove(&denied)
+                .unwrap();
+            assert_eq!(counter.get_inner().load(Ordering::Relaxed), 1);
+            sent.send(()).unwrap();
+        });
+    });
+    received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("projection must not re-enter a held registry shard");
+    worker.join().unwrap();
+}
+
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn real_family_builder_allocation_traffic_fits_reserved_projection_credit() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let process = ProcessAdmission::with_limits(0, 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let key = Key::from_parts(
+        "allocation_probe",
+        vec![metrics::Label::new("pool", "long-label".repeat(100))],
+    );
+    let mut scope = CaptureScope::new(&request).unwrap();
+    let mut building = Building::new();
+    crate::ThreadAllocated::reset();
+    output::series(&mut scope, &key, 9).unwrap();
+    put(
+        &mut building,
+        SCRAPE_KIND_SUMMARY,
+        &key,
+        (0..9)
+            .map(|i| ("_count", Some(i.to_string()), f64::MAX.to_string()))
+            .collect(),
+    );
+    let allocated = crate::ThreadAllocated::bytes();
+    assert!(allocated > 0);
+    assert!(
+        allocated <= u64::try_from(process.used().0).unwrap(),
+        "{allocated} bytes exceeded the pre-reserved requested-storage bound"
+    );
+    drop(building);
+    drop(scope);
+    assert_eq!(process.used(), (0, 0));
+}
+
 fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
     ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
@@ -68,7 +180,7 @@ fn workload() {
 
 #[test]
 fn source_preserves_the_kinds_raw_metric_vector() {
-    let source: &'static Source = Box::leak(Box::new(Source::new(
+    let source: &'static Source = Box::leak(Box::new(Source::isolated(
         Duration::from_secs(20),
         std::num::NonZeroU32::new(3).unwrap(),
         Duration::from_secs(60),
@@ -77,7 +189,12 @@ fn source_preserves_the_kinds_raw_metric_vector() {
     let expected: Vec<Family> =
         json::parse_str(busbar_contract::abi::sdk::test_support::metrics::SNAPSHOT)
             .expect("the kind's raw snapshot vector");
-    let actual = source.snapshot();
+    // Adopted request-recorder health is additional to the unchanged kind recording vector.
+    let all = source.snapshot().unwrap();
+    let actual: Vec<_> = all
+        .into_iter()
+        .filter(|family| !family.name.starts_with("busbar_telemetry_request_"))
+        .collect();
     assert_eq!(ordered_families(&actual), ordered_families(&expected));
     assert_eq!(
         actual.len(),
@@ -108,7 +225,7 @@ fn the_window_rolls_while_count_and_sum_never_reset() {
 }
 
 fn identity_source() -> &'static Source {
-    Box::leak(Box::new(Source::new(
+    Box::leak(Box::new(Source::isolated(
         crate::snapshot::GAUGE_IDLE_TIMEOUT,
         crate::snapshot::SUMMARY_BUCKETS,
         crate::snapshot::GAUGE_IDLE_TIMEOUT,
@@ -149,7 +266,7 @@ fn raw_label_values_keep_distinct_exported_series() {
             gauges[at].set(value as f64);
             histograms[at].record(value as f64);
         }
-        let first = source.snapshot();
+        let first = source.snapshot().unwrap();
         assert_eq!(identity_values(&first, COUNTER), ["17", "23"]);
         assert_eq!(identity_values(&first, GAUGE), ["17", "23"]);
         assert_eq!(identity_values(&first, SUMMARY_SUM), ["17", "23"]);
@@ -194,7 +311,7 @@ fn raw_label_values_keep_distinct_exported_series() {
                 .collect::<Vec<_>>(),
             expected_names
         );
-        let again = source.snapshot();
+        let again = source.snapshot().unwrap();
         assert_eq!(identity_values(&again, COUNTER), ["17", "23"]);
         assert_eq!(identity_values(&again, SUMMARY_COUNT), ["1", "1"]);
         std::thread::scope(|threads| {
@@ -203,7 +320,7 @@ fn raw_label_values_keep_distinct_exported_series() {
         });
         gauges[0].set(41.0);
         histograms[1].record(7.0);
-        let updated = source.snapshot();
+        let updated = source.snapshot().unwrap();
         assert_eq!(identity_values(&updated, COUNTER), ["22", "30"]);
         assert_eq!(identity_values(&updated, GAUGE), ["23", "41"]);
         assert_eq!(identity_values(&updated, SUMMARY_SUM), ["17", "30"]);
@@ -229,7 +346,7 @@ fn raw_duplicate_labels_keep_registry_identity_and_existing_display_semantics() 
         metrics::counter!(COUNTER, displayed).increment(11);
         metrics::counter!(COUNTER, duplicate).increment(2);
     });
-    let families = source.snapshot();
+    let families = source.snapshot().unwrap();
     assert_eq!(identity_values(&families, COUNTER), ["11", "7"]);
     let family = families
         .iter()
@@ -259,7 +376,7 @@ fn series_order_uses_raw_labels_without_wire_encoding() {
         }
     });
     for _ in [(), ()] {
-        let families = source.snapshot();
+        let families = source.snapshot().unwrap();
         let family = families
             .iter()
             .find(|family| family.name == COUNTER)

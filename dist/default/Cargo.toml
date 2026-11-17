@@ -534,6 +534,8 @@ tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
 # The root's transport refresh fixture uses the connector's instance-local test support.
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
+# tests/hook_parity_driver: the plane's driver proofs run on the plugin-test Harness beside the host seat.
+busbar-plugin-test = { path = "../../crates/busbar-plugin-test" }
 # The kernel's test fixtures on its pub API (the root's tests and this crate's).
 # `tests/plane_integration.rs` reads a plane's admission audience as a URL.
 url = { workspace = true }
@@ -745,7 +747,7 @@ busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webre
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "4102868e504e32b22f1c6f19e6f5a363c1c1d980" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "eb40baa7b52c6a3209357bf298fa513fe48ab46e" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6f3a36a9762c86fb8059d4fa6598beed6c793932" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "d2f65de0e2b35c68ba9162eff375d48c77130ff7" }
@@ -1074,18 +1076,20 @@ zeroize = "1"
 # busbar-contract links into the binary, and a plugin's rev of busbar never decides what the
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
+busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }
-busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
 
 # Published MIN-3 planes name the GitLab source identity. Resolve their SDK and JSON facade
 # to this same core tree; URL aliases otherwise produce a second SDK/FFI type universe.
-[patch.'https://github.com/GetBusbar/busbar']
+[patch.'https://github.com/GetBusbar/busbar.git']
 busbar-contract = { path = "../../crates/busbar-contract" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
+# Adopted funded TLS output/ticket storage and actual wire provenance.
+rustls = { git = "https://github.com/MattJackson/rustls", rev = "02181ad51e81f9cb33a0648117b03039274716a3" }
 # Dependency patches are effective only at the consuming workspace root.
 mysql_common = { git = "https://github.com/MattJackson/rust_mysql_common", rev = "f8e1d4f6dbb61ed46e0cae1f1c451f9ffadded39" }
 postgres-protocol = { git = "https://github.com/MattJackson/rust-postgres", rev = "a0a2f6f8f7f3d23dd5204c06ff56768dc75bb3f2" }
@@ -1094,7 +1098,11 @@ jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3ef
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
-h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
+# Native HTTP allocation projection and serializer provenance (adopted transport cohort).
+http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
+h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
+hyper = { git = "https://github.com/MattJackson/hyper", rev = "c140435f43477ca3ffbdb2078a5994e9dfb11969" }
+hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "b4c554c133c7fc83ee55a9ce0271849f7387994d" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered

@@ -496,6 +496,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
             Validation / NoDiskBase,
+            NotFound / UnknownResource,
             VersionConflict / StaleIfMatch,
             Conflict / RestartUnreachable,
             Conflict / OperatorFilePolicy,

@@ -3565,6 +3565,9 @@ impl HostServices for KernelServices {
         let Some(unit) = unit else {
             return refused();
         };
+        if !self.units.generic_effects_allowed(unit, caller) {
+            return refused();
+        }
         let Some(principal) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
             return refused();
         };
