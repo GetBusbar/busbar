@@ -27,6 +27,7 @@ fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
         auth,
         pattern: pattern.into(),
         cred_header: None,
+        resource_kinds: Vec::new(),
     }
 }
 

@@ -43,6 +43,7 @@ pub struct Mounted {
     pub pattern: Box<str>,
     /// D_ROUTE_CRED_HEADER, lowercase.
     pub cred_header: Option<Box<str>>,
+    pub resource_kinds: Vec<Box<str>>,
     /// A `ROUTE_CATALOG` route.
     pub catalog: bool,
 }
@@ -127,6 +128,7 @@ pub fn plan(
             effective,
             pattern: r.pattern.clone(),
             cred_header: r.cred_header.clone(),
+            resource_kinds: r.resource_kinds.clone(),
             catalog: r.flags & ROUTE_CATALOG != 0,
         };
         match special {

@@ -259,6 +259,8 @@ pub struct TargetIn<'a> {
     pub upstream: &'a str,
     pub provider: &'a str,
     pub params: &'a [Pair<'a>],
+    /// Opaque host-prepared records. Empty carries no resource authority.
+    pub admission: &'a [u8],
 }
 
 /// One TRUST answer core encodes for P_TRUST (§12.14). `named` = TRUST_VERIFY's SIGNED_ALGORITHM/SIGNED_CRITICAL
@@ -288,6 +290,8 @@ pub struct RouteInfo {
     pub auth: u32,
     pub pattern: Box<str>,
     pub cred_header: Option<Box<str>>,
+    /// Complete declared generic scope kinds; empty means this route does not opt in.
+    pub resource_kinds: Vec<Box<str>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -323,6 +327,29 @@ pub struct WorkAnswer<'a> {
 
 pub trait PlanePort: Send + Sync + 'static {
     fn routes(&self) -> &[RouteInfo];
+    /// Declared kinds for this route; empty means no native resource-admission producer.
+    fn resource_kinds(&self, route: u32) -> &[Box<str>] {
+        self.routes()
+            .iter()
+            .find(|r| r.route == route)
+            .map_or(&[], |r| r.resource_kinds.as_slice())
+    }
+    /// Pure inventory/selection records, validated before return. Unsupported by default;
+    /// callers must never use a failure to fall back to weaker authorization.
+    fn resource_facts(
+        &self,
+        _mode: u32,
+        _req: &PlaneIn<'_>,
+        _body: &[u8],
+        _byte_limit: usize,
+    ) -> Result<Vec<u8>, PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "resource admission is unavailable".into(),
+            error: None,
+        })
+    }
+
     fn dialects(&self) -> &[Box<str>];
     fn usage_classes(&self) -> &[UsageClass];
     fn facts(&self) -> u64;
