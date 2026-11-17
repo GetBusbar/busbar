@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_plugin_abi::plane::{tag as t, RouteRec, ROUTE_LINE};
+use busbar_plugin_abi::plane::{tag as t, RouteRec, ROUTE_ADMIN, ROUTE_LINE, ROUTE_RECOVERY};
 use busbar_plugin_abi::records::Rec;
 use busbar_plugin_abi::types::KindCode;
 
@@ -120,13 +120,30 @@ pub fn plane_sections<'a>(
 
 /// Whether an admitted image is a plane declaring a ROUTE_LINE route (r34 §12.23).
 pub(crate) fn declares_line_route(described: &Described) -> bool {
-    described.kind == KindCode::Plane
-        && described
-            .items
-            .iter()
-            .filter(|(tag, _)| *tag == t::D_ROUTE)
-            .filter_map(|(tag, body)| Rec { tag: *tag, body }.pod_tail::<RouteRec>().ok())
-            .any(|(route, _)| route.flags & ROUTE_LINE != 0)
+    route_flags(described).any(|flags| flags & ROUTE_LINE != 0)
+}
+
+/// Route flags that keep a route off the data listener. r34 has no HTTP route flag. Its plane
+/// route-flag rules (r34 l.3968-3978) say ROUTE_LINE and ROUTE_RECOVERY routes are "never mounted on
+/// a listener" and ROUTE_ADMIN routes mount on the admin router. Every other admitted route (plain,
+/// ROUTE_CATALOG, and ROUTE_UPGRADE, whose upgrade starts as an HTTP GET head, §12.27) is served over
+/// HTTP on the data listener.
+const NOT_DATA_HTTP: u32 = ROUTE_LINE | ROUTE_RECOVERY | ROUTE_ADMIN;
+
+/// Whether an admitted image is a plane declaring a route core serves over HTTP on the data listener.
+pub(crate) fn declares_http_route(described: &Described) -> bool {
+    route_flags(described).any(|flags| flags & NOT_DATA_HTTP == 0)
+}
+
+/// The flags of every D_ROUTE an admitted plane declared (none for another kind).
+fn route_flags(described: &Described) -> impl Iterator<Item = u32> + '_ {
+    let plane = described.kind == KindCode::Plane;
+    described
+        .items
+        .iter()
+        .filter(move |(tag, _)| plane && *tag == t::D_ROUTE)
+        .filter_map(|(tag, body)| Rec { tag: *tag, body }.pod_tail::<RouteRec>().ok())
+        .map(|(route, _)| route.flags)
 }
 
 impl Images {
@@ -135,6 +152,14 @@ impl Images {
     pub fn serves_lines(&self, identity: &str) -> bool {
         self.described(identity)
             .is_some_and(|described| declares_line_route(&described))
+    }
+
+    /// Whether the admitted image `identity` is a plane serving a route over HTTP on the data
+    /// listener: any route that is not ROUTE_LINE, ROUTE_RECOVERY or ROUTE_ADMIN.
+    #[must_use]
+    pub fn serves_http(&self, identity: &str) -> bool {
+        self.described(identity)
+            .is_some_and(|described| declares_http_route(&described))
     }
 }
 
