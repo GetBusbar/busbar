@@ -114,6 +114,19 @@ impl SchemaCheck {
             }
         })
     }
+
+    /// Validate without returning instance values or the validator's diagnostic text.
+    /// The two pointers identify the instance position and failing schema keyword.
+    pub fn validation_paths(&self, instance: &[u8]) -> Result<(), (String, String)> {
+        let document =
+            parse_foreign(instance).map_err(|_| (String::new(), String::from("/parse")))?;
+        self.0.validate(&document).map_err(|error| {
+            (
+                error.instance_path().to_string(),
+                error.schema_path().to_string(),
+            )
+        })
+    }
 }
 
 /// The keyword, apart from the facade's tree traits: its instance is jsonschema's node.
