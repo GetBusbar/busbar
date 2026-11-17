@@ -558,7 +558,7 @@ async fn at_capacity_the_idle_entry_with_the_soonest_expiry_goes_first() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn with_every_entry_leading_the_next_request_bypasses_and_is_never_refused() {
+async fn with_every_entry_leading_the_next_request_still_leads_and_is_never_refused() {
     let cache = sized(2);
     let port = admit("alice");
     let (a, b, c) = (
@@ -584,7 +584,11 @@ async fn with_every_entry_leading_the_next_request_bypasses_and_is_never_refused
         "(d) verified and admitted, never refused"
     );
     assert_eq!(port.verifies(), 3);
-    assert_eq!(cache.keys(7), 2, "and not filled");
+    assert_eq!(
+        cache.keys(7),
+        1,
+        "(d) leads take no cache room (DES-359 r3 rule 5): only c's settled identity is cached"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

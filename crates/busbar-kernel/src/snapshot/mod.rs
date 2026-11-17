@@ -301,6 +301,8 @@ pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total";
 pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total";
 pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds";
 pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total";
+/// Needs admitted under an instance's `insecure_transport.accept` (DES-359 r3 L2).
+pub const INSECURE_TRANSPORT_ADMITTED_TOTAL: &str = "busbar_insecure_transport_admitted_total";
 
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds";
@@ -499,6 +501,10 @@ fn describe() {
     describe_counter!(
         TRANSLATIONS_TOTAL,
         "Cross-protocol translations, by source and target protocol"
+    );
+    describe_counter!(
+        INSECURE_TRANSPORT_ADMITTED_TOTAL,
+        "Needs (OPEN, STARTTLS, FETCH) admitted under an instance's insecure_transport acceptance, by kind, instance and accept; pooled reuse included, not TCP dials"
     );
     describe_counter!(
         BILLING_TAP_DECODE_FAIL_TOTAL,

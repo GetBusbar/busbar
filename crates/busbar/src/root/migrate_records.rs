@@ -586,6 +586,33 @@ pub(crate) fn write_with_attempt(
     written
 }
 
+/// Step 4 then step 5 over the opened store: the records conversion and the config.yaml write the
+/// converting boot performs together. A refusal of the step-5 document must leave the store as it
+/// was found (MIGRATE-ON-BOOT r42: nothing has been changed until the document is accepted).
+///
+/// # Errors
+/// The records step's refusal, or the write's refusal text.
+pub(crate) fn convert_and_write(
+    store: &Store,
+    keys: &Keys,
+    plan: &busbar_migrate::Plan,
+    settled: &[busbar_migrate::Settled],
+    check: busbar_migrate::Check<'_>,
+    config: &Path,
+    stamped: bool,
+) -> Result<busbar_migrate::Written, String> {
+    // Every refusal of step 5 is judged first, read-only, so it changes nothing (#328).
+    busbar_migrate::check_settled(plan, settled, check).map_err(|refusal| refusal.to_string())?;
+    if let Some(report) = run_blocking(store, keys, config, stamped)? {
+        tracing::info!(
+            target: "busbar::migrate",
+            "the 1.5.5 records were migrated: {}",
+            report_line(&report)
+        );
+    }
+    write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
+}
+
 #[cfg(test)]
 mod key_handoff_tests {
     use super::Keys;

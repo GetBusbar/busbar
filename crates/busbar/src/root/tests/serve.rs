@@ -545,9 +545,23 @@ fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
 #[tokio::test(flavor = "multi_thread")]
 async fn constructed_services_sign_and_write_trust_changes_down() {
     use busbar_kernel::host_services::{InstanceFacts, Signing};
+    use busbar_kernel::trust::book::{Reviewed, Ruling};
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
-    let late = Services::serving(Arc::new(kernel(&[])));
+    // The operator reviews the key's current `seen` and then decides (r3 §10.1 (R)).
+    let current_seen = |k: &KernelServices| {
+        k.trust_rows()
+            .into_iter()
+            .find(|row| row.key() == "owner/peer")
+            .and_then(|row| row.seen)
+    };
+    // Decisions need bound custody (r3 §10.1 (F), A-C1): a record over an in-memory Store whose
+    // owner is not this caller, so this source's drift is still not written down.
+    let custody = Arc::new(DemotionRecord::default());
+    custody
+        .set_store(crate::root::real_store::core().await)
+        .expect("a fresh record attaches");
+    let late = Services::serving(Arc::new(kernel(&[]).with_demotions(custody, "")));
     let k = late.kernel().expect("kept");
 
     let entry = TrustEntry {
@@ -600,9 +614,17 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
     );
 
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
-    k.trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
-        .await
-        .expect("approved");
+    let seen = current_seen(&k);
+    k.trust_rule_by(
+        "owner/peer",
+        Ruling::Approve,
+        seen.as_deref().map_or(Reviewed::Unsighted, Reviewed::Seen),
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("approved");
     assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
@@ -641,9 +663,17 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
         }
     };
     assert_eq!(complete_sight("h1"), (svc::TRUST_NEW, false));
+    let seen = current_seen(&complete_kernel);
     complete_kernel
-        .trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
+        .trust_rule_by(
+            "owner/peer",
+            Ruling::Approve,
+            seen.as_deref().map_or(Reviewed::Unsighted, Reviewed::Seen),
+            "op",
+            None,
+        )
         .await
+        .result
         .expect("complete approved");
     assert_eq!(complete_sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(
@@ -1094,4 +1124,15 @@ async fn record_unit_is_request_id() {
     for other in [other_node, restarted] {
         assert_ne!(other.map(|o| o.to_string()), Some(canonical.clone()));
     }
+}
+
+#[test]
+fn admin_trust_binds_one_kernel() {
+    let kernel = Arc::new(KernelServices::new());
+    let services = Services::serving(Arc::clone(&kernel));
+    let (decide, read) = admin_trust(&services);
+    assert!(decide.as_ref().is_some_and(|k| Arc::ptr_eq(k, &kernel)));
+    assert!(read.as_ref().is_some_and(|r| r.same_kernel(&kernel)));
+    let (decide, read) = admin_trust(&Services::bootstrap());
+    assert!(decide.is_none() && read.is_none());
 }

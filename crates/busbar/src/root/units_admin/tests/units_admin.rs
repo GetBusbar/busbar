@@ -581,6 +581,7 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
             &request,
             &request.body,
             None,
+            bound::ReplayContext::None,
             mint,
         )
         .await
@@ -598,7 +599,12 @@ async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         ("another node", &sibling),
     ] {
         assert_eq!(replayed.status, first.status, "{who}: the first status");
-        assert_eq!(replayed.headers, first.headers, "{who}: the first headers");
+        let mut marked = first.headers.clone();
+        marked.push(("idempotent-replayed".to_string(), "true".to_string()));
+        assert_eq!(
+            replayed.headers, marked,
+            "{who}: the first headers, marked as replayed (r3 §4.6)"
+        );
         assert_eq!(replayed.body, first.body, "{who}: the first body's bytes");
     }
     assert_eq!(
@@ -4294,6 +4300,7 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
             request,
             &request.body,
             Some(&journal),
+            bound::ReplayContext::None,
             || async {
                 bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
                     .await
@@ -4312,7 +4319,11 @@ async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     request.body = json::to_vec(&json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request).await, accepted);
+    let mut replayed = accepted.clone();
+    replayed
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(ask(&request).await, replayed);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
@@ -4367,6 +4378,7 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
@@ -4382,11 +4394,19 @@ async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() 
         &request,
         &request.body,
         None,
+        bound::ReplayContext::None,
         effect,
     )
     .await
     .expect("the retry answers");
-    assert_eq!(retried, first, "the retry answers the first answer's bytes");
+    let mut marked = first.clone();
+    marked
+        .headers
+        .push(("idempotent-replayed".to_string(), "true".to_string()));
+    assert_eq!(
+        retried, marked,
+        "the retry answers the first answer's bytes, marked as replayed"
+    );
     assert_eq!(
         ran.load(std::sync::atomic::Ordering::SeqCst),
         1,

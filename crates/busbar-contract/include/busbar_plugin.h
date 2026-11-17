@@ -335,6 +335,7 @@ extern "C" {
 #define BB_EXPORT_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced anything (deliver: the batch was not */
 #define BB_EXPORT_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
 #define BB_EXPORT_HARD_MAX_ROUTES UINT64_C(64) /* The most routes one export instance may declare. */
+#define BB_EXPORT_CONTENT_SCHEMA "busbar.content.v1" /* The version tag of the pinned `content` line and exchange schema */
 
 /* plane */
 #define BB_PLANE_MAX_UNITS UINT64_C(64) /* The most unit counts one answer may carry. */
@@ -4151,7 +4152,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 287 of 287 structures are pinned by the golden ---- */
+/* ---- layout proof: 286 of 286 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)

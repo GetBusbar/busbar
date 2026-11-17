@@ -2089,6 +2089,29 @@ pub const ADMIN_AUTH_UNAVAILABLE_MESSAGE: &str =
 
 pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RETRY_AFTER;
 
+/// THE TRUST DECISION AUTHORITY this admission verdict grants (TRUST-ADMIN-PRODUCER-DESIGN r3
+/// §4.2a, condition B-C1): `approve`/`revoke` exactly when the door admits `POST /trust/approve` /
+/// `POST /trust/revoke` under the gate's own rules (full scope; a non-empty verb list must name the
+/// verb). An open door is `anonymous`; a refused door, or one admitting neither, grants none.
+pub(crate) fn trust_decision_authority(
+    door: &AdminDoor,
+) -> Option<crate::host_services::TrustDecisionAuthority> {
+    let principal = match door {
+        AdminDoor::Open => busbar_kernel_identity::principal::ANONYMOUS.to_string(),
+        AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
+            principal.id.clone()
+        }
+        AdminDoor::Denied | AdminDoor::Rejected(_) | AdminDoor::Unavailable(_) => return None,
+    };
+    let approve = admin_door_admits(door, "POST", "/api/v1/admin/trust/approve");
+    let revoke = admin_door_admits(door, "POST", "/api/v1/admin/trust/revoke");
+    (approve || revoke).then_some(crate::host_services::TrustDecisionAuthority {
+        principal,
+        approve,
+        revoke,
+    })
+}
+
 fn admin_principal_or_response(door: AdminDoor) -> Result<Option<Principal>, Box<Response>> {
     match door {
         AdminDoor::Identified(principal, _) | AdminDoor::Listed(principal, _, _) => {
@@ -2627,6 +2650,9 @@ pub(crate) async fn auth_middleware(
         {
             app.login_guard.admin_refused(admin_source, now);
         }
+        // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2a, condition B-C1: what a plane admin route this request
+        // reaches may decide trust under, built only from this gate's own verdict.
+        let trust_authority = trust_decision_authority(&door);
         let principal = match admin_principal_or_response(door) {
             Ok(principal) => principal,
             Err(response) => {
@@ -2704,6 +2730,9 @@ pub(crate) async fn auth_middleware(
             }
         }
         req.extensions_mut().insert(AuthPrincipal(principal));
+        if let Some(authority) = trust_authority {
+            req.extensions_mut().insert(authority);
+        }
 
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
@@ -3101,3 +3130,7 @@ impl AuthMiddleware {
 #[cfg(test)]
 #[path = "tests/admin_grant_tests.rs"]
 mod admin_grant_tests;
+
+#[cfg(test)]
+#[path = "tests/trust_authority_tests.rs"]
+mod trust_authority_tests;

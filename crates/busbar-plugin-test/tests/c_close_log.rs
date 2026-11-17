@@ -20,7 +20,7 @@ use crate::min3_second::{self as fx, CLOSE_LINE};
 const SECRET: &str = "pw-close-log-4417";
 
 fn config(tag: &str) -> Vec<u8> {
-    format!(r#"{{"tag":"{tag}","password":"the operator's reference","close_log":true}}"#)
+    format!(r#"{{"tag":"{tag}","password":{{"env":"OPERATOR_REFERENCE"}},"close_log":true}}"#)
         .into_bytes()
 }
 

@@ -23,13 +23,24 @@ pub(crate) fn line_carrier(
     }
 }
 
+/// The environment variable a line session's credential is read from. Every character outside
+/// `[A-Z0-9_]` of the upper-cased words maps to `_`, so an identity-named instance still spells a
+/// name a shell can export (WP1-GAP r3 §1.3, B-N11).
 #[must_use]
 pub(crate) fn env_credential(plane: &str, carrier: &str) -> String {
-    format!(
-        "BUSBAR_{}_{}_CREDENTIAL",
-        plane.to_ascii_uppercase(),
-        carrier.to_ascii_uppercase()
-    )
+    let word = |w: &str| -> String {
+        w.chars()
+            .map(|c| c.to_ascii_uppercase())
+            .map(|c| {
+                if c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    format!("BUSBAR_{}_{}_CREDENTIAL", word(plane), word(carrier))
 }
 
 pub(crate) async fn session(

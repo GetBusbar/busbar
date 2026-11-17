@@ -127,6 +127,7 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
         consumed: None,
         query: None,
         serve: busbar_kernel::plane_driver::serve::ServeTables::default(),
+        trust_authority: None,
     };
     let reply = connect_reply::<NanPlane>(ctx).await;
     assert!(

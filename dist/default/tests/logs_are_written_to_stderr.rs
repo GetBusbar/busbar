@@ -3,7 +3,7 @@
 
 //! Busbar's log stream is stderr, always, as in 1.5.5: a server serving HTTP (no plane in stdio line
 //! mode) writes its log lines to stderr and nothing at all to stdout, so stdout stays free for a
-//! plane that serves its protocol there (`--mcp-stdio`, whose stdout `mcp_stdio_serve` pins).
+//! plane that serves its protocol there (`--stdio`, whose stdout `mcp_stdio_serve` pins).
 
 #![cfg(unix)]
 

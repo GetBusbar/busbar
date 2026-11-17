@@ -2716,6 +2716,10 @@ async fn build_app_native(
     app.config_pending_restart = prior
         .map(|app| app.config_pending_restart.clone())
         .unwrap_or_default();
+    // Export membership is restart-only: recompute its markers against the retained boot
+    // instances, so a reverted or withdrawn candidate cannot leave a stale requirement.
+    app.config_pending_restart
+        .retain(|path| !path.starts_with("export."));
     app.boot_restart_root = prior.and_then(|app| app.boot_restart_root.clone());
     app.boot_restart_source = prior.and_then(|app| app.boot_restart_source.clone());
     if let Some(boot) = &app.boot_restart_root {
@@ -2734,7 +2738,7 @@ async fn build_app_native(
         let exports: std::collections::BTreeSet<_> = app
             .export_defs
             .keys()
-            .chain(prior.export_defs.keys())
+            .chain(app.exports.sinks.iter().map(|sink| &sink.name))
             .cloned()
             .collect();
         for name in exports {

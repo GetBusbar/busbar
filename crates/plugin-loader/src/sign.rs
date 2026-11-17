@@ -1237,38 +1237,13 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
     }
 }
 
-fn version_components(v: &str) -> Option<[&str; 3]> {
-    if !valid_semver(v) {
-        return None;
-    }
-    let core = v.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut component = || {
-        let digits = parts.next()?.trim_start_matches('0');
-        Some(if digits.is_empty() { "0" } else { digits })
-    };
-    Some([component()?, component()?, component()?])
-}
-
+/// `have` ≥ `floor` by SemVer 2.0 precedence (the one comparator, DES-359 r3 L11); an empty floor is no floor.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
-    if floor.is_empty() {
-        return true;
-    }
-    let (Some(have), Some(floor)) = (version_components(have), version_components(floor)) else {
-        return false;
-    };
-    for (have, floor) in have.into_iter().zip(floor) {
-        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => return true,
-            std::cmp::Ordering::Equal => {}
-        }
-    }
-    true
+    busbar_contract::semver::version_at_least(have, floor)
 }
 
 fn floor_note(floor: &str) -> &'static str {
-    if floor.is_empty() || valid_semver(floor) {
+    if floor.is_empty() || busbar_contract::semver::valid_authored(floor) {
         ""
     } else {
         " — NOTE: this floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v', e.g. \
@@ -1480,9 +1455,11 @@ const fn fips_backend_linked() -> bool {
 /// manifest verified against busbar's embedded release roots (`Verdict::Trusted { first_party:
 /// true }`; never the self-declared `publisher` string) passes. Everything else that phase 2
 /// would load, through an allowlisted publisher or an `allow_untrusted`
-/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned, tampered or
-/// unknown-publisher reject, so its remedy never names an opt-in that cannot help. The hard
-/// rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
+/// opt-in, is refused [`RejectKind::ExternalCrypto`], and so is an unsigned or unknown-publisher
+/// reject, so its remedy never names an opt-in that cannot help. Proof is verified before this
+/// policy: invalid proof from a known publisher (a Busbar artifact without a valid release seal
+/// included) refuses as tampered and is audited as tampering, never hidden as the backend's policy
+/// refusal (AGREED l.474). The hard rejects (revoked, retired, below a floor) keep their own code. A compiled-in plugin never
 /// reaches here: it is built in the same build, against the same backend.
 ///
 /// GAP (#260, DES-1): busbar's release seal does not yet attest that the crypto-graph and
@@ -1807,7 +1784,10 @@ fn evaluate_against_with_evidence(
             .or_else(|| policy.first_party_high_water.get(&manifest.name))
             .map(String::as_str)
             .unwrap_or("");
-        if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
+        // An authored pin must also be a well-formed authored version (DES-359 r3 L11); a stored
+        // high-water mark is read as it was written.
+        let unreadable_pin = pinned.is_some() && !busbar_contract::semver::valid_authored(floor);
+        if !floor.is_empty() && (unreadable_pin || !version_at_least(&manifest.version, floor)) {
             let why = if pinned.is_some() {
                 "the PINNED first-party rollback floor"
             } else {
@@ -1833,7 +1813,9 @@ fn evaluate_against_with_evidence(
 
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
-            Ok(_) if version_at_least(&manifest.version, floor) => {}
+            Ok(_)
+                if version_at_least(&manifest.version, floor)
+                    && (floor.is_empty() || busbar_contract::semver::valid_authored(floor)) => {}
             Ok(_) => {
                 return Err(Rejected::new(
                     RejectKind::AntiDowngrade,
