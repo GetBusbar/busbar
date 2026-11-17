@@ -19,15 +19,10 @@ const WITNESS_KEY: &[u8] = b"namespace";
 /// Exclusive file creation precedes every Store open and is retained as creation provenance.
 pub fn stage(directory: &Path) {
     let library = super::plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .expect("the qualified actual Store statement reads")
-        .expect("the qualified actual Store states its door");
-    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("the qualified actual Store statement parses");
-    let mut manifest =
-        super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-    manifest.version = facts.version;
-    manifest.statement = Some(hex::encode(statement));
+    // The actual Store is a native MIN-3 image: its stamp names it and its header completes the manifest.
+    let facts = super::plugins::native_image(&library);
+    let manifest =
+        super::plugins::native_manifest("store", &library, super::plugins::FIXTURE_PUBLISHER);
     let image = std::fs::read(&library).expect("the qualified actual Store image reads");
     let archive =
         super::plugins::signed(&super::credentials::harness_release_key(), manifest, &image);

@@ -228,14 +228,8 @@ async fn app() -> (
     busbar_kernel::snapshot::init_for_test(Duration::from_secs(3600));
     crate::dist_root_install::install();
     let library = crate::root::test_plugins::application_store_library();
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .unwrap()
-        .unwrap();
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .unwrap()
-        .name;
-    let mut manifest = plugins::manifest("store", &module, "third-party");
-    manifest.statement = Some(hex::encode(statement));
+    let module = crate::root::test_plugins::native_image(&library).name;
+    let manifest = crate::root::test_plugins::native_manifest("store", &library, "third-party");
     let directory = plugins::scratch("admin-custody-outcomes");
     let archive = plugins::signed(
         &plugins::key(0x33),
