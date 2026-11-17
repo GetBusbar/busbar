@@ -205,6 +205,10 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    /// Enforcement cannot discover its scope without first performing an effect.
+    HookPrerequisite,
+    /// A completed native hook stage refused this unit before any provider effect.
+    HookRefused(crate::refusal::ClientRefusal),
     /// The plane refused, failed or faulted; the port already handled the image.
     Port(PortError),
     /// The plane broke a once rule; the session is cancelled.

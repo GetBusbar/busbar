@@ -1248,7 +1248,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         resolver: &Resolver<'_>,
         effects: &dyn Effects,
     ) -> Result<Vec<Answer>, SessionError> {
-        self.resolve(first, resolver, effects)
+        self.resolve_stage(first, resolver, effects, true)
     }
 
     /// Resolves the intents of `first` and of every answer their results provoke. Answers come back in delivery
@@ -1260,11 +1260,37 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         resolver: &Resolver<'_>,
         effects: &dyn Effects,
     ) -> Result<Vec<Answer>, SessionError> {
+        self.resolve_stage(first, resolver, effects, false)
+    }
+
+    fn resolve_stage(
+        &mut self,
+        first: Answer,
+        resolver: &Resolver<'_>,
+        effects: &dyn Effects,
+        screening: bool,
+    ) -> Result<Vec<Answer>, SessionError> {
         let mut out = Vec::new();
         let mut queue = VecDeque::from([first]);
         let mut rounds = 0u32;
+        let mut held_effects = false;
         while let Some(mut answer) = queue.pop_front() {
             let intents = std::mem::take(&mut answer.intents);
+            if screening && !intents.is_empty() {
+                let reads = intents.iter().any(prerequisite);
+                let writes = intents.iter().any(|intent| !prerequisite(intent));
+                if (reads && (writes || held_effects))
+                    || (writes && answer.forward.is_none() && answer.client.is_empty())
+                {
+                    return Err(SessionError::HookPrerequisite);
+                }
+                if writes {
+                    held_effects = true;
+                    answer.intents = intents;
+                    out.push(answer);
+                    continue;
+                }
+            }
             out.push(answer);
             if intents.is_empty() {
                 continue;
@@ -1286,6 +1312,17 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         }
         Ok(out)
     }
+}
+
+/// These operations can discover a deferred route without opening a wire or changing state.
+fn prerequisite(intent: &Intent) -> bool {
+    matches!(
+        intent,
+        Intent::Lookup { .. }
+            | Intent::Entitle { .. }
+            | Intent::Judge { .. }
+            | Intent::Work { op: WORK_FIND, .. }
+    )
 }
 
 /// Who a plane instance is to the store: its record namespace (IF §12.5).
