@@ -5,6 +5,7 @@ use libloading::Library;
 use std::io::Write as _;
 #[cfg(target_os = "linux")]
 use std::mem::ManuallyDrop;
+#[cfg(any(unix, test))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -15,12 +16,14 @@ mod lifecycle_custody_tests;
 
 /// Before admission, the native image and its staging identity are one retaining owner.
 /// Generic parameters let safe witnesses exercise the actual retention/close-once mechanism.
+#[cfg(any(unix, test))]
 pub(crate) struct ImageCustody<L = busbar_ffi::image::Opened, B = Staged> {
     opened: Option<L>,
     backing: Option<B>,
     close_started: bool,
 }
 
+#[cfg(any(unix, test))]
 impl<L, B> ImageCustody<L, B> {
     fn new(backing: B) -> Self {
         Self {
@@ -68,6 +71,7 @@ impl ImageCustody {
     }
 }
 
+#[cfg(any(unix, test))]
 impl<L, B> Drop for ImageCustody<L, B> {
     fn drop(&mut self) {
         std::mem::forget(self.opened.take());
@@ -75,6 +79,7 @@ impl<L, B> Drop for ImageCustody<L, B> {
     }
 }
 
+#[cfg(any(unix, test))]
 fn close_with<L, B>(
     mut owner: ImageCustody<L, B>,
     submit: impl FnOnce(&mut ImageCustody<L, B>) -> std::thread::Result<bool>,
@@ -167,24 +172,6 @@ pub(crate) fn dlclose_on_worker(lib: Library) {
     }) {
         std::mem::forget(payload);
     }
-}
-
-/// Retire a legacy image and its staging identity as one owner. A failed close or
-/// worker unwind keeps the backing retained, just like native image refusal.
-pub(crate) fn close_library_with_backing(lib: Library, backing: Staged) -> bool {
-    let mut owner = ImageCustody::new(backing);
-    owner.opened = Some(lib);
-    let closed = close_with(owner, |owner| {
-        busbar_ffi::lifecycle::run(|| {
-            debug_assert!(busbar_ffi::lifecycle::is_worker());
-            owner.close_once(|lib| lib.close().is_ok())
-        })
-    });
-    #[cfg(test)]
-    if closed {
-        crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    }
-    closed
 }
 
 /// Why admit step 8 opened no image.
@@ -752,21 +739,11 @@ fn load_via_staged_file(
         }
     };
     if let Err(why) = verify_pinned(&pin, &path, bytes) {
-        let closed = close_library_with_backing(
-            lib,
-            Staged::TempFile {
-                path,
-                pin: Some(pin),
-            },
-        );
-        let retirement = if closed {
-            "unloaded"
-        } else {
-            "backing retained after unconfirmed unload"
-        };
+        crate::stage::dlclose_on_worker(lib);
+        abandon(pin, &path);
         return Err(format!(
             "refusing to load plugin '{display}': its staged file changed while it was loading \
-             ({why}); {retirement}"
+             ({why}); unloaded"
         ));
     }
     Ok((
