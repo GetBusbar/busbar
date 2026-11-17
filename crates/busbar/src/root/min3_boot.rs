@@ -38,7 +38,7 @@ use busbar_kernel::plane_driver::port_work::{Binder as WorkBinder, StoreWork};
 use busbar_kernel::plane_grants::{
     SealedTickets, TicketAdmitted, TicketDenied, TicketMint, Tickets,
 };
-use busbar_kernel::plugin_config::{Binder, ConfigBinder};
+use busbar_kernel::plugin_config::ConfigBinder;
 use busbar_kernel::plugin_records::{PluginRecords, RecordsDenied, StoreRecords};
 use busbar_kernel::push::{PushQueue, StorePushQueue};
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
@@ -626,21 +626,6 @@ pub(crate) fn declared_planes(
     Ok(declarations)
 }
 
-/// Reference schemas include implicit instances and are keyed by the exact configured reference target.
-fn ref_schemas(cfg: &RootCfg) -> Result<Vec<(Arc<str>, Box<str>)>, String> {
-    let grammar = cfg.grammar().map_err(|error| error.0)?;
-    Ok(grammar
-        .secret_instances
-        .iter()
-        .map(|(name, source)| {
-            (
-                Arc::from(name.as_str()),
-                Box::from(source.ref_schema.as_str()),
-            )
-        })
-        .collect())
-}
-
 /// The registry over the production Need handlers, every image added, the binder told the shorthands and the
 /// schemas, custody attached to the binder and the registry's scrub sets, and the kernel's sides installed.
 /// `store` carries what the deployment step fills.
@@ -688,8 +673,7 @@ fn build(
     images: busbar_plugin_loader::instance::Images,
 ) -> Result<Built, String> {
     let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
-    let binder: Arc<dyn ConfigBinder> =
-        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
+    let binder = super::min3_candidate_secrets::new_binder(cfg.grammar().map_err(|error| error.0)?);
     // The process's one secret kind, built over the binder and kept for the life of the process.
     let secrets = BootSecrets::empty(Arc::clone(&binder), Arc::clone(process.slots()));
     let registry = Registry::new(images, Arc::clone(&binder), Arc::clone(process.ids()));
@@ -1362,8 +1346,7 @@ pub(crate) fn prepare_serving(
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
     let sugars = cfg.grammar().map_err(|error| error.0)?.sugars.clone();
-    let binder: Arc<dyn ConfigBinder> =
-        Arc::new(Binder::new(Arc::new(sugars.clone()), ref_schemas(cfg)?));
+    let binder = super::min3_candidate_secrets::new_binder(cfg.grammar().map_err(|error| error.0)?);
     let prefix = prefix.with_binder(Arc::clone(&binder));
     let registry = Arc::new(Registry::new(
         images,
