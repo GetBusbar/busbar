@@ -132,6 +132,8 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
 #[derive(Clone)]
 pub struct PortSeat {
     pub instance: String,
+    /// Exact catalog and registration request domains retained by this serving generation.
+    pub request_routes: Arc<super::request_admission::RequestRoutes>,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.

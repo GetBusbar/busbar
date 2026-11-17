@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::port::Unit;
 use super::port_serve::{Books, UnitBooks};
-use super::port_session::SessionError;
+use super::port_session::{RequestDeclaration, SessionError};
 use super::port_upstream::{Members, Wants};
 use super::request_admission::{
     AdmittedRequest, RequestAllocation, RequestPoolReceipt, RequestRoutes,
@@ -20,7 +20,18 @@ pub struct AdmittedUnit {
     pub unit: Unit,
 }
 
-type Commit = Box<dyn FnOnce(RequestPoolReceipt) -> Result<AdmittedUnit, ClientRefusal> + Send>;
+enum Commit {
+    Ordinary(Box<dyn FnOnce(RequestPoolReceipt) -> Result<AdmittedUnit, ClientRefusal> + Send>),
+    Selected(
+        Box<
+            dyn FnOnce(
+                    RequestPoolReceipt,
+                    RequestDeclaration,
+                ) -> Result<AdmittedUnit, ClientRefusal>
+                + Send,
+        >,
+    ),
+}
 
 /// Root owns the exact allocation and callback. Neither plugin facts nor a numeric unit can construct it.
 pub struct Pending {
@@ -43,7 +54,26 @@ impl Pending {
             context: allocation.context().clone(),
             routes,
             allocation: Mutex::new(Some(allocation)),
-            commit: Mutex::new(Some(Box::new(commit))),
+            commit: Mutex::new(Some(Commit::Ordinary(Box::new(commit)))),
+            admitted: OnceLock::new(),
+            journal,
+        }
+    }
+
+    /// The selected initial binder must install its actual native checkpoint before phase commit.
+    pub fn new_selected(
+        allocation: RequestAllocation,
+        routes: Arc<RequestRoutes>,
+        journal: Option<Arc<dyn super::HookJournal>>,
+        commit: impl FnOnce(RequestPoolReceipt, RequestDeclaration) -> Result<AdmittedUnit, ClientRefusal>
+            + Send
+            + 'static,
+    ) -> Self {
+        Self {
+            context: allocation.context().clone(),
+            routes,
+            allocation: Mutex::new(Some(allocation)),
+            commit: Mutex::new(Some(Commit::Selected(Box::new(commit)))),
             admitted: OnceLock::new(),
             journal,
         }
@@ -66,7 +96,20 @@ impl Pending {
         &self,
         members: Option<&mut dyn Members>,
         wants: Option<&Wants>,
+        declaration: RequestDeclaration,
     ) -> Result<(), SessionError> {
+        if !declaration.context().same_unit(&self.context) || !declaration.context().is_live() {
+            return Err(SessionError::NotDriven);
+        }
+        let commit = self
+            .commit
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(SessionError::NotDriven)?;
+        if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
+            return Err(SessionError::NotDriven);
+        }
         let allocation = self
             .allocation
             .lock()
@@ -90,13 +133,11 @@ impl Pending {
                 .local(&self.routes)
                 .map_err(|_| SessionError::NotDriven)?,
         };
-        let commit = self
-            .commit
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or(SessionError::NotDriven)?;
-        let admitted = commit(receipt).map_err(SessionError::AdmissionRefused)?;
+        let admitted = match commit {
+            Commit::Ordinary(commit) => commit(receipt),
+            Commit::Selected(commit) => commit(receipt, declaration),
+        }
+        .map_err(SessionError::AdmissionRefused)?;
         if !admitted.request.context().same_unit(&self.context)
             || admitted.unit.ctx.key != admitted.request.unit()
             || !admitted.request.is_live()

@@ -37,6 +37,7 @@ pub(crate) struct AuditServices {
     boot: Mutex<Option<SignerHandle<Seal>>>,
     sealer: Mutex<Option<SignerHandle<Seal>>>,
     notary: Mutex<Option<NotaryTask>>,
+    predecessor: Mutex<Option<super::predecessor::PredecessorInputs>>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -77,6 +78,7 @@ impl AuditServices {
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
             notary: Mutex::new(None),
+            predecessor: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
         };
         Ok((services, signers.checkpoint))
@@ -138,6 +140,24 @@ impl AuditServices {
     /// The predecessor sealer's Bootstrap handle (taken once).
     pub(crate) fn take_sealer_handle(&self) -> Option<SignerHandle<Seal>> {
         self.sealer.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+    /// What the boot book knows that the predecessor sealer needs (this node, its take time and
+    /// the bound key), set once at boot.
+    pub(crate) fn set_predecessor_inputs(&self, inputs: super::predecessor::PredecessorInputs) {
+        *self.predecessor.lock().unwrap_or_else(|p| p.into_inner()) = Some(inputs);
+    }
+
+    /// THE PREDECESSOR SEALER'S INPUTS and its Bootstrap handle, taken once by `main` after
+    /// `Ready`.
+    pub(crate) fn take_predecessor(
+        &self,
+    ) -> Option<(super::predecessor::PredecessorInputs, SignerHandle<Seal>)> {
+        let inputs = self
+            .predecessor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()?;
+        Some((inputs, self.take_sealer_handle()?))
     }
 }
 

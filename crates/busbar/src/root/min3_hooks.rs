@@ -3,21 +3,78 @@
 
 //! Native hook inputs are opened in the typed plan and frozen before a plane driver is shared.
 use super::*;
-use busbar_kernel::plane_driver::native_hook_bindings::{Bindings, OpenedHook, SeatScope};
-use std::collections::BTreeMap;
+use busbar_kernel::plane_driver::native_hook_bindings::{Inputs, OpenedHook};
+use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) struct Environment<'a> {
-    cfg: &'a RootCfg,
+#[cfg(test)]
+#[path = "tests/min3_hook_plan.rs"]
+mod tests;
+
+/// Configuration captured before App construction consumes the candidate RootCfg.
+pub(crate) struct Plan {
+    inputs: BTreeMap<String, Inputs>,
+}
+
+impl Plan {
+    pub(crate) fn capture(cfg: &RootCfg, instances: &[Configured]) -> Result<Self, String> {
+        let mut inputs = BTreeMap::new();
+        for instance in instances.iter().filter(|one| one.kind == KindCode::Plane) {
+            let name = &instance.name;
+            if inputs.contains_key(name) {
+                return Err(format!("native hook plan repeats plane `{name}`"));
+            }
+            inputs.insert(
+                name.clone(),
+                Inputs::capture(cfg, name.clone(), Some(name.clone()))?,
+            );
+        }
+        // A pool attachment cannot disappear because no native seat walks that pool.
+        for (name, pool) in &cfg.pools {
+            if (!pool.gates.is_empty() || pool.policy.native_name().is_some())
+                && !inputs.contains_key(name)
+            {
+                return Err(format!(
+                    "native hook pool `{name}` has no configured plane walk"
+                ));
+            }
+        }
+        Ok(Self { inputs })
+    }
+
+    fn check_instances(&self, instances: &[Configured]) -> Result<(), String> {
+        let mut planes = BTreeSet::new();
+        for instance in instances.iter().filter(|one| one.kind == KindCode::Plane) {
+            if !planes.insert(instance.name.as_str()) {
+                return Err(format!(
+                    "native hook plan repeats plane `{}`",
+                    instance.name
+                ));
+            }
+        }
+        if planes.len() != self.inputs.len()
+            || !self
+                .inputs
+                .keys()
+                .all(|name| planes.contains(name.as_str()))
+        {
+            return Err("native hook plan differs from the candidate plane instances".into());
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct Environment {
+    plan: Plan,
     governance: Arc<busbar_kernel::governance::GovState>,
     cost: Arc<busbar_kernel::cost::CostModel>,
     amendments: Arc<busbar_kernel::audit::amend::NodeAmendments>,
     call_budget: Duration,
 }
 
-impl<'a> Environment<'a> {
-    pub(crate) fn new(cfg: &'a RootCfg, app: &busbar_kernel::state::App) -> Result<Self, String> {
+impl Environment {
+    pub(crate) fn new(plan: Plan, app: &busbar_kernel::state::App) -> Result<Self, String> {
         Ok(Self {
-            cfg,
+            plan,
             governance: app
                 .governance
                 .clone()
@@ -35,6 +92,9 @@ impl<'a> Environment<'a> {
         driver: PortDriver,
         opened: &BTreeMap<String, Opened>,
     ) -> Result<PortDriver, String> {
+        let inputs = self.plan.inputs.get(instance).ok_or_else(|| {
+            format!("native plane `{instance}` has no captured candidate hook plan")
+        })?;
         let ports = opened
             .iter()
             .map(|(name, hook)| {
@@ -64,22 +124,17 @@ impl<'a> Environment<'a> {
             .into_iter()
             .map(|(image, words)| (image.to_owned(), words.into_iter().map(Box::from).collect()))
             .collect();
-        let scope = SeatScope {
-            section: instance.to_owned(),
-            pool: Some(instance.to_owned()),
-            routes: driver
-                .routes()
-                .data
-                .iter()
-                .chain(driver.routes().upgrade.iter())
-                .chain(driver.routes().line.iter())
-                .chain(driver.routes().recovery.iter())
-                .map(|route| route.route)
-                .collect(),
-        };
-        let bindings = Bindings::build(
-            self.cfg,
-            scope,
+        let routes = driver
+            .routes()
+            .data
+            .iter()
+            .chain(driver.routes().upgrade.iter())
+            .chain(driver.routes().line.iter())
+            .chain(driver.routes().recovery.iter())
+            .map(|route| route.route)
+            .collect();
+        let bindings = inputs.bind(
+            routes,
             &ports,
             &words,
             Arc::clone(&self.governance),
@@ -93,20 +148,8 @@ impl<'a> Environment<'a> {
         })
     }
 
-    /// A pool attachment cannot disappear because no native seat walks that configured pool.
     pub(super) fn check_pools(&self, instances: &[Configured]) -> Result<(), String> {
-        for (name, pool) in &self.cfg.pools {
-            if (!pool.gates.is_empty() || pool.policy.native_name().is_some())
-                && !instances
-                    .iter()
-                    .any(|one| one.kind == KindCode::Plane && one.name == *name)
-            {
-                return Err(format!(
-                    "native hook pool `{name}` has no configured plane walk"
-                ));
-            }
-        }
-        Ok(())
+        self.plan.check_instances(instances)
     }
 }
 

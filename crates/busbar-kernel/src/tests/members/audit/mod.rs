@@ -7,6 +7,7 @@ mod journal_tests;
 mod link_tests;
 mod published_recipe_tests;
 mod record_tests;
+mod restart_walk_tests;
 mod sign_tests;
 mod stamp_tests;
 mod subject_decoder_tests;

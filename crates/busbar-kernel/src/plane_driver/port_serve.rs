@@ -256,6 +256,7 @@ fn run_pending_session<K: Calls + ?Sized>(
         pending.admit(
             drive.members.as_deref_mut().map(|m| m as &mut dyn Members),
             wants.as_ref(),
+            task.request_declaration()?,
         )?;
         task.bind_admission(pending)?;
         if let Some(user) = answers.iter().find_map(end_user_of) {
