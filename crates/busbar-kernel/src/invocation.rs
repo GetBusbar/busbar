@@ -139,6 +139,16 @@ impl InvocationContext {
         self.record.principal.as_ref()
     }
 
+    /// Keep hook work on the exact retained generation's bounded executor, including after
+    /// the request stops waiting for a tap or an expired call.
+    pub(crate) fn offload_hook(
+        &self,
+        job: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), &'static str> {
+        self.generation.core.pool().ok_or(super::NO_POOL)?.run(job);
+        Ok(())
+    }
+
     /// Hook child operations carry the same checked parent and generation.
     pub(crate) fn dispatch_hook_child(
         &self,
