@@ -438,8 +438,31 @@ pub(crate) fn name_sections(
 pub(crate) fn untrusted_rows(
     admitted: &[(busbar_plugin_loader::admit::Admitted, String)],
 ) -> Vec<busbar_kernel::audit::auditlog::AuditRowInput> {
-    let _ = admitted;
-    Vec::new()
+    use busbar_plugin_loader::admit::Signer;
+    use busbar_plugin_loader::sign::Verdict;
+    admitted
+        .iter()
+        .filter_map(|(image, _)| match image.signer() {
+            Signer::Dropped {
+                verdict: Verdict::Allowed { reason, allow },
+                ..
+            } => Some(busbar_kernel::audit::auditlog::AuditRowInput {
+                action: "plugin.admitted.untrusted".into(),
+                resource: format!("plugin:{}", image.identity()),
+                outcome: "applied".into(),
+                principal: "busbar".into(),
+                kind: Some("plugin".into()),
+                severity: "warning".into(),
+                message: format!(
+                    "setting={} sha256={} publisher: {reason}",
+                    allow.setting(),
+                    image.sha256().map(hex::encode).unwrap_or_default()
+                ),
+                ..Default::default()
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 fn audit_untrusted(admitted: &[(busbar_plugin_loader::admit::Admitted, String)]) {
