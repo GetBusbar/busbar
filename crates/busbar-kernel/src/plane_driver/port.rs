@@ -518,7 +518,7 @@ impl PortSeat {
         &self,
         carrier: NonZeroU64,
         request_id: u64,
-        line: Vec<u8>,
+        line: crate::plane_driver::SessionInput,
         from: &LineCaller,
     ) -> Result<Vec<u8>, LineRefused> {
         let route = self
@@ -533,6 +533,9 @@ impl PortSeat {
         let principal = from.authenticated.then(|| Arc::clone(&from.principal));
         let seated = self.seated();
         tokio::task::spawn_blocking(move || {
+            // Capture the complete owner, including custody. Capturing only `line.bytes`
+            // would let cancellation of the waiting caller retire a still-running input.
+            let input = line;
             line_blocking(
                 &seated,
                 &route,
@@ -540,7 +543,7 @@ impl PortSeat {
                 principal.as_deref(),
                 carrier.get(),
                 request_id,
-                &line,
+                &input.bytes,
             )
         })
         .await
