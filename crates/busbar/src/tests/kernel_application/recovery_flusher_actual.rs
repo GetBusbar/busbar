@@ -224,6 +224,7 @@ async fn metered(store: &CoreStore, key_id: &str, model: &str, n: u64, now: u64)
     store
         .ledger()
         .add_metering(&MeteringDelta {
+            pricing: None,
             scale: 0,
             key_id: key_id.into(),
             bucket: busbar_kernel::governance::metering_bucket(now),

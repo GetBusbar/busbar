@@ -110,7 +110,8 @@ pub(crate) fn capture(
             selection(&mut selections, &target.provider, &target.auth_selection)?;
         }
     }
-    let seal = busbar_kernel::seal::lend();
+    let kernel_seal = busbar_kernel::seal::acquire();
+    let seal = busbar_contract::caps::Grant::<busbar_contract::caps::Sign>::mint(&kernel_seal);
     let mut operators = Vec::new();
     for (name, provider) in &cfg.identity_providers {
         if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
@@ -221,7 +222,7 @@ pub(crate) fn capture(
                     .get(name.as_ref())
                     .ok_or("implicit provider credential is absent")?;
                 Some(
-                    serde_json::to_string(&provider.api_key.authoring(&seal))
+                    serde_json::to_string(&provider.api_key.authoring(&kernel_seal))
                         .map_err(|_| "provider reference cannot be encoded")?,
                 )
             }

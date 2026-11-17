@@ -192,7 +192,7 @@ fn metering_chunk_preserves_full_count_range() {
         tokens_input: n,
         ..Default::default()
     };
-    let (first, rest) = super::metering_flush::metering_chunk(&key, &counts);
+    let (first, rest) = super::metering_flush::metering_chunk(&key.into(), &counts);
     assert_eq!(first.scale, COUNT_SCALE);
     assert_eq!(first.tokens_input, i128::MAX);
     assert_eq!(first.requests, 1);
