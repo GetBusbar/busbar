@@ -39,12 +39,16 @@ use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
 use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
 use busbar_kernel::plane_driver::port_admin;
-use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Presented, Principal};
-use busbar_kernel::plane_driver::port_billing::{end_of, Admit, PortBilling};
+use busbar_kernel::plane_driver::port_admission::{AdmittedUnit, Pending};
+use busbar_kernel::plane_driver::port_auth::{
+    self, subject_identity, Credentials, Presented, Principal,
+};
+use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
-use busbar_kernel::plane_driver::HeadFields;
+use busbar_kernel::plane_driver::request_admission::RequestAllocation;
+use busbar_kernel::plane_driver::{HeadFields, NativeAdmissionError};
 use busbar_kernel::plane_grants::{IngressVerifier, ReplayGuard};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteFuture, PlaneRouteSpec};
 use busbar_kernel::state::{App, AppHandle};
@@ -84,6 +88,48 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The same native route table admitted by the driver seals physical listener claims. The
+/// route id is the renderer's native selector; native render has no legacy dialect number.
+pub(crate) fn guest_lines(
+    seats: &[PortSeat],
+    chain: &[(String, busbar_contract::abi::auth::AuthPoints)],
+) -> Vec<busbar_kernel::guest::Line> {
+    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+    seats
+        .iter()
+        .flat_map(|seat| {
+            seat.driver.routes().data.iter().filter_map(|route| {
+                let methods = methods_of(route.methods)
+                    .into_iter()
+                    .fold(0, |mask, method| mask | method_bit(method.as_str()));
+                (methods != 0).then(|| Line {
+                    route: Route {
+                        methods,
+                        path_form: if route.pattern.contains('{') {
+                            PATH_PATTERN
+                        } else {
+                            PATH_EXACT
+                        },
+                        path: route.pattern.to_string(),
+                        fields: Vec::new(),
+                        rung: route.route,
+                    },
+                    claimant: Claimant::Plane(seat.instance.clone()),
+                    dialect: 0,
+                    auth: if auth_of(route.effective) == RouteAuth::Key {
+                        super::serve::chain_auth(chain)
+                    } else {
+                        LineAuth::None
+                    },
+                    upgrade: None,
+                    offered: crate::root::doors::offers_unstated(),
+                })
+            })
+        })
+        .collect()
+}
+
 /// The credential the request carries: the route's own header when it names one (`D_ROUTE_CRED_HEADER`), else the
 /// `Authorization: Bearer` token.
 pub(crate) fn bearer_of(headers: &HeaderMap, cred_header: Option<&str>) -> Option<String> {
@@ -119,6 +165,65 @@ fn response_of(items: Vec<ToClient>) -> PlaneResponse {
     with_head(status, fields, Body::from(body))
 }
 
+/// Unitless rendering has only the selected route and core's refusal. It cannot open billing,
+/// authenticate, consume replay, or obtain an invocation's effect authority.
+pub(crate) fn render_kernel_refusal(
+    seat: &PortSeat,
+    route: u32,
+    method: &str,
+    target: &str,
+    refusal: busbar_kernel::refusal::ClientRefusal,
+) -> PlaneResponse {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let http = HttpIn {
+        method: method.to_owned(),
+        path: path.to_owned(),
+        query: query.to_owned(),
+        headers: Vec::new(),
+        body: Bytes::new(),
+        request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
+    };
+    match seat.driver.render_refusal_now(route, http, refusal.clone()) {
+        Ok(items) => response_of(items),
+        Err(_) => response_of(port_auth::plain_refusal(&refusal)),
+    }
+}
+
+pub(crate) fn refusal_specs(
+    seats: &[PortSeat],
+) -> Vec<busbar_kernel::plane_routes::PlaneRefusalSpec> {
+    use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec};
+    let mut out = Vec::new();
+    for seat in seats {
+        for route in &seat.driver.routes().data {
+            if auth_of(route.effective) != RouteAuth::Key {
+                continue;
+            }
+            for method in methods_of(route.methods) {
+                let seat = seat.clone();
+                let id = route.route;
+                out.push(PlaneRefusalSpec {
+                    route: DoorRouteId {
+                        path: route.pattern.to_string(),
+                        method,
+                    },
+                    ticket_prefix: None,
+                    signed_ingress: Arc::from([]),
+                    refuse: Arc::new(move |reason, target| {
+                        let refusal = super::native_refusals::client(
+                            reason,
+                            busbar_kernel::plane_driver::refusal_status(reason) as u16,
+                            reason.as_str(),
+                        );
+                        render_kernel_refusal(&seat, id, method.as_str(), target, refusal)
+                    }),
+                });
+            }
+        }
+    }
+    out
+}
+
 fn failed(status: StatusCode) -> PlaneResponse {
     let mut response = PlaneResponse::new(Body::empty());
     *response.status_mut() = status;
@@ -135,7 +240,7 @@ fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect(),
-        body: ctx.body.to_vec(),
+        body: ctx.body.clone(),
         request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
     }
 }
@@ -241,15 +346,15 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
+async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
     let Some(token) = bearer else {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return Seen::Rejected;
+        return (Seen::Rejected, None);
     };
     if app.auth.is_open() {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     }
     let target = ctx
         .uri
@@ -264,9 +369,10 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
         None,
     )
     .await;
-    seen_of(busbar_kernel::auth::resolve_data_plane_identity(
-        &app, verdict,
-    ))
+    match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
+        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
+        Err(why) => (seen_of(Err(why)), None),
+    }
 }
 
 /// The webhook secret configured for (plane instance, route), if any.
@@ -327,47 +433,52 @@ fn models_of(ctx: &PlaneReqCtx) -> Vec<String> {
 }
 
 /// A request the governance book refused to admit: the status its limit maps to, the wait it names (if any).
+#[cfg(test)]
 pub(crate) fn blocked_response(blocked: &LimitBlocked) -> PlaneResponse {
+    let (refusal, retry_after) = blocked_client(blocked);
+    let mut response = response_of(port_auth::plain_refusal(&refusal));
+    retry_header(&mut response, retry_after);
+    response
+}
+
+fn blocked_client(blocked: &LimitBlocked) -> (busbar_kernel::refusal::ClientRefusal, Option<u64>) {
+    use busbar_contract::caps::ReasonCode;
     let (status, _, message, retry_after) = busbar_kernel::ingress::limit_refusal("", blocked);
-    let mut response = PlaneResponse::new(Body::from(message));
-    *response.status_mut() = status;
+    let reason = match blocked {
+        LimitBlocked::Limit {
+            metric: "budget", ..
+        } => ReasonCode::OverBudget,
+        LimitBlocked::Limit { .. } => ReasonCode::RateLimited,
+        LimitBlocked::Disabled(_) => ReasonCode::GroupFrozen,
+        LimitBlocked::MissingGroup(_) => ReasonCode::ScopeDenied,
+        LimitBlocked::Draining => ReasonCode::Drain,
+        LimitBlocked::CustodyFull { .. } => ReasonCode::SessionBudget,
+    };
+    (
+        super::native_refusals::client(reason, status.as_u16(), &message),
+        retry_after,
+    )
+}
+
+fn retry_header(response: &mut PlaneResponse, retry_after: Option<u64>) {
     if let Some(seconds) = retry_after {
         if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
     }
-    response
 }
 
-/// The request as a billed unit: admitted through its resolved key's budget chain and opened on the plane money.
-/// `None` = not billed (no billing installed, no governed key on the request, or no app generation to price
-/// under): the request runs with audit rows only.
-fn open_unit(
+/// Allocate only the unit identity. The retained task's checked pool receipt owns the later
+/// monetary admission; allocation itself charges nothing and acquires no governor hold.
+fn allocate_unit(
     seat: &PortSeat,
     billing: Option<&PortBilling>,
     ctx: &PlaneReqCtx,
-    arrived: u64,
-) -> Result<Option<Unit>, LimitBlocked> {
-    let Some(billing) = billing else {
-        return Ok(None);
-    };
-    let Some(key) = ctx.gov.as_ref().and_then(|gov| gov.key.clone()) else {
-        return Ok(None);
-    };
-    let Some(app) = app_of(&ctx.engine) else {
-        return Ok(None);
-    };
-    let mode = busbar_kernel::config::groups::ExhaustionMode::FinishUnit;
-    billing
-        .open(Admit {
-            instance: &seat.instance,
-            classes: seat.driver.usage_classes(),
-            key,
-            cost: Arc::clone(&app.cost),
-            mode,
-            arrived,
-        })
-        .map(Some)
+) -> Option<Unit> {
+    let billing = billing?;
+    ctx.gov.as_ref()?.key.as_ref()?;
+    app_of(&ctx.engine)?;
+    Some(billing.allocate(seat.driver.usage_classes()))
 }
 
 /// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
@@ -431,13 +542,22 @@ async fn answer(
     ingress: Option<&Ingress>,
     billing: Option<&PortBilling>,
     generation: Option<&Arc<super::serve::DataRoutes>>,
-    ctx: PlaneReqCtx,
+    mut ctx: PlaneReqCtx,
 ) -> PlaneResponse {
     let now_s = busbar_kernel::store::now();
-    let unit = match open_unit(seat, billing, &ctx, now_s) {
-        Ok(unit) => unit,
-        Err(blocked) => return blocked_response(&blocked),
+    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
+    // Resolve the optional credential before billing. Retain the exact admitted key; the
+    // principal's subject text alone cannot reconstruct external identity grants or budgets.
+    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
+        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
+        None if resolves_credential(route.effective) => {
+            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            ctx.gov = gov;
+            seen
+        }
+        None => Seen::Anonymous,
     };
+    let unit = allocate_unit(seat, billing, &ctx);
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
             billing: billing.clone(),
@@ -457,21 +577,63 @@ async fn answer(
         (Some(_), None) => return failed(StatusCode::SERVICE_UNAVAILABLE),
         (None, _) => None,
     };
-    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
-    // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject. A route
-    // the chain did not gate resolves its credential here.
-    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
-        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
-        None if resolves_credential(route.effective) => {
-            chain_principal(&ctx, bearer.as_deref()).await
+    let retry_after = Arc::new(Mutex::new(None));
+    let admission = match (unit, &invocation, billing) {
+        (Some(unit), Some(invocation), Some(billing)) => {
+            let Some(app) = app_of(&ctx.engine) else {
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            };
+            let allocation = match RequestAllocation::new(
+                invocation.context.clone(),
+                Arc::clone(&app.cost),
+                now_s,
+            ) {
+                Ok(allocation) => allocation,
+                Err(_) => return failed(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            let billing = billing.clone();
+            let classes = seat.driver.usage_classes();
+            let route_id = route.route;
+            let retry_after = Arc::clone(&retry_after);
+            Some(Arc::new(Pending::new(
+                allocation,
+                Arc::clone(&seat.request_routes),
+                unit.journal.clone(),
+                move |receipt| {
+                    use busbar_kernel::refusal::RefusalMap;
+                    let unavailable = || {
+                        busbar_kernel::refusal::CoreRefusals::new()
+                            .for_core(route_id, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
+                    };
+                    let receipt = receipt.begin().map_err(|_| unavailable())?;
+                    let request = billing
+                        .admit_existing(
+                            receipt,
+                            classes,
+                            busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(Arc::from([])),
+                            busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                        )
+                        .map_err(|error| match error {
+                            NativeAdmissionError::Blocked(blocked) => {
+                                let (refusal, wait) = blocked_client(&blocked);
+                                *retry_after.lock().unwrap_or_else(PoisonError::into_inner) = wait;
+                                refusal
+                            }
+                            _ => unavailable(),
+                        })?;
+                    Ok(AdmittedUnit { request, unit })
+                },
+            )))
         }
-        None => Seen::Anonymous,
+        (None, None, _) => None,
+        _ => return failed(StatusCode::SERVICE_UNAVAILABLE),
     };
     let (principal, identity) = match &seen {
         Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
         Seen::Anonymous | Seen::Rejected => (None, None),
     };
     let http = http_in(&ctx);
+    let request = ctx.request.clone();
     let signed = match ingress {
         Some(ingress) => {
             signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
@@ -507,7 +669,8 @@ async fn answer(
             signed,
         };
         let input = ServeIn {
-            admission: None,
+            request,
+            admission,
             invocation: invocation.as_ref().map(|owner| owner.context.clone()),
             route: route.route,
             http,
@@ -515,7 +678,7 @@ async fn answer(
             audience: seat.audience.as_deref().unwrap_or_default(),
             now_s,
             principal,
-            unit,
+            unit: None,
             upstream: seat.upstream.clone(),
             client: Some(Arc::new(pipe)),
             carrier: seat.carrier.clone(),
@@ -544,7 +707,7 @@ async fn answer(
         }
         served
     });
-    tokio::select! {
+    let mut response = tokio::select! {
         head = &mut head_rx => match head {
             Ok((status, fields)) => with_head(status, fields, Body::new(PipeBody(body_rx))),
             // The session ended without writing a head.
@@ -555,7 +718,10 @@ async fn answer(
             Ok((status, fields)) => with_head(status, fields, Body::new(PipeBody(body_rx))),
             Err(_) => finished(done),
         },
-    }
+    };
+    let wait = *retry_after.lock().unwrap_or_else(PoisonError::into_inner);
+    retry_header(&mut response, wait);
+    response
 }
 
 /// One spec per (data route, verb) of every seat, catalog routes included. `ingress` is what an

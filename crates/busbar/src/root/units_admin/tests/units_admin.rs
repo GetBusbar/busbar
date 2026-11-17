@@ -331,7 +331,11 @@ async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 }
 
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
+    Arc::new(move |_: &AdminRequest| {
+        Box::pin(std::future::ready(busbar_kernel::auth::AdminVerdict::from(
+            door.clone(),
+        )))
+    })
 }
 
 fn listed_door(named: &[&str], needs: Scope) -> busbar_kernel::auth::AdminDoor {
@@ -357,7 +361,15 @@ fn approved_under(
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
     let bindings = crate::root::auth_bindings::AuthBindings::without_directory();
-    authenticate(&binding, &bindings, &mut walk)?;
+    {
+        let mut future = std::pin::pin!(authenticate(&binding, &bindings, &mut walk));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(answer) = std::future::Future::poll(future.as_mut(), &mut cx)
+        else {
+            panic!("this fixture is a ready door")
+        };
+        answer?;
+    }
     approve(&walk)
 }
 
@@ -681,6 +693,44 @@ async fn answer_at_the_closed_door(door: AdminDoorFn, credential: Option<&str>) 
     AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(request)
         .await
+}
+
+#[tokio::test]
+async fn authoritative_admin_door_awaits_before_revocation_and_approval() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let door: AdminDoorFn = Arc::new(move |_: &AdminRequest| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            busbar_kernel::auth::AdminDoor::Identified(
+                busbar_contract::auth::Principal::from_id(
+                    busbar_kernel::config::operator_principal_id(),
+                ),
+                busbar_contract::authz::Grants::of(Scope::Full),
+            )
+            .into()
+        })
+    });
+    assert_eq!(
+        answer_at_the_closed_door(door.clone(), Some("credential"))
+            .await
+            .status,
+        200
+    );
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+        .await
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(true),
+        )));
+    let mut request = a_request();
+    request.credential = Some("credential".into());
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await;
+    assert_eq!(answer.status, 401);
+    assert_eq!(observed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

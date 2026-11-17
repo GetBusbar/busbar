@@ -132,6 +132,8 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Vec<u8> {
 #[derive(Clone)]
 pub struct PortSeat {
     pub instance: String,
+    /// Exact catalog and registration request domains retained by this serving generation.
+    pub request_routes: Arc<super::request_admission::RequestRoutes>,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
@@ -369,6 +371,7 @@ impl PortDriver {
         let hook_binder = self.hooks.clone();
         let arrived = input.now_s;
         let ServeIn {
+            request,
             http,
             principal,
             unit,
@@ -387,6 +390,9 @@ impl PortDriver {
         let services = Arc::clone(&self.services);
         let owner = self.caller.incarnation().clone();
         tokio::task::spawn_blocking(move || {
+            // Capture the count owner itself, including when the HTTP body is empty.
+            // Cancelling the caller's await does not cancel an executing blocking call.
+            let _request = request;
             serve_blocking(
                 &*port,
                 &*refusals,
@@ -433,12 +439,14 @@ impl PortDriver {
     pub async fn render_refusal(
         &self,
         route: u32,
+        request: crate::limits::process_admission::RequestLease,
         http: HttpIn,
         refusal: ClientRefusal,
     ) -> Result<Vec<ToClient>, ServeError> {
         let auth = self.refusal_auth(route)?;
         let port = Arc::clone(&self.port);
         tokio::task::spawn_blocking(move || {
+            let _request = request;
             render_native_refusal(&*port, route, auth, http, refusal)
         })
         .await
@@ -676,7 +684,7 @@ impl PortSeat {
         &self,
         carrier: NonZeroU64,
         request_id: u64,
-        line: Vec<u8>,
+        line: crate::plane_driver::SessionInput,
         from: &LineCaller,
     ) -> Result<Vec<u8>, LineRefused> {
         let route = self
@@ -699,6 +707,9 @@ impl PortSeat {
         let principal = from.authenticated.then(|| Arc::clone(&from.principal));
         let seated = self.seated();
         tokio::task::spawn_blocking(move || {
+            // Capture the complete owner, including custody. Capturing only `line.bytes`
+            // would let cancellation of the waiting caller retire a still-running input.
+            let input = line;
             line_blocking(
                 &seated,
                 &route,
@@ -706,7 +717,7 @@ impl PortSeat {
                 principal.as_deref(),
                 carrier.get(),
                 request_id,
-                &line,
+                &input.bytes,
             )
         })
         .await
@@ -845,7 +856,8 @@ pub struct HttpIn {
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<u8>)>,
-    pub body: Vec<u8>,
+    /// Shared inbound backing; clones retain its process byte credit without copying payload.
+    pub body: bytes::Bytes,
     pub request_id: u64,
 }
 
@@ -859,6 +871,8 @@ pub struct Unit {
 
 /// What the route layer hands [`PortDriver::serve`] beside the request.
 pub struct ServeIn<'a> {
+    /// The original process admission, retained through the blocking call even for an empty body.
+    pub request: crate::limits::process_admission::RequestLease,
     /// The exact pre-money allocation and one callback; mutually exclusive with `unit`.
     pub admission: Option<Arc<super::port_admission::Pending>>,
     /// Checked root dispatch authority for the exact selected seat, unit and serving generation.
@@ -1142,3 +1156,7 @@ fn drive_blocking(
 #[cfg(test)]
 #[path = "tests/port_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/port_input_custody.rs"]
+mod input_custody_tests;

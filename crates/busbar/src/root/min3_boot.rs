@@ -210,9 +210,9 @@ pub(crate) struct Booted {
         busbar_plugin_loader::instance::BootPhase,
         Option<OpenedPort>,
     )>,
-    pub(crate) instances: std::collections::BTreeMap<String, Namespace>,
-    pub(crate) directory: Arc<KernelDirectory>,
-    pub(crate) holds: Arc<busbar_kernel::directory::Holds>,
+    pub(crate) auth: Arc<super::min3_auth::AuthSet>,
+    pub(crate) provisioning: Vec<Arc<super::provisioning_mount::ProvisionMount>>,
+    pub(crate) config_version: u64,
     pub(crate) seats: Vec<PortSeat>,
     pub(crate) core: Arc<CoreSecrets>,
     /// The secret kind the boot opened its secret instances into (webhook secrets resolve through it).
@@ -503,6 +503,24 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
         &super::door_steps::raw_sections(cfg),
     )?);
     out.extend(hooks::configured(cfg)?);
+    let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
+    providers.sort_by_key(|(name, _)| *name);
+    for (name, provider) in providers {
+        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+            continue;
+        }
+        out.push(Configured {
+            kind: KindCode::Auth,
+            identity: provider.module.clone(),
+            name: name.clone(),
+            config: provider
+                .settings
+                .encode()
+                .map_err(|error| format!("identity-providers.{name}: {error}"))?
+                .into_exposed(&seal),
+            limits: instance_limits(cfg, "identity-providers", name),
+        });
+    }
     for (name, def) in &cfg.export_defs {
         out.push(Configured {
             kind: KindCode::Export,
@@ -797,22 +815,14 @@ impl Steps<'_> {
         }
     }
 
+    #[cfg(test)]
     async fn open_plane(
         &self,
         spec: &InstanceSpec<'_>,
         prepared: PreparedInstance,
-        hooks: &hooks::Environment<'_>,
+        hooks: &hooks::Environment,
         opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<(), OpenError> {
-        let services = self.services.clone().ok_or_else(|| {
-            OpenError::Unknown("the kernel services are not installed: a plane cannot open".into())
-        })?;
-        let seal = busbar_kernel::seal::acquire();
-        let caller = busbar_contract::services::Caller::issue(
-            &seal,
-            Arc::from(spec.name),
-            busbar_contract::abi::mechanism::KindCode::Plane,
-        );
         let who = Namespace {
             plugin: Arc::from(prepared.identity()),
             name: Arc::from(prepared.name()),
@@ -829,6 +839,29 @@ impl Steps<'_> {
             .registry
             .open_plane_reserved(prepared, &needs, &prefix.refs())
             .await?;
+        self.compose_plane(spec, who, port, hooks, opened_hooks)
+    }
+
+    fn compose_plane(
+        &self,
+        spec: &InstanceSpec<'_>,
+        who: Namespace,
+        port: Arc<dyn busbar_ports::plane::PlanePort>,
+        hooks: &hooks::Environment,
+        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
+    ) -> Result<(), OpenError> {
+        let services = self.services.clone().ok_or_else(|| {
+            OpenError::Unknown(
+                "the kernel services are not installed: a plane cannot compose".into(),
+            )
+        })?;
+        let seal = busbar_kernel::seal::acquire();
+        let caller = busbar_contract::services::Caller::issue(
+            &seal,
+            Arc::from(spec.name),
+            busbar_contract::abi::mechanism::KindCode::Plane,
+        );
+        let prefix = self.prefix();
         let driver = PortDriver::new(
             port,
             Arc::clone(&services),
@@ -854,6 +887,7 @@ impl Steps<'_> {
         // `insecure_transport.accept`.
         let seat = SeatShared {
             upstreams: self.seat.upstreams.clone(),
+            catalogs: self.seat.catalogs.clone(),
             signals: Arc::clone(&self.seat.signals),
             secrets: Arc::new(SpawnCustody(prefix)),
             kernel: Arc::clone(&self.seat.kernel),
@@ -906,6 +940,7 @@ impl Steps<'_> {
                 audience: audience_of(spec.config_json),
                 intents: Arc::new(intents),
                 who,
+                request_routes: wiring.request_routes,
                 upstream: wiring.upstream,
                 carrier: Some(wiring.carrier),
             });
@@ -931,27 +966,14 @@ impl Steps<'_> {
         &self,
         index: u32,
         prepared: PreparedInstance,
-        hooks: Option<&hooks::Environment<'_>>,
-        opened_hooks: &std::collections::BTreeMap<String, hooks::Opened>,
     ) -> Result<Option<OpenedPort>, OpenError> {
-        let Some((kind, spec)) = self.instances.get(index as usize) else {
+        let Some((kind, _)) = self.instances.get(index as usize) else {
             return Err(OpenError::Unknown("unconfigured serving step".into()));
         };
         match kind {
             KindCode::Secret | KindCode::Store => Err(OpenError::Unknown(
                 "bootstrap instances cannot reopen in the serving stage".into(),
             )),
-            KindCode::Plane
-                if spec.purpose
-                    != busbar_plugin_loader::instance::OpenPurpose::ConvertUnstamped =>
-            {
-                let hooks = hooks.ok_or_else(|| {
-                    OpenError::Unknown("native plane has no frozen hook construction inputs".into())
-                })?;
-                self.open_plane(spec, prepared, hooks, opened_hooks)
-                    .await
-                    .map(|()| None)
-            }
             _ => self.open_port(index, prepared).await.map(Some),
         }
     }
@@ -1040,6 +1062,14 @@ pub(crate) struct BootstrapReady {
 
 /// S4b's effective registry and its retained bootstrap leases, before serving opens.
 pub(crate) struct ServingReady {
+    hook_plan: hooks::Plan,
+    provider_plan: super::min3_provider_plan::Plan,
+    provider_catalogs: busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
+    implicit_auth: std::collections::BTreeSet<String>,
+    staged_catalogs:
+        std::collections::BTreeMap<String, super::min3_provider_catalog::StagedCatalog>,
+    auth_policy: busbar_kernel::config::min3::Min3Config,
+    request_body_cap: usize,
     built: Built,
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
@@ -1052,6 +1082,16 @@ pub(crate) struct ServingReady {
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
     _bootstrap_registry: Arc<MinRegistry>,
+}
+
+impl ServingReady {
+    /// Reserve the complete candidate before any export pump receives a producer handle.
+    pub(crate) fn export_names(&self) -> impl Iterator<Item = String> + '_ {
+        self.instances
+            .iter()
+            .filter(|instance| instance.kind == KindCode::Export)
+            .map(|instance| instance.name.clone())
+    }
 }
 
 impl BootstrapReady {
@@ -1197,8 +1237,10 @@ pub(crate) fn prepare_serving(
     process: &busbar_plugin_loader::process::ProcessResources,
     effective_images: super::boot::images::FileImages,
     cfg: &RootCfg,
+    catalogs: &busbar_kernel::plane_driver::provider_catalog::ProviderCatalogs,
     guard: Guard,
 ) -> Result<ServingReady, String> {
+    let mut provider_plan = super::min3_provider_plan::capture(&effective_images, cfg, catalogs)?;
     let BootstrapReady {
         built: bootstrap_built,
         instances: before,
@@ -1238,6 +1280,19 @@ pub(crate) fn prepare_serving(
         Arc::clone(process.ids()),
     ));
     let mut instances = configured(cfg, &planes)?;
+    let authored_auth: std::collections::BTreeSet<_> = instances
+        .iter()
+        .filter(|instance| instance.kind == KindCode::Auth)
+        .map(|instance| instance.name.clone())
+        .collect();
+    let implicit_auth = provider_plan
+        .auth
+        .iter()
+        .filter(|instance| !authored_auth.contains(&instance.name))
+        .map(|instance| instance.name.clone())
+        .collect();
+    instances.retain(|instance| instance.kind != KindCode::Auth);
+    instances.extend(std::mem::take(&mut provider_plan.auth));
     if !converting {
         instances.extend(transports::configured(cfg, &registry, &transports)?);
     }
@@ -1246,6 +1301,59 @@ pub(crate) fn prepare_serving(
     } else {
         declared_planes(&registry, &mut instances)?
     };
+    let mut staged_catalogs = std::collections::BTreeMap::new();
+    let registrations = declared
+        .iter()
+        .map(|(name, split)| {
+            busbar_kernel::plane_driver::port_egress::SeatPool::of(name, &split.definitions)
+                .map(|pool| (name.clone(), pool))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    let mut next_destination = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.destination.get()))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1)
+                .ok_or("catalog destination IDs exhausted")
+        })?;
+    let mut next_need = registrations
+        .values()
+        .flat_map(|pool| pool.members.iter().map(|member| member.need.0))
+        .max()
+        .map_or(Ok(0), |last| {
+            last.checked_add(1).ok_or("catalog Need IDs exhausted")
+        })?;
+    for (name, catalog) in catalogs {
+        let registration = registrations
+            .get(name)
+            .ok_or_else(|| format!("plane {name}: catalog has no admitted registration owner"))?;
+        let definitions = &declared
+            .get(name)
+            .ok_or("catalog owner lost its definitions")?
+            .definitions;
+        let mut allocations = super::min3_provider_catalog::Allocations::new();
+        for pair in catalog.targets().keys() {
+            let destination = busbar_kernel_egress::ports::DestinationId::new(next_destination);
+            next_destination = next_destination
+                .checked_add(1)
+                .ok_or("catalog destination IDs exhausted")?;
+            let need = busbar_contract::conn::NeedId(next_need);
+            next_need = next_need
+                .checked_add(1)
+                .ok_or("catalog Need IDs exhausted")?;
+            allocations.insert(
+                pair.clone(),
+                super::min3_provider_catalog::Allocation {
+                    destination,
+                    need,
+                    upstream: format!("catalog-{}", destination.get()).into(),
+                },
+            );
+        }
+        let staged = provider_plan.stage(cfg, catalog, &allocations, registration, definitions)?;
+        staged_catalogs.insert(name.clone(), staged);
+    }
     let mut leases = bootstrap.into_leases();
     for (index, _, _) in &mut leases.opened {
         let old = before
@@ -1330,7 +1438,15 @@ pub(crate) fn prepare_serving(
         binder,
         guard,
     };
+    let hook_plan = hooks::Plan::capture(cfg, &instances)?;
     Ok(ServingReady {
+        hook_plan,
+        provider_plan,
+        provider_catalogs: catalogs.clone(),
+        implicit_auth,
+        staged_catalogs,
+        auth_policy: cfg.min3.clone(),
+        request_body_cap: cfg.limits.request_body_max_bytes,
         built,
         instances,
         declared,
@@ -1346,13 +1462,24 @@ pub(crate) fn prepare_serving(
     })
 }
 
+pub(crate) struct ServingEnvironment<'a> {
+    app: &'a busbar_kernel::state::App,
+}
+
+impl<'a> ServingEnvironment<'a> {
+    pub(crate) fn new(app: &'a busbar_kernel::state::App) -> Self {
+        Self { app }
+    }
+}
+
 pub(crate) async fn finish(
     ready: ServingReady,
     reactor: tokio::runtime::Handle,
     startup: Startup,
     services: Option<Arc<KernelServices>>,
     work_binder: Arc<WorkBinder>,
-    hooks: Option<hooks::Environment<'_>>,
+    environment: Option<ServingEnvironment<'_>>,
+    export_observers: &super::export_observer::ExportReservation,
 ) -> Result<
     (
         Startup,
@@ -1363,6 +1490,13 @@ pub(crate) async fn finish(
     String,
 > {
     let ServingReady {
+        hook_plan,
+        provider_plan,
+        mut provider_catalogs,
+        implicit_auth,
+        mut staged_catalogs,
+        auth_policy,
+        request_body_cap,
         built,
         instances,
         declared,
@@ -1376,7 +1510,12 @@ pub(crate) async fn finish(
         converting,
         normalization_source,
     } = ready;
-    if let Some(hooks) = &hooks {
+    let hook_environment = environment
+        .as_ref()
+        .map(|environment| hooks::Environment::new(hook_plan, environment.app))
+        .transpose()?;
+    let hooks = hook_environment.as_ref();
+    if let Some(hooks) = hooks {
         hooks.check_pools(&instances)?;
     }
     let core = startup
@@ -1399,12 +1538,13 @@ pub(crate) async fn finish(
             .iter()
             .map(|(name, split)| (name.clone(), Arc::new(split.definitions.clone())))
             .collect(),
+        catalogs: Default::default(),
         signals: Arc::clone(&shared.signals),
         secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
     };
-    let steps = Steps {
+    let mut steps = Steps {
         registry: &built.registry,
         instances: &specs,
         services,
@@ -1419,21 +1559,41 @@ pub(crate) async fn finish(
         probes: Mutex::default(),
     };
     let mut opened = leases.opened;
-    let mut serving_instances = std::collections::BTreeMap::new();
+    let mut opened_auth = Vec::new();
     let mut export_doors = Vec::new();
     let mut opened_hooks = std::collections::BTreeMap::new();
+    let mut opened_planes = Vec::new();
     for (index, prepared) in reserved {
         let instance_id = prepared.id();
-        serving_instances.insert(
-            prepared.name().to_owned(),
-            Namespace {
-                plugin: Arc::from(prepared.identity()),
-                name: Arc::from(prepared.name()),
-                instance: prepared.id(),
-                slot: prepared.slot(),
-            },
-        );
-        let port = if prepared.kind() == KindCode::Hook {
+        let who = Namespace {
+            plugin: Arc::from(prepared.identity()),
+            name: Arc::from(prepared.name()),
+            instance: prepared.id(),
+            slot: prepared.slot(),
+        };
+        let plane = (prepared.kind() == KindCode::Plane).then(|| who.clone());
+        let port = if prepared.kind() == KindCode::Auth {
+            let prefix = steps.prefix();
+            let needs = built.needs_for(
+                Arc::clone(&prefix),
+                Arc::clone(&records),
+                Arc::clone(&directory),
+            );
+            let opening = built
+                .registry
+                .open_auth_reserved_with_metadata(prepared, &needs, &prefix.refs())
+                .await
+                .map_err(|error| format!("serving auth {index}: {error:?}"))?;
+            let port = Arc::clone(&opening.port);
+            opened_auth.push(super::min3_auth::OpenedAuth {
+                who,
+                port: opening.port,
+                methods: opening.methods,
+                limits: opening.limits,
+                out_of_process: false,
+            });
+            Some(OpenedPort::Auth(port))
+        } else if prepared.kind() == KindCode::Hook {
             let hook = hooks::open(
                 &built,
                 prepared,
@@ -1448,10 +1608,13 @@ pub(crate) async fn finish(
             Some(OpenedPort::Hook(port))
         } else {
             steps
-                .open_reserved(index, prepared, hooks.as_ref(), &opened_hooks)
+                .open_reserved(index, prepared)
                 .await
                 .map_err(|error| format!("serving open {index}: {error:?}"))?
         };
+        if let (Some(who), Some(OpenedPort::Plane(port))) = (plane, &port) {
+            opened_planes.push((index, who, Arc::clone(port)));
+        }
         if let Some(OpenedPort::Export(port)) = &port {
             let instance = instances
                 .get(index as usize)
@@ -1466,6 +1629,9 @@ pub(crate) async fn finish(
                 Arc::clone(port),
                 disk,
                 &instance.limits,
+                export_observers
+                    .observer(&instance.name)
+                    .ok_or("opened export has no reserved observation owner")?,
             );
             export_doors.push((instance.name.clone(), door));
         }
@@ -1516,6 +1682,7 @@ pub(crate) async fn finish(
         }
         // Temporary planes are never composed into seats or published. Keep bootstrap owners
         // while the record/config writers run, then close them before replacing this process.
+        drop(opened_planes);
         let mut opened = walked.opened;
         opened.retain(|(index, _, _)| instances[*index as usize].kind != KindCode::Plane);
         let admission = startup;
@@ -1543,6 +1710,11 @@ pub(crate) async fn finish(
     let mut normalized = Vec::new();
     let mut plane_checks = Vec::new();
     for (index, instance) in instances.iter().enumerate() {
+        // Provider bindings synthesize these instances from admitted style metadata. They
+        // have no authored identity-provider block to rewrite during normalization.
+        if instance.kind == KindCode::Auth && implicit_auth.contains(&instance.name) {
+            continue;
+        }
         let identity = built
             .registry
             .identity_of(&instance.identity)
@@ -1602,6 +1774,86 @@ pub(crate) async fn finish(
         Arc::new(move |text| settlement::candidate(text, &plane_checks)),
     )
     .await?;
+    let environment = environment.ok_or("serving composition has no candidate authority")?;
+    let owners = super::min3_admin_auth::owners(
+        environment.app,
+        &auth_policy,
+        &opened_auth,
+        Arc::clone(&records),
+    )?;
+    let auth = Arc::new(super::min3_auth::AuthSet::new(
+        opened_auth,
+        &holds,
+        owners,
+        Duration::from_secs(auth_policy.unknown_key_refresh_s),
+    )?);
+    use busbar_kernel::retry::{RetryPolicy, RetrySite};
+    let retry = RetryPolicyImpl::default();
+    let cache = Arc::new(busbar_kernel::custody::CredCache::new(
+        auth_policy.outbound,
+        move |attempt, error| retry.next(RetrySite::AuthOutbound, attempt, error),
+        |key, event| {
+            let action = match event {
+                busbar_kernel::custody::CredEvent::Backoff => "outbound_credential_backoff",
+                busbar_kernel::custody::CredEvent::NoLifetime => "outbound_credential_no_lifetime",
+            };
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                action,
+                &format!("auth:{}:upstream:{}", key.auth_instance, key.upstream),
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                "system",
+            );
+        },
+    ));
+    let rows = staged_catalogs
+        .values_mut()
+        .flat_map(super::min3_provider_catalog::StagedCatalog::take_auth_rows)
+        .collect();
+    let outbound = super::min3_outbound_auth::prepare(
+        &provider_plan.bindings,
+        rows,
+        &auth,
+        &provider_plan.styles,
+        cache,
+    )?;
+    for (name, staged) in staged_catalogs {
+        let pools = provider_plan
+            .pools
+            .get(&name)
+            .ok_or("staged catalog has no retained pool policy")?
+            .clone();
+        let catalog = super::plane_seats::CatalogSeat {
+            plan: Arc::new(
+                provider_catalogs
+                    .remove(&name)
+                    .ok_or("staged catalog lost its exact resolved plan")?,
+            ),
+            sealed: staged.seal(&outbound)?,
+            pools,
+        };
+        steps.seat.catalogs.insert(name, Arc::new(catalog));
+    }
+    let hooks = hooks.ok_or("native planes have no frozen hook construction inputs")?;
+    for (index, who, port) in opened_planes {
+        let (_, spec) = specs
+            .get(index as usize)
+            .ok_or("opened plane has no configured owner")?;
+        steps
+            .compose_plane(spec, who, port, hooks, &opened_hooks)
+            .map_err(|error| format!("serving plane {index}: {error:?}"))?;
+    }
+    let provisioning = super::provisioning::mounts(
+        &auth_policy,
+        &auth,
+        environment.app,
+        environment
+            .app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+        request_body_cap,
+        crate::root::dispatch::dispatcher().budgets().call,
+        Arc::clone(&environment.app.request_id_counter),
+    )?;
     let transports = transports::table(transports::opened(&walked.opened, &specs))?;
     let secrets = steps.prefix();
     let core = core_secrets;
@@ -1625,9 +1877,9 @@ pub(crate) async fn finish(
         _transports: transports,
         _native_invocations: invocations,
         _opened: walked.opened,
-        instances: serving_instances,
-        directory,
-        holds,
+        auth,
+        provisioning,
+        config_version: environment.app.config_version,
         seats,
         core,
         secrets,

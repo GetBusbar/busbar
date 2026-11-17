@@ -989,3 +989,19 @@ async fn recv_shutdown(mut rx: Receiver<()>) {
     let found = check_main(main);
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
+
+#[test]
+fn pre_drain_propagation_wait_is_owned_by_shutdown_drain() {
+    let owned = "impl ShutdownDrain { async fn coordinate(&self) { tokio::select! { _ = intent.changed() => {}, _ = tokio::time::sleep_until(deadline) => {} } } }";
+    assert!(check_shutdown(owned).is_empty());
+    let unmanaged = "async fn listener_delay() { tokio::time::sleep(delay).await; }";
+    assert!(
+        !check_shutdown(unmanaged).is_empty(),
+        "a listener cannot acquire an independent shutdown timer"
+    );
+    let unbounded_phase = "async fn settle() { pending_write.await; }";
+    assert!(
+        !check_shutdown(unbounded_phase).is_empty(),
+        "the pre-drain allowance does not relax settlement waits"
+    );
+}

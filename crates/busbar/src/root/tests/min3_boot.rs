@@ -355,6 +355,36 @@ fn configured_hooks_join_the_typed_plan_with_their_exact_settings() {
 }
 
 #[test]
+fn configured_auth_uses_the_named_instance_and_only_its_plugin_settings() {
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    cfg.identity_providers.insert(
+        "employees".into(),
+        busbar_contract::json::parse_str(
+            r#"{"module":"fixture-auth","settings":{"audience":"staff"},"max_admin_scope":"read-only"}"#,
+        ).unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let auth = instances
+        .iter()
+        .find(|one| one.kind == KindCode::Auth)
+        .expect("the real configured auth participates in the same typed boot plan");
+    assert_eq!(auth.name, "employees");
+    assert_eq!(auth.identity, "fixture-auth");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&auth.config).unwrap(),
+        serde_json::json!({"audience":"staff"})
+    );
+}
+
+#[test]
 fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
     let grammar =
         busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());

@@ -168,6 +168,29 @@ pub(crate) struct PreparedExchange {
     declaration: Arc<FrozenUsage>,
 }
 
+/// The actual retained task's immutable declaration, supplied before its money admission.
+/// Clones share the same frozen descriptor; neither names nor caller-provided facts construct it.
+#[derive(Clone)]
+pub struct RequestDeclaration {
+    context: crate::host_services::InvocationContext,
+    declaration: Arc<FrozenUsage>,
+}
+
+impl RequestDeclaration {
+    pub fn context(&self) -> &crate::host_services::InvocationContext {
+        &self.context
+    }
+    pub fn declaration(&self) -> Declaration<'_> {
+        self.declaration.declaration()
+    }
+    pub(crate) fn accepts(&self, prepared: &PreparedExchange) -> bool {
+        Arc::ptr_eq(&self.declaration, &prepared.declaration)
+    }
+    pub(crate) fn selected(&self) -> bool {
+        self.declaration().facts() & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
+    }
+}
+
 impl PreparedExchange {
     pub(crate) fn target(&self) -> &Candidate {
         &self.target
@@ -189,6 +212,13 @@ impl PreparedExchange {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
+    pub(crate) fn request_declaration(&self) -> Result<RequestDeclaration, SessionError> {
+        Ok(RequestDeclaration {
+            context: self.invocation.clone().ok_or(SessionError::NotDriven)?,
+            declaration: Arc::clone(&self.declaration),
+        })
+    }
+
     /// Calls the actual encoder once, then moves its unique exchange into immutable custody.
     pub(crate) fn prepare(
         &mut self,

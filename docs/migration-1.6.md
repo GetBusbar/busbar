@@ -215,23 +215,13 @@ as separate requirements. See [plugin security](plugins.md#how-plugins-are-secur
 
 ### Environment inputs
 
-Serving no longer uses the four launch overrides below. The current boot and `--validate`
-report a set variable with `BUSBAR-3029` without echoing its value; an empty `BUSBAR_PROVIDERS`
-counts as unset. That warning does not by itself refuse startup.
-
-On an **unstamped upgrade boot**, catalog migration still honors 1.5.5's selection order:
-nonempty `BUSBAR_PROVIDERS` (relative to the working directory), then `providers_file:`
-(relative to the config directory), then `providers.yaml` beside the config. It records an
-environment-selected unchanged catalog as an absolute `providers_file:`. If ignored catalog
-keys must be stripped, it writes `providers.busbar-1.6.yaml` beside the config and selects that
-file, preserving the original catalog. A missing or unreadable selected catalog refuses.
-Keep the old launch environment through that boot; remove the variable after checking the
-written selection. The `--providers` flag is refused on this upgrade boot.
-
-The other three variables are not captured by this migration. Before using this development
-procedure, write their intended values into configuration; otherwise an HTTP/1-only upstream
-setting or worker count can be lost. Automatic capture or an explained refusal remains required
-before the final upgrade procedure is qualified. There is no separate conversion command.
+Serving no longer uses these launch overrides. Boot and `--validate` refuse them with
+`BUSBAR-3029` before configuration migration or validation, naming each replacement without
+echoing its value. Write their intended values into configuration, then remove the variables
+from the launcher and validate. No automatic environment capture or separate conversion command
+is provided. An empty `BUSBAR_PROVIDERS` counts as unset; all other retired variables refuse
+even when empty. This refusal prevents an HTTP/1-only or worker setting from silently changing
+on upgrade; exact-artifact upgrade qualification remains required.
 
 | Retired variable | Current configuration |
 |---|---|

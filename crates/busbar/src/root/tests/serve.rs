@@ -775,7 +775,10 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         carrier: 0,
     };
     let messages = vec![b"ab".to_vec(), b"cd".to_vec()];
-    let (arrival, caller, _reply) = deframed_arrival(framed, messages);
+    let request = busbar_kernel::limits::process_admission::ProcessAdmission::new(0)
+        .try_enter(busbar_kernel::limits::process_admission::AdmissionClass::Data)
+        .unwrap();
+    let (arrival, caller, _reply) = deframed_arrival(framed, messages, &request).unwrap();
     assert_eq!(
         &arrival.body[..],
         b"abcd",
@@ -786,6 +789,55 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         Some(&b"abcd"[..]),
         "the caller leg reads the messages, never the framing"
     );
+}
+
+#[tokio::test]
+async fn a_budgeted_pipe_moves_custody_through_owned_reads_only() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use busbar_kernel::plane_driver::SessionCaller as _;
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let (from, received) = mpsc::channel(1);
+    let (to, _) = mpsc::channel(1);
+    let caller = PipeCaller {
+        from: tokio::sync::Mutex::new(received),
+        to,
+    };
+    let input = request
+        .adopt_input(b"owned".to_vec())
+        .unwrap()
+        .into_session_input();
+    assert!(from.send(input).await.is_ok());
+    assert!(
+        caller.read().await.is_none(),
+        "a bare read cannot strip or dequeue ownership"
+    );
+    let input = caller.read_owned().await.unwrap();
+    assert_eq!(input.bytes, b"owned");
+    drop(caller);
+    drop(from);
+    drop(request);
+    assert!(
+        budget.try_enter(AdmissionClass::Data).is_err(),
+        "the detached input still owns its request slot"
+    );
+    assert!(budget.try_enter(AdmissionClass::Operator).is_ok());
+    drop(input);
+    assert!(budget.try_enter(AdmissionClass::Data).is_ok());
+}
+
+#[test]
+fn a_failed_decoded_gather_retires_every_partial_payload_credit() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let budget = ProcessAdmission::new(2);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let full = request.try_reserve(224 * 1024 * 1024 - 3).unwrap();
+    assert!(gathered_input(vec![b"ab".to_vec(), b"cd".to_vec()], &request).is_err());
+    assert!(
+        request.try_reserve(3).is_ok(),
+        "the refused gather keeps no partial credit"
+    );
+    drop(full);
 }
 
 #[test]
