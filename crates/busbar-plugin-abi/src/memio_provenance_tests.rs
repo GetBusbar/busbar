@@ -203,3 +203,37 @@ fn short_answers_retain_every_control_payload_boundary_and_end_once() {
     plan.settled(101).unwrap();
     assert!(!plan.is_live(101));
 }
+
+#[test]
+fn malformed_lifecycle_order_inside_one_batch_is_rejected_atomically() {
+    for events in [
+        vec![
+            SerializedEvent::End {
+                stream: 41,
+                requirement: CompletionRequirement::Flush,
+            },
+            SerializedEvent::Span {
+                stream: 41,
+                class: SerializedClass::Control,
+                len: 1,
+            },
+        ],
+        vec![
+            SerializedEvent::Abort { stream: 41 },
+            SerializedEvent::End {
+                stream: 41,
+                requirement: CompletionRequirement::Flush,
+            },
+        ],
+    ] {
+        let mut mio = MemIo::new();
+        let provenance = mio.attributed_output(1, 8, 1024);
+        provenance.admit(41, 1_000).unwrap();
+        assert!(provenance.record(&events).is_err());
+        let pipes = lock(&mio.shared.pipes);
+        let plan = pipes.plan.as_ref().unwrap();
+        assert!(plan.queue.is_empty());
+        assert_eq!(plan.serialized, 0);
+        assert!(plan.fault);
+    }
+}
