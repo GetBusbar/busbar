@@ -180,6 +180,41 @@ pub struct Guard {
     node: Arc<ArcSwap<OwnNode>>,
 }
 
+/// A destination-policy snapshot with no mutation or publication surface.
+/// The captured metadata and own-listener values cannot follow a later generation.
+#[derive(Debug, Clone)]
+pub struct FrozenGuard(Guard);
+
+impl FrozenGuard {
+    /// Judge the logical name using this generation's immutable policy.
+    pub fn judge_name_with(
+        &self,
+        host: &str,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<Option<IpAddr>, Refusal> {
+        self.0.judge_name_with(host, class, strict, reach)
+    }
+
+    /// Judge every address using this generation's immutable policy.
+    pub fn judge_answer_with(
+        &self,
+        host: &str,
+        addrs: &[IpAddr],
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(), Refusal> {
+        self.0.judge_answer_with(host, addrs, class, strict, reach)
+    }
+
+    /// Refuse this generation's own listeners in every egress class.
+    pub fn not_the_node(&self, class: u32, addr: SocketAddr) -> Result<(), Refusal> {
+        self.0.not_the_node(class, addr, true)
+    }
+}
+
 /// The node's own front door: every configured listener's port (`listen`, `admin_listen`, each
 /// listener and media listener) and the addresses those listeners are bound to.
 #[derive(Debug, Default)]
@@ -200,6 +235,17 @@ impl Default for Guard {
 }
 
 impl Guard {
+    /// Freeze the current metadata and own-listener policy into independent publication cells.
+    /// Neither this guard nor any of its clones can mutate the returned snapshot.
+    #[must_use]
+    pub fn freeze(&self) -> FrozenGuard {
+        FrozenGuard(Guard {
+            block_private: self.block_private,
+            metadata: Arc::new(RwLock::new(self.metadata())),
+            node: Arc::new(ArcSwap::from(self.node.load_full())),
+        })
+    }
+
     /// The guard a deployment states.
     pub fn from_config(d: &Destinations) -> Result<Guard, String> {
         Ok(Guard {

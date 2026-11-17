@@ -20,7 +20,6 @@
 //! `Accept` waives it.
 
 use std::future::Future;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,7 +36,7 @@ use busbar_plugin_abi::need::need_flag::{TLS_INBAND, TLS_MUTUAL, TLS_NONE, TLS_R
 use busbar_plugin_abi::need::open_flag;
 use busbar_plugin_abi::records::commit as commit_code;
 
-use crate::guard::{judged_class, Resolve, SystemResolver};
+use crate::guard::{judged_class, Resolve};
 
 pub mod certs;
 pub mod commit;
@@ -45,6 +44,7 @@ pub mod exchange;
 pub mod judge;
 pub mod key;
 pub mod net;
+pub mod network;
 pub mod observations;
 pub mod policy;
 pub mod table;
@@ -128,8 +128,10 @@ pub struct TlsPlan<'a> {
 
 /// One dial.
 pub struct Dial<'a> {
-    /// The addresses the judge admitted, in answer order (empty for a unix socket).
-    pub addrs: &'a [SocketAddr],
+    /// Original admitted logical destination; independent of resolved addresses and TLS SNI.
+    pub dest: &'a str,
+    /// The route admitted for this logical destination.
+    pub route: judge::Route,
     /// The unix socket path (rules (1) to (3) and (5) held), when the dest is one.
     pub unix: Option<&'a str>,
     /// TLS from the first byte; `None` for plaintext and for TLS_INBAND's plaintext phase.
@@ -173,8 +175,12 @@ pub struct FetchReq<'a> {
 /// judged again), so a client that pools its own connections still judges every dial it makes.
 pub trait Admission: Send + Sync {
     /// Judge a dial of `host:port` and return the addresses to connect to.
-    fn dial<'a>(&'a self, host: &'a str, port: u16)
-        -> BoxFut<'a, Result<Vec<SocketAddr>, NeedErr>>;
+    fn dial<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        secured: bool,
+    ) -> BoxFut<'a, Result<judge::Route, NeedErr>>;
 }
 
 /// The seam under the handlers: sockets, TLS and the HTTP client. Everything a Need decides is
@@ -182,6 +188,12 @@ pub trait Admission: Send + Sync {
 pub trait NeedIo: Send + Sync + 'static {
     /// A live conn.
     type Conn: Send + 'static;
+    /// Bound DNS and the full connection plan using this I/O owner's timer service.
+    fn timeout<F: Future + Send>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> impl Future<Output = Result<F::Output, NeedErr>> + Send;
     /// Connect (and, for `Dial::tls`, handshake), within `timeout`.
     fn dial(
         &self,
@@ -232,8 +244,12 @@ impl<R: Resolve> Admission for Dialer<'_, R> {
         &'a self,
         host: &'a str,
         port: u16,
-    ) -> BoxFut<'a, Result<Vec<SocketAddr>, NeedErr>> {
-        Box::pin(self.judge.dial(host, port, self.class, self.owner))
+        secured: bool,
+    ) -> BoxFut<'a, Result<judge::Route, NeedErr>> {
+        Box::pin(
+            self.judge
+                .plan(host, port, self.class, false, secured, self.owner),
+        )
     }
 }
 
@@ -308,7 +324,7 @@ fn parts<'a>(tls: &TlsMode<'a>) -> Parts<'a> {
 
 /// The Need handlers. `C` custody, `R` records, `D` the kernel directory, `I` the I/O seam (the
 /// connector's own sockets, TLS and HTTP in production), `Z` the resolver (the system's).
-pub struct HostNeeds<C, R, D, I = ConnectorIo, Z = SystemResolver>
+pub struct HostNeeds<C, R, D, I = ConnectorIo, Z = network::SharedResolver>
 where
     C: SecretCustody,
     R: PluginRecords,
@@ -336,35 +352,6 @@ type ConfiguredFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Idle conns kept per key.
 const POOL_PER_KEY: usize = 8;
-
-impl<C, R, D> HostNeeds<C, R, D>
-where
-    C: SecretCustody,
-    R: PluginRecords,
-    D: PluginDirectory,
-{
-    /// The production handlers, as the kernel boot builds them: the connector's own sockets, rustls
-    /// and hyper ([`ConnectorIo`]) under `guard` (the node's own ports published into it, IF 12.1)
-    /// and the system resolver.
-    pub fn production(
-        guard: crate::guard::Guard,
-        custody: C,
-        records: R,
-        directory: D,
-        binder: Arc<dyn ConfigBinder>,
-        limits: NeedLimits,
-    ) -> Self {
-        Self::new(
-            ConnectorIo::new(),
-            Judge::new(guard, SystemResolver),
-            custody,
-            records,
-            directory,
-            binder,
-            limits,
-        )
-    }
-}
 
 impl<C, R, D, I, Z> HostNeeds<C, R, D, I, Z>
 where
@@ -543,9 +530,21 @@ where
                 return Err(NeedErr::Denied);
             }
         }
+        let deadline = Instant::now()
+            + self.budget(
+                cx,
+                dial_policy(class).connect_timeout,
+                cx.limits.connect_timeout_ms,
+            )?;
         let inband = p.bits == TLS_INBAND;
         let (trust, trust_digest) = self.trust(cx, class, p.trust)?;
-        let (_, cert_digest) = self.cert(cx, p.cert, false).await?;
+        let (_, cert_digest) = self
+            .io
+            .timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.cert(cx, p.cert, false),
+            )
+            .await??;
         let sni = if p.bits == TLS_NONE {
             "".into()
         } else {
@@ -588,36 +587,61 @@ where
             let id = self.hold(cx, held)?;
             return self.answer(res, id, flags, &hit.alpn, hit.id);
         }
-        // A miss: judge, then dial.
-        let (addrs, path) = match unix {
-            Some(path) => (Vec::new(), Some(path)),
-            None => {
-                let (host, port) = split_dest(&dest)?;
-                (
-                    self.judge.dial(host, port, class, (cx.instance, 0)).await?,
-                    None,
-                )
-            }
-        };
+        // One connection deadline begins before resolution and covers proxy and TLS.
         let policy = dial_policy(class);
-        let timeout = self.budget(cx, policy.connect_timeout, cx.limits.connect_timeout_ms)?;
-        let (cert, _) = self.cert(cx, p.cert, true).await?;
-        let plan = (p.bits != TLS_NONE && !inband).then(|| TlsPlan {
-            sni: &sni,
-            alpn: p.alpn,
-            trust: trust.clone(),
-            cert: cert.clone(),
-            waive: waived,
-        });
+        let timeout = self
+            .budget(cx, policy.connect_timeout, cx.limits.connect_timeout_ms)?
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if timeout.is_zero() {
+            return Err(NeedErr::Timeout);
+        }
         let dialled = self
             .io
-            .dial(Dial {
-                addrs: &addrs,
-                unix: path,
-                tls: plan,
-                timeout,
+            .timeout(timeout, async {
+                let (route, path) = match unix {
+                    Some(path) => (
+                        judge::Route {
+                            addrs: Vec::new(),
+                            tunnel: None,
+                        },
+                        Some(path),
+                    ),
+                    None => {
+                        let (host, port) = split_dest(&dest)?;
+                        (
+                            self.judge
+                                .plan(
+                                    host,
+                                    port,
+                                    class,
+                                    false,
+                                    p.bits != TLS_NONE,
+                                    (cx.instance, 0),
+                                )
+                                .await?,
+                            None,
+                        )
+                    }
+                };
+                let (cert, _) = self.cert(cx, p.cert, true).await?;
+                let plan = (p.bits != TLS_NONE && !inband).then(|| TlsPlan {
+                    sni: &sni,
+                    alpn: p.alpn,
+                    trust: trust.clone(),
+                    cert: cert.clone(),
+                    waive: waived,
+                });
+                self.io
+                    .dial(Dial {
+                        dest: &dest,
+                        route,
+                        unix: path,
+                        tls: plan,
+                        timeout,
+                    })
+                    .await
             })
-            .await?;
+            .await??;
         let pooled = self.ids.mint(cx.instance);
         let mut dial_key = key;
         dial_key.tls = match p.bits {
@@ -793,10 +817,23 @@ where
         let (host, port) = split_url(n.url)?;
         let dest = normalise(&format!("{host}:{port}"))?;
         let class = judged_class(n.egress, self.is_configured(&dest));
+        let deadline = Instant::now()
+            + self.budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?;
         let (trust, _) = self.trust(cx, class, n.trust)?;
         let cert_handle = n.cert.filter(|c| *c != 0);
-        let (cert, _) = self.cert(cx, cert_handle, true).await?;
-        let timeout = self.budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?;
+        let (cert, _) = self
+            .io
+            .timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.cert(cx, cert_handle, true),
+            )
+            .await??;
+        let timeout = self
+            .budget(cx, dial_policy(class).io_timeout, cx.limits.timeout_ms)?
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if timeout.is_zero() {
+            return Err(NeedErr::Timeout);
+        }
         let req = FetchReq {
             need: n,
             class,

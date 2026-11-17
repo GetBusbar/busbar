@@ -639,14 +639,12 @@ impl TrustStore {
             .map(|pem| {
                 let chain = CertificateDer::pem_slice_iter(pem.as_slice())
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| {
-                        TrustRefusal::Build("instance certificate does not parse".into())
-                    })?;
+                    .map_err(|_| TrustRefusal::InvalidNeed)?;
                 if chain.is_empty() {
-                    return Err(TrustRefusal::Build("instance certificate is empty".into()));
+                    return Err(TrustRefusal::InvalidNeed);
                 }
                 let key = PrivateKeyDer::from_pem_slice(pem.as_slice())
-                    .map_err(|_| TrustRefusal::Build("instance key does not parse".into()))?;
+                    .map_err(|_| TrustRefusal::InvalidNeed)?;
                 Ok((chain, Arc::new(key)))
             })
             .transpose()?;

@@ -19,9 +19,9 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Body as _, Bytes};
 use hyper::client::conn::{http1, http2};
 use hyper::header::{HeaderName, HeaderValue};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 
-use super::net::{connect, handshake, ConnectorIo, Stream};
+use super::net::{ConnectorIo, Stream};
 use super::{Admission, FetchReq, TlsPlan};
 
 /// Where a FETCH answer goes.
@@ -93,19 +93,32 @@ fn hyper_err(e: &hyper::Error) -> NeedErr {
     }
 }
 
+#[derive(Clone)]
+struct RuntimeExecutor(tokio::runtime::Handle);
+impl<F> hyper::rt::Executor<F> for RuntimeExecutor
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, future: F) {
+        self.0.spawn(future);
+    }
+}
+
 /// Send `request` on `stream` as HTTP/1.1 or HTTP/2 and return the response head and body with the
 /// guard that keeps the connection driven.
 async fn send(
+    runtime: &tokio::runtime::Handle,
     stream: Stream,
     h2: bool,
     request: http::Request<Full<Bytes>>,
 ) -> Result<(http::response::Parts, hyper::body::Incoming, Driver), NeedErr> {
     let io = TokioIo::new(stream);
     if h2 {
-        let (mut sender, conn) = http2::handshake(TokioExecutor::new(), io)
+        let (mut sender, conn) = http2::handshake(RuntimeExecutor(runtime.clone()), io)
             .await
             .map_err(|e| hyper_err(&e))?;
-        let driver = Driver(tokio::spawn(async move {
+        let driver = Driver(runtime.spawn(async move {
             let _ = conn.await;
         }));
         let (parts, body) = sender
@@ -116,7 +129,7 @@ async fn send(
         Ok((parts, body, driver))
     } else {
         let (mut sender, conn) = http1::handshake(io).await.map_err(|e| hyper_err(&e))?;
-        let driver = Driver(tokio::spawn(async move {
+        let driver = Driver(runtime.spawn(async move {
             let _ = conn.await;
         }));
         let (parts, body) = sender
@@ -141,7 +154,7 @@ pub(super) async fn fetch<P: Reply>(
     reply: &mut P,
 ) -> Result<(), NeedErr> {
     let timeout = req.timeout;
-    tokio::time::timeout(timeout, exchange(io, req, admission, reply))
+    crate::io::timeout_on(io.runtime(), timeout, exchange(io, req, admission, reply))
         .await
         .map_err(|_| NeedErr::Timeout)?
 }
@@ -182,8 +195,10 @@ async fn exchange<P: Reply>(
     let headers = request_headers(req.need.headers)?;
 
     // The one judgement of this exchange's one connection, before a byte is sent.
-    let addrs = admission.dial(host, port).await?;
-    let net = connect(&addrs, None, req.timeout).await?;
+    let route = admission.dial(host, port, https).await?;
+    let net = io
+        .connect_route(&authority, &route, None, req.timeout)
+        .await?;
     let (stream, h2) = if https {
         let plan = TlsPlan {
             sni: host,
@@ -193,10 +208,7 @@ async fn exchange<P: Reply>(
             waive: req.waive,
         };
         let offered = [b"h2".to_vec(), b"http/1.1".to_vec()];
-        let config = io.configs().get(&plan, &offered)?;
-        let name = rustls::pki_types::ServerName::try_from(host.to_owned())
-            .map_err(|_| NeedErr::Invalid)?;
-        let dialled = handshake(net, config, name).await?;
+        let dialled = io.secure(net, &plan, &offered, req.timeout).await?;
         let h2 = &*dialled.alpn == "h2";
         (dialled.conn, h2)
     } else {
@@ -225,7 +237,7 @@ async fn exchange<P: Reply>(
         wire.insert(http::header::HOST, host_value(&authority)?);
     }
 
-    let (parts, mut body, _driver) = send(stream, h2, request).await?;
+    let (parts, mut body, _driver) = send(io.runtime(), stream, h2, request).await?;
 
     let held = parts.headers.iter().fold(0usize, |n, (name, value)| {
         n.saturating_add(name.as_str().len())

@@ -27,13 +27,16 @@ use tokio_rustls::TlsConnector;
 use super::exchange;
 use super::tlsconf::Configs;
 use super::{Admission, Dial, Dialled, FetchReq, NeedIo, TlsPlan};
-use crate::io::{register, Direction, Registered};
+use crate::io::{register_on, timeout_on, Direction, Registered};
 use crate::socket::{self, Sock};
 
 /// A dialled socket on the reactor, as a tokio byte stream.
 #[derive(Debug)]
 pub struct Net {
     sock: Registered<Sock>,
+    logical_dest: Box<str>,
+    epoch: u64,
+    prefix: busbar_contract::secure::SecureVec,
 }
 
 impl Net {
@@ -48,12 +51,19 @@ impl AsyncRead for Net {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if !this.prefix.is_empty() {
+            let count = buf.remaining().min(this.prefix.len());
+            buf.put_slice(&this.prefix.as_slice()[..count]);
+            this.prefix.consume(count);
+            return Poll::Ready(Ok(()));
+        }
         let dst = buf.initialize_unfilled();
         if dst.is_empty() {
             return Poll::Ready(Ok(()));
         }
         let want = dst.len();
-        let n = std::task::ready!(self
+        let n = std::task::ready!(this
             .sock
             .poll_io_sized(Direction::Read, want, cx, |mut s| s.read(&mut *dst)))?;
         buf.advance(n);
@@ -106,7 +116,7 @@ impl Stream {
     /// Still good to hand out again: open, with nothing waiting to be read and no error.
     #[must_use]
     pub fn healthy(&self) -> bool {
-        socket::idle_and_open(&self.net().sock.socket())
+        self.net().prefix.is_empty() && socket::idle_and_open(&self.net().sock.socket())
     }
 }
 
@@ -167,10 +177,20 @@ fn io_err(e: &io::Error) -> NeedErr {
 }
 
 /// One connect, begun and settled on the reactor.
-async fn connect_one(sock: io::Result<Sock>) -> io::Result<Net> {
-    let sock = register(sock?)?;
+async fn connect_one(
+    runtime: &tokio::runtime::Handle,
+    dest: &str,
+    epoch: u64,
+    sock: io::Result<Sock>,
+) -> io::Result<Net> {
+    let sock = register_on(runtime, sock?)?;
     poll_fn(|cx| socket::poll_connected(&sock, cx)).await?;
-    Ok(Net { sock })
+    Ok(Net {
+        sock,
+        logical_dest: dest.into(),
+        epoch,
+        prefix: Default::default(),
+    })
 }
 
 /// Connect to the unix socket at `path`, or to the first of `addrs` that answers, within `timeout`
@@ -178,15 +198,24 @@ async fn connect_one(sock: io::Result<Sock>) -> io::Result<Net> {
 /// the budget of the ones behind it. Trying the next address of the judged answer is not a retry
 /// of anything the plugin sent.
 pub(super) async fn connect(
+    runtime: &tokio::runtime::Handle,
+    dest: &str,
+    epoch: u64,
     addrs: &[SocketAddr],
     unix: Option<&str>,
     timeout: Duration,
 ) -> Result<Net, NeedErr> {
     if let Some(path) = unix {
         #[cfg(unix)]
-        return match tokio::time::timeout(
+        return match timeout_on(
+            runtime,
             timeout,
-            connect_one(socket::connect_unix(path).map(Sock::Unix)),
+            connect_one(
+                runtime,
+                dest,
+                epoch,
+                socket::connect_unix(path).map(Sock::Unix),
+            ),
         )
         .await
         {
@@ -211,7 +240,12 @@ pub(super) async fn connect(
             return Err(NeedErr::Timeout);
         }
         let share = left / u32::try_from(addrs.len() - i).unwrap_or(1).max(1);
-        match tokio::time::timeout(share, connect_one(socket::connect(*addr).map(Sock::Tcp))).await
+        match timeout_on(
+            runtime,
+            share,
+            connect_one(runtime, dest, epoch, socket::connect(*addr).map(Sock::Tcp)),
+        )
+        .await
         {
             Ok(Ok(net)) => return Ok(net),
             Ok(Err(_)) => failed = NeedErr::Unavailable,
@@ -254,48 +288,115 @@ pub(super) async fn handshake(
     })
 }
 
-/// The production I/O: sockets, TLS and HTTP, over what the connector already has.
-#[derive(Debug, Default)]
+/// The production I/O, retaining one complete immutable network owner.
+#[derive(Clone)]
 pub struct ConnectorIo {
-    configs: Configs,
+    state: Arc<super::network::State>,
 }
 
 impl ConnectorIo {
-    /// The I/O seam over the process's reactor.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub(super) fn from_state(state: Arc<super::network::State>) -> Self {
+        Self { state }
     }
 
     pub(super) fn configs(&self) -> &Configs {
-        &self.configs
+        &self.state.configs
     }
 
-    async fn secure(
+    pub(super) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.state.runtime
+    }
+
+    /// Connect one previously admitted route. OPEN and FETCH share this exact path.
+    pub(super) async fn connect_route(
+        &self,
+        dest: &str,
+        route: &super::judge::Route,
+        unix: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Net, NeedErr> {
+        let epoch = self.state.configs.epoch();
+        let operation = async {
+            let mut net = connect(self.runtime(), dest, epoch, &route.addrs, unix, timeout).await?;
+            if let Some(tunnel) = &route.tunnel {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let request = busbar_contract::secure::SecureVec::from(
+                    crate::proxy::connect_request(&tunnel.target, &tunnel.hop),
+                );
+                net.write_all(request.as_slice())
+                    .await
+                    .map_err(|error| io_err(&error))?;
+                net.flush().await.map_err(|error| io_err(&error))?;
+                let mut head = busbar_contract::secure::SecureVec::default();
+                loop {
+                    let mut bytes = [0; 1024];
+                    let n = net.read(&mut bytes).await.map_err(|error| io_err(&error))?;
+                    if n == 0 {
+                        return Err(NeedErr::Closed);
+                    }
+                    head.extend_from_slice(&bytes[..n]);
+                    if let Some(end) = crate::proxy::connect_answer(head.as_slice(), &tunnel.target)
+                        .map_err(|_| NeedErr::Denied)?
+                    {
+                        if end > crate::proxy::CONNECT_HEAD_CAP {
+                            return Err(NeedErr::Limit);
+                        }
+                        head.consume(end);
+                        net.prefix = head;
+                        break;
+                    }
+                }
+            }
+            Ok(net)
+        };
+        timeout_on(self.runtime(), timeout, operation)
+            .await
+            .map_err(|_| NeedErr::Timeout)?
+    }
+
+    pub(super) async fn secure(
         &self,
         net: Net,
         plan: &TlsPlan<'_>,
+        offered: &[Vec<u8>],
         timeout: Duration,
     ) -> Result<Dialled<Stream>, NeedErr> {
         let name = server_name(plan.sni, net.peer_ip())?;
-        let alpn = if plan.alpn.is_empty() {
-            Vec::new()
-        } else {
-            vec![plan.alpn.as_bytes().to_vec()]
+        let host = net.logical_dest.clone();
+        let result = async {
+            let config = self.configs().get(&host, plan, offered)?;
+            handshake(net, config, name).await
         };
-        let config = self.configs.get(plan, &alpn)?;
-        tokio::time::timeout(timeout, handshake(net, config, name))
+        let result = timeout_on(self.runtime(), timeout, result)
             .await
-            .map_err(|_| NeedErr::Timeout)?
+            .map_err(|_| NeedErr::Timeout)?;
+        if matches!(result, Err(NeedErr::Tls)) {
+            self.state
+                .observations
+                .record(&host, None, None, super::observations::Outcome::Tls);
+        }
+        result
     }
 }
 
 impl NeedIo for ConnectorIo {
     type Conn = Stream;
 
+    async fn timeout<F: std::future::Future + Send>(
+        &self,
+        duration: Duration,
+        future: F,
+    ) -> Result<F::Output, NeedErr> {
+        timeout_on(self.runtime(), duration, future)
+            .await
+            .map_err(|_| NeedErr::Timeout)
+    }
+
     async fn dial(&self, d: Dial<'_>) -> Result<Dialled<Stream>, NeedErr> {
         let end = Instant::now() + d.timeout;
-        let net = connect(d.addrs, d.unix, d.timeout).await?;
+        let net = self
+            .connect_route(d.dest, &d.route, d.unix, d.timeout)
+            .await?;
         let Some(plan) = d.tls else {
             return Ok(Dialled {
                 conn: Stream::Plain(net),
@@ -303,8 +404,18 @@ impl NeedIo for ConnectorIo {
                 resumed: false,
             });
         };
-        self.secure(net, &plan, end.saturating_duration_since(Instant::now()))
-            .await
+        let alpn = if plan.alpn.is_empty() {
+            Vec::new()
+        } else {
+            vec![plan.alpn.as_bytes().to_vec()]
+        };
+        self.secure(
+            net,
+            &plan,
+            &alpn,
+            end.saturating_duration_since(Instant::now()),
+        )
+        .await
     }
 
     async fn upgrade(
@@ -316,7 +427,12 @@ impl NeedIo for ConnectorIo {
         let Stream::Plain(net) = conn else {
             return Err(NeedErr::Invalid);
         };
-        self.secure(net, &tls, timeout).await
+        let alpn = if tls.alpn.is_empty() {
+            Vec::new()
+        } else {
+            vec![tls.alpn.as_bytes().to_vec()]
+        };
+        self.secure(net, &tls, &alpn, timeout).await
     }
 
     async fn write(
@@ -334,7 +450,7 @@ impl NeedIo for ConnectorIo {
                 .map_err(|e| io_err(&e))?;
             Ok::<usize, NeedErr>(n)
         };
-        tokio::time::timeout(timeout, sent)
+        timeout_on(self.runtime(), timeout, sent)
             .await
             .map_err(|_| NeedErr::Timeout)?
     }
@@ -353,14 +469,14 @@ impl NeedIo for ConnectorIo {
                 Poll::Pending => Poll::Pending,
             }
         });
-        tokio::time::timeout(timeout, got)
+        timeout_on(self.runtime(), timeout, got)
             .await
             .map_err(|_| NeedErr::Timeout)?
             .map_err(|e| io_err(&e))
     }
 
     fn healthy(&self, conn: &Stream) -> bool {
-        conn.healthy()
+        conn.net().epoch == self.configs().epoch() && conn.healthy()
     }
 
     async fn fetch(
@@ -371,6 +487,28 @@ impl NeedIo for ConnectorIo {
     ) -> Result<(), NeedErr> {
         exchange::fetch(self, req, admission, res).await
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_io() -> ConnectorIo {
+    let trust = Arc::new(
+        crate::tls::store::TrustStore::build(
+            &Default::default(),
+            std::time::SystemTime::now(),
+            &|_| None,
+        )
+        .expect("test trust"),
+    );
+    super::network::BootstrapConnector::new(super::network::NetworkInputs {
+        runtime: tokio::runtime::Handle::current(),
+        guard: crate::guard::Guard::default().freeze(),
+        resolver: Arc::new(crate::guard::SystemResolver),
+        trust,
+        proxy: None,
+        resolution: busbar_kernel::config::tls::ProxyResolution::Local,
+        observations: Arc::default(),
+    })
+    .io()
 }
 
 #[cfg(test)]
