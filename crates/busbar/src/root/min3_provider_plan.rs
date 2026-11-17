@@ -150,7 +150,7 @@ pub(crate) fn capture(
             settings_keys: one
                 .config
                 .get("settings")
-                .and_then(Value::as_object)
+                .and_then(|settings| settings.as_object())
                 .map(|settings| settings.iter().map(|(key, _)| key).collect())
                 .unwrap_or_default(),
         })
