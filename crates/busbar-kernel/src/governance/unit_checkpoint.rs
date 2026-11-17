@@ -31,6 +31,13 @@ pub enum SelectedTransfer {
     },
 }
 
+/// Initial custody refused before publication, or the synchronous admission publication failed.
+#[derive(Debug)]
+pub(crate) enum SelectedActivationError<E> {
+    Custody(RecordStoreError),
+    Publish(E),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitTarget {
@@ -142,7 +149,81 @@ fn error(message: &str) -> RecordStoreError {
     crate::cold::governance::runtime::unit_checkpoint_refusal(message)
 }
 
+/// Keeps a new, unpublished entry invisible to flush until admission commits. Removal also
+/// restores the book's indexes on an unwind; it never invokes Store or changes fee ownership.
+struct InitialActivation<'a> {
+    pending: book::PendingGuard<'a>,
+    id: [u8; 16],
+    committed: bool,
+}
+
+impl Drop for InitialActivation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.pending.remove(&self.id);
+        }
+    }
+}
+
 impl GovState {
+    /// Install initial custody and publish admission under the same book lock. The caller holds
+    /// its Open shard throughout and must not reenter this book from `publish`. On refusal it
+    /// retains responsibility for removing Open and releasing the original pending admission.
+    /// No checkpoint can reach the flusher before the synchronous publication succeeds.
+    pub(crate) fn activate_selected_checkpoint<R, E>(
+        &self,
+        snapshot: UnitCheckpoint,
+        publish: impl FnOnce(Arc<UnitCheckpoint>) -> Result<R, E>,
+    ) -> Result<R, SelectedActivationError<E>> {
+        let validate = || -> RecordStoreResult<()> {
+            let Some(parts) = &snapshot.partitions else {
+                return Err(error("selected activation requires partitioned custody"));
+            };
+            if snapshot.revision != 0
+                || snapshot.ended
+                || snapshot.metered
+                || snapshot.terminal.is_some()
+                || parts.disposition != partitions::Disposition::Running
+                || !parts.attempts.is_empty()
+                || parts.session.is_some()
+                || parts.far_end_answered
+                || parts.caller_bytes_committed
+                || parts.final_target.is_some()
+                || !matches!(
+                    &parts.fee,
+                    partitions::CapturedFee::PendingOwner { .. }
+                        | partitions::CapturedFee::NotOwner { .. }
+                )
+            {
+                return Err(error("selected activation requires empty initial facts"));
+            }
+            snapshot.validate()?;
+            parts.preflight_terminal_bound(snapshot.targets.len())?;
+            self.validate_selected_terminal_capacity(&snapshot)
+        };
+        validate().map_err(SelectedActivationError::Custody)?;
+        let mut pending = self.unit_checkpoints.pending.lock();
+        if pending.get(&snapshot.id).is_some() {
+            return Err(SelectedActivationError::Custody(error(
+                "selected activation already has checkpoint custody",
+            )));
+        }
+        let accepted = Arc::new(snapshot.clone());
+        let id = snapshot.id;
+        pending.insert(
+            id,
+            Pending::selected(snapshot, self.unit_checkpoints_enabled(), false),
+        );
+        let mut activation = InitialActivation {
+            pending,
+            id,
+            committed: false,
+        };
+        let result = publish(accepted).map_err(SelectedActivationError::Publish)?;
+        activation.committed = true;
+        Ok(result)
+    }
+
     /// Publish one selected revision into the existing book, including RAM-only selected units.
     /// The money owner publishes the returned same revision into Open while retaining its lock.
     pub fn stage_selected_checkpoint(

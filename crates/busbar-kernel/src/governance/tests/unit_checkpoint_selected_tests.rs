@@ -89,6 +89,67 @@ async fn governance() -> GovState {
         .unwrap()
 }
 
+fn initial_selected() -> UnitCheckpoint {
+    let mut value = selected_value();
+    value["revision"] = json::json!(0);
+    value["ended"] = json::json!(false);
+    value["metered"] = json::json!(false);
+    value["partitions"]["attempts"] = json::json!([]);
+    value["partitions"]["far_end_answered"] = json::json!(false);
+    value["partitions"]["caller_bytes_committed"] = json::json!(false);
+    value["partitions"]["disposition"] = json::json!("running");
+    value["partitions"]["final_target"] = json::json!(null);
+    value["partitions"]["fee"]["state"] = json::json!("pending_owner");
+    decode(&value)
+}
+
+#[tokio::test]
+async fn selected_activation_refusal_rolls_back_custody_before_retry() {
+    use crate::governance::unit_checkpoint::SelectedActivationError;
+    let gov = governance().await;
+    let initial = initial_selected();
+    let result = gov.activate_selected_checkpoint(initial.clone(), |accepted| {
+        assert_eq!(*accepted, initial);
+        Err::<(), _>("admission ended before CAS")
+    });
+    assert!(matches!(result, Err(SelectedActivationError::Publish(_))));
+    assert!(!gov.unit_checkpoint_pending(&initial.id));
+    assert_eq!(gov.unit_checkpoint_count(), 0);
+
+    let accepted = gov
+        .activate_selected_checkpoint(initial.clone(), Ok::<_, ()>)
+        .unwrap();
+    assert_eq!(*accepted, initial);
+    assert!(gov.unit_checkpoint_pending(&initial.id));
+    assert_eq!(gov.unit_checkpoint_count(), 1);
+    let duplicate: Result<(), SelectedActivationError<()>> = gov
+        .activate_selected_checkpoint(initial, |_| {
+            panic!("an already owned id must not call the publication callback")
+        });
+    assert!(matches!(
+        duplicate,
+        Err(SelectedActivationError::Custody(_))
+    ));
+    assert_eq!(gov.unit_checkpoint_count(), 1);
+}
+
+#[tokio::test]
+async fn selected_activation_unwind_removes_unpublished_entry() {
+    let gov = governance().await;
+    let initial = initial_selected();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gov.activate_selected_checkpoint(initial.clone(), |_| -> Result<(), ()> {
+            panic!("publication unwind")
+        })
+    }));
+    assert!(result.is_err());
+    assert!(!gov.unit_checkpoint_pending(&initial.id));
+    assert_eq!(gov.unit_checkpoint_count(), 0);
+    assert!(gov
+        .activate_selected_checkpoint(initial, Ok::<_, ()>)
+        .is_ok());
+}
+
 fn meter_events(
     gov: &GovState,
     snapshot: &UnitCheckpoint,
