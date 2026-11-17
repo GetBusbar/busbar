@@ -19,7 +19,7 @@ use crate::teller::{Ended, UnitCtx};
 
 mod native_admission;
 pub(super) mod native_attempt;
-pub use native_admission::NativeAdmissionError;
+pub use native_admission::{AdmissionRollback, NativeAdmissionError};
 mod native_fee;
 mod selected_view;
 pub use selected_view::UsageView;

@@ -286,14 +286,6 @@ pub trait ExportAxis: Send + Sync {
         instances: &[(String, &crate::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>>;
 
-    /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
-    fn open(
-        &self,
-        module: &str,
-        label: &str,
-        settings: &PreparedExport,
-    ) -> Result<std::sync::Arc<dyn ExportCalls>, String>;
-
     /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
     fn linked(&self, module: &str) -> bool;
 
@@ -420,18 +412,6 @@ pub enum ExportCustodyLevel {
 }
 
 impl ExportCustodyLevel {
-    /// Validate an existing export wire custody level; zero and unknown levels are refused.
-    #[must_use]
-    pub const fn from_wire(level: u32) -> Option<Self> {
-        use crate::abi::export::{CUSTODY_ACCEPTED, CUSTODY_DURABLE, CUSTODY_INDEXED};
-        match level {
-            CUSTODY_ACCEPTED => Some(Self::Accepted),
-            CUSTODY_DURABLE => Some(Self::Durable),
-            CUSTODY_INDEXED => Some(Self::Indexed),
-            _ => None,
-        }
-    }
-
     /// Stable metric label for this checked positive custody level.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

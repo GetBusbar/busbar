@@ -810,6 +810,40 @@ fn observer_append_acknowledges_only_successful_disk_custody() {
 }
 
 #[test]
+fn observer_maps_only_canonical_positive_wire_custody() {
+    use busbar_contract::export_calls::{ExportCustodyLevel, ExportObservation};
+    use busbar_contract::export_stream::ExportStream;
+    let (port, _) = Double::new(&[x::STREAM_LOGS]);
+    let (door, observer) = observed(port, Arc::new(Disk::default()));
+    for wire in [x::CUSTODY_NONE, x::CUSTODY_INDEXED + 1, u32::MAX] {
+        door.shared.count_custody(x::STREAM_LOGS as u8, wire, 1);
+    }
+    assert!(observer.0.lock().unwrap().is_empty());
+    let levels = [
+        (
+            x::CUSTODY_ACCEPTED,
+            ExportCustodyLevel::Accepted,
+            "accepted",
+        ),
+        (x::CUSTODY_DURABLE, ExportCustodyLevel::Durable, "durable"),
+        (x::CUSTODY_INDEXED, ExportCustodyLevel::Indexed, "indexed"),
+    ];
+    for (wire, level, label) in levels {
+        door.shared.count_custody(x::STREAM_LOGS as u8, wire, 1);
+        assert_eq!(door.custody_total(x::STREAM_LOGS, wire), 1);
+        assert_eq!(level.as_str(), label);
+    }
+    assert_eq!(
+        *observer.0.lock().unwrap(),
+        levels.map(|(_, level, _)| ExportObservation::Custody {
+            stream: ExportStream::Logs,
+            level,
+            lines: 1,
+        })
+    );
+}
+
+#[test]
 fn observer_ignores_zero_and_invalid_custody_levels() {
     use busbar_contract::export_calls::{ExportCustodyLevel, ExportObservation};
     use busbar_contract::export_stream::ExportStream;

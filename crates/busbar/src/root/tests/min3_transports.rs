@@ -174,6 +174,7 @@ fn the_walk_hands_back_each_opened_transport_under_its_instance_name_and_nothing
     let port = framer(&["websocket"]);
     let config: &[u8] = b"{}";
     let spec = |name: &'static str| InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: name,
         name,
@@ -236,7 +237,7 @@ fn two_instances_declaring_one_protocol_refuse_the_boot_naming_both() {
     );
 }
 
-fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
+pub(crate) fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
     ServedTransport {
         instance: Arc::from(instance),
         port: Arc::new(Framer {

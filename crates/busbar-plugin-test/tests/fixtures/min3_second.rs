@@ -745,6 +745,7 @@ pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Pl
 /// The spec of instance `name` of the image `module` names, with `config` and no limits.
 pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpec<'a> {
     InstanceSpec {
+        store_migration: None,
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
         identity: module,
         name,

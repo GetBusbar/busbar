@@ -876,6 +876,59 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
     )
 }
 
+/// #370: recovery carries the original WAL position, distinct from the audit chain sequence.
+#[tokio::test]
+async fn recovered_audit_lookup_and_reappend_keep_the_original_wal_position() {
+    bounded(async {
+        let fixture = fixture().await;
+        fixture.sink.persist(&unit(1)).await.unwrap();
+        let audit = audit_line();
+        let position = fixture.evidence.append_audit(audit.clone()).await.unwrap();
+        assert_ne!(position, 0);
+        assert_ne!(
+            position, audit.seq,
+            "the checkpoint occupies its own WAL record"
+        );
+
+        let recovered = RuntimeJournal::open(
+            fixture.journal.store().clone(),
+            NODE,
+            BufferBudget {
+                records: 1024,
+                bytes: 4 * 1024 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+        let evidence =
+            UnitCheckpointEvidence::new(recovered, crate::teller::Kernel::new().durability_token());
+        assert_eq!(evidence.pending_audit(17, 7), None);
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit.clone()))
+        );
+        let applied = fixture.backend.appends_applied.load(Ordering::SeqCst);
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            evidence.append_audit(audit.clone()).await.unwrap(),
+            position
+        );
+        assert_eq!(
+            fixture.backend.appends_applied.load(Ordering::SeqCst),
+            applied,
+            "reappending the recovered line writes no new original"
+        );
+        assert_eq!(
+            evidence.find_audit(17, 7).await.unwrap(),
+            Some((position, audit))
+        );
+    })
+    .await;
+}
+
 /// One request-path append on the shared journal, confirmed.
 async fn append_one(journal: &RuntimeJournal) {
     let run = journal

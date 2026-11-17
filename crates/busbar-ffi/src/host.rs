@@ -36,6 +36,38 @@ use crate::vt::{
 #[path = "tests/fixed_loan_tests.rs"]
 mod fixed_loan_tests;
 
+std::thread_local! {
+    static TEARDOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// True while a native cancel or close is executing, including implicit Drop and raw fallbacks.
+/// An unavailable thread-local is denied; hosts must never inherit an enclosing open's authority.
+pub fn teardown_active() -> bool {
+    TEARDOWN.try_with(Cell::get).unwrap_or(true)
+}
+
+struct Teardown {
+    previous: Option<bool>,
+    _thread: PhantomData<std::rc::Rc<()>>,
+}
+
+impl Teardown {
+    fn enter() -> Self {
+        Self {
+            previous: TEARDOWN.try_with(|active| active.replace(true)).ok(),
+            _thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for Teardown {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous {
+            let _ = TEARDOWN.try_with(|active| active.set(previous));
+        }
+    }
+}
+
 // ---- answers ----
 
 /// A record head (IF §3): tag, reserved, body length; the body is padded to 8.
@@ -470,10 +502,11 @@ fn invoke5<K: Kind, A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, A5: RawArg>(
 
 /// `cancel(inst, tok)` through the image's header.
 fn cancel_raw(header: &Plugin, inst: *const c_void, tok: Token) -> Status {
+    let _teardown = Teardown::enter();
     match header.entries().3 {
         // SAFETY: `cancel` is the image's own header entry; `inst` is null (the image's open slab) or the
-        // image's live instance; the token belongs to the one `Chain` or `Session` calling this from its
-        // `Drop`, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
+        // image's live instance; the token belongs to the one `Chain` cancelling itself or the `Session`
+        // being dropped, so no other entry for it can run (I6). Unknown or stale tokens are a no-op.
         Some(f) => unsafe { f(inst, tok) },
         None => Status::FAULT,
     }
@@ -664,6 +697,7 @@ impl<K: Kind> Instance<K> {
 
 impl<K: Kind> Drop for Instance<K> {
     fn drop(&mut self) {
+        let _teardown = Teardown::enter();
         if let Some(close) = self.image.header().entries().4 {
             // SAFETY: `close` is the image's own header entry and `inst` its live INSTANCE address. This is
             // the last use: every `Session` holds an `Arc` of this instance and every `Chain` borrows it, so
@@ -893,14 +927,27 @@ impl<K: Kind> Chain<'_, K> {
     pub fn token(&self) -> Token {
         self.tok
     }
+
+    /// Cancel this parked chain, retaining its owner and borrowed buffers until the entry returns.
+    /// The token is retired before entry, so the following Drop cannot cancel it a second time.
+    /// Hosts with caller attribution and fault reporting run this inside their cancellation scope.
+    pub fn cancel(mut self) -> Status {
+        self.cancel_once()
+    }
+
+    fn cancel_once(&mut self) -> Status {
+        let token = core::mem::replace(&mut self.tok, 0);
+        if token == 0 {
+            return Status::OK;
+        }
+        let (header, inst, _) = self.parts();
+        cancel_raw(header, inst, token)
+    }
 }
 
 impl<K: Kind> Drop for Chain<'_, K> {
     fn drop(&mut self) {
-        if self.tok != 0 {
-            let (header, inst, _) = self.parts();
-            let _ = cancel_raw(header, inst, self.tok);
-        }
+        let _ = self.cancel_once();
     }
 }
 

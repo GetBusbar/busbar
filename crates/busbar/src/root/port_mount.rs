@@ -659,14 +659,14 @@ async fn answer(
                                 }
                                 _ => unavailable(),
                             })?;
-                        Ok(AdmittedUnit {
-                            request,
-                            unit,
-                            selected: None,
-                        })
+                        let rollback = billing
+                            .admission_rollback(&request)
+                            .map_err(|_| unavailable())?;
+                        AdmittedUnit::ordinary(request, unit, rollback).map_err(|_| unavailable())
                     },
                 )
                 .with_channel_budget(seat.channel_budget.unit())
+                .with_current_rates(ctx.handle.selected_rate_admission())
                 .with_route(original_route),
             ))
         }
