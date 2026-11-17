@@ -284,7 +284,7 @@ impl busbar_kernel::plane_grants::ReplayGuard for UnusedAuth {
     }
 }
 
-fn catalog() -> (CatalogSeat, String, String) {
+async fn catalog() -> (CatalogSeat, String, String) {
     use super::super::{min3_auth, min3_outbound_auth, min3_provider_catalog};
     use busbar_kernel::config::{self, Grammar};
     use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
@@ -340,9 +340,18 @@ fn catalog() -> (CatalogSeat, String, String) {
         &BTreeMap::new(),
     )
     .unwrap();
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults).await;
+    let (_directory, holds, _refresh) = busbar_kernel::directory::KernelDirectory::prepare(
+        store,
+        Arc::new(busbar_kernel::directory::LogEvents),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
     let auth = min3_auth::AuthSet::new(
         Vec::new(),
-        &busbar_kernel::directory::Holds::default(),
+        &holds,
         min3_auth::AuthOwners {
             issued: Arc::new(UnusedAuth),
             replay: Arc::new(UnusedAuth),
@@ -370,6 +379,7 @@ fn catalog() -> (CatalogSeat, String, String) {
         CatalogSeat {
             sealed: staged.seal(&prepared).unwrap(),
             pools: plan.pools().clone(),
+            plan: Arc::new(plan),
         },
         fast,
         slow,
@@ -378,7 +388,7 @@ fn catalog() -> (CatalogSeat, String, String) {
 
 #[tokio::test]
 async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() {
-    let (catalog, fast, slow) = catalog();
+    let (catalog, fast, slow) = catalog().await;
     let mut pool = SeatPool::of("mcp", &upstreams()).unwrap();
     extend_catalog("mcp", &mut pool, &catalog).unwrap();
     let fast_pool = &pool.pools[&fast];
@@ -449,7 +459,7 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
 
 #[tokio::test]
 async fn catalog_composition_keeps_model_definitions_out_of_channel_registrations() {
-    let (catalog, _, _) = catalog();
+    let (catalog, _, _) = catalog().await;
     let model_names: Vec<_> = catalog
         .sealed
         .members
