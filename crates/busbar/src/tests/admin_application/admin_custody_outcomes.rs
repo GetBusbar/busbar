@@ -1268,6 +1268,48 @@ async fn concurrent_cursor_advances_still_grant_exactly_one_claim() {
     println!("custody assertions completed");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_answer_persistence_keeps_the_acknowledged_intent() {
+    if isolated() {
+        return;
+    }
+    use tower::ServiceExt as _;
+    let (store, handle, _router, _book) = app().await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let handler_store = store.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/answer-persistence",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            let store = handler_store.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                store.refuse_replay.store(true, Ordering::SeqCst);
+                (StatusCode::OK, "effect committed")
+            }
+        }),
+    );
+    let router = busbar_core_admin::test_support::with_idempotency(effect, handle.load());
+    let request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/answer-persistence")
+            .header("idempotency-key", "answer-persistence")
+            .body(axum::body::Body::from("original"))
+            .unwrap()
+    };
+    assert_eq!(
+        router.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    store.refuse_replay.store(false, Ordering::SeqCst);
+    let retry = router.oneshot(request()).await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CONFLICT);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    println!("custody assertions completed");
+}
+
 fn identity_key(address: &Address) -> bool {
     address.namespace == *b"busbar.identity1" && address.key.first() == Some(&b'K')
 }
