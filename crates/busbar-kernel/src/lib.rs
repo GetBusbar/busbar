@@ -15,6 +15,10 @@
 // point each; see `boot.rs`.
 
 #![deny(unsafe_code)]
+// The serving App owns provider credential custody several layers deep (serve tables, seats, native
+// bindings, their credential cache, outbound answers). Proving a future over it Send/Sync walks that
+// whole finite chain, which exceeds the default depth of 128 (self_keys group provisioning).
+#![recursion_limit = "256"]
 
 extern crate self as busbar_kernel;
 
