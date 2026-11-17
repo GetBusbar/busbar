@@ -5,6 +5,59 @@ use super::*;
 use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
+#[test]
+fn verdict_cache_policy_uses_adopted_defaults_and_explicit_overrides() {
+    let defaults = parse_min3(&deploy("providers: {}\nmodels: {}\n")).unwrap();
+    assert_eq!(
+        defaults.verdict_cache,
+        crate::auth::verdicts::VerdictPolicy::DEFAULT
+    );
+    let configured = parse_min3(&deploy(
+        "providers: {}\nmodels: {}\nauth:\n  verdict_cache:\n    default_ttl_s: 17\n    max_ttl_s: 40\n    max_entries: 0\n    max_identity_bytes: 1024\n",
+    ))
+    .unwrap();
+    assert_eq!(configured.verdict_cache.default_ttl_s, 17);
+    assert_eq!(configured.verdict_cache.max_ttl_s, 40);
+    assert_eq!(configured.verdict_cache.max_entries, 0);
+    assert_eq!(configured.verdict_cache.max_identity_bytes, 1024);
+    let partial = parse_min3(&deploy(
+        "providers: {}\nmodels: {}\nauth: {verdict_cache: {max_entries: 13}}\n",
+    ))
+    .unwrap();
+    assert_eq!(partial.verdict_cache.max_entries, 13);
+    assert_eq!(partial.verdict_cache.default_ttl_s, 300);
+    assert_eq!(partial.verdict_cache.max_ttl_s, 3600);
+    assert_eq!(partial.verdict_cache.max_identity_bytes, 8192);
+}
+
+#[test]
+fn verdict_cache_policy_rejects_invalid_types_keys_and_ttl_range() {
+    for value in [
+        "null",
+        "[]",
+        "{max_entries: -1}",
+        "{max_entries: 1.5}",
+        "{max_entries: 4294967296}",
+        "{max_entries: null}",
+        "{unexpected: 1}",
+    ] {
+        let yaml = format!("providers: {{}}\nmodels: {{}}\nauth: {{verdict_cache: {value}}}\n");
+        assert!(
+            crate::config::deploy_from_yaml_str(&yaml, &crate::config::Grammar::empty()).is_err(),
+            "invalid cache policy must refuse: {value}"
+        );
+    }
+    for max in [0, 86_401] {
+        let yaml = format!(
+            "providers: {{}}\nmodels: {{}}\nauth: {{verdict_cache: {{max_ttl_s: {max}}}}}\n"
+        );
+        let errors = parse_min3(&deploy(&yaml)).err().expect("TTL range refused");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("auth.verdict_cache.max_ttl_s")));
+    }
+}
+
 fn transport(yaml: &str) -> Result<InsecureTransport, String> {
     let doc: InsecureTransportDoc =
         busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())?;
