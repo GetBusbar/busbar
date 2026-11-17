@@ -649,8 +649,15 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::DISTRUST_CHANGED,
         "a changed sighting refuses"
     );
+    // Test-Change (TST-3, r3 §4.2c): no key-only approve through the plugin interface; the
+    // re-approval names the current sighting it reviewed.
     assert_eq!(
         run(|later| r.s.trust_decide(&me, ticket, tool, None, true, later)).value,
+        svc::UNDECIDED_STALE,
+        "an approve without a reviewed digest is refused"
+    );
+    assert_eq!(
+        run(|later| r.s.trust_decide(&me, ticket, tool, Some("d2"), true, later)).value,
         svc::TRUST_DECIDED_SERVING,
         "re-approved at its current sighting"
     );
