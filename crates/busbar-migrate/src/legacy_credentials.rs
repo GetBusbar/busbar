@@ -90,7 +90,7 @@ pub(crate) fn bind_jwt_bearer(
         }
         let Some(Value::Map(entry)) = root
             .get_key_mut("providers")
-            .and_then(|p| p.get_key_mut(name.as_str()))
+            .and_then(|p| p.get_mut(name.as_str()))
         else {
             continue;
         };
