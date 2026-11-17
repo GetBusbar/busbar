@@ -124,6 +124,10 @@ async fn native_input_eof_keeps_reset_bound_to_the_original_physical_owner() {
         .is_none());
     let ready = ingress.accept(Inbound::End(1), None).unwrap().unwrap();
     let binding = ready.request.binding().clone();
+    assert!(binding.owns_stream(&ready.owner));
+    let (mut other, other_source) = ingress_fixture().await;
+    let other_ready = other.accept(public_head(&other_source, 1, true), None).unwrap().unwrap();
+    assert!(!binding.owns_stream(&other_ready.owner), "equal stream numbers are not physical identity");
     assert!(binding.check_live().is_ok());
     assert!(Arc::ptr_eq(&ingress.slots[0].owner, &ready.owner));
     let execution = ready.request.complete_public().unwrap();
