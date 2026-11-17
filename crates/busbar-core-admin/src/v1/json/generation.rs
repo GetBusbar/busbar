@@ -334,14 +334,17 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
 /// Preserve a transaction-frozen tag. Legacy handlers still receive the existing live-generation
 /// stamp; a producer needing snapshot-bound readback must attach ConfigResponseEtag under its lock.
 fn restamp(response: &mut Response, handle: &Arc<AppHandle>) {
-    if let Some(frozen) = response.extensions().get::<ConfigResponseEtag>() {
-        let value = frozen.value.clone();
-        response.headers_mut().insert(header::ETAG, value);
-        return;
-    }
-    if let Ok(value) = HeaderValue::from_str(&config_etag(&handle.load())) {
-        response.headers_mut().insert(header::ETAG, value);
-    }
+    let frozen = response
+        .extensions()
+        .get::<ConfigResponseEtag>()
+        .cloned()
+        .unwrap_or_else(|| ConfigResponseEtag::capture(&handle.load()));
+    response
+        .headers_mut()
+        .insert(header::ETAG, frozen.value.clone());
+    // Even a legacy live stamp must keep the same generation if collecting its response body
+    // yields to a later publication before the idempotency answer is encoded.
+    response.extensions_mut().insert(frozen);
 }
 
 pub(crate) fn valid_idempotency_key(key: &str) -> bool {
