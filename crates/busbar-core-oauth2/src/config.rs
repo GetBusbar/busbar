@@ -258,13 +258,11 @@ pub struct AsIdentity {
     pub authorize_path: String,
     pub token_path: String,
     pub device_authorization_path: String,
-    pub verification_path: String,
     pub revocation_path: String,
     /// The RFC 7591 registration endpoint's path. Always derived, never optional: registration is
     /// one of the three always-on ways a client obtains a `client_id` on this plane.
     pub register_path: String,
     pub jwks_path: String,
-    pub consent_path: String,
     /// The RFC 9126 pushed authorization request endpoint's path. Always DERIVED, like every path
     /// above; mounted and advertised only under the FAPI 2.0 posture ([`AsIdentity::fapi2`]).
     pub par_path: String,
@@ -289,6 +287,15 @@ pub struct AsIdentity {
 }
 
 const AS_WELL_KNOWN: &str = "/.well-known/oauth-authorization-server";
+
+/// The RFC 8628 device verification page, on the ADMIN listener (#140). FIXED rather than derived
+/// from the issuer: the admin router is built once at boot, and a path a reload could move would
+/// strand it. Published as `verification_uri` under the admin origin.
+pub const OPERATOR_DEVICE_PATH: &str = "/oauth/device";
+
+/// The consent page, on the ADMIN listener (#140). Fixed for the reason
+/// [`OPERATOR_DEVICE_PATH`] is.
+pub const OPERATOR_CONSENT_PATH: &str = "/oauth/consent";
 
 const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -355,11 +362,9 @@ impl AsIdentity {
             authorize_path: under("authorize"),
             token_path: under("token"),
             device_authorization_path: under("device_authorization"),
-            verification_path: under("device"),
             revocation_path: under("revoke"),
             register_path: under("register"),
             jwks_path: under("jwks"),
-            consent_path: under("consent"),
             par_path: under("par"),
             fapi2: cfg.fapi2,
             clients: cfg.clients.clone(),
@@ -387,23 +392,14 @@ impl AsIdentity {
     pub fn device_authorization_path(&self) -> &str {
         &self.device_authorization_path
     }
-    pub fn verification_path(&self) -> &str {
-        &self.verification_path
-    }
     pub fn revocation_path(&self) -> &str {
         &self.revocation_path
-    }
-    pub fn verification_url(&self) -> String {
-        format!("{}{}", self.origin(), self.verification_path)
     }
     pub fn register_path(&self) -> &str {
         &self.register_path
     }
     pub fn jwks_path(&self) -> &str {
         &self.jwks_path
-    }
-    pub fn consent_path(&self) -> &str {
-        &self.consent_path
     }
     pub fn par_path(&self) -> &str {
         &self.par_path
@@ -417,9 +413,6 @@ impl AsIdentity {
         self.fapi2
     }
 
-    pub fn consent_url(&self) -> String {
-        format!("{}{}", self.origin(), self.consent_path)
-    }
     pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
@@ -583,11 +576,9 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
         authorize_path: _,
         token_path: _,
         device_authorization_path: _,
-        verification_path: _,
         revocation_path: _,
         register_path: _,
         jwks_path: _,
-        consent_path: _,
         par_path: _,
 
         fapi2: _,

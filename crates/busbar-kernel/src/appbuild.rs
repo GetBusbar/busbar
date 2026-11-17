@@ -1869,6 +1869,14 @@ async fn build_app_native(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    // #359 SEC-L1: a root listener served in the clear under its acceptance is bannered and audited
+    // (before `cfg.models` moves out below).
+    crate::config::listener_acceptance::announce(&cfg);
+    let plaintext_listeners: Vec<&'static str> = crate::config::listener_acceptance::accepted(&cfg)
+        .into_iter()
+        .map(|(listener, _)| listener.setting)
+        .collect();
+
     let llm_configured = !cfg.providers.is_empty() || !cfg.models.is_empty();
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2359,6 +2367,7 @@ async fn build_app_native(
                     protected_resources,
                     prior.and_then(state::App::oauth_as_any).cloned(),
                     store,
+                    checked.admin_origin.clone(),
                 )
                 .await?,
             )
@@ -2581,6 +2590,7 @@ async fn build_app_native(
     app.configured_view = Some(configured_view);
     app.operator_file_defs = operator_file_defs;
     app.grammar = grammar;
+    app.plaintext_listeners = plaintext_listeners;
     if let Some(preparation) = preparation {
         preparation.finish(&mut app).await?;
     }

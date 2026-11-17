@@ -143,7 +143,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
             let created = json::parse_value(
                 &client
                     .post(format!("http://{addr}/api/v1/admin/keys"))
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .json(&json::json!({"name": "rotate-target"}))
                     .send()
                     .await
@@ -191,7 +191,7 @@ async fn create_and_rotate_operation_namespaces_survive_cache_loss() {
                         .header("idempotency-key", rotate_header)
                 };
                 let response = request
-                    .header("x-admin-token", "admintok")
+                    .header("authorization", "Bearer admintok")
                     .send()
                     .await
                     .unwrap();

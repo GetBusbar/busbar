@@ -101,3 +101,11 @@ pub fn with_idempotency(
 pub fn openapi_doc() -> serde_json::Value {
     crate::v1::json::openapi_doc()
 }
+
+/// Hold the shared plugin scan gate (DES-359 r3 L9 tests): while the guard lives, every catalog
+/// read, schema read, install and remove waits on it within its bound.
+pub async fn hold_scan_gate() -> tokio::sync::MutexGuard<'static, ()> {
+    crate::v1::service::scan_gate("test.hold")
+        .await
+        .expect("the scan gate is free when a test takes it")
+}
