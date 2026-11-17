@@ -239,14 +239,20 @@ fn test_extract_admin_header_token_empty_filtered() {
     let present = req_with(X_ADMIN_TOKEN, "admintok");
     assert_eq!(
         carried_credential(&carriers, present.headers()),
-        Some("admintok".to_string()),
-        "a non-empty x-admin-token must be carried verbatim"
+        None,
+        "x-admin-token is no operator carrier (Bearer only, ADMIN-API-1.6-ONE-MODEL §8.1): even a \
+         non-empty value is not carried"
     );
 
     let absent = Request::builder()
         .uri("/api/v1/admin/keys")
         .body(Body::empty())
         .expect("test request must build");
+    assert_eq!(
+        carriers,
+        [HeaderName::from_static("authorization")],
+        "the operator credential's one carrier is the Bearer"
+    );
     assert_eq!(carried_credential(&carriers, absent.headers()), None);
 }
 

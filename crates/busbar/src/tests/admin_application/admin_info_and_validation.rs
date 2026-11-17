@@ -312,6 +312,7 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
         members,
         [
             "config_generation",
+            "crypto",
             "deployment_id",
             "incarnation",
             "node_id",
@@ -381,6 +382,139 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
     assert!(
         started >= 1_600_000_000_000 && started <= seen,
         "lease times are epoch milliseconds, start before last seen: {own:?}"
+    );
+
+    handle.abort();
+    println!("{WITNESS}");
+}
+
+/// ADMIN-API-1.6-ONE-MODEL r3.3 §10.1 (E-17, CA-16, CA-17): the `core/process` instance states the
+/// linked crypto backend as `state.crypto`, exactly `{backend, module, api, validated_mode,
+/// validation}`: `backend` is the backend's `NAME`, `module` its `module_version()`, `api` its
+/// contract `API` (3 in 1.6.0), and `validated_mode`/`validation` the values `/info.crypto` serves,
+/// from the one computation (`validated_mode` only from `VALIDATION.is_some()`). The Console's FIPS
+/// CI reads `state.crypto.backend` here with its read-only key.
+#[tokio::test]
+async fn process_state_crypto_members() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_7C3E19A04B6D";
+    const WITNESS: &str = "actual root case process_state_crypto_members completed";
+    isolated!(CHILD, WITNESS);
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let (module, directory, settings) =
+        crate::distribution::rig::actual_store("process_state_crypto_members-actual-store");
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let signing_key = directory.join("signing-key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
+    std::fs::write(&operator_token, "admintok").expect("write the test operator input");
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
+        "store": { "module": module, "settings": settings },
+        "advanced": {  },
+        "identity-providers": {},
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "token": { "file": operator_token },
+    });
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
+    let client = reqwest::Client::new();
+
+    let (status, process) = admin_read(&client, addr, "/kinds/core/instances/process").await;
+    assert_eq!(status, 200, "{process:?}");
+    let crypto = &process["state"]["crypto"];
+    let mut members: Vec<String> = crypto
+        .as_object()
+        .unwrap_or_else(|| panic!("core/process states state.crypto as an object: {process:?}"))
+        .iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    members.sort();
+    assert_eq!(
+        members,
+        ["api", "backend", "module", "validated_mode", "validation"],
+        "state.crypto is exactly the five members: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["backend"].as_str(),
+        Some(busbar_contract::crypto::BACKEND),
+        "backend is the linked backend's NAME: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["module"].as_str(),
+        Some(busbar_contract::crypto::module_version()),
+        "module is the linked backend's module_version(): {crypto:?}"
+    );
+    assert_eq!(
+        crypto["api"].as_u64(),
+        Some(3),
+        "api is the backend contract's API, 3 in 1.6.0: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["api"].as_u64(),
+        Some(u64::from(busbar_contract::crypto::API)),
+        "api is the linked backend's API: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["validation"].as_str(),
+        busbar_contract::crypto::VALIDATION,
+        "validation is the linked backend's VALIDATION: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["validated_mode"].as_bool(),
+        Some(busbar_contract::crypto::VALIDATED_MODE),
+        "validated_mode is the facade's one computation: {crypto:?}"
+    );
+    let validation = &crypto["validation"];
+    assert!(
+        validation.is_null() || validation.as_str().is_some_and(|v| !v.is_empty()),
+        "validation is the backend's statement or null: {crypto:?}"
+    );
+    assert_eq!(
+        crypto["validated_mode"].as_bool(),
+        Some(!validation.is_null()),
+        "validated_mode is derived only from the backend's VALIDATION: {crypto:?}"
+    );
+    let schema = &process["state_schema"];
+    let mut stated: Vec<String> = schema["properties"]["crypto"]["required"]
+        .as_array()
+        .unwrap_or_else(|| panic!("core/process states its own state schema: {schema:?}"))
+        .iter()
+        .map(|m| m.as_str().unwrap_or_default().to_owned())
+        .collect();
+    stated.sort();
+    assert_eq!(
+        stated, members,
+        "the state schema names the same five: {schema:?}"
+    );
+
+    let (status, info) = admin_read(&client, addr, "/info").await;
+    assert_eq!(status, 200, "{info:?}");
+    let mut info_members: Vec<String> = info["crypto"]
+        .as_object()
+        .unwrap_or_else(|| panic!("/info states crypto as an object: {info:?}"))
+        .iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    info_members.sort();
+    assert_eq!(
+        info_members,
+        ["validated_mode", "validation"],
+        "/info.crypto is exactly {{validated_mode, validation}}: {info:?}"
+    );
+    assert_eq!(
+        info["crypto"]["validated_mode"], crypto["validated_mode"],
+        "/info.crypto.validated_mode is the same one computation as state.crypto: {info:?}"
+    );
+    assert_eq!(
+        info["crypto"]["validation"], *validation,
+        "/info.crypto.validation is the same one computation as state.crypto: {info:?}"
     );
 
     handle.abort();

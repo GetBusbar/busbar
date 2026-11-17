@@ -380,13 +380,13 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "bb1e6886edb77c561377744a852958ee209a570d",
+      "commit": "db77fbf59a7f1a59ea8b4b9e176ef271c0a91612",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
       "image": "libbusbar_store_valkey_plugin.so",
       "declares": "store-valkey/declares.json",
-      "lock_sha256": "cb93449c587e7650a80de7e33344a46c0eb15eb7a93e441a525f4e4c930a13df",
+      "lock_sha256": "803a35a3cbe669eae99298211f7fb9976fb9185be70540a8c9a29f796956b3f7",
       "former_names": [
         "busbar-store-valkey-plugin"
       ]

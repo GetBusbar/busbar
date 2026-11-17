@@ -61,8 +61,9 @@ async fn test_admin_blank_header_token_rejected() {
         .unwrap();
     assert_eq!(
         r_ok.status().as_u16(),
-        200,
-        "a correct x-admin-token must authorize, got {}",
+        401,
+        "x-admin-token is not an admin carrier in 1.6 (Bearer only, ADMIN-API-1.6-ONE-MODEL \
+         §8.1): even the correct token there is refused, got {}",
         r_ok.status()
     );
 
@@ -70,17 +71,14 @@ async fn test_admin_blank_header_token_rejected() {
     println!("{WITNESS}");
 }
 
-/// Regression for the admin-token carrier-level timing oracle: the two admin
-/// carriers (Authorization: Bearer and x-admin-token) are combined with a bitwise-OR fold, NOT a
-/// short-circuiting `||`. Behaviorally this means EITHER carrier alone authorizes, AND a request
-/// presenting BOTH carriers is authorized whenever EITHER matches — regardless of which one. We
-/// drive it through the real router so the inline fold in `auth_middleware` is exercised:
-///   - correct Bearer + wrong x-admin-token  → authorized (header compare ran, didn't veto)
-///   - wrong Bearer  + correct x-admin-token  → authorized (Bearer miss didn't short-circuit away
-///                                               the header compare)
+/// Bearer is the only admin carrier (ADMIN-API-1.6-ONE-MODEL §8.1, busbar#314): an x-admin-token
+/// line beside the Bearer is no credential, so it neither vetoes a correct Bearer nor rescues a
+/// wrong one. Driven through the real router:
+///   - correct Bearer + wrong x-admin-token  → authorized (the header is ignored)
+///   - wrong Bearer  + correct x-admin-token  → 401 (the header never authorizes)
 ///   - wrong + wrong                          → 401
 #[tokio::test]
-async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
+async fn test_admin_x_admin_token_beside_a_bearer_is_ignored() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_C0414CC4DE55";
     const WITNESS: &str =
         "actual root case test_admin_token_both_carriers_or_fold_no_short_circuit completed";
@@ -125,7 +123,7 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     assert_eq!(
         r.status().as_u16(),
         200,
-        "correct Authorization header + wrong x-admin-token must authorize (OR fold), got {}",
+        "correct Authorization header + wrong x-admin-token must authorize (the header is ignored), got {}",
         r.status()
     );
 
@@ -138,8 +136,8 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
         .unwrap();
     assert_eq!(
         r.status().as_u16(),
-        200,
-        "wrong Authorization header + correct x-admin-token must authorize (header compare must run), got {}",
+        401,
+        "wrong Authorization header + correct x-admin-token is refused: x-admin-token is no carrier, got {}",
         r.status()
     );
 
@@ -245,8 +243,8 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         .unwrap();
     assert_eq!(
         r_hdr.status().as_u16(),
-        200,
-        "x-admin-token: admintok must authorize the admin surface, got {}",
+        401,
+        "x-admin-token: admintok must NOT reach the admin surface (Bearer only), got {}",
         r_hdr.status()
     );
 

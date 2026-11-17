@@ -9,7 +9,7 @@
 //! cut of each (plugin, field) pair logs BUSBAR-6013 once for the life of the process.
 
 use busbar_contract::hook_wire::reply::{
-    TextCuts, TextField, MAX_METRIC_HELP_CHARS, MAX_METRIC_LABEL_CHARS, MAX_METRIC_UNIT_CHARS,
+    TextField, MAX_METRIC_HELP_CHARS, MAX_METRIC_LABEL_CHARS, MAX_METRIC_UNIT_CHARS,
     REJECT_MESSAGE_MAX_CHARS,
 };
 use foldhash::HashMap;
@@ -90,13 +90,6 @@ pub fn report(
          further cuts of this field from this plugin are counted on busbar_plugin_text_cut_total"
     );
     Reported::Warned
-}
-
-/// [`report`] once for each field `cuts` holds, at the cap `caps` names for it.
-pub(crate) fn report_cuts(plugin: &str, cuts: &TextCuts, caps: impl Fn(TextField) -> usize) {
-    for (field, count, max_sanitised) in cuts.iter() {
-        report(plugin, field, caps(field), count, max_sanitised);
-    }
 }
 
 /// The cap each field is cut at.
