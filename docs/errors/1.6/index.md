@@ -115,7 +115,7 @@ The thousands digit is the area.
 | [BUSBAR-3132](/docs/1.6/errors/BUSBAR-3132/) | An outbound destination is refused by the egress policy | 1.6.0 |
 | [BUSBAR-3133](/docs/1.6/errors/BUSBAR-3133/) | A login attempt limit setting is invalid | 1.6.0 |
 | [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
-| [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch | 1.6.0 |
+| [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch *(retired)* | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
 | [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
 | [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An advanced.tls trust anchor was accepted | 1.6.0 |
@@ -136,7 +136,7 @@ The thousands digit is the area.
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |
 | [BUSBAR-3408](/docs/1.6/errors/BUSBAR-3408/) | Migration added a binding that keeps 1.5.5's ungoverned access | 1.6.0 |
 | [BUSBAR-3409](/docs/1.6/errors/BUSBAR-3409/) | BUSBAR_WORKER_THREADS was not a positive integer and was not captured | 1.6.0 |
-| [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries | 1.6.0 |
+| [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries *(retired)* | 1.6.0 |
 | [BUSBAR-3411](/docs/1.6/errors/BUSBAR-3411/) | A retired cloud-metadata carve-out key was removed | 1.6.0 |
 
 ## 4xxx: Auth & identity

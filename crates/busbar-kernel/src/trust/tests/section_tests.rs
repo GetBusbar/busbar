@@ -228,69 +228,6 @@ fn the_pre_parse_judgement_leaves_a_malformed_shape_to_the_plane() {
     );
 }
 
-#[test]
-fn a_registration_writing_the_retired_private_reach_is_refused_whatever_its_value() {
-    use super::private_reach;
-    const REACHING: &[TrustKeyDecl] = &[TrustKeyDecl {
-        key: "inside",
-        role: TrustRole::PrivateReach,
-        fingerprint: false,
-        default: None,
-        mechanisms: &[],
-    }];
-    for written in [
-        "inside: true",
-        "inside: false",
-        "inside: yes please",
-        "inside: 3",
-    ] {
-        for refusal in [
-            parse_entry("`bays.dock`", &entry(written), REACHING).unwrap_err(),
-            judge_entry("`bays.dock`", &entry(written), REACHING).unwrap_err(),
-        ] {
-            assert!(
-                refusal.starts_with("`bays.dock`: `inside:` is retired (BUSBAR-3135)"),
-                "{written}: {refusal}"
-            );
-            assert!(refusal.contains("advanced.allow_destinations"), "{refusal}");
-            assert!(refusal.contains("remove `inside:`"), "{refusal}");
-            assert!(!refusal.contains("--migrate-config"), "{refusal}");
-        }
-        assert!(!private_reach(&entry(written), REACHING), "{written}");
-    }
-    assert!(parse_entry("`bays.dock`", &entry("url: x"), REACHING).is_ok());
-    assert!(parse_entry("`bays.dock`", &entry("inside: null"), REACHING).is_ok());
-    assert!(
-        parse_entry("`bays.dock`", &entry("inside: true"), KEYS).is_ok(),
-        "a plane declaring no reach key leaves the field to its own grammar"
-    );
-}
-
-/// BUSBAR-3135 by NAME: `allow_private`, the key 1.5.5 and the 1.6 betas wrote on an MCP server or
-/// an A2A agent, is refused in every registration whatever its plane declares, so the coded
-/// refusal survives the planes dropping the retired trust role.
-#[test]
-fn allow_private_is_refused_by_name_where_no_plane_declares_it() {
-    for written in [
-        "allow_private: true",
-        "allow_private: false",
-        "{ url: 'https://a.test', allow_private: true }",
-    ] {
-        for refusal in [
-            parse_entry("`tools.probe`", &entry(written), KEYS).unwrap_err(),
-            judge_entry("`tools.probe`", &entry(written), KEYS).unwrap_err(),
-            parse_entry("`agents.probe`", &entry(written), &[]).unwrap_err(),
-        ] {
-            assert!(
-                refusal.contains(": `allow_private:` is retired (BUSBAR-3135)"),
-                "{written}: {refusal}"
-            );
-            assert!(refusal.contains("advanced.allow_destinations"), "{refusal}");
-        }
-    }
-    assert!(parse_entry("`tools.probe`", &entry("allow_private: null"), KEYS).is_ok());
-}
-
 /// #302 (owner 2026-11-16T23:15Z, config KEEP list item 2; UPSTREAMS-DECLARED r3 §2.4): a
 /// registration's `allow_private` is core's own boolean at its declared registration, read and
 /// judged by the upstream split (`upstreams::entry`). The trust reader neither refuses it by name
