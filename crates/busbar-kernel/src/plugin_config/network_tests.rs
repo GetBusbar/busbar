@@ -1,5 +1,8 @@
-use super::tests::binder;
-use super::ConfigBinder;
+use super::{ConfigBinder, Binder};
+use std::sync::Arc;
+fn binder(_: &str) -> Binder {
+    Binder::new(Arc::new(busbar_contract::secret_ref::Sugars::default()), Vec::new())
+}
 use busbar_ports::binder::NetworkEndpoint;
 use busbar_plugin_abi::need::{egress, need_flag, op};
 
