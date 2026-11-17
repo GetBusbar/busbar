@@ -267,6 +267,17 @@ pub enum RelendCause {
     Refused,
     /// The new instance (a plugin with no `refresh`) did not open.
     ReopenFailed,
+    /// DES-454: two reads of an unleased source disagreed, or a binding outside the rotation no longer matches
+    /// what the instance committed.
+    Unstable,
+    /// DES-454: a rotation call held or waited for its permit past the poll deadline.
+    Deadline,
+    /// DES-454: the export successor differs in shape from the instance it would replace.
+    ShapeChanged,
+    /// DES-454 (PM D1): a non-export kind takes a rotated value only at the next reload or restart.
+    ReloadRequired,
+    /// DES-454: the process store takes a rotated value only at restart.
+    RestartRequired,
 }
 
 impl RelendCause {
@@ -277,6 +288,11 @@ impl RelendCause {
             Self::Unresolvable => "unresolvable",
             Self::Refused => "refused",
             Self::ReopenFailed => "reopen-failed",
+            Self::Unstable => "unstable",
+            Self::Deadline => "deadline",
+            Self::ShapeChanged => "shape-changed",
+            Self::ReloadRequired => "reload-required",
+            Self::RestartRequired => "restart-required",
         }
     }
 }

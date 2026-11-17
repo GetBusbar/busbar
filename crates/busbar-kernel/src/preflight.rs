@@ -877,14 +877,33 @@ impl RelendStreak {
         }
         self.reported = Some(now);
         let level = match refused.cause {
-            RelendCause::Unresolvable => tracing::Level::WARN,
-            RelendCause::Refused | RelendCause::ReopenFailed => tracing::Level::ERROR,
+            RelendCause::Unresolvable
+            | RelendCause::Unstable
+            | RelendCause::ReloadRequired
+            | RelendCause::RestartRequired => tracing::Level::WARN,
+            RelendCause::Refused
+            | RelendCause::ReopenFailed
+            | RelendCause::Deadline
+            | RelendCause::ShapeChanged => tracing::Level::ERROR,
+        };
+        let message = match refused.cause {
+            RelendCause::ReloadRequired => {
+                "a plugin instance's own credential changed: the running instance keeps the value it \
+                 holds, and the change takes effect at the next reload or restart"
+            }
+            RelendCause::RestartRequired => {
+                "a plugin instance's own credential changed: the running instance keeps the value it \
+                 holds, and the change takes effect at the next restart"
+            }
+            _ => {
+                "a plugin instance's own credential changed and could not be applied: the running \
+                 instance and what it holds are kept, and the change is retried on the next poll"
+            }
         };
         report.diag(
             &crate::diagnostics::PLUGIN_CREDENTIAL_ROTATION_FAILED,
             level,
-            "a plugin instance's own credential changed and could not be applied: the running \
-             instance and what it holds are kept, and the change is retried on the next poll",
+            message,
             &[
                 ("instance", label.to_string()),
                 ("cause", refused.cause.as_str().to_string()),
@@ -920,6 +939,29 @@ impl RelendStreak {
 
 /// The audit action a re-lend writes.
 pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
+
+/// DES-454 §6: core's text for a rotation cause, the 8028 `error` field. Never a value, a digest or plugin text.
+pub(crate) fn rotation_text(cause: busbar_contract::secret::RelendCause) -> &'static str {
+    use busbar_contract::secret::RelendCause;
+    match cause {
+        RelendCause::Unresolvable => {
+            "the rotated value is blank, too short to mask or not text where text is bound"
+        }
+        RelendCause::Refused => "the plugin refused the rotated value",
+        RelendCause::ReopenFailed => "the instance did not open with the rotated value",
+        RelendCause::Unstable => {
+            "the rotated value did not read the same twice, or another bound value changed with it"
+        }
+        RelendCause::Deadline => "a rotation call ran past its deadline",
+        RelendCause::ShapeChanged => {
+            "the instance opened with the rotated value declares other streams, scopes or limits"
+        }
+        RelendCause::ReloadRequired => {
+            "the rotated value takes effect at the next reload or restart"
+        }
+        RelendCause::RestartRequired => "the rotated value takes effect at the next restart",
+    }
+}
 
 #[cfg(test)]
 impl Source {
@@ -1137,3 +1179,7 @@ impl std::fmt::Debug for Fetched {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/rotation_degrade_tests.rs"]
+mod rotation_degrade_tests;
