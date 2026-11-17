@@ -689,3 +689,67 @@ fn native_physical_admin_carrier_clone_shares_one_pending_right() {
     drop(completing);
     assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
 }
+
+fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {
+    let credit = request.binding().request().try_reserve(0).unwrap();
+    request
+        .finish_input(SecureVec::new(), credit)
+        .unwrap()
+        .begin_completion()
+        .unwrap()
+}
+
+#[test]
+fn native_physical_public_completion_requires_exact_public_core_class() {
+    for auth in [RouteAuth::Key, RouteAuth::Admin] {
+        let f = fixture_for(AdmissionClass::Data, auth);
+        let conn = f.listener.connect(accepted());
+        let (request, _owner) = arrive(&f, &conn, 1);
+        assert!(matches!(
+            complete_input(request).complete_public(),
+            Err(ArrivalRefusal::Class)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn native_physical_public_completion_obeys_actual_publication_gate() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let pending = complete_input(request);
+    f.listener.handle.swap(Arc::new((*f.app).clone())).await;
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Binding(_))
+    ));
+}
+
+#[tokio::test]
+async fn native_physical_public_owner_retains_admitted_generation_and_cancels_on_drop() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let binding = request.binding().clone();
+    let execution = complete_input(request).complete_public().unwrap();
+    assert!(Arc::ptr_eq(execution.binding(), &binding));
+    assert!(Arc::ptr_eq(execution.lease().generation(), &f.app));
+    assert_eq!(execution.lease().invocation(), binding.invocation());
+    f.listener.handle.swap(Arc::new((*f.app).clone())).await;
+    assert!(binding.check_executing().is_ok());
+    drop(execution);
+    assert_eq!(binding.check_executing(), Err(ArrivalRefusal::Cancelled));
+}
+
+#[test]
+fn native_physical_public_completion_cannot_follow_reset() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, owner) = arrive(&f, &conn, 1);
+    let pending = complete_input(request);
+    conn.cancel(&owner);
+    assert!(matches!(
+        pending.complete_public(),
+        Err(ArrivalRefusal::Cancelled)
+    ));
+}
