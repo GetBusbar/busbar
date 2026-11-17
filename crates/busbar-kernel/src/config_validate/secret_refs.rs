@@ -428,6 +428,23 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "BootstrapSteps",
+        SecretBearing::NotInResolvedConfig(
+            "the bootstrap (S5/S6) step owner in busbar::root::min3_boot: `at_rest` is a clone of \
+             `auth.signing_key`, copied from `AuthCfg`, which IS walked, so the reference is already \
+             enumerated and validated; `BootstrapSteps` is built from a loaded `RootCfg` and is \
+             never part of it.",
+        ),
+    ),
+    (
+        "DeclaredAuth",
+        SecretBearing::NotInResolvedConfig(
+            "a runtime CARRIER (upstreams::declared): `Declared::resolve_bindings` builds it at \
+             bind time from an `upstreams.<name>.auth` form already parsed into `UpstreamCfg`, \
+             copying that form's reference; it is never part of `RootCfg`.",
+        ),
+    ),
+    (
         "StdioCommand",
         SecretBearing::NotInResolvedConfig(
             "MIN-3 (IF §12.1, W0-ABI stub): an `upstreams.<name>` stdio command. It is not part of \
