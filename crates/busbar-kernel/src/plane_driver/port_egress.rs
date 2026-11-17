@@ -169,6 +169,13 @@ fn fault_of(failure: &Failure) -> u8 {
 }
 
 impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
+    fn hook_remaining(&self) -> Option<usize> {
+        self.0.far.get()?.remaining(self.0.token)
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        self.0.far.get()?.failure(self.0.token)
+    }
+
     fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
         let far = self.0.far.get_or_init(|| (self.0.make)(wants));
         far.candidates(self.0.token)

@@ -130,6 +130,13 @@ pub struct Failure {
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
 pub trait Members {
+    fn hook_remaining(&self) -> Option<usize> {
+        None
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        None
+    }
+
     /// Inspect the same configured walk that will choose the first member.
     fn hook_candidates(&mut self, _wants: &Wants) -> Option<super::hooks::Candidates> {
         None
@@ -386,7 +393,12 @@ pub fn run_attempts<K: Calls + ?Sized>(
             return Ok(Attempted::Exhausted { attempts });
         };
         attempts += 1;
-        effects.routing(attempts, &member.upstream);
+        effects.routing(
+            attempts,
+            &member.upstream,
+            members.hook_remaining(),
+            members.hook_failure(),
+        );
         let answer = member.with_target(attempts, dialect, model, |t| task.upstream(t, effects))?;
         if answer
             .attempt

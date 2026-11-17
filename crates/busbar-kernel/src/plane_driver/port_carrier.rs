@@ -126,6 +126,13 @@ impl<'a> Mapped<'a> {
 }
 
 impl Members for Mapped<'_> {
+    fn hook_remaining(&self) -> Option<usize> {
+        self.inner.hook_remaining()
+    }
+    fn hook_failure(&self) -> Option<&str> {
+        self.inner.hook_failure()
+    }
+
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let picked = self.inner.next(wants)?;
         self.map.point(&picked.upstream);

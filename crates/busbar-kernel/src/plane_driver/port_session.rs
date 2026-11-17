@@ -339,7 +339,14 @@ pub trait Effects {
     fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
         None
     }
-    fn routing(&self, _attempt: u32, _model: &str) {}
+    fn routing(
+        &self,
+        _attempt: u32,
+        _model: &str,
+        _remaining: Option<usize>,
+        _failed: Option<&str>,
+    ) {
+    }
     fn response(&self, _status: u16) {}
 
     /// Execution context supplied by the root's admitted dispatch. Open/check and
