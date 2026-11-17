@@ -5,6 +5,30 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
+fn named_secret_readback_uses_selected_module_even_when_name_collides() {
+    let deploy = crate::config::deploy_from_deserializer(
+        json!({
+            "providers":{}, "models":{}, "auth":{"chain":[],"admin_auth":[]},
+            "store":{"module":"fixture-store"},
+            "secrets":{
+                "friendly-name":{"module":"selected-source","settings":{"opaque":"PRIVATE_SENTINEL"}},
+                "other-source":{"module":"selected-source","settings":{}}
+            }
+        }),
+        &crate::config::Grammar::empty(),
+    )
+    .unwrap();
+    let config = crate::config::resolve(&deploy, &Default::default()).unwrap();
+    let view = ConfiguredView::from_root(&config, &deploy.plugins);
+    for name in ["friendly-name", "other-source"] {
+        assert_eq!(view.sections["secrets"][name]["module"], "selected-source");
+    }
+    assert!(!serde_json::to_string(&view)
+        .unwrap()
+        .contains("PRIVATE_SENTINEL"));
+}
+
+#[test]
 fn opaque_settings_are_never_copied_and_public_references_stay_hidden() {
     let settings = json!({
         "timeout": 42,
