@@ -452,3 +452,19 @@ fn native_physical_incomplete_body_cannot_enter_completion() {
         Err(ArrivalRefusal::BodyIncomplete)
     ));
 }
+
+#[test]
+fn native_physical_response_owner_retains_request_count_after_input_drop() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let (request, response_owner) = arrive(&f, &conn, 1);
+    drop(request);
+    let second = f.budget.try_enter(AdmissionClass::Data).unwrap();
+    assert!(
+        f.budget.try_enter(AdmissionClass::Data).is_err(),
+        "the response still owns the first request count"
+    );
+    drop(response_owner);
+    let third = f.budget.try_enter(AdmissionClass::Data).unwrap();
+    drop((second, third));
+}
