@@ -345,6 +345,25 @@ fn print_metadata_blocklist_prints_builtin_plus_blocked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// WP3 hook step: a pool's ranking strategy is a declared word (D_WORD) of an admitted native hook image; config
+/// validation reads it from the native images, never from a hook door.
+#[cfg(linked_section_pools)]
+#[test]
+fn validate_accepts_a_pool_ranked_by_a_native_hook_images_declared_word() {
+    let dir = fixture_dir("pools-native-ranking");
+    write_configs(
+        &dir,
+        "pools:\n  ranked:\n    policy: cheapest\n    members: [{model: test-model}]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_accepts_root_pools_named_after_a_reserved_sub_key_as_1_5_5_did() {
