@@ -1165,13 +1165,15 @@ fn drive_blocking(
     }
     .with_route(route);
     let session = carrier.map(|carrier| {
-        carrier.session_with_budget(
-            effects
-                .admission
-                .as_ref()
-                .and_then(|pending| pending.channel_budget())
-                .cloned(),
-        )
+        carrier
+            .session_with_budget(
+                effects
+                    .admission
+                    .as_ref()
+                    .and_then(|pending| pending.channel_budget())
+                    .cloned(),
+            )
+            .with_admission(effects.admission.clone())
     });
     let resolver = match &session {
         Some(session) => resolver.with_channels(&session.host),
