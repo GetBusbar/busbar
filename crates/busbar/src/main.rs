@@ -373,13 +373,14 @@ fn main() {
     // wait line, a takeover, an exit-time hand-over) reach stderr (FIRST-START-TAKEOVER §2.8).
     // A RUST_LOG the console filter cannot read stops boot here: it is never silently replaced
     // by the default level.
-    match busbar_kernel::observability::init_logging() {
-        Ok(()) => {}
+    let trace_publisher = match busbar_kernel::observability::init_logging() {
+        Ok(publisher) => Some(publisher),
         Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
             eprintln!("busbar: {e}");
+            None
         }
-    }
+    };
 
     let (_, warnings) = &*WORKERS;
     for w in warnings {
@@ -410,7 +411,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work));
+            .block_on(run(catalogue, control_work, trace_publisher));
     }
     #[cfg(not(unix))]
     {
@@ -421,7 +422,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work));
+            .block_on(run(catalogue, control_work, trace_publisher));
     }
     // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
     // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
@@ -572,7 +573,11 @@ mod bootstrap_destination_tests {
     }
 }
 
-async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: ControlWork) {
+async fn run(
+    catalogue: busbar_kernel::diagnostics::Catalogue,
+    control_work: ControlWork,
+    trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
+) {
     let process_io = root::boot::process::ProcessIo::new().unwrap_or_else(|error| die(error));
     let plugin_process = std::sync::Arc::new(
         busbar_plugin_loader::process::ProcessResources::new().unwrap_or_else(|error| die(error)),
@@ -1503,6 +1508,11 @@ async fn run(catalogue: busbar_kernel::diagnostics::Catalogue, control_work: Con
     }
     let _ = root::inbound::publish(&app_handle.load());
     export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
+    if let Some(publisher) = trace_publisher {
+        publisher
+            .publish(Arc::clone(&app_handle.load().exports))
+            .unwrap_or_else(|e| die(e));
+    }
     // Start serving maintenance only after the physical routes and application owner exist.
     recovery_served.spawn_ticks();
     export::plugin::start(&app_handle.load().exports)

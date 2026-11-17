@@ -64,7 +64,7 @@ pub struct Exports {
     pub(crate) status_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
-// The early process tracing subscriber and durable audit drain still use this observer.
+// The durable audit drain still uses this observer.
 // It receives only the complete application's registry, after AppHandle construction.
 pub(crate) static SINKS: OnceLock<Arc<Exports>> = OnceLock::new();
 
@@ -72,13 +72,7 @@ pub fn publish_observers(app: &crate::state::App) -> Result<(), String> {
     SINKS
         .set(Arc::clone(&app.exports))
         .map_err(|_| "export observers already belong to a serving generation".to_string())?;
-    crate::export::traces::sinks_fixed();
-    tracing::callsite::rebuild_interest_cache();
     Ok(())
-}
-
-pub(crate) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
-    SINKS.get().into_iter().flat_map(|exports| &exports.sinks)
 }
 
 /// Once OPEN completes, reloads cannot resize the live recorder's projection budget.
@@ -96,16 +90,23 @@ pub(crate) fn boot_recorder_requirements(
 
 /// Hand each sink subscribed to `stream` its own record, rendered to its projection by `f`.
 pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Rendered) {
-    deliver_to(stream, op, |projection, _| f(projection));
+    if let Some(exports) = SINKS.get() {
+        deliver_to(exports, stream, op, |projection, _| f(projection));
+    }
 }
 
 pub(super) fn deliver_to(
+    exports: &Exports,
     stream: ExportStream,
     op: &str,
     mut f: impl FnMut(Projection, bool) -> Rendered,
 ) {
     let mut handed = Handed::default();
-    for s in sinks().filter(|s| s.projection.wants_stream(stream)) {
+    for s in exports
+        .sinks
+        .iter()
+        .filter(|s| s.projection.wants_stream(stream))
+    {
         deliver_one(s, stream, &mut f, &mut handed);
     }
     handed.record(op);
