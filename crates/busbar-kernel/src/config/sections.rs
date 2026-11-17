@@ -255,8 +255,7 @@ pub struct AdvancedCfg {
     /// per-header. See `docs/observability.md#response-headers` for the full catalogue. BOOT-TIME
     /// (restart-to-apply), same freezing mechanism as the rest of this struct's non-`Patch`able
     /// fields: `server_timing` is baked into router middleware state at process start
-    /// (`main.rs::apply_common_layers`) and `route_policy` seeds a process-wide `OnceLock` read by
-    /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
+    /// (`main.rs::apply_common_layers`) and is not rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
     /// The destination guard refuses ordinary private-address dials by default. A core-selected
@@ -350,8 +349,7 @@ pub fn default_usage_flush_interval_ms() -> u64 {
 }
 
 /// The `advanced.response_headers:` block: opt-in toggles for every busbar-INJECTED
-/// response header, unified in ONE place instead of each header having its own bespoke gate (or, as
-/// `x-busbar-route-policy`/`-target` had before this, NO gate at all). Every field defaults `false`
+/// response header, unified in ONE place instead of each header having its own bespoke gate. Every field defaults `false`
 /// (invisible out of the box) — see each field's doc comment for the header it controls and why it
 /// defaults off.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -367,20 +365,12 @@ pub struct ResponseHeadersCfg {
     /// the product tell) opt IN by setting `true`.
     #[serde(default = "default_response_headers_server_timing")]
     pub server_timing: bool,
-    /// Emit the `x-busbar-route-policy` / `x-busbar-route-target` TRANSPARENCY headers on a response
-    /// whose lane was chosen by a non-default routing policy (default `false`). Previously emitted
-    /// UNCONDITIONALLY whenever a non-default policy fired (no config gate at all) — the same
-    /// fingerprinting concern as `server_timing` above: the header names apply, so it defaults OFF and
-    /// an operator opts IN by setting `true`.
-    #[serde(default = "default_response_headers_route_policy")]
-    pub route_policy: bool,
 }
 
 impl Default for ResponseHeadersCfg {
     fn default() -> Self {
         Self {
             server_timing: default_response_headers_server_timing(),
-            route_policy: default_response_headers_route_policy(),
         }
     }
 }
@@ -388,11 +378,6 @@ impl Default for ResponseHeadersCfg {
 pub const DEFAULT_RESPONSE_HEADERS_SERVER_TIMING: bool = false;
 pub fn default_response_headers_server_timing() -> bool {
     DEFAULT_RESPONSE_HEADERS_SERVER_TIMING
-}
-
-pub const DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY: bool = false;
-pub fn default_response_headers_route_policy() -> bool {
-    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY
 }
 
 /// Runtime config-management policy. Mutations persist exclusively through the base-config

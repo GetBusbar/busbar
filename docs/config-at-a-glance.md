@@ -225,7 +225,7 @@ advanced:                       # internal tuning (normally omitted)  → #advan
   { rate_sweep_interval: 256, usage_flush_interval_ms: 100,
     worker_threads: 4,          # data-plane worker count, one runtime+listener each; omit ⇒ one per core
     upstream_http1_only: false, upstream_h2_prior_knowledge: false,
-    response_headers: { server_timing: false, route_policy: false },  # opt-in headers → observability.md#response-headers
+    response_headers: { server_timing: false },  # opt-in headers → observability.md#response-headers
     trusted_proxies: [] }                                      # ingress addresses whose X-Forwarded-For is believed → #advanced
 config:                         # config-management policy (persistence follows Store) → #config
   { locked: false }

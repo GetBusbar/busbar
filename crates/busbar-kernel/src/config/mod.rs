@@ -1373,9 +1373,8 @@ impl PluginsCfg {
 pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, StoreCfg};
 
 pub use busbar_kernel::config::sections::{
-    default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,
-    AuditCfg, ResponseHeadersCfg, DEFAULT_AUDIT_SEAL_EVERY_MS,
-    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    default_response_headers_server_timing, AdvancedCfg, AuditCfg, ResponseHeadersCfg,
+    DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{
