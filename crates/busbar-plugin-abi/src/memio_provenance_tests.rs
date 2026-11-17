@@ -76,60 +76,123 @@ fn rejected_batch_is_atomic_and_poisoned_before_io_acceptance() {
 
 #[test]
 fn short_answers_retain_every_control_payload_boundary_and_end_once() {
-    use crate::records::{Pod, U32s, Nested};
+    use crate::records::{Nested, Pod, U32s};
     #[derive(Default)]
-    struct Short { room: usize, records: Vec<(u16, Vec<u8>)> }
+    struct Short {
+        room: usize,
+        records: Vec<(u16, Vec<u8>)>,
+    }
     impl Writer for Short {
         fn put(&mut self, tag: u16, bytes: &[u8]) -> Result<(), Full> {
             let size = bytes.len() + 8;
-            if size > self.room { return Err(Full); }
-            self.room -= size; self.records.push((tag, bytes.to_vec())); Ok(())
+            if size > self.room {
+                return Err(Full);
+            }
+            self.room -= size;
+            self.records.push((tag, bytes.to_vec()));
+            Ok(())
         }
-        fn put_pod<T: Pod>(&mut self, tag: u16, value: &T) -> Result<(), Full> { self.put(tag, value.as_bytes()) }
+        fn put_pod<T: Pod>(&mut self, tag: u16, value: &T) -> Result<(), Full> {
+            self.put(tag, value.as_bytes())
+        }
         fn put_pod_tail<T: Pod>(&mut self, tag: u16, value: &T, tail: &[u8]) -> Result<(), Full> {
-            let mut bytes = value.as_bytes().to_vec(); bytes.extend_from_slice(tail); self.put(tag, &bytes)
+            let mut bytes = value.as_bytes().to_vec();
+            bytes.extend_from_slice(tail);
+            self.put(tag, &bytes)
         }
-        fn put_u32s(&mut self, _: u16, _: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>) -> Result<(), Full> { unreachable!() }
-        fn put_text(&mut self, _: u16, _: &str) -> Result<(), Full> { unreachable!() }
-        fn put_pair(&mut self, _: u16, _: &str, _: &[u8]) -> Result<(), Full> { unreachable!() }
-        fn put_fact(&mut self, _: u32, _: u64) -> Result<(), Full> { unreachable!() }
-        fn put_fact_text(&mut self, _: u32, _: &str) -> Result<(), Full> { unreachable!() }
-        fn put_metric(&mut self, _: u32, _: u32, _: f64, _: &[&str]) -> Result<(), Full> { unreachable!() }
-        fn put_nested(&mut self, _: u16, _: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>) -> Result<(), Full> { unreachable!() }
+        fn put_u32s(
+            &mut self,
+            _: u16,
+            _: impl FnOnce(&mut U32s<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_text(&mut self, _: u16, _: &str) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_pair(&mut self, _: u16, _: &str, _: &[u8]) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_fact(&mut self, _: u32, _: u64) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_fact_text(&mut self, _: u32, _: &str) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_metric(&mut self, _: u32, _: u32, _: f64, _: &[&str]) -> Result<(), Full> {
+            unreachable!()
+        }
+        fn put_nested(
+            &mut self,
+            _: u16,
+            _: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
+        }
     }
     let mut mio = MemIo::new();
     let plan = mio.attributed_output(1, 8, 128);
     plan.admit(101, 10_000).unwrap();
     plan.record(&[
-        SerializedEvent::Span { stream: 101, class: SerializedClass::Control, len: 3 },
-        SerializedEvent::Span { stream: 101, class: SerializedClass::Payload, len: 32 },
+        SerializedEvent::Span {
+            stream: 101,
+            class: SerializedClass::Control,
+            len: 3,
+        },
+        SerializedEvent::Span {
+            stream: 101,
+            class: SerializedClass::Payload,
+            len: 32,
+        },
         SerializedEvent::ReleaseBarrier { stream: 101 },
-        SerializedEvent::Span { stream: 101, class: SerializedClass::Control, len: 5 },
-        SerializedEvent::End { stream: 101, requirement: CompletionRequirement::Flush },
+        SerializedEvent::Span {
+            stream: 101,
+            class: SerializedClass::Control,
+            len: 5,
+        },
+        SerializedEvent::End {
+            stream: 101,
+            requirement: CompletionRequirement::Flush,
+        },
         SerializedEvent::Quiescent { stream: 101 },
-    ]).unwrap();
+    ])
+    .unwrap();
     plan.release(101).unwrap();
     let wire = [b"20\r".as_slice(), &[42; 32], b"0\r\n\r\n"].concat();
     let mut stream = mio.io();
     let mut cx = Context::from_waker(Waker::noop());
-    assert!(matches!(Pin::new(&mut stream).poll_write(&mut cx, &wire), Poll::Ready(Ok(40))));
+    assert!(matches!(
+        Pin::new(&mut stream).poll_write(&mut cx, &wire),
+        Poll::Ready(Ok(40))
+    ));
     let mut all = Vec::new();
     for _ in 0..32 {
-        let mut answer = Short { room: 32, records: Vec::new() };
+        let mut answer = Short {
+            room: 32,
+            records: Vec::new(),
+        };
         let done = mio.flush_attributed(&mut answer).unwrap();
         all.extend(answer.records);
-        if done { break; }
+        if done {
+            break;
+        }
     }
     let mut payload = Vec::new();
     let mut encoded = Vec::new();
     let mut ends = 0;
     for (tag, bytes) in all {
         if tag == tag::WIRE_PART {
-            let (header, tail) = crate::records::Rec { tag, body: &bytes }.pod_tail::<crate::kinds::transport::transport::WirePart>().unwrap();
+            let (header, tail) = crate::records::Rec { tag, body: &bytes }
+                .pod_tail::<crate::kinds::transport::transport::WirePart>()
+                .unwrap();
             assert_eq!(header.stream, 101);
             encoded.extend_from_slice(tail);
-            if header.class == crate::kinds::transport::transport::WIRE_PAYLOAD { payload.extend_from_slice(tail); }
-        } else if tag == tag::WIRE_END { ends += 1; }
+            if header.class == crate::kinds::transport::transport::WIRE_PAYLOAD {
+                payload.extend_from_slice(tail);
+            }
+        } else if tag == tag::WIRE_END {
+            ends += 1;
+        }
     }
     assert_eq!(encoded, wire);
     assert_eq!(payload, vec![42; 32]);
