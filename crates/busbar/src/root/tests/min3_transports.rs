@@ -237,7 +237,7 @@ fn two_instances_declaring_one_protocol_refuse_the_boot_naming_both() {
     );
 }
 
-fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
+pub(crate) fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
     ServedTransport {
         instance: Arc::from(instance),
         port: Arc::new(Framer {
