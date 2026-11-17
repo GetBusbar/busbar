@@ -575,3 +575,12 @@ async fn a_non_requesting_hook_sees_no_error_rate_breaker_or_p95() {
     assert_eq!(rec.error_rate_ppm, 0);
     assert_eq!(rec.breaker, 0);
 }
+
+/// A hook that requested `candidate_error_rate` sees it, with its presence bit, in ppm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_requesting_hook_sees_error_rate_with_its_presence_bit() {
+    let recs = recs_shown(&[busbar_contract::signal::Signal::CandidateErrorRate]).await;
+    assert_eq!(recs.len(), 1);
+    assert_ne!(recs[0].flags & abi::C_HAS_ERROR_RATE, 0);
+    assert_eq!(recs[0].error_rate_ppm, 250_000);
+}
