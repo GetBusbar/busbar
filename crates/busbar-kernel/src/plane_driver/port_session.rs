@@ -37,6 +37,11 @@ use super::{CallerEnd, HeadFields};
 pub trait Calls {
     type Session: Send + 'static;
 
+    /// Declared resource kinds require the separate completed resource admission producer.
+    fn resource_scoped(&self, _route: u32) -> bool {
+        false
+    }
+
     fn request(
         &self,
         req: &PlaneIn<'_>,
@@ -87,6 +92,10 @@ pub trait Calls {
 
 impl Calls for dyn PlanePort {
     type Session = PlaneSession;
+
+    fn resource_scoped(&self, route: u32) -> bool {
+        !self.resource_kinds(route).is_empty()
+    }
 
     fn request(
         &self,

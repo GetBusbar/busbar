@@ -94,6 +94,7 @@ struct Live;
 
 #[derive(Default)]
 struct Plane {
+    resource_scoped: bool,
     request: Vec<It>,
     upstream: Mutex<VecDeque<Vec<It>>>,
     pieces: Mutex<VecDeque<Vec<It>>>,
@@ -113,12 +114,20 @@ fn nope() -> PortError {
 impl Calls for Plane {
     type Session = Live;
 
+    fn resource_scoped(&self, _: u32) -> bool {
+        self.resource_scoped
+    }
+
     fn request(
         &self,
         _: &PlaneIn<'_>,
         _: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<Live, PortError> {
+        assert!(
+            !self.resource_scoped,
+            "resource admission must finish before request dispatch"
+        );
         play(&self.request, sink);
         Ok(Live)
     }
@@ -353,6 +362,21 @@ fn forwarding() -> Plane {
     *plane.pieces.lock().unwrap() =
         VecDeque::from([vec![It::Respond(200)], vec![It::Body(b"hi")], vec![It::End]]);
     plane
+}
+
+#[test]
+fn a_resource_scoped_route_cannot_execute_without_completed_admission() {
+    let plane = Plane {
+        resource_scoped: true,
+        request: vec![It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let books = Log::default();
+    assert!(matches!(
+        run(&plane, None, &books),
+        Err(SessionError::NotDriven)
+    ));
+    assert!(books.0.lock().unwrap().is_empty());
 }
 
 fn statuses(client: &[ToClient]) -> Vec<String> {
