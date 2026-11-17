@@ -4,6 +4,85 @@
 use super::*;
 use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
 
+#[test]
+fn budgeted_projection_keeps_real_families_and_retires_its_own_credit() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = identity_source();
+    metrics::with_local_recorder(&source, || {
+        metrics::counter!("budgeted_counter", "pool" => "p").increment(7);
+        metrics::gauge!("budgeted_gauge", "pool" => "p").set(4.0);
+    });
+    let process = ProcessAdmission::with_limits(0, 4 * 1024 * 1024, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let captured = source.snapshot_budgeted(&request).unwrap().unwrap();
+    assert!(process.used().0 > 0);
+    assert_eq!(
+        ordered_families(captured.value()),
+        ordered_families(&source.snapshot().unwrap())
+    );
+    let used = process.used();
+    let second = source.snapshot_budgeted(&request).unwrap().unwrap();
+    assert!(process.used().0 > used.0);
+    drop(second);
+    assert_eq!(process.used(), used);
+    drop(captured);
+    assert_eq!(process.used(), (0, 0));
+}
+
+#[test]
+fn first_denial_in_the_visited_counter_shard_is_reported_only_after_capture() {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = identity_source();
+    let denied = Key::from_parts(
+        crate::snapshot::ADMISSION_DENIED_TOTAL,
+        [metrics::Label::new("gate", "inbound_body_bytes")],
+    );
+    // Pinned metrics-util registry chooses the low hash bits with this exact shard count.
+    let mask = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .next_power_of_two()
+        - 1;
+    let target = (0..100_000)
+        .map(|i| Key::from_name(format!("projection_probe_{i}")))
+        .find(|key| (key.get_hash() as usize & mask) == (denied.get_hash() as usize & mask))
+        .unwrap();
+    metrics::with_local_recorder(&source, || {
+        source
+            .register_counter(
+                &target,
+                &metrics::Metadata::new("output-test", metrics::Level::INFO, None),
+            )
+            .increment(1);
+    });
+    assert!(!source.registry.get_counter_handles().contains_key(&denied));
+    let process = ProcessAdmission::with_limits(0, 1, 0);
+    let request = process.try_enter(AdmissionClass::Operator).unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        metrics::with_local_recorder(&source, || {
+            let error = match source.snapshot_budgeted(&request) {
+                Err(error) => error,
+                Ok(_) => panic!("one byte cannot fund the retained handle vector"),
+            };
+            assert_eq!(error, OutputError::Capacity);
+            assert_eq!(process.used(), (0, 0));
+            assert!(!source.registry.get_counter_handles().contains_key(&denied));
+            error.report();
+            let counter = source
+                .registry
+                .get_counter_handles()
+                .remove(&denied)
+                .unwrap();
+            assert_eq!(counter.get_inner().load(Ordering::Relaxed), 1);
+            sent.send(()).unwrap();
+        });
+    });
+    received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("projection must not re-enter a held registry shard");
+    worker.join().unwrap();
+}
+
 fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
     ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
