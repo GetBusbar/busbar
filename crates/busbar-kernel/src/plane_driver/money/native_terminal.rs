@@ -345,7 +345,7 @@ impl PlaneMoney {
                 .native
                 .as_ref()
                 .ok_or(NativeAttemptError::Unavailable)?;
-            if native.work.is_some()
+            if native.work == Some(crate::plane_driver::usage::Ending::End)
                 || !Arc::ptr_eq(&native.terminal, slot)
                 || native.checkpoint().id != slot.id
             {
@@ -365,7 +365,17 @@ impl PlaneMoney {
             {
                 return Err(NativeAttemptError::Binding);
             }
-            parts.disposition = Disposition::Failed;
+            parts.disposition = match native.work {
+                Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
+                    Disposition::Cancel {
+                        reason: cause.as_str().to_owned(),
+                    }
+                }
+                None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,
+                Some(crate::plane_driver::usage::Ending::End) => {
+                    return Err(NativeAttemptError::Binding)
+                }
+            };
             let (fee, completion) = open.fee.selected_fee();
             parts.fee = fee;
             snapshot.ended = true;

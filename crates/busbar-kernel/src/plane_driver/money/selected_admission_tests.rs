@@ -571,6 +571,9 @@ async fn selected_startup_rollback_preserves_original_fee_marker_after_initial_a
         )
         .unwrap();
     selected.observe_session(&descriptor, &usage).unwrap();
+    selected
+        .work_ended(crate::plane_driver::usage::Ending::Failed)
+        .unwrap();
     drop(guard);
     assert_eq!(money.open_units(), 0);
     let snapshot = terminal.wait().await.unwrap();
