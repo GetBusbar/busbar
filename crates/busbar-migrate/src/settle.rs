@@ -58,6 +58,9 @@ pub struct Settled {
     /// Exact pointers authorized by core from admitted describe paths and typed core leaves.
     /// Never infer this set from CONFIG strings or from requested LIFT fragments.
     pub allowed_lifts: std::collections::BTreeSet<String>,
+    /// The 1.5.5 literal secrets the plugin was handed at its declared secret positions, as they stood
+    /// before its `open`. The settled document may hold none of them in plaintext (#441).
+    pub known_secrets: Vec<SecureString>,
     pub placement: BagPlacement,
 }
 

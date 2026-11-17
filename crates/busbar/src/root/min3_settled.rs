@@ -78,6 +78,7 @@ pub(super) fn answer(
         settings: Some(SecureString::from(settings)),
         core_cfg,
         allowed_lifts,
+        known_secrets: Vec::new(),
     })
 }
 

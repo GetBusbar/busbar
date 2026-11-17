@@ -374,6 +374,7 @@ fn a_stamped_boot_writes_the_settled_answer_back_once() {
     let settled = [busbar_migrate::Settled {
         placement: busbar_migrate::BagPlacement::Settings,
         allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         index: 0,
         path: vec!["store".to_owned()],
         settings: Some(busbar_contract::secure::SecureString::from(
