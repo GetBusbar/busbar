@@ -63,6 +63,9 @@ pub enum PreparedAnswer {
     Held,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmissionRefused;
+
 /// Host-only immutable verification state. Neither identity projection nor STRIP certifies that
 /// every declared credential field was verified; field provenance needs its own attestation.
 pub trait PreparedIdentity: Send + Sync {
@@ -106,12 +109,13 @@ impl Pending {
         }
     }
 
-    pub(super) async fn complete(&self) -> Result<ExecutionAdmission, ()> {
+    pub(super) async fn complete(&self) -> Result<ExecutionAdmission, AdmissionRefused> {
         // Consume before the first await. A cancelled or failed store call cannot retry this right.
         if self.spent.swap(true, Ordering::AcqRel)
             || self.invocation.cx.request_id != self.invocation.id.request_id().get()
+            || std::time::Instant::now() >= self.invocation.cx.deadline
         {
-            return Err(());
+            return Err(AdmissionRefused);
         }
         let lease = self
             .invocation
@@ -119,9 +123,9 @@ impl Pending {
             .admit_current(&self.invocation.selected, self.invocation.id, |_| {
                 self.prepared.authorize(crate::store::now())
             })
-            .map_err(|_| ())?;
+            .map_err(|_| AdmissionRefused)?;
         if !self.prepared.claim().await {
-            return Err(());
+            return Err(AdmissionRefused);
         }
         // Publication after the lease is not cancellation of this already-admitted operation.
         Ok(ExecutionAdmission {

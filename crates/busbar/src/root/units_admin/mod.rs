@@ -1861,7 +1861,7 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             if let Some(context) = &mut walk.effect_context {
                 context
                     .attach_execution(execution.clone())
-                    .map_err(|()| ReasonCode::Unauthenticated)?;
+                    .map_err(|_| ReasonCode::Unauthenticated)?;
             }
             walk.execution = Some(execution);
         }
@@ -1872,12 +1872,12 @@ pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
             pending
                 .complete_admin()
                 .await
-                .map_err(|()| ReasonCode::Unauthenticated)?,
+                .map_err(|_| ReasonCode::Unauthenticated)?,
         );
         if let Some(context) = &mut walk.effect_context {
             context
                 .attach_execution(execution.clone())
-                .map_err(|()| ReasonCode::Unauthenticated)?;
+                .map_err(|_| ReasonCode::Unauthenticated)?;
         }
         walk.execution = Some(execution);
     }

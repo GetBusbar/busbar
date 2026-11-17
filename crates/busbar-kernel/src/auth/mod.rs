@@ -294,14 +294,16 @@ impl PendingClaim {
         )))
     }
 
-    pub async fn complete_admin(&self) -> Result<native_admin::ExecutionAdmission, ()> {
+    pub async fn complete_admin(
+        &self,
+    ) -> Result<native_admin::ExecutionAdmission, native_admin::AdmissionRefused> {
         match &self.0 {
             PendingKind::Native(pending) => pending.complete().await,
             PendingKind::Legacy { claim, gov } => claim
                 .win(gov.as_deref())
                 .await
                 .then(native_admin::ExecutionAdmission::legacy)
-                .ok_or(()),
+                .ok_or(native_admin::AdmissionRefused),
         }
     }
 
@@ -2556,7 +2558,7 @@ pub(crate) async fn auth_middleware(
                     let execution = pending
                         .complete_admin()
                         .await
-                        .map_err(|()| admin_unauthorized_response())?;
+                        .map_err(|_| admin_unauthorized_response())?;
                     req.extensions_mut().insert(std::sync::Arc::new(execution));
                 }
             }
@@ -2576,7 +2578,7 @@ pub(crate) async fn auth_middleware(
         {
             effect_context
                 .attach_execution(execution.clone())
-                .map_err(|()| admin_unauthorized_response())?;
+                .map_err(|_| admin_unauthorized_response())?;
         }
         let authorized = admin_door_admits(&door, req.method().as_str(), path);
         if path == crate::admin::gate::WHOAMI_PATH
