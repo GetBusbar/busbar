@@ -25,10 +25,12 @@ use busbar_contract::persistence::{Address, NamespaceId};
 use busbar_contract::records::{AuditRecord, MeteringRow, ModelTokens, UsageLedger};
 use busbar_contract::secure::SecureVec;
 use busbar_kernel::persistence::facade::CoreStore;
+use busbar_kernel::persistence::format_migration::MigrationOwner;
 use busbar_kernel::persistence::import_target::r0::{Access, Commit, Outcome};
 use busbar_kernel::persistence::import_target::records as encode;
+use busbar_kernel::persistence::startup::FormatChain;
 use busbar_migrate::records::{
-    self, attempts, Audit, Candidate, Committed, Native, RecordStore, Report, StoreFail,
+    self, attempts, Audit, Candidate, Committed, Native, Page, RecordStore, Report, StoreFail,
 };
 
 /// Where the records step's audit records live: core's own namespace, beside IMPORT, never a
@@ -47,10 +49,12 @@ pub(crate) struct Store {
 
 impl Store {
     pub(crate) fn new(core: Arc<CoreStore>, runtime: tokio::runtime::Handle) -> Self {
-        Self {
-            access: Access::new(core),
-            runtime,
-        }
+        Self::over(Access::new(core), runtime)
+    }
+
+    /// Over `access`: the admitted store's, or a record-format migration owner's.
+    fn over(access: Access, runtime: tokio::runtime::Handle) -> Self {
+        Self { access, runtime }
     }
 
     /// `c` as one native commit, `None` when it cannot hold (two records land at one address, or a
@@ -140,14 +144,20 @@ impl Store {
 }
 
 impl RecordStore for Store {
-    fn scan(
-        &self,
-        ns: NamespaceId,
-        after: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, SecureVec)>, StoreFail> {
-        self.runtime
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        let page = self
+            .runtime
             .block_on(self.access.scan(ns, after, limit))
+            .map_err(StoreFail)?;
+        Ok(Page {
+            rows: page.rows,
+            next: page.next,
+        })
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.runtime
+            .block_on(self.access.read(at(ns, key.to_vec())))
             .map_err(StoreFail)
     }
 
@@ -155,25 +165,123 @@ impl RecordStore for Store {
         let Some((commit, audits)) = self.native(c)? else {
             return Ok(Committed::Conflict);
         };
-        match self
+        let outcome = self
             .runtime
             .block_on(self.access.commit(commit))
-            .map_err(StoreFail)?
-        {
-            Outcome::Applied => {
-                for audit in &audits {
-                    let (word, line) = audit_line(audit);
-                    tracing::info!(target: "busbar::migrate", "{word}: {line}");
-                }
-                Ok(Committed::Applied)
-            }
-            Outcome::Conflict => Ok(Committed::Conflict),
-        }
+            .map_err(StoreFail)?;
+        Ok(committed(outcome, &audits))
     }
 
     fn register(&self) -> Result<(), StoreFail> {
         self.access.register().map_err(StoreFail)
     }
+}
+
+/// A commit's outcome as the records step reads it; an applied commit's audit records are also
+/// logged.
+fn committed(outcome: Outcome, audits: &[Audit]) -> Committed {
+    match outcome {
+        Outcome::Applied => {
+            for audit in audits {
+                let (word, line) = audit_line(audit);
+                tracing::info!(target: "busbar::migrate", "{word}: {line}");
+            }
+            Committed::Applied
+        }
+        Outcome::Conflict => Committed::Conflict,
+        Outcome::Fenced => Committed::Fenced,
+        Outcome::Refused => Committed::Refused,
+    }
+}
+
+/// The record-format chain's store (#319 r4 §7, §9): the records step's [`Store`] over the
+/// migration owner's access, and the owner's final publication.
+struct OwnerStore<'a> {
+    store: Store,
+    owner: &'a MigrationOwner,
+}
+
+impl RecordStore for OwnerStore<'_> {
+    fn scan(&self, ns: NamespaceId, after: Option<&[u8]>, limit: u32) -> Result<Page, StoreFail> {
+        self.store.scan(ns, after, limit)
+    }
+
+    fn read(&self, ns: NamespaceId, key: &[u8]) -> Result<Option<SecureVec>, StoreFail> {
+        self.store.read(ns, key)
+    }
+
+    fn commit(&self, c: Candidate) -> Result<Committed, StoreFail> {
+        self.store.commit(c)
+    }
+
+    fn register(&self) -> Result<(), StoreFail> {
+        self.store.register()
+    }
+}
+
+impl records::FormatStore for OwnerStore<'_> {
+    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
+        let Some((commit, audits)) = self.store.native(c)? else {
+            return Ok(Committed::Conflict);
+        };
+        let outcome = self
+            .store
+            .runtime
+            .block_on(self.owner.finalize(commit, format))
+            .map_err(StoreFail)?;
+        Ok(committed(outcome, &audits))
+    }
+}
+
+/// A record-format chain (the production one is `records::RECORD_STEPS`), as the kernel's
+/// admission asks for it (#319 r4 §5).
+pub(crate) struct Chain(pub(crate) &'static [records::RecordStep]);
+
+impl FormatChain for Chain {
+    fn has_step(&self, from: u32) -> bool {
+        self.0.iter().any(|step| step.from == from)
+    }
+
+    fn initial_cursor(&self, from: u32) -> Option<Vec<u8>> {
+        records::initial_cursor(self.0, from)
+    }
+}
+
+/// The record-format conversion over `owner`, on a blocking thread while the boot's runtime
+/// drives the store (#319 r4 §7): `Ok(rows)` once its final publication applied.
+///
+/// # Errors
+/// The chain's refusal, its word first; nothing serves and the tail stays nonzero.
+pub(crate) async fn evolve(
+    owner: Arc<MigrationOwner>,
+    steps: &'static [records::RecordStep],
+) -> Result<u64, String> {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let store = OwnerStore {
+            store: Store::over(owner.access(), runtime),
+            owner: &owner,
+        };
+        let (ns, key) = MigrationOwner::manifest_at();
+        let encode = |format: u32, tail: u32| owner.encode_manifest(format, tail);
+        records::evolve_with(
+            &store,
+            steps,
+            records::RECORD_FORMAT,
+            &records::Manifest {
+                ns,
+                key: &key,
+                bytes: owner.manifest_bytes(),
+                format: owner.format(),
+                migrating_to: owner.migrating_to(),
+                encode: &encode,
+            },
+        )
+        .map_err(|refusal| refusal.to_string())?
+        .ok_or_else(|| "VERIFY: a migration owner holds a current manifest".to_owned())
+    })
+    .await
+    .map_err(|error| format!("the record-format step did not finish: {error}"))?
 }
 
 fn at(ns: NamespaceId, key: Vec<u8>) -> Address {
@@ -439,8 +547,9 @@ pub(crate) fn run_blocking(
     stamped: bool,
 ) -> Result<Option<Report>, String> {
     if store
-        .scan(IMPORT_NS, &[], 1)
+        .scan(IMPORT_NS, None, 1)
         .map_err(|fail| format!("STORE: {}", fail.0))?
+        .rows
         .is_empty()
     {
         return Ok(None);
@@ -638,3 +747,7 @@ mod key_handoff_tests {
         assert!(Keys::from_core(&invalid).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "tests/format_admission.rs"]
+mod format_admission;

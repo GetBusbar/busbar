@@ -168,6 +168,161 @@ pub fn request_id_of(counter: u64) -> String {
     format!("r_{counter:016x}")
 }
 
+/// The header a client's own request id comes in on: the same `X-Request-Id` the engine answers
+/// with its own id (ADMIN-API-1.6-ONE-MODEL section 7).
+pub const HEADER_CLIENT_REQUEST_ID: &str = "x-client-request-id";
+
+/// The W3C trace context header, in and out.
+pub const HEADER_TRACEPARENT: &str = "traceparent";
+
+/// The longest client request id the engine keeps.
+pub const CLIENT_REQUEST_ID_MAX: usize = 128;
+
+/// A client `X-Request-Id` the engine keeps: 1 to 128 of `[A-Za-z0-9._:-]`.
+#[must_use]
+pub fn valid_client_request_id(value: &[u8]) -> bool {
+    (1..=CLIENT_REQUEST_ID_MAX).contains(&value.len())
+        && value
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
+fn lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The W3C trace an admin request arrived in (`traceparent`, W3C Trace Context level 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceParent {
+    /// 32 lowercase hex digits, never all zero.
+    pub trace_id: String,
+    /// The caller's span: 16 lowercase hex digits, never all zero.
+    pub parent_id: String,
+    /// The trace flags: 2 lowercase hex digits.
+    pub flags: String,
+}
+
+impl TraceParent {
+    /// Read a `traceparent` value. Version `00` is exactly `00-<trace>-<parent>-<flags>`; a later
+    /// version (never `ff`) is read by its first four fields, as the specification asks. Anything
+    /// else is no trace: the request is not refused for it.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        let head = value.get(..55)?;
+        let rest = &value[55..];
+        let mut fields = head.split('-');
+        let (version, trace_id, parent_id, flags) = (
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+        );
+        let well_formed = lower_hex(version, 2)
+            && version != "ff"
+            && lower_hex(trace_id, 32)
+            && trace_id.bytes().any(|b| b != b'0')
+            && lower_hex(parent_id, 16)
+            && parent_id.bytes().any(|b| b != b'0')
+            && lower_hex(flags, 2)
+            && if version == "00" {
+                rest.is_empty()
+            } else {
+                rest.is_empty() || rest.starts_with('-')
+            };
+        well_formed.then(|| Self {
+            trace_id: trace_id.to_owned(),
+            parent_id: parent_id.to_owned(),
+            flags: flags.to_owned(),
+        })
+    }
+
+    /// The `traceparent` the engine answers with: the caller's trace and flags, and the admin
+    /// span's own id.
+    #[must_use]
+    pub fn child(&self, span_id: &[u8; 8]) -> String {
+        format!(
+            "00-{}-{}-{}",
+            self.trace_id,
+            hex::encode(span_id),
+            self.flags
+        )
+    }
+}
+
+/// What a caller sent to correlate its admin request with its own records
+/// (ADMIN-API-1.6-ONE-MODEL section 7): its own request id, when valid, and the trace it arrived in.
+/// Neither is ever the request's `request_id`, which the engine always mints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Correlation {
+    pub client_request_id: Option<String>,
+    pub trace: Option<TraceParent>,
+}
+
+impl Correlation {
+    /// Read the correlation from a request's headers. A header sent more than once, or a value
+    /// that is not valid, is dropped without comment: a proxy may have set it.
+    #[must_use]
+    pub fn of(headers: &axum::http::HeaderMap) -> Self {
+        let single = |name: &str| {
+            let mut values = headers.get_all(name).iter();
+            match (values.next(), values.next()) {
+                (Some(value), None) => Some(value),
+                _ => None,
+            }
+        };
+        Self {
+            client_request_id: single(HEADER_REQUEST_ID)
+                .filter(|value| valid_client_request_id(value.as_bytes()))
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            trace: single(HEADER_TRACEPARENT)
+                .and_then(|value| value.to_str().ok())
+                .and_then(TraceParent::parse),
+        }
+    }
+
+    /// Answer the caller's correlation on `headers`: `X-Client-Request-Id` when it sent a valid
+    /// id, and `traceparent` on its trace, naming the admin span `span_id`, when it sent one.
+    pub fn answer(&self, span_id: Option<&[u8; 8]>, headers: &mut axum::http::HeaderMap) {
+        if let Some(value) = self
+            .client_request_id
+            .as_deref()
+            .and_then(|id| axum::http::HeaderValue::from_str(id).ok())
+        {
+            headers.insert(HEADER_CLIENT_REQUEST_ID, value);
+        }
+        if let Some(value) =
+            self.trace.as_ref().zip(span_id).and_then(|(trace, span)| {
+                axum::http::HeaderValue::from_str(&trace.child(span)).ok()
+            })
+        {
+            headers.insert(HEADER_TRACEPARENT, value);
+        }
+    }
+}
+
+tokio::task_local! {
+    /// The correlation of the admin request in flight, set at the admin boundary beside its id.
+    static CORRELATION: Correlation;
+}
+
+/// Run `future` with the admin request's correlation in scope.
+pub async fn with_correlation<F: std::future::Future>(
+    correlation: Correlation,
+    future: F,
+) -> F::Output {
+    CORRELATION.scope(correlation, future).await
+}
+
+/// The correlation of the admin request in flight, or `None` outside one.
+#[must_use]
+pub fn correlation_in_scope() -> Option<Correlation> {
+    CORRELATION.try_with(Clone::clone).ok()
+}
+
 /// The `error` object of the admin envelope (ADMIN-API-1.6 section 1.2): `code`, `reason`
 /// (`null` only for `internal`), `message`, `request_id`, `retryable` and `details`. A `reason` the
 /// raiser did not name is the default of `code`.
@@ -376,3 +531,7 @@ pub fn scope_insufficient_for(needed_scope: &str, needed_verb: Option<&str>) -> 
         &scope_details_for(needed_scope, needed_verb),
     )
 }
+
+#[cfg(test)]
+#[path = "tests/correlation_tests.rs"]
+mod correlation_tests;

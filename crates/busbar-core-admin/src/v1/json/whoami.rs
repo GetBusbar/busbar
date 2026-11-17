@@ -174,7 +174,7 @@ pub(crate) async fn who_of(
 pub(super) async fn get(
     State(handle): State<Arc<AppHandle>>,
     slot: Option<axum::Extension<AdminWhoSlot>>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
 ) -> Response {
     let app = handle.load();
     let who = who_of(&app, slot.map(|s| s.0), &headers).await;

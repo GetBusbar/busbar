@@ -7,7 +7,10 @@
 use std::path::Path;
 
 use crate::templates::Template;
-use crate::{absent_store, catalog, legacy_markers, migrate_1_6, overlay, patch, Facts, Refusal};
+use crate::{
+    absent_store, catalog, legacy_credentials, legacy_markers, migrate_1_6, overlay, patch, Facts,
+    Refusal,
+};
 
 /// What a step reads beside the text, and what it plans besides it.
 pub(crate) struct Work<'a> {
@@ -21,6 +24,8 @@ pub(crate) struct Work<'a> {
     pub(crate) report: &'a mut Vec<String>,
     /// The new providers catalog, when 1k plans one.
     pub(crate) catalog: Option<catalog::Planned>,
+    /// The side table of 1.5.5 credential slots core marks at the migrating bind (LEGACY-KEYFILE-MARKER r2).
+    pub(crate) marks: Vec<legacy_credentials::Mark>,
 }
 
 /// One step: the format-`v` text in, the format-`v + 1` text out (patch-writer edits only).
@@ -40,6 +45,7 @@ pub(crate) const STEPS: [Step; 1] = [v0];
 fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
     let template = Template::read(text, work.facts.env, "config.yaml")?;
     legacy_markers::refuse(template.resolved())?;
+    legacy_credentials::refuse_marker(template.resolved())?;
     let folded;
     let (text, template) = match work.overlay {
         Some(read) => {
@@ -70,6 +76,14 @@ fn v0(text: &str, work: &mut Work<'_>) -> Result<String, Refusal> {
         template.resolved(),
         work.facts,
         work.report,
+    )?;
+    let listed = catalog::resolved(work.path, template.resolved(), work.facts)?;
+    legacy_credentials::bind_jwt_bearer(
+        root,
+        template.resolved(),
+        &listed,
+        work.report,
+        &mut work.marks,
     )?;
     let patched = patch::rewrite(text, template.tree(), &after, "config.yaml")?;
     if patched != text {

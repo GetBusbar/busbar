@@ -1,0 +1,12 @@
+auth:
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+providers: {}
+models: {}
+tools:
+  github:
+    transport: stdio
+    command: /usr/local/bin/mcp-github
+    env:
+      LOG_LEVEL: debug-verbose
+      GITHUB_TOKEN: ghp-oracle-literal-0001

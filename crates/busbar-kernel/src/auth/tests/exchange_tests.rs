@@ -48,6 +48,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
         module: "mode-replay-idp".to_string(),
         principal,
         resolved: None,
+        signed_authority: None,
     };
     let bindings = std::collections::BTreeMap::from([(
         "mode-replay-idp".to_string(),

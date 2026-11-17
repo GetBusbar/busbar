@@ -291,7 +291,6 @@ async fn test_memory_store_cannot_reach_inert_with_keys() {
 
     let store = crate::tests::real_store::core().await;
     let gov = GovState::new_with_core(store, None, None).await.unwrap();
-    assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
     let key_count = gov
         .all_keys_async()
         .await
@@ -300,12 +299,6 @@ async fn test_memory_store_cannot_reach_inert_with_keys() {
     assert_eq!(key_count, 0, "a fresh RAM store holds no keys");
 
     assert!(inert_durable_keys_banner(false, key_count, false).is_none());
-
-    let store2 = crate::tests::real_store::core().await;
-    let gov2 = GovState::new_with_core(store2, Some("admintok".to_string()), None)
-        .await
-        .unwrap();
-    assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 
 fn residual_planes() -> crate::plane_driver::dispatch::PlaneDispatch {

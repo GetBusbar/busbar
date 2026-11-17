@@ -199,3 +199,52 @@ fn admission_evidence_distinguishes_roots_signers_and_unverified_claims() {
         evaluate_with_verification(LIB, &artifact(&publisher, "acme-store"), &untrusted).unwrap();
     assert_eq!(proof, Verification::default());
 }
+
+/// #300: `plugins.trust.allow_untrusted` is the one opt-in for unverified code. The shipped
+/// template, the operator pages and the published diagnostics never document the retired
+/// `allow_unsigned` / `allow_third_party` opt-ins, which 1.6.0 refuses to read.
+#[test]
+fn the_shipped_config_and_docs_name_only_the_one_untrusted_opt_in() {
+    let shipped = [
+        (
+            "config.yaml",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.yaml")),
+        ),
+        (
+            "docs/config-at-a-glance.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/config-at-a-glance.md"
+            )),
+        ),
+        (
+            "docs/admin-api.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/admin-api.md"
+            )),
+        ),
+        (
+            "docs/diagnostics.md",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/diagnostics.md"
+            )),
+        ),
+        (
+            "docs/diagnostics.json",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/diagnostics.json"
+            )),
+        ),
+    ];
+    for (path, text) in shipped {
+        for retired in ["allow_unsigned", "allow_third_party"] {
+            assert!(
+                !text.contains(retired),
+                "{path} still documents the retired plugins.trust.{retired}; the one opt-in is allow_untrusted"
+            );
+        }
+    }
+}

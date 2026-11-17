@@ -90,10 +90,10 @@ deny = [
     { crate = "paste", wrappers = ["tikv-jemalloc-ctl"], reason = "unmaintained (RUSTSEC-2024-0436); only tikv-jemalloc-ctl carries it, a recorded exception" },
     # THE CRYPTO SEAM (CRYPTO-SEAM r15 §2.7, decisions 210, 224, 229): one backend, reached only through
     # the facade; AWS-LC (aws-lc-rs) is the one provider. Wrappers are the third-party parents allowed
-    # to carry a banned crate. Not yet on: `ring` (busbar-auth-oauth, -oidc, -sigv4 and
-    # -transport-webrtc still name it, #173; dist/default has no deny.toml of its own and reads this
-    # one; core's own graph builds no ring, held by tools/ci-checks crypto-graph), `aes`/`cipher`
-    # (transport-webrtc), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
+    # to carry a banned crate. A row whose reason says `tracked: <repo>#<n>` is a recorded exception that
+    # tools/ci-checks crypto-graph reads from here (the one list): it prints it with its issue and does not fail it.
+    # Not yet on: `ring` for busbar-auth-oauth, -oidc and -sigv4 (#173; dist/default has no deny.toml of its own and reads this
+    # one; core's own graph builds no ring, held by crypto-graph), `sha2` (busbar-auth-oauth) and `getrandom`/`rand_core` (busbar-store-memory,
     # -postgres, -sqlite): core is clean since oauth-as 1.1 (decision 228), these plugins move in §8 5-7.
     { crate = "aws-lc-rs", wrappers = ["busbar-crypto-backend", "busbar-system-hammer", "quinn-proto", "rcgen", "rustls", "rustls-webpki", "x509-parser"], reason = "AWS-LC only through the crypto backend" },
     { crate = "aws-lc-sys", wrappers = ["busbar-crypto-backend", "aws-lc-rs"], reason = "AWS-LC only through the crypto backend" },
@@ -109,8 +109,12 @@ deny = [
     { crate = "num-rational", wrappers = ["num"], reason = "jsonschema's number type only" },
     { crate = "fraction", wrappers = ["jsonschema", "jsonschema-value"], reason = "jsonschema's number type only" },
     { crate = "sha1", wrappers = ["tungstenite"], reason = "SHA-1 is the facade's legacy::sha1" },
-    { crate = "md-5", wrappers = ["busbar-crypto-backend", "postgres-protocol"], reason = "backend MD5 is the Q9a legacy exception; postgres-protocol also carries MD5 outside the facade (core #289)" },
-    { crate = "hmac", wrappers = ["postgres-protocol"], reason = "postgres-protocol still carries its own HMAC dependency; seam closure tracked by core #289" },
+    { crate = "md-5", wrappers = ["busbar-crypto-backend", "postgres-protocol"], reason = "backend MD5 is the Q9a legacy exception; postgres-protocol also carries MD5 outside the facade (core #289), tracked: busbar-store-postgres#11" },
+    { crate = "hmac", wrappers = ["postgres-protocol"], reason = "postgres-protocol still carries its own HMAC dependency (core #289), tracked: busbar-store-postgres#11" },
+    { crate = "sha2", wrappers = ["postgres-protocol"], reason = "postgres-protocol SCRAM digests on its own SHA-2 (core #289), tracked: busbar-store-postgres#11" },
+    { crate = "aes", wrappers = ["busbar-transport-webrtc"], reason = "DTLS-SRTP AES outside the facade (core #173), tracked: busbar-transport-webrtc#13" },
+    { crate = "cipher", wrappers = ["aes"], reason = "only aes carries it (core #173), tracked: busbar-transport-webrtc#13" },
+    { crate = "ring", wrappers = ["busbar-transport-webrtc"], reason = "busbar-transport-webrtc still names ring (core #173), tracked: busbar-transport-webrtc#13" },
     { crate = "digest", wrappers = ["curve25519-dalek", "hmac", "md-5", "sha1", "sha2"], reason = "any new RustCrypto hash/MAC depends on it" },
     { crate = "signature", wrappers = ["ed25519"], reason = "any new RustCrypto signature crate depends on it" },
     { crate = "rand", wrappers = ["busbar-crypto-backend", "dimpl", "metrics-util", "opentelemetry_sdk", "postgres-protocol", "quinn-proto", "sctp-proto", "tungstenite"], reason = "third-party RNG dependencies are not evidence of facade routing; dimpl security randomness bypass tracked by core #288" },
@@ -217,8 +221,14 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-sqlite",
     "https://github.com/GetBusbar/busbar-store-postgres",
     # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
-    # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
+    # h2 retains upstream sensitive-field fixes plus adopted native serializer provenance.
     "https://github.com/MattJackson/h2",
+    # Adopted HTTP-PROJECTION-PRODUCER r2 and native serializer cohort; exact revs in locks.
+    "https://github.com/MattJackson/http",
+    "https://github.com/MattJackson/hyper",
+    "https://github.com/MattJackson/hyper-util",
+    # Adopted TLS output/ticket storage r2; immutable revision in consuming locks.
+    "https://github.com/MattJackson/rustls",
     # tungstenite 893a21f1f98011a2665840231330c473836c9a0a (1014 fix plus streaming diagnostic formatting).
     "https://github.com/MattJackson/tungstenite-rs",
     "https://github.com/MattJackson/jobserver-rs",

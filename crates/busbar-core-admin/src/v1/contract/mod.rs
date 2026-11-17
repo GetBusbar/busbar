@@ -71,6 +71,10 @@ pub enum AdminError {
     /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
     /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait.
     Unavailable(String),
+    /// Like [`AdminError::Unavailable`], with the delay the caller should wait before retrying: `code = unavailable`,
+    /// 503, and a `Retry-After` header of `retry_after_s` (r5 envelope, `retryable: true`). First user: a plugin
+    /// inspection that is busy, past its deadline, or at its cap (DES-443 r3).
+    RetryLater { text: String, retry_after_s: u32 },
     /// A usage read over a class the rate card in force does not price (#42: a card is PRESENT, so
     /// an unpriced class refuses rather than reading 0). `code = unpriced_class`, 409: the state
     /// of the card, not the request, is what a retry cannot fix. `class` is `None` when the card
@@ -132,6 +136,7 @@ impl AdminError {
             AdminError::RateLimited => ApiError::RateLimited.code(),
             AdminError::Internal => ApiError::Internal.code(),
             AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).code(),
+            AdminError::RetryLater { .. } => ApiError::Unavailable(String::new()).code(),
             AdminError::UnpricedClass { .. } => "unpriced_class",
             AdminError::PluginText { .. } => "invalid_request",
         }
@@ -149,6 +154,7 @@ impl AdminError {
             AdminError::RateLimited => ApiError::RateLimited.http_status(),
             AdminError::Internal => ApiError::Internal.http_status(),
             AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).http_status(),
+            AdminError::RetryLater { .. } => ApiError::Unavailable(String::new()).http_status(),
             AdminError::UnpricedClass { .. } => 409,
             AdminError::PluginText { .. } => 400,
         }
@@ -175,6 +181,7 @@ impl AdminError {
             AdminError::RateLimited => ApiError::RateLimited.message(),
             AdminError::Internal => ApiError::Internal.message(),
             AdminError::Unavailable(msg) => msg.clone(),
+            AdminError::RetryLater { text, .. } => text.clone(),
             AdminError::PluginText { cond, .. } => match cond {
                 taxonomy::Cond::HookNoAck => {
                     "the hook did not acknowledge the settings push".into()
@@ -255,11 +262,6 @@ pub struct InfoView {
     /// publication, so it never repeats across restarts. The ETag of every config resource is
     /// `"<deployment_id>.<config_generation>"`.
     pub config_generation: u64,
-    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
-    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
-    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
-    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
-    pub config_persistence: bool,
     /// Conditions an operator should know about this process, oldest first; empty normally.
     pub warnings: Vec<InfoWarning>,
 }

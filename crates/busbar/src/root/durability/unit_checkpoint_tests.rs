@@ -29,7 +29,7 @@ use std::sync::{
 struct ActualStore {
     path: std::path::PathBuf,
     core: OnceLock<Arc<CoreStore>>,
-    backend: OnceLock<Arc<crate::root::loader::store_v4::LoadedPersistence>>,
+    backend: OnceLock<Arc<dyn PersistenceBackend>>,
 }
 impl ActualStore {
     fn new() -> Self {
@@ -55,46 +55,49 @@ impl ActualStore {
         if let Some(core) = self.core.get() {
             return core.clone();
         }
-        use crate::root::loader::dispatch::{
-            kinds::store_v4::StoreV4, load_dropped, rendering_of_library, Bind, ConnTable,
-            DispatchConfig, Dispatcher, NoSink,
-        };
-        use crate::root::loader::store_v4::{Limits, LoadedPersistence};
-        let path = crate::root::test_plugins::application_store_library();
-        let stated = rendering_of_library(&path).unwrap().unwrap();
-        let dispatcher = Arc::new(Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        ));
-        let plugin = load_dropped::<StoreV4>(
-            &path,
-            &stated,
-            Bind {
-                instance: format!("checkpoint-{}", hex::encode(busbar_kernel::door::op_id().0))
-                    .into(),
-                max_inflight_cap: 1024,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns: ConnTable::NoNeeds,
-            },
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
+        // The actual application Store is a native MIN-3 image: stage it signed and open it through the
+        // root's native boot (Registry::open_store), named by its stamp.
+        let library = crate::root::test_plugins::application_store_library();
+        let module = crate::root::test_plugins::native_image(&library).name;
+        let release = crate::root::test_plugins::key(0x5a);
+        let manifest = crate::root::test_plugins::native_manifest(
+            "store",
+            &library,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
+        );
+        std::fs::write(
+            self.path.join("store.tar.gz"),
+            crate::root::test_plugins::signed(
+                &release,
+                manifest,
+                &std::fs::read(&library).expect("the actual Store image reads"),
+            ),
         )
-        .unwrap();
-        let settings=json::to_vec(&json::json!({"db_path":self.path.join("application.sqlite"),"input_budget_bytes":16*1024*1024})).unwrap();
-        let backend = Arc::new(
-            LoadedPersistence::open(
-                plugin,
-                dispatcher,
-                &settings,
-                Limits {
-                    descriptor_bytes: 16 * 1024 * 1024,
-                    output_items: 1024,
-                    output_bytes: 16 * 1024 * 1024,
-                    decode_bytes: 16 * 1024 * 1024,
-                },
+        .expect("stage the actual Store");
+        let deploy = busbar_kernel::config::deploy_from_deserializer(
+            serde_json::json!({
+                "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+                "store": {"module": module, "settings": {
+                    "db_path": self.path.join("application.sqlite"),
+                    "input_budget_bytes": 16 * 1024 * 1024,
+                }},
+            }),
+            &crate::root::boot::axis_test_grammar(),
+        )
+        .expect("the checkpoint deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the checkpoint deployment resolves");
+        let plugins = crate::root::test_plugins::trusted_config_with_key(&self.path, &release);
+        let crate::root::min3_boot::fixture::Fixture { backend, .. } =
+            crate::root::min3_boot::fixture::open(
+                &cfg,
+                &plugins,
+                Arc::new(crate::root::door_steps::Rules::default()),
             )
             .await
-            .unwrap(),
-        );
+            .expect("the actual Store opens natively");
         let mut startup = Startup::new(
             wrap(backend.clone()),
             CoreLimits {
@@ -192,6 +195,7 @@ fn unit() -> UnitCheckpoint {
         .key("work")
         .expect("test meter class registered");
     let audit = super::super::RunningAudit {
+        selected_identity: None,
         incarnation: 7,
         principal: "checkpoint-principal".into(),
         op_class: "checkpoint.actual".into(),
@@ -1665,4 +1669,59 @@ fn test_commit_key() -> busbar_contract::persistence::CommitKey {
         &busbar_contract::caps::SlotSeal::acquire_for_tests(),
     )
     .expect("slot 0, seq 1 is a valid key")
+}
+
+#[tokio::test]
+async fn selected_recovery_keeps_signed_partition_and_rejects_replayed_attribution_change() {
+    let fixture = ActualStore::new();
+    let core = fixture.open().await;
+    let host = format!(
+        "selected-audit-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(core, &host).await;
+    let mut report = crate::root::selected_report_tests::terminal();
+    let facts = super::super::RunningAudit {
+        selected_identity: Some(super::super::SelectedAuditIdentity {
+            node: book.lock().unwrap().record.node(),
+            boot_nonce: [7; 16],
+            user: Some("original-user".into()),
+            labels: vec![("purpose".into(), "original".into())],
+        }),
+        incarnation: 7,
+        principal: report.principal.clone(),
+        op_class: "checkpoint.selected".into(),
+        origin: "client".into(),
+        parent: None,
+        wall: report.arrived,
+        mono: 91,
+        destination: None,
+        rate_card: None,
+        policy_epoch: 3,
+        hooks: Vec::new(),
+    };
+    report.audit = Some(json::to_vec(&facts).unwrap());
+    let sink = unit_checkpoint_sink(&book);
+    sink.recover_audit(&report).await.unwrap();
+    let (_, audit) = book
+        .evidence
+        .find_audit(report.unit, 7)
+        .await
+        .unwrap()
+        .unwrap();
+    let view = busbar_kernel::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint::try_from(&report).unwrap();
+    let expected = crate::root::selected_report::selected_billing(&view).unwrap();
+    assert_eq!(audit.unit.billing.as_ref(), Some(&expected));
+    assert!(audit.usage.lines.is_empty());
+    assert_eq!(audit.unit.boot_nonce, [7; 16]);
+    assert_eq!(audit.unit.records.user.as_deref(), Some("original-user"));
+    sink.recover_audit(&report).await.unwrap();
+    report.partitions.as_mut().unwrap().attempts[0]
+        .usage
+        .provider = Some("another-provider".into());
+    assert!(
+        sink.recover_audit(&report).await.is_err(),
+        "same identity cannot adopt a different partition"
+    );
+    stop(&book);
 }

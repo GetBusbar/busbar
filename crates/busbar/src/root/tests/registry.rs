@@ -13,10 +13,9 @@ fn linked_claims() -> Vec<PlaneClaim> {
 
 /// Every scheme the linked transport rows serve, each row's own claim first.
 fn linked_schemes() -> Vec<&'static str> {
-    crate::LINKED
-        .transports
+    crate::LINKED_TRANSPORT_DOORS
         .iter()
-        .flat_map(|t| (t.claims)())
+        .flat_map(|(_, door)| crate::root::doors::claims_of(*door))
         .collect()
 }
 
@@ -478,9 +477,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
         .expect("the door serves");
         vec![DroppedDoor {
             key,
-            claims: vec![key],
-            composes_over: Vec::new(),
-            offered: facts.offered,
             upgrades: facts.upgrades,
             door,
         }]
@@ -488,84 +484,25 @@ fn dropped_doors() -> &'static [DroppedDoor] {
 }
 
 #[test]
-fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
-    use busbar_contract::abi::auth::AuthPoints;
-    use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, Line, LineAuth, Route};
-    let fixture = &dropped_doors()[0];
-    assert_eq!(
-        crate::root::serve::transport_offers(&[], dropped_doors()),
-        [(fixture.key, crate::root::doors::offers_unstated())],
-        "a dropped-in door stating no record offers what an unstated record does"
-    );
-    let peer_only = DroppedDoor {
-        key: fixture.key,
-        claims: fixture.claims.clone(),
-        composes_over: Vec::new(),
-        offered: AuthPoints::PEER,
-        upgrades: Vec::new(),
-        door: fixture.door.clone(),
-    };
-    let offers = crate::root::serve::transport_offers(&[], std::slice::from_ref(&peer_only));
-    assert_eq!(offers, [(fixture.key, AuthPoints::PEER)]);
-    let line = Line {
-        route: Route {
-            methods: busbar_contract::abi::transport::route::METHOD_POST,
-            path_form: busbar_contract::abi::transport::route::PATH_EXACT,
-            path: "/a".into(),
-            fields: Vec::new(),
-            rung: 0,
-        },
-        claimant: Claimant::Plane("a".into()),
-        dialect: 0,
-        auth: LineAuth::Chain(vec!["chain".into()], AuthPoints::HEAD),
-        upgrade: None,
-        offered: offers[0].1,
-    };
-    assert!(
-        matches!(
-            GuestList::seal(vec![line]),
-            Err(GuestRefusal::PointNotOffered(_))
-        ),
-        "a Head line on a dropped-in transport stating {{Peer}} only is refused"
-    );
-}
-
-#[test]
 fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_do() {
-    use busbar_contract::abi::auth::AuthPoints;
-    use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, Line, LineAuth, Route};
     let fixture = &dropped_doors()[0];
-    let door = |claim: &'static str, under: Vec<&'static str>, offered, upgrades| DroppedDoor {
+    let door = |claim: &'static str, upgrades| DroppedDoor {
         key: claim,
-        claims: vec![claim],
-        composes_over: under,
-        offered,
         upgrades,
         door: fixture.door.clone(),
     };
     let dropped = [
-        door("framed", Vec::new(), AuthPoints::PEER, Vec::new()),
-        door(
-            "upgraded",
-            vec!["framed"],
-            crate::root::doors::offers_unstated(),
-            vec!["upgraded"],
-        ),
+        door("framed", Vec::new()),
+        door("upgraded", vec!["upgraded"]),
     ];
     let linked = [
         LinkedTransport {
-            composes_over: || &[],
-            claims: || vec!["framed"],
             upgrades: Vec::new,
             lines: Vec::new,
-            offered: || AuthPoints::PEER,
         },
         LinkedTransport {
-            composes_over: || &["framed"],
-            claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
             lines: Vec::new,
-            offered: crate::root::doors::offers_unstated,
         },
     ];
     let carriers = crate::root::serve::upgrade_carriers(&[], &dropped);
@@ -578,54 +515,6 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
         carriers,
         crate::root::serve::upgrade_carriers(&linked, &[]),
         "the same upgrade lines as the linked rows'"
-    );
-    let offers = crate::root::serve::transport_offers(&[], &dropped);
-    assert_eq!(
-        offers,
-        crate::root::serve::transport_offers(&linked, &[]),
-        "the same offered sets as the linked rows'"
-    );
-    let line = |carriers: &[&str], offers: &[crate::root::serve::TransportOffer]| Line {
-        route: Route {
-            methods: busbar_contract::abi::transport::route::METHOD_GET,
-            path_form: busbar_contract::abi::transport::route::PATH_EXACT,
-            path: "/a".into(),
-            fields: Vec::new(),
-            rung: 0,
-        },
-        claimant: Claimant::Plane("a".into()),
-        dialect: 0,
-        auth: LineAuth::Chain(vec!["chain".into()], AuthPoints::HEAD),
-        upgrade: carriers
-            .contains(&"upgraded")
-            .then(|| "upgraded".to_string()),
-        offered: offers
-            .iter()
-            .find(|(c, _)| *c == "upgraded")
-            .expect("the upgrade claim offers")
-            .1,
-    };
-    let on_dropped = line(&carriers, &offers);
-    assert_eq!(on_dropped.upgrade.as_deref(), Some("upgraded"));
-    assert_eq!(
-        on_dropped.offered,
-        AuthPoints::PEER,
-        "it takes its framer's set"
-    );
-    assert_eq!(
-        on_dropped,
-        line(
-            &crate::root::serve::upgrade_carriers(&linked, &[]),
-            &crate::root::serve::transport_offers(&linked, &[])
-        ),
-        "the same line as on the linked rows"
-    );
-    assert!(
-        matches!(
-            GuestList::seal(vec![on_dropped]),
-            Err(GuestRefusal::PointNotOffered(_))
-        ),
-        "a Head line on the dropped-in upgrade claim is refused as on the linked one"
     );
 }
 
