@@ -128,12 +128,13 @@ backup or recovery procedure.
 
 ### Environment inputs
 
-Serving no longer uses these launch overrides. Before the first development upgrade boot, write
-their intended values into configuration; there is no separate conversion command to run.
-The current boot reports ignored launch variables with `BUSBAR-3029`, but neither imports their
-values nor refuses startup solely because they are set. In particular,
-an HTTP/1-only upstream setting can otherwise be lost. Automatic capture or an explained refusal
-remains required before the final upgrade procedure is qualified.
+Serving no longer uses these launch overrides. Boot and `--validate` refuse them with
+`BUSBAR-3029` before configuration migration or validation, naming each replacement without
+echoing its value. Write their intended values into configuration, then remove the variables
+from the launcher and validate. No automatic environment capture or separate conversion command
+is provided. An empty `BUSBAR_PROVIDERS` counts as unset; all other retired variables refuse
+even when empty. This refusal prevents an HTTP/1-only or worker setting from silently changing
+on upgrade; exact-artifact upgrade qualification remains required.
 
 | Retired variable | Current configuration |
 |---|---|

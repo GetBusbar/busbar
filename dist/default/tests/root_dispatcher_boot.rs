@@ -92,7 +92,7 @@ fn boot(tag: &str, env: &[(&str, &str)], workers: Option<usize>) -> (usize, Stri
     let log_err = log.try_clone().unwrap();
     let mut cmd = Command::new(common::boot::exe());
     cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env_remove("BUSBAR_WORKER_THREADS")
         .env_remove("TOKIO_WORKER_THREADS");
@@ -180,118 +180,56 @@ fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
 }
 
 #[test]
-fn retired_worker_environment_never_overrides_the_configured_dispatcher() {
-    for (tag, value) in [("retired-invalid", "0"), ("retired-positive", "2")] {
-        let (threads, out) = boot(tag, &[("BUSBAR_WORKER_THREADS", value)], Some(WORKERS));
-        assert_eq!(
-            threads,
-            WORKERS + 1,
-            "retired environment cannot override configured workers"
-        );
-        let notice = format!(
-            "[warn] {}: BUSBAR_WORKER_THREADS is set but ignored",
-            busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
-        );
-        let notices: Vec<&str> = out
-            .lines()
-            .filter(|line| line.starts_with(&notice) && line.contains("advanced.worker_threads"))
-            .collect();
-        assert_eq!(
-            notices.len(),
-            1,
-            "decision 160: retired runtime input is ignored and reported, never honoured: {out}"
-        );
-        assert!(
-            out.lines()
-                .filter(|line| line.contains("BUSBAR_WORKER_THREADS"))
-                .all(|line| !line.contains("DEPRECATED") && !line.contains("honored")),
-            "decision 160: retired runtime input is ignored and reported, never honoured: {out}"
-        );
-        let listening = out
-            .find("busbar listening")
-            .expect("boot() waited for the listener line");
-        assert!(
-            out.find(notices[0]).is_some_and(|at| at < listening),
-            "the notice prints before the listener: {out}"
-        );
+fn retired_worker_environment_refuses_even_with_configured_workers() {
+    for value in ["0", "2"] {
+        let out = refused(&[("BUSBAR_WORKER_THREADS", value)]);
+        assert!(out.contains("advanced.worker_threads"), "{out}");
     }
 }
 
+fn refused(env: &[(&str, &str)]) -> String {
+    let dir = fixture_dir();
+    write_configs(&dir, 0, 0, Some(WORKERS));
+    let config = dir.join("config.yaml");
+    let original = std::fs::read(&config).unwrap();
+    let mut command = Command::new(common::boot::exe());
+    command.env("BUSBAR_CONFIG", &config).env("MOCK_KEY", "x");
+    for name in ["BUSBAR_PROVIDERS", "BUSBAR_WORKER_THREADS", "BUSBAR_UPSTREAM_HTTP1_ONLY", "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE"] {
+        command.env_remove(name);
+    }
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output().expect("run refused boot");
+    let out = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(1), "{out}");
+    assert!(!out.contains("busbar listening"), "{out}");
+    assert_eq!(std::fs::read(&config).unwrap(), original, "refusal must precede config migration");
+    assert!(!dir.join("config.yaml.1.5.5").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+    out
+}
+
 #[test]
-fn every_retired_launch_variable_is_reported_at_boot_and_never_honoured() {
-    // RETIRED_LAUNCH_ENV order, each with the key the notice must name instead.
+fn every_retired_launch_variable_refuses_boot_and_never_echoes_values() {
     let retired = [
         ("BUSBAR_PROVIDERS", "providers_file"),
         ("BUSBAR_WORKER_THREADS", "advanced.worker_threads"),
         ("BUSBAR_UPSTREAM_HTTP1_ONLY", "advanced.upstream_http1_only"),
-        (
-            "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
-            "advanced.upstream_h2_prior_knowledge",
-        ),
+        ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "advanced.upstream_h2_prior_knowledge"),
     ];
-    let elsewhere = std::env::temp_dir()
-        .join(format!(
-            "busbar-retired-providers-{}-elsewhere.yaml",
-            std::process::id()
-        ))
-        .to_string_lossy()
-        .into_owned();
-    let (threads, out) = boot(
-        "retired-all",
-        &[
-            ("BUSBAR_WORKER_THREADS", "2"),
-            ("BUSBAR_UPSTREAM_HTTP1_ONLY", "true"),
-            ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "false"),
-            ("BUSBAR_PROVIDERS", elsewhere.as_str()),
-        ],
-        Some(WORKERS),
-    );
-    assert_eq!(
-        threads,
-        WORKERS + 1,
-        "decision 160: BUSBAR_WORKER_THREADS is not honoured; the configured workers run: {out}"
-    );
-    let listening = out
-        .find("busbar listening")
-        .expect("boot() waited for the listener line");
+    let canary = "retired-launch-env-value-canary";
+    let env: Vec<_> = retired.iter().map(|(name, _)| (*name, canary)).collect();
+    let out = refused(&env);
+    let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner().to_string();
     let mut last = None;
     for (name, key) in retired {
-        let notice = format!(
-            "[warn] {}: {name} is set but ignored",
-            busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner()
-        );
-        let notices: Vec<&str> = out
-            .lines()
-            .filter(|line| line.starts_with(&notice))
-            .collect();
-        assert_eq!(
-            notices.len(),
-            1,
-            "exactly one BUSBAR-3029 line for {name} at boot: {out}"
-        );
-        assert!(
-            notices[0].contains(key),
-            "the {name} notice names its replacement {key}: {out}"
-        );
-        let at = out.find(notices[0]).expect("the notice is in the log");
-        assert!(
-            at < listening,
-            "the {name} notice prints before the listener: {out}"
-        );
-        assert!(
-            last.is_none_or(|prev| prev < at),
-            "the notices print in RETIRED_LAUNCH_ENV order ({name} out of order): {out}"
-        );
+        let notice = format!("{banner}: startup refused because {name} is set");
+        let lines: Vec<_> = out.lines().filter(|line| line.contains(&notice) && line.contains(key)).collect();
+        assert_eq!(lines.len(), 1, "one explained refusal per variable: {out}");
+        let at = out.find(lines[0]).unwrap();
+        assert!(last.is_none_or(|before| before < at), "table order: {out}");
         last = Some(at);
-        assert!(
-            out.lines()
-                .filter(|line| line.contains(name))
-                .all(|line| !line.contains("DEPRECATED") && !line.contains("honored")),
-            "decision 160: {name} is ignored and reported, never honoured: {out}"
-        );
     }
-    assert!(
-        !out.contains(&elsewhere),
-        "the notice never echoes a retired variable's value: {out}"
-    );
+    assert!(!out.contains(canary), "environment values must never be echoed: {out}");
 }

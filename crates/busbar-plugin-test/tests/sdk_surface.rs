@@ -9,7 +9,7 @@ use busbar_ffi::LinkedPlugin;
 use busbar_plugin_test::suites::{
     self, AuthCase, AuthIn, Expect, MigrateExpect, Pair, PlaneCase, PlaneIn, TransportCase,
 };
-use busbar_plugin_test::{CallCx, FakeNeeds, LoginAnswer, LoginIn, PortError};
+use busbar_plugin_test::{CallCx, FakeNeeds, LoginAnswer, LoginIn, PlaneOut, PortError, TargetIn};
 
 #[allow(dead_code)]
 fn surface(p: &'static LinkedPlugin) {
@@ -88,4 +88,31 @@ fn auth_login_surface_compiles() {
     }
 
     let _login = login;
+}
+
+#[test]
+fn plane_upstream_surface_compiles() {
+    // A plugin repository drives a request and target using only its test facade.
+    fn exchange(
+        harness: &suites::harness::Harness,
+        request: &PlaneIn<'_>,
+    ) -> Result<(), PortError> {
+        let plane = harness.open_plane("plane", b"{}").expect("open plane");
+        let target = TargetIn {
+            attempt: 0,
+            flags: 0,
+            dialect: "test",
+            model: "test-model",
+            base_path: "/",
+            upstream: "test-upstream",
+            provider: "test-provider",
+            params: &[],
+        };
+        let mut sink = |_: PlaneOut<'_>| {};
+        let mut session = plane.request(request, b"{}", &mut sink)?;
+        plane.upstream(&mut session, &target, &mut sink)?;
+        plane.end(session, &mut sink)
+    }
+
+    let _exchange = exchange;
 }
