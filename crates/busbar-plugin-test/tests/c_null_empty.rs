@@ -165,7 +165,7 @@ mod empty_arm {
         },
     );
 
-    pub fn lease() -> OutLease {
+    pub fn lease() -> OutLease<'static> {
         OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot")
     }
 

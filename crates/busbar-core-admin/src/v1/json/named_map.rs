@@ -241,7 +241,7 @@ async fn put(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -276,7 +276,7 @@ async fn patch_settings(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -341,7 +341,7 @@ async fn delete(
     State(handle): State<Arc<AppHandle>>,
     Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     Extension(section): Extension<NamedMapSection>,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
@@ -357,7 +357,7 @@ async fn apply(
     principal: busbar_kernel::auth::AuthPrincipal,
     section: NamedMapSection,
     name: String,
-    headers: axum::http::HeaderMap,
+    headers: busbar_kernel::inbound::http_projection::AdminHeaders,
     mutation: Mutation,
 ) -> Response {
     let actor = principal.actor_id().to_string();

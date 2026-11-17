@@ -16,6 +16,12 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
 
+#[path = "request_registration.rs"]
+mod registration;
+use registration::SelectedCommand;
+#[path = "request_current.rs"]
+mod current;
+
 const REGISTERED: u8 = 0;
 const RESOLVING: u8 = 1;
 const READY: u8 = 2;
@@ -75,6 +81,7 @@ pub struct RequestRoutes {
     scope_kind: Option<Arc<str>>,
     catalog: Option<Arc<CatalogPlan>>,
     registration: Option<Arc<SeatPool>>,
+    registrations: Option<Arc<crate::upstreams::ConfiguredUpstreams>>,
 }
 impl RequestRoutes {
     pub fn new(
@@ -103,6 +110,7 @@ impl RequestRoutes {
             scope_kind,
             catalog,
             registration,
+            registrations: None,
         })
     }
 
@@ -287,6 +295,7 @@ impl RequestAllocation {
             pool,
             domain,
             walk,
+            command: None,
             armed: true,
         })
     }
@@ -310,6 +319,7 @@ pub struct RequestPoolReceipt {
     pool: String,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
+    command: Option<SelectedCommand>,
     armed: bool,
 }
 impl RequestPoolReceipt {
@@ -372,6 +382,11 @@ impl CommittingRequest {
     pub fn is_live(&self) -> bool {
         self.context().is_live() && self.context().admission_phase().at(COMMITTING)
     }
+    pub(in crate::plane_driver) fn accepts_governance(&self, governance: &GovState) -> bool {
+        self.context().signed_authority().is_none_or(|proof| {
+            proof.belongs_to(governance) && Arc::ptr_eq(proof.original_key(), self.key())
+        })
+    }
     pub(in crate::plane_driver) fn admitted(
         self,
         money: Arc<UnitMoney>,
@@ -426,6 +441,9 @@ impl CommittingRequest {
         book: Arc<()>,
         open: Arc<()>,
     ) -> Result<AdmittedRequest, AdmissionError> {
+        if !self.accepts_governance(&governance) {
+            return Err(AdmissionError::Principal);
+        }
         self.context()
             .admission_phase()
             .change(COMMITTING, ADMITTED)?;
@@ -436,6 +454,7 @@ impl CommittingRequest {
             grants: self.route.grants.clone(),
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
+            command: self.route.command.clone(),
             money,
             grant,
             governance,
@@ -460,6 +479,7 @@ pub struct AdmittedRequest {
     grants: Arc<BTreeMap<String, Vec<String>>>,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
+    command: Option<SelectedCommand>,
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     governance: Arc<GovState>,
@@ -467,6 +487,32 @@ pub struct AdmittedRequest {
     open: Arc<()>,
 }
 impl AdmittedRequest {
+    /// Same original monetary and invocation ownership, including after effects retire.
+    /// This comparison grants no new admission and cannot be satisfied by a reused unit number.
+    pub fn same_admission(&self, other: &Self) -> bool {
+        self.context.same_unit(&other.context)
+            && Arc::ptr_eq(&self.book, &other.book)
+            && Arc::ptr_eq(&self.open, &other.open)
+            && Arc::ptr_eq(&self.grant, &other.grant)
+            && Arc::ptr_eq(&self.governance, &other.governance)
+            && Arc::ptr_eq(&self.money, &other.money)
+            && Arc::ptr_eq(&self.routes, &other.routes)
+            && match (self.registered_command(), other.registered_command()) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    /// The original signed verification of this exact registered request, never a key lookup.
+    pub fn signed_authority(
+        &self,
+    ) -> Option<&crate::governance::current_credential::VerifiedKeyAuthority> {
+        self.is_live()
+            .then(|| self.context.signed_authority())
+            .flatten()
+            .map(Arc::as_ref)
+    }
     pub fn context(&self) -> &InvocationContext {
         &self.context
     }
@@ -523,8 +569,16 @@ impl AdmittedRequest {
         open: &Arc<()>,
         grant: &Arc<AdmitGrant>,
     ) -> bool {
-        self.is_live()
-            && Arc::ptr_eq(&self.book, book)
+        self.is_live() && self.matches_money_identity(book, open, grant)
+    }
+    /// Terminal cleanup only: retirement closes effects but does not erase the original Open.
+    pub(in crate::plane_driver) fn matches_money_identity(
+        &self,
+        book: &Arc<()>,
+        open: &Arc<()>,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.book, book)
             && Arc::ptr_eq(&self.open, open)
             && Arc::ptr_eq(&self.grant, grant)
     }
@@ -533,3 +587,16 @@ impl AdmittedRequest {
 #[cfg(test)]
 #[path = "tests/request_admission_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/request_credential_tests.rs"]
+mod credential_tests;
+#[cfg(test)]
+#[path = "tests/request_registration_support.rs"]
+mod registration_support;
+#[cfg(test)]
+pub(crate) use registration_support::CommandAdmissionFixture;
+
+#[cfg(test)]
+#[path = "tests/request_current_tests.rs"]
+mod current_tests;

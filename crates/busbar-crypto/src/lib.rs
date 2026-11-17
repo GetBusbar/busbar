@@ -29,6 +29,8 @@ mod signer;
 pub mod testing;
 #[cfg(feature = "tls")]
 pub mod tls;
+/// Per-operation authority for verification through the selected backend.
+pub mod verification;
 
 pub use signer::{
     approve_signer, verify, Boundary, LocalSigner, PublicKey, SigAlg, SignError, Signer,
@@ -90,6 +92,8 @@ pub enum Error {
     Mismatch,
     /// A start-up self-test failed.
     SelfTest(&'static str),
+    /// The selected provider cannot perform the operation.
+    ProviderUnavailable,
 }
 
 impl fmt::Display for Error {
@@ -99,6 +103,7 @@ impl fmt::Display for Error {
             Self::Rng(r) => r.fmt(f),
             Self::Invalid(w) => write!(f, "invalid crypto input: {w}"),
             Self::Mismatch => f.write_str("verification failed"),
+            Self::ProviderUnavailable => f.write_str("crypto provider unavailable"),
             Self::SelfTest(w) => write!(f, "crypto self-test failed: {w}"),
         }
     }
@@ -127,6 +132,7 @@ pub(crate) fn map(e: b::Error) -> Error {
             backend: BACKEND,
             reason,
         }),
+        b::Error::ProviderUnavailable => Error::ProviderUnavailable,
         b::Error::Rng => Error::Rng(RngError),
         b::Error::Invalid(w) => Error::Invalid(w),
         b::Error::Mismatch => Error::Mismatch,

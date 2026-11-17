@@ -34,10 +34,20 @@ use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
 use super::{CallerEnd, HeadFields};
 
+#[path = "port_prepared.rs"]
+mod prepared;
+pub(crate) use prepared::PreparedExchange;
+pub use prepared::RequestDeclaration;
+use prepared::{FrozenUsage, PreparationFacts};
+
 /// The plane's calls on one session, as a driver sees them. The port implements it; a test implements it over a
 /// script.
 pub trait Calls {
     type Session: Send + 'static;
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (0, &[], &[])
+    }
 
     /// Declared resource kinds require the separate completed resource admission producer.
     fn resource_scoped(&self, _route: u32) -> bool {
@@ -90,10 +100,36 @@ pub trait Calls {
         t: &TargetIn<'_>,
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError>;
+
+    fn channel(
+        &self,
+        _session: &mut Self::Session,
+        _target: &TargetIn<'_>,
+        _sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        Err(PortError::Refused {
+            code: busbar_plugin_abi::fail::refused::R_UNSUPPORTED,
+            text: "".into(),
+            error: None,
+        })
+    }
 }
 
 impl Calls for dyn PlanePort {
     type Session = PlaneSession;
+
+    fn channel(
+        &self,
+        session: &mut PlaneSession,
+        target: &TargetIn<'_>,
+        sink: &mut dyn FnMut(PlaneOut<'_>),
+    ) -> Result<(), PortError> {
+        PlanePort::channel(self, session, target, sink)
+    }
+
+    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+        (self.facts(), self.usage_classes(), self.attempt_classes())
+    }
 
     fn resource_scoped(&self, route: u32) -> bool {
         !self.resource_kinds(route).is_empty()
@@ -168,6 +204,7 @@ const EGRESS_CLASS_MAX: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     Request,
+    Channel,
     Piece(u32),
     Upstream,
     Rewrite,
@@ -216,6 +253,9 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    SelectedRefused(super::port_egress::SelectedSendError),
+    /// A core-owned running-unit refusal, rendered through the actual route's mapping.
+    CoreRefused(u32),
     /// The original request's one monetary admission refused before effects.
     AdmissionRefused(crate::refusal::ClientRefusal),
     /// Enforcement cannot discover its scope without first performing an effect.
@@ -337,6 +377,11 @@ pub struct ExMsgItem {
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
+    pub(super) command_channel: bool,
+    emitted: bool,
+    attempt_usage: Vec<AttemptUsageItem>,
+    attempt_end: Option<busbar_plugin_abi::fallback_usage::AttemptEnd>,
+    preparation: PreparationFacts,
     resource_echo: Option<ResourceEcho>,
     pub client: Vec<ToClient>,
     pub forward: Option<Forward>,
@@ -371,8 +416,35 @@ pub struct Answer {
     trailers: Option<HeadFields>,
 }
 
+#[derive(Debug)]
+struct AttemptUsageItem {
+    attempt: u32,
+    class: Box<str>,
+    amount: u64,
+    scale: u32,
+    source: busbar_plugin_abi::fallback_usage::UsageSource,
+}
+
+impl AttemptUsageItem {
+    fn borrowed(&self) -> busbar_plugin_abi::fallback_usage::AttemptUsage<'_> {
+        busbar_plugin_abi::fallback_usage::AttemptUsage {
+            attempt: self.attempt,
+            class: &self.class,
+            amount: self.amount,
+            scale: self.scale,
+            source: self.source,
+        }
+    }
+}
+
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        None
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        None
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         None
     }
@@ -445,6 +517,12 @@ impl<'a> Buffered<'a> {
 }
 
 impl Effects for Buffered<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.inner.admission_owner()
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.inner.data()
+    }
     fn admission(&self) -> Option<&super::port_admission::Pending> {
         self.inner.admission()
     }
@@ -586,7 +664,51 @@ impl Answer {
         once: &mut Once,
         effects: &dyn Effects,
     ) -> Result<(), Violation> {
+        if origin == Origin::Channel {
+            match &out {
+                PlaneOut::Channel { carrier, .. }
+                    if *carrier == busbar_plugin_abi::plane::CARRIER_STDIO
+                        && self.intents.is_empty() => {}
+                PlaneOut::Fact(_, _) => {}
+                _ => return Err(Violation::BadRecords),
+            }
+        }
         match out {
+            PlaneOut::SelectedResource(selected) => {
+                if origin != Origin::Upstream {
+                    return Err(Violation::BadRecords);
+                }
+                self.preparation.selected(selected)?;
+            }
+            PlaneOut::PreparedEstimates(estimates) => {
+                if origin != Origin::Upstream {
+                    return Err(Violation::BadRecords);
+                }
+                self.preparation.estimates(estimates)?;
+            }
+            PlaneOut::AttemptUsage(usage) => {
+                if !matches!(origin, Origin::Piece(FROM_UPSTREAM) | Origin::End)
+                    || (matches!(origin, Origin::Piece(_)) && self.default_exchange != 0)
+                    || self.attempt_end.is_some()
+                {
+                    return Err(Violation::BadRecords);
+                }
+                self.attempt_usage.push(AttemptUsageItem {
+                    attempt: usage.attempt,
+                    class: usage.class.into(),
+                    amount: usage.amount,
+                    scale: usage.scale,
+                    source: usage.source,
+                });
+            }
+            PlaneOut::AttemptUsageEnd(end) => {
+                if !matches!(origin, Origin::Piece(FROM_UPSTREAM) | Origin::End)
+                    || (matches!(origin, Origin::Piece(_)) && self.default_exchange != 0)
+                    || self.attempt_end.replace(end).is_some()
+                {
+                    return Err(Violation::BadRecords);
+                }
+            }
             PlaneOut::ResourceEcho(echo) => {
                 if origin != Origin::Upstream || self.resource_echo.is_some() {
                     return Err(Violation::BadRecords);
@@ -669,7 +791,10 @@ impl Answer {
             PlaneOut::Conversation(bytes) => {
                 self.conversation = Some(busbar_contract::secure::SecureVec::from(bytes));
             }
-            PlaneOut::Emit { carrier, bytes } => effects.emit(carrier, bytes),
+            PlaneOut::Emit { carrier, bytes } => {
+                self.emitted = true;
+                effects.emit(carrier, bytes);
+            }
             PlaneOut::Finish => self.finish = true,
             PlaneOut::UpCarrier { carrier, outbound } => {
                 upstream_placed(origin)?;
@@ -1021,14 +1146,17 @@ impl Answer {
                 framing,
                 key,
                 head,
-            } => self.intents.push(Intent::Channel {
-                exchange,
-                carrier,
-                flags,
-                framing,
-                key: key.to_owned(),
-                head: head.rest().to_vec(),
-            }),
+            } => {
+                self.command_channel = origin == Origin::Channel;
+                self.intents.push(Intent::Channel {
+                    exchange,
+                    carrier,
+                    flags,
+                    framing,
+                    key: key.to_owned(),
+                    head: head.rest().to_vec(),
+                });
+            }
             PlaneOut::ChReady { exchange, tail } => self.intents.push(Intent::ChReady {
                 exchange,
                 tail: tail.to_vec(),
@@ -1078,6 +1206,12 @@ fn fact_val(value: FactRef<'_>) -> FactVal {
 
 /// One plane session under core's hand.
 pub struct Task<'k, K: Calls + ?Sized> {
+    command_called: bool,
+    active_attempt: Option<super::NativeAttempt>,
+    pending: Option<Arc<super::port_admission::Pending>>,
+    data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
+    declaration: Arc<FrozenUsage>,
+    session_classes: std::collections::BTreeSet<String>,
     admitted: Option<(
         super::request_admission::AdmittedRequest,
         Arc<super::request_admission::RequestRoutes>,
@@ -1099,12 +1233,46 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
-        // Factual scope selection is not completed execution admission. Until the root
-        // supplies that opaque receipt, every session entrypoint refuses before request.
-        if calls.resource_scoped(req.route) {
+        let data = effects.data().cloned();
+        if let Some(data) = &data {
+            if !data.is_live()
+                || data.selected().request().route() != req.route
+                || req.request_id != data.binding().invocation().request_id().get()
+                || req.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
+                || req.identity != data.identity().identity_records()
+                || req.method != data.snapshot().method()
+                || req.path != data.snapshot().path()
+                || req.query != data.snapshot().query()
+                || body != data.snapshot().body()
+                || !req
+                    .headers
+                    .iter()
+                    .map(|field| (field.name.get(), field.value.get()))
+                    .eq(data.snapshot().headers())
+                || !effects
+                    .invocation()
+                    .is_some_and(|context| context.same_unit(data.context()))
+                || !calls.resource_scoped(req.route)
+            {
+                return Err(SessionError::NotDriven);
+            }
+        } else if calls.resource_scoped(req.route) {
+            // Factual resource selection alone never grants preparatory plugin dispatch.
             return Err(SessionError::NotDriven);
         }
         let buffered = Buffered::new(effects);
+        let origin = effects
+            .admission()
+            .and_then(|pending| pending.original_route())
+            .cloned();
+        if origin.as_ref().is_some_and(|origin| {
+            !effects
+                .invocation()
+                .is_some_and(|context| origin.accepts(context, req.route))
+        }) {
+            return Err(SessionError::NotDriven);
+        }
+        let declaration = FrozenUsage::of(calls, Some(req.route), origin)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1114,6 +1282,12 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            command_called: false,
+            active_attempt: None,
+            pending: effects.admission_owner().cloned(),
+            data,
+            declaration,
+            session_classes: std::collections::BTreeSet::new(),
             admitted: None,
             invocation,
             calls,
@@ -1135,6 +1309,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
         let buffered = Buffered::new(effects);
+        let declaration = FrozenUsage::of(calls, None, None)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1144,6 +1319,12 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
+            command_called: false,
+            active_attempt: None,
+            pending: None,
+            data: None,
+            declaration,
+            session_classes: std::collections::BTreeSet::new(),
             admitted: None,
             invocation,
             calls,
@@ -1161,12 +1342,120 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     pub fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
         self.invocation.as_ref()
     }
+    pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.data.as_ref()
+    }
+
+    pub(crate) fn is_command(&self) -> bool {
+        self.admitted
+            .as_ref()
+            .is_some_and(|(request, _)| request.registered_command().is_some())
+    }
+
+    /// The selected command callback runs once, after the same request's admission and hooks.
+    /// Attempt zero is reserved for this callback: it is not an HTTP preparation ordinal.
+    pub(crate) fn command(
+        &mut self,
+        wants: &super::port_upstream::Wants,
+        dialect: &str,
+        effects: &dyn Effects,
+    ) -> Result<Answer, SessionError> {
+        let (request, routes) = self.admitted.as_ref().ok_or(SessionError::NotDriven)?;
+        if self.command_called
+            || !request.is_live()
+            || !self
+                .invocation
+                .as_ref()
+                .is_some_and(|context| context.same_unit(request.context()))
+            || !request.accepts_forward(routes, wants.model.as_deref(), wants.upstream.as_deref())
+            || self.data.is_some()
+        {
+            return Err(SessionError::NotDriven);
+        }
+        let definition = request
+            .registered_command()
+            .cloned()
+            .ok_or(SessionError::NotDriven)?;
+        self.command_called = true;
+        let target = TargetIn {
+            attempt: 0,
+            flags: 0,
+            dialect,
+            model: "",
+            base_path: "",
+            upstream: &definition.name,
+            provider: "{}",
+            params: &[],
+            admission: &[],
+        };
+        let buffered = Buffered::new(effects);
+        let mut answer = Answer::default();
+        let session = self.session.as_mut().ok_or(SessionError::Over)?;
+        let once = &mut self.once;
+        let called = self.calls.channel(session, &target, &mut |out| {
+            answer.take(out, Origin::Channel, once, &buffered);
+        });
+        if answer.intents.len() != 1 {
+            answer.violation.get_or_insert(Violation::BadRecords);
+        }
+        let answer = self.settle(called, answer)?;
+        buffered.release();
+        Ok(answer)
+    }
+
+    pub(crate) fn install_attempt(
+        &mut self,
+        attempt: super::NativeAttempt,
+    ) -> Result<(), SessionError> {
+        if self.active_attempt.is_some()
+            || !attempt.accepts(&self.request_declaration()?)
+            || match (self.data.as_ref(), attempt.data()) {
+                (Some(expected), Some(actual)) => !Arc::ptr_eq(expected, actual),
+                (None, None) => false,
+                _ => true,
+            }
+        {
+            return Err(SessionError::NotDriven);
+        }
+        self.active_attempt = Some(attempt);
+        Ok(())
+    }
+
+    pub(crate) fn finish_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.take() {
+            attempt.seal().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn answered_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.as_mut() {
+            attempt.answered().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn served_attempt(&mut self) -> Result<(), SessionError> {
+        if let Some(attempt) = self.active_attempt.as_mut() {
+            attempt.served().map_err(|_| SessionError::NotDriven)?;
+        }
+        Ok(())
+    }
 
     pub(crate) fn bind_admission(
         &mut self,
         pending: &super::port_admission::Pending,
     ) -> Result<(), SessionError> {
         let admitted = pending.admitted().ok_or(SessionError::NotDriven)?;
+        if let Some(data) = &self.data {
+            let execution = data.execution().ok_or(SessionError::NotDriven)?;
+            if !execution.context().same_unit(admitted.request.context())
+                || execution.binding().check_executing().is_err()
+                || !data.is_live()
+            {
+                return Err(SessionError::NotDriven);
+            }
+        }
         if self.admitted.is_some()
             || !self
                 .invocation
@@ -1175,6 +1464,16 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         {
             return Err(SessionError::NotDriven);
         }
+        if admitted.selected.is_some()
+            && self
+                .pending
+                .as_ref()
+                .is_none_or(|owner| !std::ptr::eq(owner.as_ref(), pending))
+        {
+            return Err(SessionError::NotDriven);
+        }
+        self.selected_session_usage(&self.usage)?;
+        pending.accept_admission()?;
         self.admitted = Some((admitted.request.clone(), pending.routes()));
         Ok(())
     }
@@ -1243,11 +1542,8 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 answer.take(out, Origin::End, once, &buffered);
             })
             .map_err(SessionError::Port)?;
-        let answer = answer.seal();
-        if let Some(v) = answer.violation {
-            return Err(SessionError::Violation(v));
-        }
-        self.keep_usage(&answer)?;
+        let answer = self.checked(answer)?;
+        self.finish_attempt()?;
         buffered.release();
         Ok(answer.seal())
     }
@@ -1277,6 +1573,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             .attempt
             .as_ref()
             .is_some_and(|a| a.verdict == ATT_DECLINE);
+        if let Err(violation) =
+            answer
+                .preparation
+                .validate(self.declaration.declaration(), target, declined)
+        {
+            answer.violation.get_or_insert(violation);
+        }
         if !declined && answer.resource_echo.as_ref().map(ResourceEcho::borrowed) != expected {
             answer.violation.get_or_insert(Violation::BadRecords);
         }
@@ -1288,6 +1591,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     /// The last USAGE per (class, source) any answer of this session stated (IF §12.4).
     pub fn usage(&self) -> &SessionUsage {
         &self.usage
+    }
+
+    pub(crate) fn selected_attempts(&self) -> bool {
+        self.declaration.declaration().facts()
+            & (busbar_plugin_abi::plane::FB_ATTEMPT_USAGE
+                | busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES)
+            != 0
     }
 
     /// Whether the session is still open.
@@ -1309,10 +1619,38 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
 
     /// A violation drops the session, which cancels it; the plane is told nothing.
     fn checked(&mut self, answer: Answer) -> Result<Answer, SessionError> {
-        let answer = answer.seal();
+        let mut answer = answer.seal();
+        if self.data.as_ref().is_some_and(|data| !data.is_live()) {
+            self.session = None;
+            return Err(SessionError::NotDriven);
+        }
+        if self.data.is_some()
+            && (answer.emitted
+                || !answer.ex_msgs.is_empty()
+                || answer.detach.is_some()
+                || answer.wake_at.is_some()
+                || answer
+                    .client
+                    .iter()
+                    .any(|item| matches!(item, ToClient::Msg { .. }))
+                || answer
+                    .exchanges
+                    .iter()
+                    .any(|exchange| exchange.id != 0 || !exchange.msgs.is_empty())
+                || answer.intents.iter().any(|intent| {
+                    !matches!(
+                        intent,
+                        Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
+                    )
+                }))
+        {
+            self.session = None;
+            return Err(SessionError::NotDriven);
+        }
         if let (Some(forward), Some((admitted, routes))) = (&answer.forward, &self.admitted) {
             let wants = super::port_upstream::Wants::from_facts(&forward.wants);
-            if !admitted.accepts_route(routes, wants.model.as_deref()) {
+            if !admitted.accepts_forward(routes, wants.model.as_deref(), wants.upstream.as_deref())
+            {
                 self.session = None;
                 return Err(SessionError::NotDriven);
             }
@@ -1321,14 +1659,127 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::Violation(v));
         }
-        if let Err(error) = self.keep_usage(&answer) {
-            self.session = None;
-            return Err(error);
+        let mut session_classes = self.session_classes.clone();
+        session_classes.extend(answer.usage.iter().map(|usage| usage.class.to_string()));
+        for intent in &answer.intents {
+            match intent {
+                Intent::Observe { counts, .. } => {
+                    session_classes.extend(counts.iter().map(|(class, _, _)| class.clone()))
+                }
+                Intent::ObsScope { require, .. } => session_classes.extend(require.iter().cloned()),
+                _ => {}
+            }
         }
+        if self.once.forwarded
+            && session_classes.iter().any(|class| {
+                self.declaration
+                    .declaration()
+                    .validate_session_class(class)
+                    .is_err()
+            })
+        {
+            self.session = None;
+            return Err(SessionError::Violation(Violation::BadRecords));
+        }
+        let usage = self
+            .validated_usage(&answer)
+            .inspect_err(|_| self.session = None)?;
+        if self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.admitted())
+            .is_some_and(|unit| unit.selected.is_some())
+            && usage.last().iter().any(|report| {
+                !self
+                    .declaration
+                    .classes
+                    .iter()
+                    .any(|class| class.class == report.class)
+                    || super::usage::scaled(report.amount, report.scale).is_none()
+            })
+        {
+            self.session = None;
+            return Err(SessionError::Violation(Violation::BadRecords));
+        }
+        if !answer.attempt_usage.is_empty() || answer.attempt_end.is_some() {
+            let Some(attempt) = self.active_attempt.as_mut() else {
+                self.session = None;
+                return Err(SessionError::Violation(Violation::BadRecords));
+            };
+            let reports: Vec<_> = answer
+                .attempt_usage
+                .iter()
+                .map(AttemptUsageItem::borrowed)
+                .collect();
+            let rounded = attempt
+                .observe(&reports, answer.attempt_end)
+                .map_err(|error| {
+                    self.session = None;
+                    match error {
+                        super::NativeAttemptError::Usage(_) => {
+                            SessionError::Violation(Violation::BadRecords)
+                        }
+                        _ => SessionError::NotDriven,
+                    }
+                })?;
+            if rounded {
+                for class in answer
+                    .attempt_usage
+                    .iter()
+                    .filter(|usage| {
+                        super::usage::scaled(usage.amount, usage.scale)
+                            .is_some_and(|(_, rounded)| rounded)
+                    })
+                    .map(|usage| &usage.class)
+                    .collect::<std::collections::BTreeSet<_>>()
+                {
+                    answer.audits.push(AuditRow {
+                        verdict: AUDIT_DEGRADED,
+                        action: super::port_money::ACTION_ROUNDED.into(),
+                        resource: format!(
+                            "unit:{} class:{class}",
+                            self.invocation
+                                .as_ref()
+                                .expect("committed task has invocation")
+                                .unit()
+                        )
+                        .into(),
+                    });
+                }
+            }
+        }
+        let session_rounded = self.selected_session_usage(&usage)?;
+        if session_rounded {
+            for class in usage
+                .last()
+                .iter()
+                .filter(|usage| {
+                    super::usage::scaled(usage.amount, usage.scale)
+                        .is_some_and(|(_, rounded)| rounded)
+                })
+                .map(|usage| &usage.class)
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                answer.audits.push(AuditRow {
+                    verdict: AUDIT_DEGRADED,
+                    action: super::port_money::ACTION_ROUNDED.into(),
+                    resource: format!(
+                        "unit:{} class:{class}",
+                        self.invocation
+                            .as_ref()
+                            .expect("selected task has invocation")
+                            .unit()
+                    )
+                    .into(),
+                });
+            }
+        }
+        self.usage = usage;
+        self.session_classes = session_classes;
         Ok(answer.seal())
     }
 
-    fn keep_usage(&mut self, answer: &Answer) -> Result<(), SessionError> {
+    fn validated_usage(&self, answer: &Answer) -> Result<SessionUsage, SessionError> {
         let mut usage = self.usage.clone();
         for u in &answer.usage {
             let rec = UsageRec {
@@ -1340,8 +1791,33 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 .answer(&u.class, rec)
                 .map_err(|why| SessionError::Violation(Violation::Usage(why)))?;
         }
-        self.usage = usage;
-        Ok(())
+        Ok(usage)
+    }
+
+    fn selected_session_usage(&self, usage: &SessionUsage) -> Result<bool, SessionError> {
+        let Some(money) = self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.admitted())
+            .and_then(|admitted| admitted.selected.as_ref())
+        else {
+            return Ok(false);
+        };
+        let rounded = money
+            .observe_session(&self.request_declaration()?, usage)
+            .map_err(|error| match error {
+                super::NativeAttemptError::Usage(_) => {
+                    SessionError::Violation(Violation::BadRecords)
+                }
+                _ => SessionError::NotDriven,
+            })?;
+        match money.checkpoint().map_err(|_| SessionError::NotDriven)? {
+            super::Checkpoint::Continue => Ok(rounded),
+            super::Checkpoint::Cut => Err(SessionError::CoreRefused(
+                busbar_plugin_abi::fail::refused::R_BUDGET,
+            )),
+            super::Checkpoint::Unpriced => Err(SessionError::NotDriven),
+        }
     }
 }
 

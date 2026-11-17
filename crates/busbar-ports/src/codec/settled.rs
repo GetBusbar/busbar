@@ -135,13 +135,14 @@ fn settled_records(mut recs: Records<'_>) -> Result<Option<SettledOut<'_>>, RecE
     }))
 }
 
+/// The settled part judged against the open's purpose. A canonical open may not answer CORE_CFG. A converting
+/// open that answers no CONFIG is "unchanged" (#432): `Ok(None)`, and the caller settles the bag as bound.
 pub fn for_purpose<'a>(
     recs: Records<'a>,
     converting: bool,
 ) -> Result<Option<SettledOut<'a>>, RecErr> {
     let out = settled_records(recs)?;
     match (&out, converting) {
-        (None, true) => Err(RecErr::Truncated),
         (Some(out), false) if !out.core_cfg.rest().is_empty() => {
             Err(RecErr::Unknown(tag::CORE_CFG))
         }
