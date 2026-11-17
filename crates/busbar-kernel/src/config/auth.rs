@@ -394,9 +394,6 @@ pub struct AuthPolicyCfg {
     /// Empty by default.
     #[serde(default)]
     pub mint_ceilings: std::collections::BTreeMap<String, MintCeilingCfg>,
-    /// ADMIN-API-1.6 6.2: when `true`, a guarded config mutation without `If-Match` is refused 428
-    /// (`invalid_request` / `if_match_required`). Absent or `false` ⇒ a missing `If-Match` is accepted.
-    pub require_if_match: Option<bool>,
 }
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
@@ -503,6 +500,9 @@ pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthDeployCfg {
+    /// ADMIN-API-1.6 6.2: when true, a guarded config mutation without `If-Match` is refused
+    /// with 428 (`invalid_request` / `if_match_required`). Absent or false accepts its absence.
+    pub require_if_match: Option<bool>,
     /// See [`AuthCfg::signing_key`].
     #[serde(default)]
     pub signing_key: Option<SecretRef>,
@@ -627,6 +627,7 @@ pub struct GlobalLimitCfg {
 impl Default for AuthDeployCfg {
     fn default() -> Self {
         Self {
+            require_if_match: None,
             signing_key: None,
             chain: Vec::new(),
             admin_auth: default_admin_auth_names(),
@@ -646,6 +647,8 @@ impl Default for AuthDeployCfg {
 pub struct AuthCfg {
     /// The authored native verifier cache policy, retained for config round trips.
     pub verdict_cache: VerdictCacheCfg,
+    /// Whether guarded admin mutations require `If-Match`; copied from the direct `auth` key.
+    pub require_if_match: Option<bool>,
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
     /// resolves the same key). REQUIRED when the data-plane chain names the built-in `keys` verifier
@@ -684,6 +687,7 @@ impl AuthCfg {
         #[derive(Serialize)]
         struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
             verdict_cache: &'a VerdictCacheCfg,
+            require_if_match: &'a Option<bool>,
             signing_key: F0,
             chain: F1,
             admin_auth: F2,
@@ -694,6 +698,7 @@ impl AuthCfg {
         }
         View {
             verdict_cache: &self.verdict_cache,
+            require_if_match: &self.require_if_match,
             signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
             chain: self
                 .chain
@@ -721,6 +726,7 @@ impl AuthCfg {
     pub fn default_none() -> Self {
         Self {
             verdict_cache: VerdictCacheCfg::default(),
+            require_if_match: None,
             signing_key: None,
             chain: vec![],
             admin_auth: default_admin_auth(),

@@ -574,6 +574,8 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
+            loaded.resource_ownership.validate_named_maps(&doc)
+                .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
                 .map_err(AdminError::Validation)?;
             if let Some(rejection) =
@@ -584,10 +586,8 @@ async fn apply(
             let built = Box::pin(async {
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
+                let base_hook_names = loaded.resource_ownership.hook_names().clone();
+                let base_group_names = loaded.resource_ownership.group_names().clone();
                 busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
                 Box::pin(busbar_kernel::build_app_from_config(
                     cfg,

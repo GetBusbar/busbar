@@ -1926,6 +1926,13 @@ impl ListenerPlan {
                 });
             }
         }
+        for line in crate::root::port_mount::guest_lines(&served.ports, &chain) {
+            lines.push(ListenerPlaneLine {
+                line,
+                transport: self.root_claim()?.into(),
+                root_only: true,
+            });
+        }
         mounted.plane_keys = Some(
             served
                 .planes
@@ -3085,7 +3092,7 @@ pub(crate) fn door_mounts_planned(
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use foldhash::HashMap;
 
-    let public = if plan.is_none_or(|(_, _, at)| at == "listen") {
+    let mut public = if plan.is_none_or(|(_, _, at)| at == "listen") {
         public_routes(&served)
     } else {
         Vec::new()
@@ -3129,6 +3136,14 @@ pub(crate) fn door_mounts_planned(
         }
     }
 
+    // Without a physical ListenerPlan (the actual-root fixtures), seal the same native lines.
+    // A planned listener already supplied these in its complete immutable guest list.
+    if physical.is_none() {
+        lines.extend(crate::root::port_mount::guest_lines(
+            &served.ports,
+            data_chain,
+        ));
+    }
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
@@ -3244,6 +3259,18 @@ pub(crate) fn door_mounts_planned(
             .collect(),
         frames: Mutex::default(),
     })?;
+    if plan.is_none_or(|(_, _, at)| at == "listen") {
+        public.extend(crate::root::port_mount::routes(
+            &routes.served.ports,
+            routes
+                .served
+                .native
+                .as_deref()
+                .map(crate::root::min3_boot::signed_ingress),
+            routes.served.billing.as_ref(),
+            Some(Arc::clone(&routes)),
+        ));
+    }
     if let Some((plan, _, _)) = plan {
         {
             let mut nests = plan
@@ -3514,7 +3541,7 @@ pub(crate) fn line_routes(
 
 pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     let tables = &served.tables;
-    let mut tail: Vec<PlaneRouteSpec> = served
+    let tail: Vec<PlaneRouteSpec> = served
         .planes
         .iter()
         .flat_map(|p| p.snapshot.admin_routes.iter())
@@ -3551,15 +3578,6 @@ pub(crate) fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
             })
         })
         .collect();
-    // The MIN-3 plane instances serve their data routes through their ports (PLANE-BOOT-MOUNT).
-    tail.extend(crate::root::port_mount::routes(
-        &served.ports,
-        served
-            .native
-            .as_deref()
-            .map(crate::root::min3_boot::signed_ingress),
-        served.billing.as_ref(),
-    ));
     tail
 }
 

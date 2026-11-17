@@ -365,6 +365,7 @@ impl Fixture {
             startup,
             book,
         } = self;
+        let export_observers = crate::root::export_observer::ExportObservers::new();
         let post = PostServe {
             admin: None,
             lines: lines
@@ -374,6 +375,9 @@ impl Fixture {
             generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
             exports: crate::root::exports::ports::Exports::new(Vec::new())
                 .expect("no configured exports"),
+            export_captures: Arc::default(),
+            export_observer_retry: ExportRetry::start(Arc::clone(&export_observers)),
+            export_observers,
             control_drain: Box::pin(async {}),
             node_lease: None,
             flusher,

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The launch variables 1.6.0 retired (BUSBAR-3029). Serving never reads them; the boot and `--validate` only
-//! report, through [`ignored_launch_env`], that a set one is ignored, before the config load that can refuse.
+//! The launch variables 1.6.0 retired (BUSBAR-3029). Boot and `--validate` refuse a set
+//! retired variable through [`check_launch_env`] before migrating or loading config.
 use std::ffi::OsString;
 
 /// Launch env vars 1.6.0 no longer reads. The ONLY place in the workspace that spells their names
-/// (law: `dist/default/tests/retired_env_single_source.rs` and this file's tests); `ignored_launch_env()`
-/// reports them.
+/// (law: `dist/default/tests/retired_env_single_source.rs` and this file's tests).
 pub(crate) struct Retired {
     pub name: &'static str,
     /// An empty BUSBAR_PROVIDERS selected nothing in 1.5.5, so it counts as unset.
@@ -38,22 +37,26 @@ pub(crate) const RETIRED_LAUNCH_ENV: [Retired; 4] = [
     },
 ];
 
-/// One stderr line per retired variable that is set (an empty `BUSBAR_PROVIDERS` is unset).
-/// The value is never echoed.
-pub(crate) fn ignored_launch_env(env: impl Fn(&str) -> Option<OsString>) -> Vec<String> {
-    RETIRED_LAUNCH_ENV
+/// Refuse every set retired variable, naming its replacement without echoing its value.
+pub(crate) fn check_launch_env(env: impl Fn(&str) -> Option<OsString>) -> Result<(), String> {
+    let refusals: Vec<String> = RETIRED_LAUNCH_ENV
         .iter()
         .filter(|r| env(r.name).is_some_and(|v| !(r.empty_is_unset && v.is_empty())))
         .map(|r| {
             format!(
-                "[warn] {code}: {name} is set but ignored (busbar 1.6 no longer reads it); use {use_instead}. \
+                "{code}: startup refused because {name} is set (busbar 1.6 no longer reads it); use {use_instead}. \
                  Write its value into config.yaml, then remove {name} from the launcher.",
                 code = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner(),
                 name = r.name,
                 use_instead = r.use_instead
             )
         })
-        .collect()
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -70,20 +73,44 @@ mod tests {
     }
 
     #[test]
-    fn ignored_launch_env_reports_each_set_variable_once_in_table_order() {
+    fn retired_launch_settings_refuse_instead_of_silently_changing_behavior() {
+        for retired in &RETIRED_LAUNCH_ENV {
+            let refusal = check_launch_env(env_of(&[(retired.name, "launch-setting-canary")]))
+                .expect_err("a retired setting must block startup");
+            assert!(refusal.contains(retired.name), "{refusal}");
+            assert!(refusal.contains(retired.use_instead), "{refusal}");
+            assert!(refusal.contains("refused"), "{refusal}");
+            assert!(!refusal.contains("launch-setting-canary"), "{refusal}");
+        }
+    }
+
+    #[test]
+    fn retired_launch_check_preserves_the_empty_provider_and_presence_rules() {
+        assert!(check_launch_env(env_of(&[])).is_ok());
+        assert!(check_launch_env(env_of(&[("BUSBAR_PROVIDERS", "")])).is_ok());
+        assert!(check_launch_env(env_of(&[("TOKIO_WORKER_THREADS", "3")])).is_ok());
+        for retired in &RETIRED_LAUNCH_ENV[1..] {
+            assert!(check_launch_env(env_of(&[(retired.name, "")])).is_err());
+        }
+    }
+
+    #[test]
+    fn refusal_reports_each_set_variable_once_in_table_order() {
         let banner = busbar_kernel::diagnostics::RETIRED_ENV_VAR_IGNORED.banner();
-        let lines = ignored_launch_env(env_of(&[
+        let refusal = check_launch_env(env_of(&[
             ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "1"),
             ("BUSBAR_UPSTREAM_HTTP1_ONLY", ""),
             ("BUSBAR_WORKER_THREADS", "4"),
             ("BUSBAR_PROVIDERS", "/old/providers.yaml"),
             ("TOKIO_WORKER_THREADS", "3"),
-        ]));
+        ]))
+        .unwrap_err();
+        let lines: Vec<&str> = refusal.lines().collect();
         assert_eq!(lines.len(), RETIRED_LAUNCH_ENV.len(), "{lines:#?}");
         for (line, retired) in lines.iter().zip(&RETIRED_LAUNCH_ENV) {
             assert!(
                 line.starts_with(&format!(
-                    "[warn] {banner}: {} is set but ignored",
+                    "{banner}: startup refused because {} is set",
                     retired.name
                 )),
                 "{line}"
@@ -95,18 +122,20 @@ mod tests {
             );
         }
 
-        assert!(ignored_launch_env(env_of(&[])).is_empty());
+        assert!(check_launch_env(env_of(&[])).is_ok());
         assert!(
-            ignored_launch_env(env_of(&[("BUSBAR_PROVIDERS", "")])).is_empty(),
+            check_launch_env(env_of(&[("BUSBAR_PROVIDERS", "")])).is_ok(),
             "an empty BUSBAR_PROVIDERS selected nothing"
         );
-        let lines = ignored_launch_env(env_of(&[
+        let refusal = check_launch_env(env_of(&[
             ("BUSBAR_PROVIDERS", ""),
             ("BUSBAR_WORKER_THREADS", ""),
-        ]));
+        ]))
+        .unwrap_err();
+        let lines: Vec<&str> = refusal.lines().collect();
         assert_eq!(lines.len(), 1, "{lines:#?}");
         assert!(
-            lines[0].contains(": BUSBAR_WORKER_THREADS is set"),
+            lines[0].contains("because BUSBAR_WORKER_THREADS is set"),
             "{lines:#?}"
         );
     }

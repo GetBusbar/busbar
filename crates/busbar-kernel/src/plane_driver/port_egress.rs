@@ -169,6 +169,30 @@ fn fault_of(failure: &Failure) -> u8 {
 }
 
 impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
+    fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.candidates(self.0.token)
+    }
+
+    fn hook_scope(&mut self, wants: &Wants) -> Option<super::RoutedScope> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.scope(self.0.token)
+    }
+
+    fn hook_lane(&mut self, wants: &Wants, index: usize) -> Option<String> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.candidate_lane(self.0.token, index)
+    }
+
+    fn hook_constrain(&mut self, wants: &Wants, constraint: super::hooks::Constraint) -> bool {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        if far.candidates(self.0.token).is_none() {
+            return false;
+        }
+        far.constrain(self.0.token, constraint);
+        true
+    }
+
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let s = self.0;
         let far = s.far.get_or_init(|| (s.make)(wants));

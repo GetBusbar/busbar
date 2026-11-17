@@ -84,6 +84,48 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The same native route table admitted by the driver seals physical listener claims. The
+/// route id is the renderer's native selector; native render has no legacy dialect number.
+pub(crate) fn guest_lines(
+    seats: &[PortSeat],
+    chain: &[(String, busbar_contract::abi::auth::AuthPoints)],
+) -> Vec<busbar_kernel::guest::Line> {
+    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+    seats
+        .iter()
+        .flat_map(|seat| {
+            seat.driver.routes().data.iter().filter_map(|route| {
+                let methods = methods_of(route.methods)
+                    .into_iter()
+                    .fold(0, |mask, method| mask | method_bit(method.as_str()));
+                (methods != 0).then(|| Line {
+                    route: Route {
+                        methods,
+                        path_form: if route.pattern.contains('{') {
+                            PATH_PATTERN
+                        } else {
+                            PATH_EXACT
+                        },
+                        path: route.pattern.to_string(),
+                        fields: Vec::new(),
+                        rung: route.route,
+                    },
+                    claimant: Claimant::Plane(seat.instance.clone()),
+                    dialect: 0,
+                    auth: if auth_of(route.effective) == RouteAuth::Key {
+                        super::serve::chain_auth(chain)
+                    } else {
+                        LineAuth::None
+                    },
+                    upgrade: None,
+                    offered: crate::root::doors::offers_unstated(),
+                })
+            })
+        })
+        .collect()
+}
+
 /// The credential the request carries: the route's own header when it names one (`D_ROUTE_CRED_HEADER`), else the
 /// `Authorization: Bearer` token.
 pub(crate) fn bearer_of(headers: &HeaderMap, cred_header: Option<&str>) -> Option<String> {
@@ -241,15 +283,15 @@ fn app_of(engine: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<App>> {
 
 /// The principal `bearer` names under the data auth chain, for a route the chain did not gate. No credential, or a
 /// chain with nothing configured, is anonymous.
-async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
+async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> (Seen, Option<GovCtx>) {
     let Some(token) = bearer else {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     };
     let Some(app) = app_of(&ctx.engine) else {
-        return Seen::Rejected;
+        return (Seen::Rejected, None);
     };
     if app.auth.is_open() {
-        return Seen::Anonymous;
+        return (Seen::Anonymous, None);
     }
     let target = ctx
         .uri
@@ -264,9 +306,10 @@ async fn chain_principal(ctx: &PlaneReqCtx, bearer: Option<&str>) -> Seen {
         None,
     )
     .await;
-    seen_of(busbar_kernel::auth::resolve_data_plane_identity(
-        &app, verdict,
-    ))
+    match busbar_kernel::auth::resolve_data_plane_identity(&app, verdict) {
+        Ok((principal, gov)) => (seen_of(Ok((principal, GovCtx::default()))), Some(gov)),
+        Err(why) => (seen_of(Err(why)), None),
+    }
 }
 
 /// The webhook secret configured for (plane instance, route), if any.
@@ -346,6 +389,7 @@ fn open_unit(
     seat: &PortSeat,
     billing: Option<&PortBilling>,
     ctx: &PlaneReqCtx,
+    arrived: u64,
 ) -> Result<Option<Unit>, LimitBlocked> {
     let Some(billing) = billing else {
         return Ok(None);
@@ -364,7 +408,7 @@ fn open_unit(
             key,
             cost: Arc::clone(&app.cost),
             mode,
-            arrived: busbar_kernel::store::now(),
+            arrived,
         })
         .map(Some)
 }
@@ -429,9 +473,23 @@ async fn answer(
     route: &Mounted,
     ingress: Option<&Ingress>,
     billing: Option<&PortBilling>,
-    ctx: PlaneReqCtx,
+    generation: Option<&Arc<super::serve::DataRoutes>>,
+    mut ctx: PlaneReqCtx,
 ) -> PlaneResponse {
-    let unit = match open_unit(seat, billing, &ctx) {
+    let now_s = busbar_kernel::store::now();
+    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
+    // Resolve the optional credential before billing. Retain the exact admitted key; the
+    // principal's subject text alone cannot reconstruct external identity grants or budgets.
+    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
+        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
+        None if resolves_credential(route.effective) => {
+            let (seen, gov) = chain_principal(&ctx, bearer.as_deref()).await;
+            ctx.gov = gov;
+            seen
+        }
+        None => Seen::Anonymous,
+    };
+    let unit = match open_unit(seat, billing, &ctx, now_s) {
         Ok(unit) => unit,
         Err(blocked) => return blocked_response(&blocked),
     };
@@ -443,22 +501,22 @@ async fn answer(
         }),
         _ => None,
     };
-    let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
-    // The data chain's verdict, when the route sat behind it: the verified principal's id is its subject. A route
-    // the chain did not gate resolves its credential here.
-    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
-        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
-        None if resolves_credential(route.effective) => {
-            chain_principal(&ctx, bearer.as_deref()).await
-        }
-        None => Seen::Anonymous,
+    let invocation = match (&unit, generation) {
+        (Some(unit), Some(generation)) => match generation.native_unit(seat, unit, &ctx) {
+            Ok(invocation) => Some(invocation),
+            Err(why) => {
+                tracing::warn!(instance = %seat.instance, why, "native invocation refused");
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            }
+        },
+        (Some(_), None) => return failed(StatusCode::SERVICE_UNAVAILABLE),
+        (None, _) => None,
     };
     let (principal, identity) = match &seen {
         Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
         Seen::Anonymous | Seen::Rejected => (None, None),
     };
     let http = http_in(&ctx);
-    let now_s = busbar_kernel::store::now();
     let signed = match ingress {
         Some(ingress) => {
             signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
@@ -494,6 +552,7 @@ async fn answer(
             signed,
         };
         let input = ServeIn {
+            invocation: invocation.as_ref().map(|owner| owner.context.clone()),
             route: route.route,
             http,
             creds,
@@ -508,6 +567,7 @@ async fn answer(
             models,
         };
         let served = seat.driver.serve(input).await;
+        drop(invocation);
         if let Err(error) = &served {
             tracing::warn!(instance = %seat.instance, route = route.route, ?error, "a plane request failed");
         }
@@ -548,6 +608,7 @@ pub(crate) fn routes(
     seats: &[PortSeat],
     ingress: Option<Arc<Ingress>>,
     billing: Option<&PortBilling>,
+    generation: Option<Arc<super::serve::DataRoutes>>,
 ) -> Vec<PlaneRouteSpec> {
     let mut out = Vec::new();
     for seat in seats {
@@ -557,6 +618,7 @@ pub(crate) fn routes(
                 let mounted = route.clone();
                 let ingress = ingress.clone();
                 let billing = billing.cloned();
+                let generation = generation.clone();
                 out.push(PlaneRouteSpec {
                     path: route.pattern.to_string(),
                     method,
@@ -566,8 +628,17 @@ pub(crate) fn routes(
                         let mounted = mounted.clone();
                         let ingress = ingress.clone();
                         let billing = billing.clone();
+                        let generation = generation.clone();
                         Box::pin(async move {
-                            answer(&seat, &mounted, ingress.as_deref(), billing.as_ref(), ctx).await
+                            answer(
+                                &seat,
+                                &mounted,
+                                ingress.as_deref(),
+                                billing.as_ref(),
+                                generation.as_ref(),
+                                ctx,
+                            )
+                            .await
                         })
                     }),
                 });

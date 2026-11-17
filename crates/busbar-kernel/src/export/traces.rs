@@ -90,11 +90,11 @@ struct SinkFilter {
 
 impl<S> tracing_subscriber::layer::Filter<S> for SinkFilter {
     fn enabled(&self, meta: &tracing::Metadata<'_>, _: &Context<'_, S>) -> bool {
-        (self.wanted)(meta)
+        meta.target() != crate::diagnostics::EXPORT_LOSS_TARGET && (self.wanted)(meta)
     }
 
     fn callsite_enabled(&self, meta: &'static tracing::Metadata<'static>) -> Interest {
-        if (self.wanted)(meta) {
+        if meta.target() != crate::diagnostics::EXPORT_LOSS_TARGET && (self.wanted)(meta) {
             Interest::always()
         } else {
             Interest::never()
@@ -814,6 +814,9 @@ where
     W: Fn() -> bool + Send + Sync + 'static,
 {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if attrs.metadata().target() == crate::diagnostics::EXPORT_LOSS_TARGET {
+            return;
+        }
         let Some(span) = ctx.span(id) else { return };
         let mut fields = Fields::default();
         attrs.record(&mut fields);
@@ -866,6 +869,9 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        if event.metadata().target() == crate::diagnostics::EXPORT_LOSS_TARGET {
+            return;
+        }
         let span = event.parent().and_then(|id| ctx.span(id)).or_else(|| {
             event
                 .is_contextual()

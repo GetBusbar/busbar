@@ -5,7 +5,9 @@ use super::projection::{Projection, Rendered};
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::PluginHttpDispatch;
 use busbar_contract::abi::mechanism::endpoint::*;
-use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
+use busbar_contract::export_calls::{
+    Delivered, ExportAxis, ExportCalls, ExportLossKind, ServeRequest,
+};
 use busbar_contract::export_stream::ExportStream;
 use std::sync::Arc;
 
@@ -146,7 +148,7 @@ impl Handed {
                 // The original access facts remain in the shared native owner's queue; do not
                 // report a durable audit success for any sink of the set.
                 for sink in sinks {
-                    sink.shed();
+                    sink.shed(ExportLossKind::IntegrityFailed);
                 }
             }
         });
@@ -160,7 +162,7 @@ fn deliver_one(
     handed: &mut Handed,
 ) {
     if !s.started.load(std::sync::atomic::Ordering::Acquire) {
-        s.sink.shed();
+        s.sink.shed(ExportLossKind::CaptureRefused);
         return;
     }
     let admission = &s.admission;
@@ -168,7 +170,7 @@ fn deliver_one(
         return;
     }
     let Some(permit) = admission.gate.try_enter() else {
-        s.sink.shed();
+        s.sink.shed(ExportLossKind::CaptureRefused);
         return;
     };
     let Rendered { line, members } = f(s.projection, s.span_record);
@@ -181,7 +183,7 @@ fn deliver_one(
         {
             Ok(runtime) => Some(runtime),
             Err(_) => {
-                s.sink.shed();
+                s.sink.shed(ExportLossKind::CaptureRefused);
                 return;
             }
         }
@@ -202,7 +204,7 @@ fn deliver_one(
             handed.sinks.push(s.sink.clone());
             handed.permits.push(permit);
         }
-        Delivered::Shed => s.sink.shed(),
+        Delivered::Shed => {} // The adapter already reported its exact refusal or loss.
     }
 }
 
