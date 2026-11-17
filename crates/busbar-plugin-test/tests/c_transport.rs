@@ -56,11 +56,13 @@ fn case_spec_preserves_explicit_limits_and_endpoint_observations() {
     );
     spec.purpose = OpenPurpose::Canonical;
     drop(h.open_spec(&spec).expect("canonical hook open"));
+    spec.name = "missing-config";
     spec.purpose = OpenPurpose::ConvertUnstamped;
-    assert!(
-        h.open_spec(&spec).is_err(),
-        "conversion still requires CONFIG"
-    );
+    let error = h
+        .open_spec(&spec)
+        .err()
+        .expect("conversion requires CONFIG");
+    assert!(format!("{error:?}").contains("open CONFIG or CORE_CFG violates its purpose"));
 }
 
 /// One endpoint-declaring fixture per kind, with an instance name of that kind ("no kind changes the verdict").
