@@ -9,6 +9,8 @@ mod pem;
 mod pointer;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod network_tests;
 
 pub use binder::{Binder, MAX_BINDINGS, MAX_UNIX_PATHS};
 
