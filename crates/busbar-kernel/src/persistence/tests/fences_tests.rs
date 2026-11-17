@@ -4,6 +4,22 @@
 use super::*;
 
 #[test]
+fn initialization_declares_the_registrar_epoch_required_by_register() {
+    let prepared = initialize(DatasetId([1; 16]), [2; 16], [3; 16]).unwrap();
+    let epoch = control::epoch_row([2; 16], 1);
+    assert!(prepared.candidate().predicates.iter().any(|predicate| {
+        predicate.address == epoch && matches!(predicate.expected, ExpectedValue::Absent)
+    }));
+    assert!(prepared.candidate().mutations.iter().any(|mutation| {
+        matches!(mutation, Mutation::Put { address, value }
+            if *address == epoch && value.0 == control::EPOCH_VALUE)
+    }));
+    assert!(control::initialization(&prepared, DatasetId([1; 16])));
+    assert_eq!(control::admit(&prepared), Ok(()));
+    assert_eq!(control::fences(&prepared).len(), 1);
+}
+
+#[test]
 fn writer_transitions_declare_every_native_control_effect() {
     let id = AttemptId {
         dataset: DatasetId([1; 16]),

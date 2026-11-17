@@ -1434,6 +1434,35 @@ async fn initialized_only(backend: &Arc<Backend>) {
     assert!(matches!(first.phase, Phase::Inspect));
 }
 
+#[tokio::test]
+async fn first_register_native_fences_are_satisfied_by_declared_initialize_effects() {
+    let backend = Arc::new(Backend::default());
+    initialized_only(&backend).await;
+    let mut start = startup(&backend, false);
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    let Phase::Register(_, _, _, attempt, _) = &start.phase else {
+        panic!("first Register retained before submission")
+    };
+    assert_eq!(control::admit(attempt.candidate()), Ok(()));
+    {
+        let native = backend.0.lock().unwrap();
+        let fences = control::fences(attempt.candidate());
+        assert_eq!(fences.len(), 2);
+        for fence in fences {
+            let ExpectedValue::Exact(expected) = fence.expected else {
+                panic!("Register requires exact root and epoch fences")
+            };
+            assert_eq!(
+                native.rows.get(&fence.address),
+                Some(&expected),
+                "Initialize must declare every row needed by the first Register fence"
+            );
+        }
+    }
+    assert_eq!(start.advance().await, Ok(Progress::Advanced));
+    assert_eq!(start.advance().await, Ok(Progress::Admitted));
+}
+
 /// 8.2b: racing initializers, plain and with the loser's reply lost. The loser
 /// resolves its lost attempt definitively and re-inspects. Under FIRST-START-TAKEOVER it
 /// never refuses: over the winner's live first start it waits (`Pending`) and writes
