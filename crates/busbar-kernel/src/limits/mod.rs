@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 pub(crate) mod admission;
+pub mod input_body;
 pub mod process_admission;
 
 use crate::config::{

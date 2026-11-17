@@ -190,6 +190,7 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
     let caller = tokio::spawn(async move {
         driver
             .serve(ServeIn {
+                invocation: None,
                 request,
                 route: 1,
                 http: HttpIn {
