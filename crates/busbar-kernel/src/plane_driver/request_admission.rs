@@ -12,7 +12,7 @@ use super::money::UnitMoney;
 use super::port_egress::SeatPool;
 use super::provider_catalog::{CatalogPlan, RouteKind};
 use crate::cost::CostModel;
-use crate::governance::{AdmitGrant, PLANE_LANE_SEP};
+use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
 
 const REGISTERED: u8 = 0;
@@ -69,6 +69,7 @@ pub enum RequestDomain {
 
 /// Immutable route metadata from root's selected generation. It grants no unit authority.
 pub struct RequestRoutes {
+    identity: Arc<()>,
     instance: String,
     scope_kind: Option<Arc<str>>,
     catalog: Option<Arc<CatalogPlan>>,
@@ -96,6 +97,7 @@ impl RequestRoutes {
             }
         }
         Ok(Self {
+            identity: Arc::new(()),
             instance: instance.into(),
             scope_kind,
             catalog,
@@ -159,6 +161,7 @@ impl RequestWalk {
 /// Linear ownership of the one registered pre-money invocation.
 pub struct RequestAllocation {
     context: InvocationContext,
+    key: Arc<VirtualKey>,
     cost: Arc<CostModel>,
     arrived: u64,
     armed: bool,
@@ -172,12 +175,14 @@ impl RequestAllocation {
         if !context.is_live() {
             return Err(AdmissionError::Stale);
         }
-        if context.principal().is_none() {
-            return Err(AdmissionError::Principal);
-        }
+        let key = context
+            .principal()
+            .cloned()
+            .ok_or(AdmissionError::Principal)?;
         context.admission_phase().change(REGISTERED, RESOLVING)?;
         Ok(Self {
             context,
+            key,
             cost,
             arrived,
             armed: true,
@@ -233,6 +238,8 @@ impl RequestAllocation {
         self.armed = false;
         Ok(RequestPoolReceipt {
             context: self.context.clone(),
+            key: self.key.clone(),
+            routes: routes.identity.clone(),
             cost: self.cost.clone(),
             arrived: self.arrived,
             pool,
@@ -253,6 +260,8 @@ impl Drop for RequestAllocation {
 /// Route resolution on the live allocation, consumed before acquiring any monetary grant.
 pub struct RequestPoolReceipt {
     context: InvocationContext,
+    key: Arc<VirtualKey>,
+    routes: Arc<()>,
     cost: Arc<CostModel>,
     arrived: u64,
     pool: String,
@@ -300,7 +309,7 @@ impl CommittingRequest {
         &self.route.context
     }
     pub fn key(&self) -> &Arc<VirtualKey> {
-        self.route.context.principal().expect("checked principal")
+        &self.route.key
     }
     pub fn cost(&self) -> &Arc<CostModel> {
         &self.route.cost
@@ -318,9 +327,10 @@ impl CommittingRequest {
         self.context().is_live() && self.context().admission_phase().at(COMMITTING)
     }
     pub(in crate::plane_driver) fn admitted(
-        mut self,
+        self,
         money: Arc<UnitMoney>,
         grant: Arc<AdmitGrant>,
+        governance: Arc<GovState>,
         book: Arc<()>,
         open: Arc<()>,
     ) -> Result<AdmittedRequest, AdmissionError> {
@@ -336,16 +346,52 @@ impl CommittingRequest {
         {
             return Err(AdmissionError::Money);
         }
+        self.finish(money, grant, governance, book, open)
+    }
+
+    /// The money owner calls this only while its existing live-parent/child transaction is held.
+    /// The child's routing domain cannot replace the parent's monetary scope or create a grant.
+    pub(in crate::plane_driver) fn admitted_child(
+        self,
+        parent: &super::money::ParentMoney,
+        money: Arc<UnitMoney>,
+        grant: Arc<AdmitGrant>,
+        governance: Arc<GovState>,
+        book: Arc<()>,
+        open: Arc<()>,
+    ) -> Result<AdmittedRequest, AdmissionError> {
+        if !self.is_live() {
+            return Err(AdmissionError::Stale);
+        }
+        if money.key.as_ref() != self.key().as_ref()
+            || !Arc::ptr_eq(&money.cost, self.cost())
+            || !parent.matches_child_money(&money, &grant)
+        {
+            return Err(AdmissionError::Money);
+        }
+        self.finish(money, grant, governance, book, open)
+    }
+
+    fn finish(
+        mut self,
+        money: Arc<UnitMoney>,
+        grant: Arc<AdmitGrant>,
+        governance: Arc<GovState>,
+        book: Arc<()>,
+        open: Arc<()>,
+    ) -> Result<AdmittedRequest, AdmissionError> {
         self.context()
             .admission_phase()
             .change(COMMITTING, ADMITTED)?;
         self.armed = false;
         Ok(AdmittedRequest {
             context: self.context().clone(),
+            routes: self.route.routes.clone(),
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
             money,
             grant,
+            governance,
             book,
             open,
         })
@@ -363,10 +409,12 @@ impl Drop for CommittingRequest {
 #[derive(Clone)]
 pub struct AdmittedRequest {
     context: InvocationContext,
+    routes: Arc<()>,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
+    governance: Arc<GovState>,
     book: Arc<()>,
     open: Arc<()>,
 }
@@ -395,6 +443,9 @@ impl AdmittedRequest {
     pub fn charge(&self) -> &crate::governance::FeeCharge {
         &self.money.charge
     }
+    pub(crate) fn matches_governance(&self, governance: &GovState) -> bool {
+        std::ptr::eq(self.governance.as_ref(), governance)
+    }
     pub fn is_live(&self) -> bool {
         self.context.is_live() && self.context.effects_allowed()
     }
@@ -406,6 +457,14 @@ impl AdmittedRequest {
     }
     pub fn walk_key(&self) -> Option<&str> {
         self.walk.as_ref().map(|(_, key)| key.as_str())
+    }
+    /// A later FORWARD may only reuse the same frozen route; Local never acquires a route later.
+    pub fn accepts_route(&self, routes: &RequestRoutes, selector: Option<&str>) -> bool {
+        self.is_live()
+            && Arc::ptr_eq(&self.routes, &routes.identity)
+            && routes.resolve(selector).is_ok_and(|(domain, walk)| {
+                domain == self.domain && self.walk_key() == Some(walk.as_str())
+            })
     }
     pub(in crate::plane_driver) fn matches_money(
         &self,

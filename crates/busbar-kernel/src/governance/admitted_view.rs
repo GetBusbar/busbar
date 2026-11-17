@@ -14,6 +14,7 @@ pub struct AdmittedView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmissionViewUnavailable {
     Stale,
+    ForeignGovernor,
     MissingChain,
     WrongChain,
 }
@@ -27,6 +28,9 @@ impl GovState {
     ) -> Result<AdmittedView, AdmissionViewUnavailable> {
         if !request.is_live() {
             return Err(AdmissionViewUnavailable::Stale);
+        }
+        if !request.matches_governance(self) {
+            return Err(AdmissionViewUnavailable::ForeignGovernor);
         }
         let plan = request
             .charge()
