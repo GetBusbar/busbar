@@ -461,3 +461,96 @@ fn retained_scope_key_storage_is_bounded_and_preallocated() {
     let key = term.scope_key();
     assert_eq!(key.len(), 661);
 }
+
+#[test]
+fn native_dynamic_physical_classes_survive_their_declaring_storage_and_reject_new_names() {
+    use busbar_plugin_abi::plane::{FB_ATTEMPT_USAGE, UNIT_COUNT, UNIT_TOKENS};
+    use busbar_ports::codec::fallback_usage::Declaration;
+    use busbar_ports::plane::UsageClass;
+
+    let input = format!("tokens.native_input_{}", 41);
+    let output = format!("tokens.native_output_{}", 41);
+    let session = format!("request.native_{}", 41);
+    let classes = vec![
+        UsageClass {
+            class: input.clone().into_boxed_str(),
+            unit: UNIT_TOKENS,
+            expected_units: None,
+        },
+        UsageClass {
+            class: output.clone().into_boxed_str(),
+            unit: UNIT_TOKENS,
+            expected_units: None,
+        },
+        UsageClass {
+            class: session.clone().into_boxed_str(),
+            unit: UNIT_COUNT,
+            expected_units: None,
+        },
+    ];
+    let attempt_classes = vec![
+        input.clone().into_boxed_str(),
+        output.clone().into_boxed_str(),
+    ];
+    let frozen: Box<[Box<str>]> = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes)
+        .unwrap()
+        .physical_classes()
+        .map(Box::<str>::from)
+        .collect();
+    assert_eq!(frozen.len(), 2);
+    assert!(!frozen.iter().any(|class| class.as_ref() == session));
+    drop(classes);
+    drop(attempt_classes);
+
+    let (rates, _) = rates(4);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let mut hold = rates.reserve_terms(vec![tpm.clone()], &frozen).unwrap();
+    drop(frozen);
+    hold.commit().unwrap();
+    hold.observe(&EffectiveTokenView(vec![
+        EffectiveToken {
+            class: input.as_str(),
+            quantity: Some(Count::from_integer(3).unwrap()),
+            authoritative: true,
+        },
+        EffectiveToken {
+            class: output.as_str(),
+            quantity: Some(Count::ZERO),
+            authoritative: true,
+        },
+    ]))
+    .unwrap();
+    let later_generation_class = format!("tokens.native_output_{}", 42);
+    assert_eq!(
+        hold.observe(&EffectiveTokenView(vec![
+            EffectiveToken {
+                class: input.as_str(),
+                quantity: Some(Count::from_integer(8).unwrap()),
+                authoritative: true
+            },
+            EffectiveToken {
+                class: later_generation_class.as_str(),
+                quantity: Some(Count::ZERO),
+                authoritative: true
+            },
+        ]))
+        .unwrap_err(),
+        RateObservationError::InvalidView
+    );
+    assert_eq!(
+        inspect(&rates, tpm).known_tokens,
+        Count::from_integer(3).unwrap()
+    );
+    let finished = hold.finish(TokenCoverage::Complete).unwrap();
+    drop(input);
+    drop(output);
+    assert!(finished
+        .highwater
+        .iter()
+        .any(|(class, amount)| class.as_ref() == "tokens.native_input_41"
+            && *amount == Count::from_integer(3).unwrap()));
+    assert!(finished
+        .highwater
+        .iter()
+        .any(|(class, amount)| class.as_ref() == "tokens.native_output_41" && amount.is_zero()));
+}
