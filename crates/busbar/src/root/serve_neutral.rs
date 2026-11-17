@@ -115,17 +115,6 @@ impl DataRoutes {
         )
     }
 
-    pub(crate) fn auth_completion(&self, admission: &RequestAdmission, status: u32) {
-        if let Some((plane, _)) = self.admitted_claim(admission) {
-            self.auth_completion_for(
-                &admission.app(),
-                plane,
-                admission.selected_line().dialect,
-                status,
-            );
-        }
-    }
-
     fn auth_completion_for(
         &self,
         app: &Arc<busbar_kernel::state::App>,
