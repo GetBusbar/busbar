@@ -7,8 +7,16 @@ use busbar_kernel::plane_driver::provider_catalog::ProviderPlane;
 use busbar_kernel::upstreams::Upstreams;
 
 fn configured() -> (RootCfg, CatalogPlan) {
+    configured_resource(None)
+}
+
+fn configured_resource(resource: Option<&str>) -> (RootCfg, CatalogPlan) {
     let grammar = Grammar::empty();
-    let deploy = config::deploy_from_yaml_str("providers:\n  p: {api_key: none}\nmodels:\n  m: {provider: p, upstream_model: wire-model, max_concurrent: 2}\npools:\n  fast: {members: [m]}\n  slow: {members: [m]}\n", &grammar).unwrap();
+    let resource = resource
+        .map(|value| format!(", resource: {value}"))
+        .unwrap_or_default();
+    let source = format!("providers:\n  p: {{api_key: none}}\nmodels:\n  m: {{provider: p, upstream_model: wire-model, max_concurrent: 2{resource}}}\npools:\n  fast: {{members: [m]}}\n  slow: {{members: [m]}}\n");
+    let deploy = config::deploy_from_yaml_str(&source, &grammar).unwrap();
     let defs = config::providers::catalog_from_str(
         "p:\n  protocol: wire\n  base_url: https://127.0.0.1/api\n  path: /chat\n",
         &grammar,
@@ -23,6 +31,18 @@ fn configured() -> (RootCfg, CatalogPlan) {
     let mut result = config::resolve_with_provider_planes(&deploy, &defs, &planes).unwrap();
     let plan = result.catalogs.remove("chat").unwrap();
     (result.config, plan)
+}
+
+#[test]
+fn actual_model_definition_and_target_retain_only_the_configured_resource() {
+    for resource in [None, Some("shared-model")] {
+        let (cfg, plan) = configured_resource(resource);
+        let staged = stage(&cfg, &plan, &allocated(&plan)).unwrap();
+        for row in staged.rows.values() {
+            assert_eq!(row.definition.resource.as_deref(), resource);
+            assert_eq!(row.target.resource.as_deref(), resource);
+        }
+    }
 }
 
 fn allocated(plan: &CatalogPlan) -> Allocations {
