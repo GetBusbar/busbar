@@ -1383,6 +1383,9 @@ where
                         let stream = registration.key.stream;
                         if registration.admitted.send(admitted).is_err() {
                             let _ = io.ledger().stop(stream, ResponseStop::Cancelled);
+                            // The ACK never exposed a producer or reader. Retire that absent
+                            // input explicitly; protocol cancellation/quiescence still run normally.
+                            let _ = io.ledger().input_retired(stream);
                         }
                     }
                     None => registrations_open = false,
