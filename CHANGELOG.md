@@ -6,6 +6,9 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- **busbar-crypto-backend API 3: VALIDATION (Option, None until a certificate reference), the checked operations; contract frozen by ci/crypto-api.pin.**
+  1.6.0 Changed: a backend crate swapped in for `busbar-crypto-backend` states `API = 3` and `VALIDATION` (validated mode derives from it alone), and its `Error` and `rsa::Scheme` variants are frozen; any other API fails to compile with "busbar-crypto-backend API must be 3". The backend contract is hashed into `ci/crypto-api.pin` (one line per API); a contract change raises the API. The conformance suite is the facade's `conformance` feature, without `tls` or the backend's `test-support`, and reports the optional refusal sites through `conformance::refusals()` and the pin line as `conformance::CONTRACT_PIN`.
+
 - **`busbar --migrate-config` and `busbar --migrate-overlay` are removed; the first boot migrates.** 1.5.5 operators ran `--migrate-config` to convert a config and `--migrate-overlay` to import a file overlay. 1.6.0 has neither: either name is now the CLI's unknown-option usage error (exit 2). The first boot of a 1.5.5 `config.yaml` (no `config_version`) migrates it once, in place, stamps `config_version: 1`, keeps the original as `config.yaml.1.5.5`, and folds a 1.5.5 overlay file into the same write. BUSBAR-3401 to 3404 are retired and keep their pages.
 
 - **A plane member's upstream credential rides out a source outage until its lease ends.**

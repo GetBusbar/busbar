@@ -105,6 +105,15 @@ fn head(item: &syn::Item) -> String {
         .collect()
 }
 
+/// The failure for a top-level item of a kind the hash does not classify.
+fn unclassified(item: &syn::Item) -> String {
+    format!(
+        "contract.rs has a top-level item of a kind the contract hash does not classify (only use, \
+         type, const, const fn and plain fn are): `{}`; classify it in tests/contract_pin.rs",
+        head(item)
+    )
+}
+
 /// The canonical form of each hashed item of contract.rs, in file order.
 fn hashed_items(contract: &str) -> Result<Vec<String>, String> {
     let file = syn::parse_file(contract).map_err(|e| format!("contract.rs does not parse: {e}"))?;
@@ -121,12 +130,7 @@ fn hashed_items(contract: &str) -> Result<Vec<String>, String> {
                 }
                 &mut i.attrs
             }
-            other => return Err(format!(
-                "contract.rs has a top-level item of a kind the contract hash does not classify \
-                     (only use, type, const, const fn and plain fn are): `{}`; classify it in \
-                     tests/contract_pin.rs",
-                head(other)
-            )),
+            other => return Err(unclassified(other)),
         };
         attrs.retain(|a| a.path().is_ident("cfg"));
         parts.push(strip(&item.to_token_stream().to_string()));
