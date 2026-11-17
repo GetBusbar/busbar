@@ -44,8 +44,8 @@ use super::far_end::{Egress, UnitRoute};
 use super::port_probes::ProbeFar;
 use super::port_session::UpExchange;
 use super::port_upstream::{
-    Candidate, Chunk, Failure, Members, ProbeOutcome, SendFailed, UpChunks, UpOpen, UpReply,
-    UpSend, Wants,
+    Candidate, Chunk, Failure, Members, ProbeOutcome, SendFailed, TargetIdentity, UpChunks, UpOpen,
+    UpReply, UpSend, Wants,
 };
 use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
 use crate::teller::Kernel;
@@ -54,6 +54,9 @@ use crate::teller::Kernel;
 /// and the route's configured parameters. Operator vocabulary only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberTarget {
+    pub identity: TargetIdentity,
+    /// Exact admitted registration name. Provider models have no registration authority.
+    pub registered_upstream: Option<Box<str>>,
     /// The plane-owned provider keys as one canonical JSON object.
     pub provider: Box<str>,
     pub base_path: Box<str>,
@@ -66,6 +69,8 @@ impl MemberTarget {
     #[must_use]
     pub fn bare() -> Self {
         Self {
+            identity: TargetIdentity::Registration,
+            registered_upstream: None,
             provider: "{}".into(),
             base_path: "".into(),
             flags: 0,
@@ -74,9 +79,9 @@ impl MemberTarget {
     }
 }
 
-/// The member (configured upstream name) as a [`MemberTarget`]; `None` = the plane has no such upstream and the
-/// walk skips it.
-pub type Targets = Arc<dyn Fn(&str) -> Option<MemberTarget> + Send + Sync>;
+/// The exact selected `(pool, qualified member)` as a [`MemberTarget`]. Lookup never
+/// falls back to an unqualified name; `None` makes the walk skip that member.
+pub type Targets = Arc<dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync>;
 
 /// What one session needs of the egress side: the unit it bills to.
 #[derive(Clone, Copy, Debug)]
@@ -96,7 +101,7 @@ struct Shared<'a, F: FarEnd> {
     far: OnceCell<F>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
-    targets: &'a (dyn Fn(&str) -> Option<MemberTarget> + Send + Sync),
+    targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
     /// Picks made so far (the walk's attempt number).
     picks: Cell<u32>,
     /// The member (as the walk names it) and pool in hand.
@@ -117,7 +122,7 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
         make: &'a dyn Fn(&Wants) -> F,
         token: &'a Pass<Route>,
         handle: &'a Handle,
-        targets: &'a (dyn Fn(&str) -> Option<MemberTarget> + Send + Sync),
+        targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
     ) -> Self {
         Self {
             shared: Shared {
@@ -169,6 +174,30 @@ fn fault_of(failure: &Failure) -> u8 {
 }
 
 impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
+    fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.candidates(self.0.token)
+    }
+
+    fn hook_scope(&mut self, wants: &Wants) -> Option<super::RoutedScope> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.scope(self.0.token)
+    }
+
+    fn hook_lane(&mut self, wants: &Wants, index: usize) -> Option<String> {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        far.candidate_lane(self.0.token, index)
+    }
+
+    fn hook_constrain(&mut self, wants: &Wants, constraint: super::hooks::Constraint) -> bool {
+        let far = self.0.far.get_or_init(|| (self.0.make)(wants));
+        if far.candidates(self.0.token).is_none() {
+            return false;
+        }
+        far.constrain(self.0.token, constraint);
+        true
+    }
+
     fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let s = self.0;
         let far = s.far.get_or_init(|| (s.make)(wants));
@@ -177,15 +206,17 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
             s.picks.set(n);
             match s.handle.block_on(far.member(s.token, n)) {
                 Pick::Member { name, pool, .. } => {
-                    let operator =
-                        String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
-                    // A member the plane has no upstream for is passed over: the next pick retires it unjudged.
-                    let Some(target) = (s.targets)(&operator) else {
+                    let Some(target) = (s.targets)(&pool, &name) else {
                         continue;
                     };
-                    *s.member.borrow_mut() = name;
-                    *s.pool.borrow_mut() = pool;
+                    let operator =
+                        String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
+                    *s.member.borrow_mut() = name.clone();
+                    *s.pool.borrow_mut() = pool.clone();
                     return Some(Candidate {
+                        pool: pool.into(),
+                        qualified_member: name.into(),
+                        identity: target.identity,
                         upstream: operator.into(),
                         provider: target.provider,
                         base_path: target.base_path,
@@ -528,8 +559,22 @@ impl SeatPool {
 /// bare target (no plane-owned provider keys, base path or parameters: an upstream carries none, IF §12.1); any
 /// other name is not this instance's and the walk passes it over.
 #[must_use]
-pub fn upstream_targets(upstreams: Arc<dyn crate::upstreams::Upstreams>) -> Targets {
-    Arc::new(move |name: &str| upstreams.get(name).map(|_| MemberTarget::bare()))
+pub fn upstream_targets(
+    instance: &str,
+    upstreams: Arc<dyn crate::upstreams::Upstreams>,
+) -> Targets {
+    let pool = instance.to_owned();
+    let prefix = format!("{instance}{}", crate::governance::PLANE_LANE_SEP);
+    Arc::new(move |selected_pool, member| {
+        if selected_pool != pool {
+            return None;
+        }
+        let name = member.strip_prefix(&prefix)?;
+        upstreams.get(name)?;
+        let mut target = MemberTarget::bare();
+        target.registered_upstream = Some(name.into());
+        Some(target)
+    })
 }
 
 /// The production [`PortUpstream`]: the instance's pool walked over the kernel's [`Egress`].
@@ -568,6 +613,7 @@ impl PortEgress {
     #[must_use]
     pub fn probes(&self, members: Vec<(DestinationId, String)>) -> EgressProbes {
         EgressProbes {
+            pool: self.pool.clone(),
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
@@ -594,6 +640,7 @@ impl PortUpstream for PortEgress {
 /// The probe service's far end: one probe exchange to one member, judged like any other dial, and the finding
 /// handed to the breaker.
 pub struct EgressProbes {
+    pool: String,
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
     handle: Handle,
@@ -648,8 +695,12 @@ impl ProbeFar for EgressProbes {
 
     fn candidate(&self, member: usize) -> Option<Candidate> {
         let (_, name) = self.members.get(member)?;
-        let target = (self.targets)(name)?;
+        let qualified_member = format!("{}{}{name}", self.pool, crate::governance::PLANE_LANE_SEP);
+        let target = (self.targets)(&self.pool, &qualified_member)?;
         Some(Candidate {
+            pool: self.pool.clone().into(),
+            qualified_member: qualified_member.into(),
+            identity: target.identity,
             upstream: name.as_str().into(),
             provider: target.provider,
             base_path: target.base_path,

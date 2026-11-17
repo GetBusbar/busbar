@@ -440,6 +440,7 @@ pub(crate) mod effect {
         admitted: &AdminDoor,
     ) -> Context {
         Context {
+            native: None,
             method: method.into(),
             target: target.into(),
             headers,

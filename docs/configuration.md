@@ -83,11 +83,11 @@ See [Operations → Process configuration](operations.md#process-configuration).
 **Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
 (or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
 `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
-The current development boot only warns that those variables are ignored; it does not copy
-their values into configuration. Automatic capture or an explained upgrade refusal remains
-an open migration requirement. Before trying a development upgrade, write the intended values
-into configuration using [the environment-input mappings](migration-1.6.md#environment-inputs).
-Do not treat the warning as confirmation that the old settings were preserved.
+Boot and `--validate` refuse a set retired launch variable with `BUSBAR-3029`, naming its
+replacement without echoing the value. Write the intended values into configuration using
+[the environment-input mappings](migration-1.6.md#environment-inputs), then remove the variables
+from the launcher before validating or starting Busbar. An empty `BUSBAR_PROVIDERS` selects
+nothing and counts as unset; the other retired variables refuse even when empty.
 
 `BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
 folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.

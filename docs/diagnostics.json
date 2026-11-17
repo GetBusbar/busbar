@@ -312,6 +312,30 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-2052",
+    "number": 2052,
+    "class": "audit",
+    "slug": "export-loss-observed",
+    "title": "An exporter first observed lost delivery or failed evidence",
+    "severity": "actionable",
+    "summary": "The exporter retained its first delivery-loss, capture-refusal or audit-integrity failure for transfer to native audit custody. This warning is emitted once per logical instance. Later observations still update their distinct counters. Held ciphertext is not lost delivery.",
+    "action": "Check the exporter destination, admission and audit availability. Inspect the export counters for current counts. This warning does not mean that native audit has confirmed the first-loss record.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-2053",
+    "number": 2053,
+    "class": "audit",
+    "slug": "export-loss-unconfirmed",
+    "title": "Exporter loss evidence remains unconfirmed or a producer reported after quiescence",
+    "severity": "actionable",
+    "summary": "The observer could not yet confirm its retained first-loss evidence, or an exporter called it after shutdown observation intake closed. The original remains retained; an accepted native audit original is never replaced by a retry. Shutdown cannot report successful observation settlement while evidence or a late callback is unresolved.",
+    "action": "Restore native audit availability and allow settlement within the existing shutdown budget. A callback after producer quiescence indicates a runtime lifecycle defect. Preserve stderr and the incomplete-shutdown report.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-3003",
     "number": 3003,
     "class": "config",

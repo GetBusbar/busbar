@@ -5,6 +5,33 @@ use super::*;
 use busbar_contract::yaml::ValueExt;
 
 #[test]
+fn require_if_match_belongs_directly_to_auth_and_survives_resolution() {
+    for (yaml, expected) in [
+        ("{}", None),
+        ("require_if_match: true", Some(true)),
+        ("require_if_match: false", Some(false)),
+        ("require_if_match: null", None),
+    ] {
+        let auth: AuthDeployCfg = busbar_contract::yaml::from_str(yaml).unwrap();
+        assert_eq!(auth.require_if_match, expected, "{yaml}");
+        let mut errors = Vec::new();
+        let resolved = resolve_auth(&auth, &IdentityProviders::new(), &mut errors);
+        assert_eq!(resolved.require_if_match, expected, "{yaml}");
+    }
+    for yaml in [
+        "policy: {require_if_match: true}",
+        "require_if_match: true\npolicy: {require_if_match: false}",
+        "require_if_match: 1",
+        "require_if_match: 'true'",
+    ] {
+        assert!(
+            busbar_contract::yaml::from_str::<AuthDeployCfg>(yaml).is_err(),
+            "{yaml}"
+        );
+    }
+}
+
+#[test]
 fn new_pool_strategy_is_structured_and_does_not_rebind_a_bare_hook() {
     let named: PoolCfg = busbar_contract::yaml::from_str("hooks: [operator-order]").unwrap();
     assert_eq!(named.policy, PoolPolicy::Weighted);
@@ -1437,6 +1464,7 @@ fn breaker_trip_default_matches_an_empty_config_object() {
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
+        require_if_match: None,
         signing_key: Some(crate::config::secret::descriptor_reference(
             "BUSBAR_T_DEBUG_SECRET",
         )),
@@ -1447,6 +1475,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         policy: Default::default(),
         login_limits: Default::default(),
         verdict_cache: Default::default(),
+        unknown_key_refresh_s: 30,
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -1463,6 +1492,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             settings: serde_json::Map::new().into(),
             insecure_transport: None,
             provisioning: None,
+            issued_kinds: None,
         },
     );
     deploy.tls = Some(TlsCfg {
@@ -2691,7 +2721,7 @@ fn auth_refusals_describe_the_current_schema_and_source_location() {
         assert_eq!(
             message,
             format!(
-                "auth.bogus_key: unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
+                "auth.bogus_key: unknown field `bogus_key`, expected one of `unknown_key_refresh_s`, `require_if_match`, `signing_key`, `chain`, \
                  `admin_auth`, `role_bindings`, `key_ttl`, `policy`, `login_limits`, `verdict_cache` at line {line} \
                  column 3"
             )

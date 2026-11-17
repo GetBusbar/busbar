@@ -205,6 +205,10 @@ pub enum Violation {
 /// Why a session call produced no usable answer.
 #[derive(Debug)]
 pub enum SessionError {
+    /// Enforcement cannot discover its scope without first performing an effect.
+    HookPrerequisite,
+    /// A completed native hook stage refused this unit before any provider effect.
+    HookRefused(crate::refusal::ClientRefusal),
     /// The plane refused, failed or faulted; the port already handled the image.
     Port(PortError),
     /// The plane broke a once rule; the session is cancelled.
@@ -332,6 +336,12 @@ pub struct Answer {
 
 /// Effects the plane's answer has outside the client, applied at once, in sink order.
 pub trait Effects {
+    fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
+        None
+    }
+    fn routing(&self, _attempt: u32, _model: &str) {}
+    fn response(&self, _status: u16) {}
+
     /// Execution context supplied by the root's admitted dispatch. Open/check and
     /// health-only operations have no nested execution authority.
     fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
@@ -358,6 +368,11 @@ pub trait ClientSink: Send + Sync {
 /// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.
 /// `false` = the client went away.
 pub fn hand_out(effects: &dyn Effects, items: &mut Vec<ToClient>) -> bool {
+    for item in items.iter() {
+        if let ToClient::Head { status, .. } = item {
+            effects.response(*status);
+        }
+    }
     match effects.client() {
         Some(sink) if !items.is_empty() => sink.items(std::mem::take(items)),
         _ => true,
