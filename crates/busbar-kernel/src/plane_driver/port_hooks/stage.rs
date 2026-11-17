@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::sync::Arc;
 
 use super::super::hooks::{Constraint, HooksRan, Restrict};
@@ -13,34 +13,7 @@ use crate::host_services::InvocationContext;
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{plane::PlaneIn, FactVal, PortError};
 
-/// Sink-time output is held as securely as the projection until enforcement succeeds.
-pub(crate) struct Buffered<'a> {
-    inner: &'a dyn Effects,
-    emits: RefCell<Vec<(u64, busbar_contract::secure::SecureVec)>>,
-}
-impl<'a> Buffered<'a> {
-    pub(crate) fn new(inner: &'a dyn Effects) -> Self {
-        Self {
-            inner,
-            emits: RefCell::new(Vec::new()),
-        }
-    }
-    pub(crate) fn release(&self) {
-        for (carrier, bytes) in self.emits.borrow_mut().drain(..) {
-            self.inner.emit(carrier, &bytes);
-        }
-    }
-}
-impl Effects for Buffered<'_> {
-    fn invocation(&self) -> Option<&InvocationContext> {
-        self.inner.invocation()
-    }
-    fn emit(&self, carrier: u64, bytes: &[u8]) {
-        self.emits
-            .borrow_mut()
-            .push((carrier, bytes.to_vec().into()));
-    }
-}
+pub(crate) use super::super::port_session::Buffered;
 
 #[derive(Clone)]
 pub(crate) struct Stage {

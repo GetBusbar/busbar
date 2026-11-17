@@ -271,10 +271,33 @@ pub struct AttemptItem {
     pub reason: Box<str>,
 }
 
-/// One upstream exchange an answer asks core to send (IF §8.6): exchange 0 from `upstream`, or one UP_NEW
-/// started. `method` and `path` are states the plane gave (the adapter checks the record order).
+/// Owned copy of the actual encoder's resource descriptor echo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceEcho {
+    pub invocation: u64,
+    pub generation: u64,
+    pub route: u32,
+    pub descriptor: u32,
+    pub instance: Box<str>,
+}
+
+impl ResourceEcho {
+    pub fn borrowed(&self) -> busbar_plugin_abi::resource_admission::DescriptorEcho<'_> {
+        busbar_plugin_abi::resource_admission::DescriptorEcho {
+            invocation: self.invocation,
+            generation: self.generation,
+            route: self.route,
+            descriptor: self.descriptor,
+            instance: &self.instance,
+        }
+    }
+}
+
+/// One upstream exchange requested by the plane. Echo custody stays with its exact operands.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpExchange {
+    /// The actual upstream encoder's response; never regenerated from expected input.
+    pub resource_echo: Option<ResourceEcho>,
     pub id: u32,
     pub carrier: u32,
     pub outbound: u32,
@@ -301,6 +324,7 @@ pub struct ExMsgItem {
 /// One answer, decoded. Applied in the order the plane wrote it.
 #[derive(Debug, Default)]
 pub struct Answer {
+    resource_echo: Option<ResourceEcho>,
     pub client: Vec<ToClient>,
     pub forward: Option<Forward>,
     pub facts: Vec<(u32, FactVal)>,
@@ -363,6 +387,54 @@ pub trait Effects {
     /// returned when the session ends.
     fn client(&self) -> Option<&dyn ClientSink> {
         None
+    }
+}
+
+/// Hold sink-time effects until the whole answer has passed the host's checks.
+pub(crate) struct Buffered<'a> {
+    inner: &'a dyn Effects,
+    emits: std::cell::RefCell<Vec<(u64, busbar_contract::secure::SecureVec)>>,
+}
+
+fn expected_resource_echo(
+    bytes: &[u8],
+) -> Result<Option<busbar_plugin_abi::resource_admission::DescriptorEcho<'_>>, ()> {
+    let mut expected = None;
+    for rec in busbar_plugin_abi::records::Records::new(bytes) {
+        let rec = rec.map_err(|_| ())?;
+        if rec.tag == busbar_plugin_abi::plane::tag::RESOURCE_ECHO {
+            if expected.is_some() {
+                return Err(());
+            }
+            expected =
+                Some(busbar_plugin_abi::resource_admission::echo_record(rec).map_err(|_| ())?);
+        }
+    }
+    Ok(expected)
+}
+
+impl<'a> Buffered<'a> {
+    pub(crate) fn new(inner: &'a dyn Effects) -> Self {
+        Self {
+            inner,
+            emits: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        for (carrier, bytes) in self.emits.borrow_mut().drain(..) {
+            self.inner.emit(carrier, &bytes);
+        }
+    }
+}
+
+impl Effects for Buffered<'_> {
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.inner.invocation()
+    }
+
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.emits.borrow_mut().push((carrier, bytes.into()));
     }
 }
 
@@ -496,6 +568,18 @@ impl Answer {
         effects: &dyn Effects,
     ) -> Result<(), Violation> {
         match out {
+            PlaneOut::ResourceEcho(echo) => {
+                if origin != Origin::Upstream || self.resource_echo.is_some() {
+                    return Err(Violation::BadRecords);
+                }
+                self.resource_echo = Some(ResourceEcho {
+                    invocation: echo.invocation,
+                    generation: echo.generation,
+                    route: echo.route,
+                    descriptor: echo.descriptor,
+                    instance: echo.instance.into(),
+                });
+            }
             PlaneOut::Respond { status } => {
                 once.respond(self)?;
                 self.up_open = None;
@@ -947,6 +1031,13 @@ impl Answer {
     pub fn seal(mut self) -> Self {
         self.flush_head();
         self.flush_trailers();
+        if let Some(echo) = self.resource_echo.take() {
+            if self.exchanges.len() != 1 || self.exchanges[0].id != 0 || self.attempt_fails() {
+                self.violation.get_or_insert(Violation::BadRecords);
+            } else {
+                self.exchanges[0].resource_echo = Some(echo);
+            }
+        }
         self
     }
 }
@@ -985,12 +1076,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         body: &[u8],
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        let buffered = Buffered::new(effects);
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
         let session = calls
             .request(req, body, &mut |out| {
-                answer.take(out, Origin::Request, &mut once, effects);
+                answer.take(out, Origin::Request, &mut once, &buffered);
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
@@ -1002,6 +1094,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             held: Channels::new(),
         };
         let answer = task.checked(answer)?;
+        buffered.release();
         Ok((task, answer))
     }
 
@@ -1012,12 +1105,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         target: &TargetIn<'_>,
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
+        let buffered = Buffered::new(effects);
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
         let session = calls
             .probe(target, &mut |out| {
-                answer.take(out, Origin::Probe, &mut once, effects);
+                answer.take(out, Origin::Probe, &mut once, &buffered);
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
@@ -1029,6 +1123,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             held: Channels::new(),
         };
         let answer = task.checked(answer)?;
+        buffered.release();
         Ok((task, answer))
     }
 
@@ -1046,15 +1141,18 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         bytes: &[u8],
         effects: &dyn Effects,
     ) -> Result<Answer, SessionError> {
+        let buffered = Buffered::new(effects);
         let origin = Origin::Piece(from);
         let calls = self.calls;
         let once = &mut self.once;
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::for_exchange(exchange);
         let called = calls.piece(session, from, exchange, flags, bytes, &mut |out| {
-            answer.take(out, origin, once, effects);
+            answer.take(out, origin, once, &buffered);
         });
-        self.settle(called, answer)
+        let answer = self.settle(called, answer)?;
+        buffered.release();
+        Ok(answer)
     }
 
     /// `rewrite` (a hook's REWRITE).
@@ -1063,12 +1161,13 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         conversation: &[u8],
         effects: &dyn Effects,
     ) -> Result<Answer, SessionError> {
+        let buffered = Buffered::new(effects);
         let calls = self.calls;
         let once = &mut self.once;
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::default();
         let called = calls.rewrite(session, conversation, &mut |out| {
-            answer.take(out, Origin::Rewrite, once, effects);
+            answer.take(out, Origin::Rewrite, once, &buffered);
         });
         // IF §8.6: a rewrite that does not fit leaves the original request usable.
         // This exception belongs only to rewrite; other failed operations cancel the session.
@@ -1081,23 +1180,28 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         {
             return Err(SessionError::Port(error));
         }
-        self.settle(called, answer)
+        let answer = self.settle(called, answer)?;
+        buffered.release();
+        Ok(answer)
     }
 
     /// `end`: consumes the session. A task whose session is already gone answers `Over`.
     pub fn end(&mut self, effects: &dyn Effects) -> Result<Answer, SessionError> {
+        let buffered = Buffered::new(effects);
         let session = self.session.take().ok_or(SessionError::Over)?;
         let mut answer = Answer::default();
         let once = &mut self.once;
         self.calls
             .end(session, &mut |out| {
-                answer.take(out, Origin::End, once, effects);
+                answer.take(out, Origin::End, once, &buffered);
             })
             .map_err(SessionError::Port)?;
+        let answer = answer.seal();
         if let Some(v) = answer.violation {
             return Err(SessionError::Violation(v));
         }
         self.keep_usage(&answer)?;
+        buffered.release();
         Ok(answer.seal())
     }
 
@@ -1107,14 +1211,31 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         target: &TargetIn<'_>,
         effects: &dyn Effects,
     ) -> Result<Answer, SessionError> {
+        let expected = match expected_resource_echo(target.admission) {
+            Ok(expected) => expected,
+            Err(()) => {
+                self.session = None;
+                return Err(SessionError::Violation(Violation::BadRecords));
+            }
+        };
+        let buffered = Buffered::new(effects);
         let calls = self.calls;
         let once = &mut self.once;
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::default();
         let called = calls.upstream(session, target, &mut |out| {
-            answer.take(out, Origin::Upstream, once, effects);
+            answer.take(out, Origin::Upstream, once, &buffered);
         });
-        self.settle(called, answer)
+        let declined = answer
+            .attempt
+            .as_ref()
+            .is_some_and(|a| a.verdict == ATT_DECLINE);
+        if !declined && answer.resource_echo.as_ref().map(ResourceEcho::borrowed) != expected {
+            answer.violation.get_or_insert(Violation::BadRecords);
+        }
+        let answer = self.settle(called, answer)?;
+        buffered.release();
+        Ok(answer)
     }
 
     /// The last USAGE per (class, source) any answer of this session stated (IF §12.4).
@@ -1141,6 +1262,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
 
     /// A violation drops the session, which cancels it; the plane is told nothing.
     fn checked(&mut self, answer: Answer) -> Result<Answer, SessionError> {
+        let answer = answer.seal();
         if let Some(v) = answer.violation {
             self.session = None;
             return Err(SessionError::Violation(v));
@@ -1153,16 +1275,18 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
     }
 
     fn keep_usage(&mut self, answer: &Answer) -> Result<(), SessionError> {
+        let mut usage = self.usage.clone();
         for u in &answer.usage {
             let rec = UsageRec {
                 amount: u.amount,
                 scale: u.scale,
                 source: u.source,
             };
-            self.usage
+            usage
                 .answer(&u.class, rec)
                 .map_err(|why| SessionError::Violation(Violation::Usage(why)))?;
         }
+        self.usage = usage;
         Ok(())
     }
 }
