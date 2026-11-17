@@ -11,7 +11,7 @@ pub(crate) const BLANK_MARKER: &str = "(BLANK)";
 
 /// A value with no content: empty, or valid UTF-8 that is only (Unicode) whitespace. Bytes that
 /// are not UTF-8 (a raw binary key) are never blank.
-fn is_blank(bytes: &[u8]) -> bool {
+pub(crate) fn is_blank(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes).is_ok_and(|s| s.trim().is_empty())
 }
 
