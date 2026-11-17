@@ -1048,7 +1048,7 @@ pub(crate) fn enter_lifecycle(
 ) -> RawOutcome {
     debug_assert!(
         busbar_ffi::lifecycle::is_worker(),
-        "{what} entered plugin code on a thread that is not a permanent FFI worker"
+        "{what} escaped the lifecycle owner"
     );
     // SAFETY: this private crossing is reached after cross_gated validates its selected slot
     // and lends its initialized host frames and live instance for the synchronous worker call.
