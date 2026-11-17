@@ -90,6 +90,33 @@ fn all_rows_refuse_atomically_and_unsent_drop_releases_only_its_slot() {
 }
 
 #[test]
+fn pre_send_release_precedes_fallback_and_preserves_peer_custody() {
+    let (rates, _) = rates(16);
+    let rpm = rule(RateMetric::Requests, 2);
+    let tpm = rule(RateMetric::Tokens, 100);
+    let peer = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    let cancelled = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 2);
+
+    // Cancellation must complete this release before returning preparation custody.
+    drop(cancelled);
+    let snapshot = inspect(&rates, rpm.clone());
+    assert_eq!(snapshot.provisional_requests, 1);
+    assert_eq!(snapshot.committed_requests, 0);
+    let snapshot = inspect(&rates, tpm.clone());
+    assert_eq!(snapshot.known_tokens, Count::ZERO);
+    assert!(!snapshot.uncertain);
+
+    let fallback = reserve(&rates, vec![rpm.clone(), tpm.clone()]);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 2);
+    drop(fallback);
+    assert_eq!(inspect(&rates, rpm.clone()).provisional_requests, 1);
+    drop(peer);
+    assert_eq!(inspect(&rates, rpm).provisional_requests, 0);
+    assert!(!inspect(&rates, tpm).uncertain);
+}
+
+#[test]
 fn reservation_expiry_refunds_old_cell_and_never_current_committed_work() {
     let (rates, elapsed) = rates(16);
     let rpm = rule(RateMetric::Requests, 1);

@@ -540,8 +540,16 @@ impl AdmittedRequest {
         open: &Arc<()>,
         grant: &Arc<AdmitGrant>,
     ) -> bool {
-        self.is_live()
-            && Arc::ptr_eq(&self.book, book)
+        self.is_live() && self.matches_money_identity(book, open, grant)
+    }
+    /// Terminal cleanup only: retirement closes effects but does not erase the original Open.
+    pub(in crate::plane_driver) fn matches_money_identity(
+        &self,
+        book: &Arc<()>,
+        open: &Arc<()>,
+        grant: &Arc<AdmitGrant>,
+    ) -> bool {
+        Arc::ptr_eq(&self.book, book)
             && Arc::ptr_eq(&self.open, open)
             && Arc::ptr_eq(&self.grant, grant)
     }
