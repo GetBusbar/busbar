@@ -364,6 +364,17 @@ fn unknown_effect_request(body: &'static str) -> axum::http::Request<axum::body:
         .unwrap()
 }
 
+fn unknown_effect_query_request(
+    query: &str,
+    body: &'static str,
+) -> axum::http::Request<axum::body::Body> {
+    let mut request = unknown_effect_request(body);
+    *request.uri_mut() = format!("/api/v1/admin/unknown-effect?{query}")
+        .parse()
+        .unwrap();
+    request
+}
+
 #[tokio::test]
 async fn unreadable_retained_intent_refuses_without_an_effect() {
     isolated!(CHILD, WITNESS, witness = "generation");
@@ -430,7 +441,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
     );
     let s = serve("unknown-effect-collection", false).await;
     let first = busbar_core_admin::test_support::with_idempotency(effect.clone(), s.app.clone())
-        .oneshot(unknown_effect_request("original"))
+        .oneshot(unknown_effect_query_request("marker=", "original"))
         .await
         .unwrap();
     assert_eq!(first.status().as_u16(), 500);
@@ -438,7 +449,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
     let rebuilt = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone());
     let retry = rebuilt
         .clone()
-        .oneshot(unknown_effect_request("original"))
+        .oneshot(unknown_effect_query_request("marker=", "original"))
         .await
         .unwrap();
     assert_eq!(retry.status().as_u16(), 409);
@@ -450,9 +461,22 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
     )
     .unwrap();
     assert_eq!(refusal["error"]["reason"], "idempotency_in_flight");
+    let collision = rebuilt
+        .clone()
+        .oneshot(unknown_effect_query_request("marker", "=original"))
+        .await
+        .unwrap();
+    assert_eq!(collision.status().as_u16(), 409);
+    let refusal: serde_json::Value = json::from_slice(
+        &axum::body::to_bytes(collision.into_body(), 16 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(refusal["error"]["reason"], "idempotency_mismatch");
     let mismatch = rebuilt
         .clone()
-        .oneshot(unknown_effect_request("different"))
+        .oneshot(unknown_effect_query_request("marker=", "different"))
         .await
         .unwrap();
     assert_eq!(mismatch.status().as_u16(), 409);
@@ -574,6 +598,59 @@ async fn idempotency_binding_keeps_query_and_body_boundaries() {
     assert_eq!(replay.status(), first_status);
     assert_eq!(replay.headers()["idempotent-replayed"], "true");
     assert_eq!(replay.bytes().await.unwrap(), first_body);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+#[tokio::test]
+async fn unsupported_answer_binding_layout_never_replays_or_dispatches() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    use busbar_core_admin::idempotency::durable::{self, Settled};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt as _;
+
+    let s = serve("unsupported-answer-layout", false).await;
+    let scoped = durable::scoped_store(
+        s.app
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap(),
+    )
+    .unwrap();
+    let now = busbar_kernel::store::now();
+    let key = ("anonymous".into(), "op:unknown-effect".into());
+    let claim = durable::claim(&scoped, &key, now).await.unwrap();
+    // Layout1 did not distinguish framed from ambiguous concatenated fingerprints.
+    let mut old = vec![1];
+    old.extend_from_slice(&200u16.to_be_bytes());
+    old.extend_from_slice(&now.to_be_bytes());
+    old.extend_from_slice(&0u64.to_be_bytes());
+    old.extend_from_slice(&[0; 32]);
+    old.push(0);
+    old.extend_from_slice(b"old answer");
+    durable::settle(&scoped, &claim, now, &Settled::Answer(old))
+        .await
+        .unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let handler_effects = effects.clone();
+    let effect = axum::Router::new().route(
+        "/api/v1/admin/unknown-effect",
+        axum::routing::post(move || {
+            let effects = handler_effects.clone();
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+    let response = busbar_core_admin::test_support::with_idempotency(effect, s.app.clone())
+        .oneshot(unknown_effect_request("original"))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     s.finish();
     println!("{WITNESS}");
 }
