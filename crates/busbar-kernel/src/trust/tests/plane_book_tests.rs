@@ -379,7 +379,7 @@ fn an_approval_value_is_read_strictly() {
     let entry = approval_entry(
         "trust.agents.remote",
         &json!({
-            "root": {"mechanism": "jws_issuer_key", "key": "AAAA"},
+            "root": {"mechanism": "jws_issuer_key", "key": key_info(&key(1))},
             "fingerprint": "sha256:00",
             "items": {"a": digest_text(&d(0xAB)), "blank": ""},
         }),
@@ -388,7 +388,7 @@ fn an_approval_value_is_read_strictly() {
     let pin = entry.pin.expect("a root pin");
     assert!(pin.root);
     assert_eq!(pin.mechanism, "jws_issuer_key");
-    assert_eq!(pin.key.as_deref(), Some("AAAA"));
+    assert_eq!(pin.key.as_deref(), Some(key_info(&key(1)).as_str()));
     assert_eq!(entry.approved.len(), 1, "a blank digest approves nothing");
     assert_eq!(
         entry.approved.get("a").map(String::as_str),
@@ -401,6 +401,89 @@ fn an_approval_value_is_read_strictly() {
     assert!(approval_entry("t", &json!("text")).is_err());
     assert_eq!(digest_of(&digest_text(&d(3))), Some(d(3)));
     assert_eq!(digest_of("sha256:zz"), None);
+}
+
+/// QE-BOOT-KEYCHECK's off-curve key (`plugin-loader` `OFF_CURVE_PUBLIC_KEY_HEX`): `y = 2`, sign bit clear, canonical and
+/// not small-order, but no point on edwards25519 has it. Here as the RFC 8410 SubjectPublicKeyInfo a root key is.
+fn off_curve_key_info() -> String {
+    let mut raw = [0u8; 32];
+    raw[0] = 2;
+    STANDARD.encode([&KEY_INFO_HEAD[..], &raw[..]].concat())
+}
+
+fn root_approval(key: &str) -> Result<TrustEntry, String> {
+    approval_entry(
+        "trust.agents.remote",
+        &json!({"root": {"mechanism": "jws_issuer_key", "key": key}}),
+    )
+}
+
+const NOT_A_ROOT_KEY: &str =
+    "`trust.agents.remote.root.key` is not an Ed25519 public key (RFC 8410 \
+                              SubjectPublicKeyInfo, standard base64), which `root.mechanism: \
+                              jws_issuer_key` verifies signatures with";
+
+/// DES-QE-PLANE-ROOT r2: a TRUST_APPROVAL root whose key is no point on the curve is refused where the approval
+/// loads (boot, `--validate`, reload, admin apply all read it through `approval_entry`), not first at TRUST_VERIFY.
+#[test]
+fn approval_root_off_curve_key_is_refused() {
+    assert_eq!(
+        root_approval(&off_curve_key_info()).expect_err("an off-curve root key"),
+        NOT_A_ROOT_KEY
+    );
+}
+
+/// DES-QE-PLANE-ROOT r2: anything the one decoder (`signed::root_key`) cannot read is refused at load with the same
+/// text: not base64, a SubjectPublicKeyInfo that is not Ed25519's, a key one byte short.
+#[test]
+fn approval_root_malformed_base64_or_wrong_spki_head_is_refused() {
+    let wrong_head = STANDARD.encode([0u8; 44]);
+    let short =
+        STANDARD.encode([&KEY_INFO_HEAD[..], &key(1).verifying_key().to_bytes()[..31]].concat());
+    for bad in ["not base64!", wrong_head.as_str(), short.as_str()] {
+        assert_eq!(
+            root_approval(bad).expect_err("not an Ed25519 root key"),
+            NOT_A_ROOT_KEY,
+            "{bad}"
+        );
+    }
+}
+
+/// DES-QE-PLANE-ROOT r2: a valid root key still admits, and TRUST_VERIFY under it still verifies.
+#[tokio::test]
+async fn approval_root_valid_key_admits_and_verifies() {
+    let rig = Rig::new().await;
+    let entry = root_approval(&key_info(&key(1))).expect("a valid root key");
+    let book = CoreTrustBook::new(
+        Arc::new(Judge::default()),
+        StoreRecords::new(Arc::clone(&rig.store)),
+        Arc::clone(&rig.audit) as Arc<dyn TrustAudit>,
+        clock,
+    );
+    book.admit("agents", vec![("remote".to_owned(), entry)])
+        .await
+        .expect("admitted");
+    let good = json!([signature(&key(1), &json!({"alg": "EdDSA"}), PAYLOAD)]).to_string();
+    let mut named = String::new();
+    assert_eq!(
+        book.verify(&plane(), "remote", PAYLOAD, good.as_bytes(), &mut named),
+        SIGNED_VERIFIED
+    );
+}
+
+/// DES-QE-PLANE-ROOT r2: an approval with a fingerprint and no root is unchanged: its pin is the fingerprint pin.
+#[test]
+fn approval_fingerprint_only_is_unchanged() {
+    let entry = approval_entry(
+        "trust.agents.remote",
+        &json!({"fingerprint": digest_text(&d(7))}),
+    )
+    .expect("a fingerprint approval");
+    let pin = entry.pin.expect("the fingerprint pin");
+    assert_eq!(pin.mechanism, "fingerprint");
+    assert!(!pin.root);
+    assert_eq!(pin.key, None);
+    assert_eq!(pin.fingerprint, Some(digest_text(&d(7))));
 }
 
 /// TRUST_VERIFY answers exactly what today's `trust.verify` body (`trust::signed`) answers, verdict and name, over

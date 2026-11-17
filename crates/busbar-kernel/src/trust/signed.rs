@@ -29,6 +29,10 @@ pub fn root_key(key_info: &str) -> Result<VerifyingKey, Refused> {
         .strip_prefix(&KEY_INFO_HEAD[..])
         .and_then(|k| k.try_into().ok())
         .ok_or_else(|| refused(svc::SIGNED_MALFORMED_ROOT))?;
+    // QE: a key with no point on the curve verifies nothing; refuse it here, where config load and
+    // TRUST_VERIFY both read it (DES-QE-PLANE-ROOT r2). `from_bytes` does not check the point (Q9b).
+    busbar_contract::crypto::ed25519::validate_public_key(&raw)
+        .map_err(|_| refused(svc::SIGNED_MALFORMED_ROOT))?;
     VerifyingKey::from_bytes(&raw).map_err(|_| refused(svc::SIGNED_MALFORMED_ROOT))
 }
 

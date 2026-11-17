@@ -204,6 +204,13 @@ pub fn approval_entry(at: &str, value: &Value) -> Result<TrustEntry, String> {
                 .ok_or_else(|| format!("`{at}.root.mechanism` is required"))?;
             let key = text(root.get(&"key"), "root.key")?
                 .ok_or_else(|| format!("`{at}.root.key` is required"))?;
+            // The one decoder TRUST_VERIFY uses, run where the approval loads (DES-QE-PLANE-ROOT r2).
+            super::signed::root_key(&key).map_err(|_| {
+                format!(
+                    "`{at}.root.key` is not an Ed25519 public key (RFC 8410 SubjectPublicKeyInfo, \
+                     standard base64), which `root.mechanism: {mechanism}` verifies signatures with"
+                )
+            })?;
             Some(DeclaredPin {
                 mechanism,
                 root: true,
