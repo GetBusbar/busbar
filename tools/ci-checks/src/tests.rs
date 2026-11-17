@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use super::{
-    backend_only_reached, crypto_graph, no_getrandom, repo_root, scan_source, seam_only_reached,
+    backend_only_reached, crypto_graph, no_getrandom, reached, recorded_exceptions, repo_root,
+    scan_source, seam_only_reached, SEAM_ONLY,
 };
 
 #[test]
@@ -152,4 +153,87 @@ fn rustcrypto_macs_and_md5_built_outside_the_seam_are_named_with_their_paths() {
             "sha2 v0.10.9 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> sha2",
         ]
     );
+}
+
+const RECORDED_DENY: &str = r#"
+[bans]
+deny = [
+    # { crate = "commented", wrappers = ["x"], reason = "tracked: a#1" },
+    { crate = "hmac", wrappers = ["postgres-protocol"], reason = "SCRAM, tracked: busbar-store-postgres#11" },
+    { crate = "aes", wrappers = ["busbar-transport-webrtc", "other"], reason = "tracked: busbar-transport-webrtc#13" },
+    { crate = "sha2", wrappers = ["postgres-protocol"], reason = "a ban exception with no issue" },
+    { crate = "ring@0.16", reason = "no wrappers" }, { crate = "boring" },
+]
+"#;
+
+#[test]
+fn recorded_exceptions_are_the_deny_rows_that_name_wrappers_and_an_issue() {
+    let recorded = recorded_exceptions(RECORDED_DENY);
+    assert_eq!(
+        recorded.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["aes", "hmac"]
+    );
+    assert_eq!(recorded["hmac"].issue, "busbar-store-postgres#11");
+    assert_eq!(recorded["hmac"].parents, ["postgres-protocol"]);
+    assert_eq!(
+        recorded["aes"].parents,
+        ["busbar-transport-webrtc", "other"]
+    );
+}
+
+/// A recorded crate under its recorded parent passes and is listed with its issue; an unrecorded
+/// crate, a recorded crate under another parent, and a crate whose row has no issue all fail.
+#[test]
+fn an_unrecorded_crate_fails_and_a_recorded_one_passes_and_is_listed() {
+    const SHIPPED: &str = "0busbar-default v1.6.0 (/r/dist/default)\n\
+                           1busbar-store-postgres v0.1.0\n\
+                           2postgres-protocol v0.6.12\n\
+                           3hmac v0.12.1\n3sha2 v0.10.9\n\
+                           1busbar-transport-webrtc v0.1.0\n2aes v0.8.4\n\
+                           1other-plugin v0.1.0\n2hmac v0.12.1\n2ring v0.17.14\n";
+    let recorded = recorded_exceptions(RECORDED_DENY);
+    let (failures, tracked) = reached(SHIPPED, &SEAM_ONLY, "outside busbar-crypto*", &recorded);
+    assert_eq!(
+        failures,
+        [
+            "sha2 v0.10.9 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> sha2",
+            "hmac v0.12.1 is built outside busbar-crypto*: busbar-default -> other-plugin -> hmac",
+            "ring v0.17.14 is built outside busbar-crypto*: busbar-default -> other-plugin -> ring",
+        ]
+    );
+    assert_eq!(
+        tracked,
+        [
+            "hmac v0.12.1 is built outside busbar-crypto*: busbar-default -> busbar-store-postgres -> postgres-protocol -> hmac (tracked: busbar-store-postgres#11)",
+            "aes v0.8.4 is built outside busbar-crypto*: busbar-default -> busbar-transport-webrtc -> aes (tracked: busbar-transport-webrtc#13)",
+        ]
+    );
+}
+
+/// One source: the real deny.toml records the postgres-protocol and WebRTC exceptions with their issues.
+#[test]
+fn the_real_deny_toml_records_the_postgres_and_webrtc_exceptions() {
+    let deny = std::fs::read_to_string(repo_root().join("deny.toml")).expect("deny.toml");
+    let recorded = recorded_exceptions(&deny);
+    for name in ["hmac", "md-5", "sha2"] {
+        assert!(
+            recorded[name]
+                .parents
+                .contains(&"postgres-protocol".to_string())
+                && recorded[name].issue == "busbar-store-postgres#11",
+            "{name}: {:?}",
+            recorded.get(name)
+        );
+    }
+    for name in ["ring", "aes"] {
+        assert!(
+            recorded[name]
+                .parents
+                .contains(&"busbar-transport-webrtc".to_string())
+                && recorded[name].issue == "busbar-transport-webrtc#13",
+            "{name}: {:?}",
+            recorded.get(name)
+        );
+    }
+    assert_eq!(recorded["cipher"].parents, ["aes"]);
 }
