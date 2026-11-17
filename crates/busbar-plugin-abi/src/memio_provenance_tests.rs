@@ -83,6 +83,17 @@ fn short_answers_retain_every_control_payload_boundary_and_end_once() {
         records: Vec<(u16, Vec<u8>)>,
     }
     impl Writer for Short {
+        fn put_parts(&mut self, tag: u16, parts: &[&[u8]]) -> Result<(), Full> {
+            self.put(tag, &parts.concat())
+        }
+        fn put_pod_nested<T: Pod>(
+            &mut self,
+            _: u16,
+            _: &T,
+            _: impl FnOnce(&mut Nested<'_>) -> Result<(), Full>,
+        ) -> Result<(), Full> {
+            unreachable!()
+        }
         fn put(&mut self, tag: u16, bytes: &[u8]) -> Result<(), Full> {
             let size = bytes.len() + 8;
             if size > self.room {
