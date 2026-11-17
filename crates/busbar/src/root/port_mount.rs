@@ -622,6 +622,9 @@ async fn answer(
                 Ok(allocation) => allocation,
                 Err(_) => return failed(StatusCode::SERVICE_UNAVAILABLE),
             };
+            let Some(original_route) = seat.retain_route(&invocation.context, route.route) else {
+                return failed(StatusCode::SERVICE_UNAVAILABLE);
+            };
             let billing = billing.clone();
             let classes = seat.driver.usage_classes();
             let route_id = route.route;
@@ -663,7 +666,8 @@ async fn answer(
                         })
                     },
                 )
-                .with_channel_budget(seat.channel_budget.unit()),
+                .with_channel_budget(seat.channel_budget.unit())
+                .with_route(original_route),
             ))
         }
         (None, None, _) => None,

@@ -1171,7 +1171,18 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             return Err(SessionError::NotDriven);
         }
         let buffered = Buffered::new(effects);
-        let declaration = FrozenUsage::of(calls, Some(req.route))?;
+        let origin = effects
+            .admission()
+            .and_then(|pending| pending.original_route())
+            .cloned();
+        if origin.as_ref().is_some_and(|origin| {
+            !effects
+                .invocation()
+                .is_some_and(|context| origin.accepts(context, req.route))
+        }) {
+            return Err(SessionError::NotDriven);
+        }
+        let declaration = FrozenUsage::of(calls, Some(req.route), origin)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
@@ -1205,7 +1216,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         effects: &dyn Effects,
     ) -> Result<(Self, Answer), SessionError> {
         let buffered = Buffered::new(effects);
-        let declaration = FrozenUsage::of(calls, None)?;
+        let declaration = FrozenUsage::of(calls, None, None)?;
         let invocation = effects.invocation().cloned();
         let mut once = Once::default();
         let mut answer = Answer::default();
