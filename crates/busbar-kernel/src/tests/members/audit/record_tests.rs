@@ -196,7 +196,7 @@ fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
         "a record relabelled to another node still verifies"
     );
 
-    let raw = busbar_kernel_audit::expose::range_body(&chain_a, std::slice::from_ref(&a), 1, 1);
+    let raw = busbar_kernel_audit::expose::range_body(std::slice::from_ref(&a), 1, 1);
     assert!(
         raw.contains("\"mono\":\"1000\",\"node\":\"11\","),
         "the range read does not publish the node, as its decimal text, straight after mono: {raw}"
@@ -651,10 +651,9 @@ fn v5_key_presence_and_every_key_byte_survive_seal_journal_and_publication() {
             .unwrap()
             .unwrap();
         assert_eq!(back, record);
-        let exposed: json::Value = json::parse_value(
-            busbar_kernel_audit::expose::range_body(&chain, &[record], 1, 1).as_bytes(),
-        )
-        .unwrap();
+        let exposed: json::Value =
+            json::parse_value(busbar_kernel_audit::expose::range_body(&[record], 1, 1).as_bytes())
+                .unwrap();
         assert_eq!(
             exposed["records"][0]["rate_card_key_present"],
             if key.is_some() { "1" } else { "0" }

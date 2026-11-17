@@ -187,6 +187,16 @@ impl FieldSink for JsonFields<'_> {
     fn num(&mut self, name: &'static str, value: u64) {
         self.field(name, format_args!("{value}"));
     }
+
+    /// A fingerprint prints as 64 lowercase hex characters; the genesis predecessor (32 zero bytes)
+    /// prints as the empty text, as every recipe publishes it.
+    fn bytes32(&mut self, name: &'static str, value: &[u8; 32]) {
+        if *value == [0; 32] {
+            self.field(name, format_args!(""));
+        } else {
+            self.field(name, format_args!("{}", crate::record::HexBytes(value)));
+        }
+    }
 }
 
 /// One record as the range read prints it: the digest fields, grouped, then the seal.
@@ -249,33 +259,20 @@ pub fn head_body(chain: &AuditChain) -> String {
     out
 }
 
-/// THE RANGE READ: records by position, `from` through `to` inclusive. The envelope names the
-/// recipe this build seals under; every record names its own.
+/// THE RANGE READ over a slice of records: records by position, `from` through `to` inclusive,
+/// under the link recipe's envelope (SEALING-FIX §3.5 "Reads"). With no journal at hand it carries
+/// no evidence: no stamps, no cover, no certificate, no anchor and no seal row, so a verifier
+/// reports every link line unauthenticated. The admin range read over a node's journal fills the
+/// evidence. Every record names its own recipe.
 #[must_use]
-pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
-    let mut out = String::new();
-    out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE_V7);
-    out.push(',');
-    member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
-    out.push(',');
-    member_str(&mut out, "algorithm", SIGNATURE_ALGORITHM);
-    out.push(',');
-    member_num(&mut out, "from", from);
-    out.push(',');
-    member_num(&mut out, "to", to);
-    out.push(',');
-    push_json_string(&mut out, "anchor");
-    out.push(':');
-    match chain.heads().anchor_at(to) {
-        Some(head) => push_head(&mut out, &head),
-        None => out.push_str("null"),
-    }
+pub fn range_body(records: &[AuditRecord], from: u64, to: u64) -> String {
+    let mut out = range_envelope(from, to);
+    out.pop();
     out.push(',');
     push_json_string(&mut out, "records");
     out.push(':');
     push_records(&mut out, records, from, to);
-    out.push('}');
+    out.push_str(r#","stamps":[],"cover":[],"certs":[],"anchor":null,"seal_row":null}"#);
     out
 }
 

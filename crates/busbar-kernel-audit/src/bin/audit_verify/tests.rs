@@ -161,11 +161,9 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
     record.linked_ms = 1_700_000_000_123;
     record.hash = AuditChain::digest_of(&record);
     let records = vec![record];
-    let chain = AuditChain::resume(&records);
-    let mut range: Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 1).as_bytes(),
-    )
-    .unwrap();
+    let mut range: Value =
+        json::parse_value(busbar_kernel_audit::expose::range_body(&records, 1, 1).as_bytes())
+            .unwrap();
     assert_eq!(
         range["recipe"], LINK_RECIPE,
         "the range names the link recipe"
@@ -531,9 +529,10 @@ fn mixed_v5_v6_v5_exact_quantity_chain_verifies_with_explicit_dispatch() {
     assert_eq!(range["records"][0], original);
 }
 
-/// A `v7` RANGE VERIFIES AGAINST THE PUBLISHED `v7` PAGE (`docs/audit-chain-digest-v7.md`): an
-/// outside verifier recomputes every record from the page's field table, the attempts group
-/// included, and a changed unit fact is refused.
+/// A LINK RANGE VERIFIES AGAINST THE PUBLISHED LINK PAGE (`docs/audit-link-v1.md`) UNDER ITS
+/// COVERING STAMP: an outside verifier recomputes every line from the page's field table, the
+/// attempts group and the records tail included; the covering stamp verifies, and an edit breaks
+/// it.
 #[test]
 fn v7_records_verify_against_the_published_page() {
     use busbar_contract::caps::{Outcome, UnitKey};
@@ -608,10 +607,10 @@ fn v7_records_verify_against_the_published_page() {
                 attempts_total: 2,
                 records: RecordFacts::default(),
             },
-            linked_ms: 0,
+            linked_ms: 1_700_000_000_000 + seq,
             seq,
             prev_hash: previous.clone(),
-            recipe: Recipe::V7,
+            recipe: Recipe::V8,
             hash: String::new(),
             signature: None,
             key_id: None,
@@ -624,22 +623,44 @@ fn v7_records_verify_against_the_published_page() {
             };
         }
         record.hash = AuditChain::digest_of(&record);
-        record.signature = Some(signer().sign_digest(&record.hash));
-        record.key_id = Some(signer().key_id().into());
         previous.clone_from(&record.hash);
         records.push(record);
     }
-    let chain = AuditChain::resume(&records);
-    let range: Value = json::parse_value(
-        busbar_kernel_audit::expose::range_body(&chain, &records, 1, 2).as_bytes(),
+    let mut range: Value =
+        json::parse_value(busbar_kernel_audit::expose::range_body(&records, 1, 2).as_bytes())
+            .unwrap();
+    assert_eq!(range["recipe"], LINK_RECIPE);
+    assert_eq!(range["records"][1]["recipe"], LINK_RECIPE);
+    let (notary, _) = signer()
+        .into_grants(busbar_kernel_audit::LiveSigner::SameAsBootstrap)
+        .unwrap();
+    let stamp = busbar_kernel_audit::Notary::new(notary)
+        .sign_stamp(busbar_kernel_audit::Stamp {
+            node: 9,
+            from: 1,
+            to: 2,
+            fingerprint: busbar_kernel_audit::Fingerprint::from_hex(&records[1].hash).unwrap(),
+            kind: busbar_kernel_audit::StampKind::Live,
+            sealer: 9,
+            host: "host-a".into(),
+            every: 1000,
+            stamped_ms: 1_700_000_000_003,
+            down_from_ms: 0,
+            down_to_ms: 0,
+            crypto: String::new(),
+            sig_alg: String::new(),
+            key_id: String::new(),
+            key_cert: 0,
+            signature: Vec::new(),
+        })
+        .unwrap();
+    range["stamps"] = json::json!([json::parse_value(
+        busbar_kernel_audit::expose::stamp_json(Some(3), &stamp).as_bytes()
     )
-    .unwrap();
-    let head: Value =
-        json::parse_value(busbar_kernel_audit::expose::head_body(&chain).as_bytes()).unwrap();
-    assert_eq!(range["recipe"], DIGEST_RECIPE_V7);
-    assert_eq!(range["records"][1]["recipe"], DIGEST_RECIPE_V7);
-    let report = verify(&keys(), &range, Some(&head)).unwrap();
+    .unwrap()]);
+    let report = verify(&keys(), &range, None).unwrap();
     assert_eq!(report["records"], 2);
+    assert_eq!(report["authenticated_records"], 2);
 
     assert!(
         range["records"][0].get("user_present").is_none(),
@@ -652,13 +673,13 @@ fn v7_records_verify_against_the_published_page() {
     let mut tampered = range.clone();
     tampered["records"][1]["labels"][0]["value"] = json::json!("billing");
     assert!(
-        verify(&keys(), &tampered, Some(&head)).is_err(),
+        verify(&keys(), &tampered, None).is_err(),
         "a label is digested"
     );
     let mut tampered = range.clone();
     tampered["records"][1]["user"] = json::json!("u_ffeeddccbbaa99887766554433221100");
     assert!(
-        verify(&keys(), &tampered, Some(&head)).is_err(),
+        verify(&keys(), &tampered, None).is_err(),
         "the user is digested"
     );
     let mut stripped = range.clone();
@@ -667,20 +688,20 @@ fn v7_records_verify_against_the_published_page() {
         second.remove(&member);
     }
     assert!(
-        verify(&keys(), &stripped, Some(&head)).is_err(),
+        verify(&keys(), &stripped, None).is_err(),
         "the records tail cannot be dropped"
     );
 
     let mut tampered = range.clone();
     tampered["records"][0]["attribution"] = json::json!("team\u{1f}default\u{1f}other");
     assert!(
-        verify(&keys(), &tampered, Some(&head)).is_err(),
+        verify(&keys(), &tampered, None).is_err(),
         "the attribution is digested"
     );
     let mut tampered = range;
     tampered["records"][1]["attempts"][0]["outcome"] = json::json!("ok");
     assert!(
-        verify(&keys(), &tampered, Some(&head)).is_err(),
+        verify(&keys(), &tampered, None).is_err(),
         "an attempt is digested"
     );
 }
