@@ -22,7 +22,7 @@ fn outcome_key(outcome: &'static str) -> Key {
 }
 
 fn make_source() -> &'static Source {
-    Box::leak(Box::new(Source::new(
+    Box::leak(Box::new(Source::isolated(
         Duration::from_millis(1),
         std::num::NonZeroU32::new(1).unwrap(),
         Duration::from_secs(60),
@@ -87,8 +87,8 @@ fn integer_samples_are_exact_above_f64_integer_precision() {
     let count = (1u64 << 53) + 1;
     let mut bins = [0; 16];
     bins[0] = count;
-    lock(&source.request_distributions).series.insert(
-        key(),
+    source.requests.seed(
+        &key(),
         RequestDistribution {
             count,
             errors: count,
@@ -97,7 +97,7 @@ fn integer_samples_are_exact_above_f64_integer_precision() {
             bins,
         },
     );
-    let snapshot = source.snapshot();
+    let snapshot = source.snapshot().unwrap();
     assert_eq!(value(&snapshot, REQUEST_COUNT), count);
     assert_eq!(value(&snapshot, REQUEST_SUM), count);
     assert_eq!(value(&snapshot, REQUEST_BIN), count);
@@ -113,7 +113,7 @@ fn snapshots_remain_cumulative_across_drains_and_expired_summary_windows() {
         &metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!())),
     );
     histogram.record(0.001);
-    let before = source.snapshot();
+    let before = source.snapshot().unwrap();
     let labels = &before
         .iter()
         .find(|f| f.name == REQUEST_COUNT)
@@ -130,12 +130,12 @@ fn snapshots_remain_cumulative_across_drains_and_expired_summary_windows() {
     std::thread::sleep(Duration::from_millis(3));
     histogram.record(0.005);
     source.drain();
-    let after = source.snapshot();
+    let after = source.snapshot().unwrap();
     assert_eq!(value(&before, REQUEST_COUNT), 1);
     assert_eq!(value(&after, REQUEST_COUNT), 2);
     assert_eq!(value(&after, REQUEST_SUM), 6000);
     assert_eq!(value(&after, REQUEST_BIN), 2);
-    assert_eq!(value(&source.snapshot(), REQUEST_COUNT), 2);
+    assert_eq!(value(&source.snapshot().unwrap(), REQUEST_COUNT), 2);
     assert!(!after
         .iter()
         .any(|family| family.name == crate::telemetry::REQUEST_PHASE_DURATION));
@@ -163,7 +163,10 @@ fn concurrent_recording_and_snapshots_keep_count_sum_and_bins_together() {
         }
     });
     for _ in 0..20 {
-        let snapshot = source.snapshot();
+        // R2 permits a whole-capture refusal while a writer owns the numeric state.
+        let Some(snapshot) = source.snapshot() else {
+            continue;
+        };
         let count = value(&snapshot, REQUEST_COUNT);
         assert_eq!(value(&snapshot, REQUEST_BIN), count);
         assert_eq!(value(&snapshot, REQUEST_ERRORS), count);
@@ -171,7 +174,7 @@ fn concurrent_recording_and_snapshots_keep_count_sum_and_bins_together() {
         assert_eq!(value(&snapshot, REQUEST_SUM), count * 1000);
     }
     writer.join().unwrap();
-    assert_eq!(value(&source.snapshot(), REQUEST_COUNT), 2000);
+    assert_eq!(value(&source.snapshot().unwrap(), REQUEST_COUNT), 2000);
 }
 
 /// A drain that runs while recorders push must account for every sample: each one is either in
@@ -203,7 +206,7 @@ fn drains_racing_recorders_never_lose_a_recorded_sample() {
     for writer in writers {
         writer.join().unwrap();
     }
-    let snapshot = source.snapshot();
+    let snapshot = source.snapshot().unwrap();
     assert_eq!(value(&snapshot, REQUEST_COUNT), WRITERS * PER_WRITER);
     assert_eq!(value(&snapshot, REQUEST_BIN), WRITERS * PER_WRITER);
     assert_eq!(value(&snapshot, REQUEST_SUM), WRITERS * PER_WRITER * 1000);
@@ -211,31 +214,9 @@ fn drains_racing_recorders_never_lose_a_recorded_sample() {
 
 #[test]
 fn missing_nonce_capacity_and_invalid_samples_have_bounded_drop_reasons() {
-    let mut state = RequestDistributions::default();
-    state.add(&key(), 1.0, "ok", false);
-    assert!(state.series.is_empty());
-    assert_eq!(state.dropped[3], 1);
-    state.add(&key(), f64::NAN, "ok", true);
-    assert_eq!(state.dropped[0], 1);
-    for i in 1..REQUEST_SERIES_LIMIT {
-        let key = Key::from_parts(
-            crate::telemetry::REQUEST_PHASE_DURATION,
-            vec![metrics::Label::new("pool", i.to_string())],
-        );
-        state.add(&key, 0.0, "ok", true);
-    }
-    state.add(
-        &Key::from_name(crate::telemetry::REQUEST_PHASE_DURATION),
-        0.0,
-        "ok",
-        true,
-    );
-    assert_eq!(state.series.len(), REQUEST_SERIES_LIMIT);
-    assert_eq!(state.dropped[2], 1);
-    let mut out = Building::new();
-    state.put(&mut out, None);
-    assert_eq!(out.len(), 1);
-    assert_eq!(out.values().next().unwrap().len(), 3);
+    // R2 moves admission before recording and validates metadata. The concrete store test
+    // exercises nonce absence, invalid duration and the 8192 valid-cohort capacity together.
+    request_store::tests::missing_nonce_capacity_and_invalid_samples();
 }
 
 #[test]
@@ -251,7 +232,12 @@ fn bounded_projection_selects_stable_labels_and_reports_all_omissions() {
                 metrics::Label::new("ingress_protocol", "test-wire"),
             ],
         );
-        lock(&source.request_distributions).add(&key, 0.001, "ok", true);
+        let mut labels: Vec<_> = key.labels().cloned().collect();
+        labels.push(metrics::Label::new("outcome", "ok"));
+        source
+            .requests
+            .register(labels.iter().map(|label| (label.key(), label.value())))
+            .record(0.001);
     }
     let oversized = Key::from_parts(
         crate::telemetry::REQUEST_PHASE_DURATION,
@@ -262,10 +248,15 @@ fn bounded_projection_selects_stable_labels_and_reports_all_omissions() {
             metrics::Label::new("ingress_protocol", "test-wire"),
         ],
     );
-    lock(&source.request_distributions).add(&oversized, 0.001, "ok", true);
+    source
+        .requests
+        .register(oversized.labels().map(|label| (label.key(), label.value())))
+        .record(0.001);
     let snapshot = source.request_snapshot(usize::MAX).unwrap();
     assert_eq!(snapshot.identities.len(), 32);
-    assert_eq!(snapshot.omitted_identities, 9);
+    // Adopted r2 rejects malformed metadata before retaining a row: one loss, not omission.
+    assert_eq!(snapshot.omitted_identities, 8);
+    assert_eq!(snapshot.dropped[5], 1);
     assert_eq!(snapshot.identities[0].pool, "pool-00");
     assert_eq!(snapshot.identities[31].pool, "pool-31");
     for identity in &snapshot.identities {
@@ -275,11 +266,11 @@ fn bounded_projection_selects_stable_labels_and_reports_all_omissions() {
     assert_eq!(snapshot.process_boot_nonce, process_boot_nonce().unwrap());
     let later = source.request_snapshot(1).unwrap();
     assert_eq!(later.identities.len(), 1);
-    assert_eq!(later.omitted_identities, 40);
+    assert_eq!(later.omitted_identities, 39);
     assert!(later.uptime_ms >= snapshot.uptime_ms);
     let empty = source.request_snapshot(0).unwrap();
     assert!(empty.identities.is_empty());
-    assert_eq!(empty.omitted_identities, 41);
+    assert_eq!(empty.omitted_identities, 40);
 }
 
 #[test]

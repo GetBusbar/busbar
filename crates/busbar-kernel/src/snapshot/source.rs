@@ -14,6 +14,9 @@ use metrics::{SharedString, Unit};
 use metrics_util::registry::{Generation, GenerationalStorage, Registry, Storage};
 use metrics_util::storage::Summary;
 
+#[path = "request_store.rs"]
+pub(crate) mod request_store;
+
 const QUANTILES: [f64; 7] = [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0];
 
 pub(super) const QUANTILE_LABEL: &str = "quantile";
@@ -124,16 +127,7 @@ const REQUEST_SUM: &str = "busbar_request_phase_duration_sum_us_total";
 const REQUEST_ERRORS: &str = "busbar_request_phase_errors_total";
 const REQUEST_CLIENT_ERRORS: &str = "busbar_request_phase_client_errors_total";
 const REQUEST_BIN: &str = "busbar_request_phase_duration_bin_total";
-// The bank itself has 8192 histogram slots; bound this projection even for direct recorder users.
-const REQUEST_SERIES_LIMIT: usize = 8192;
-const DROP_REASONS: [&str; 4] = [
-    "invalid_duration",
-    "integer_overflow",
-    "series_capacity",
-    "boot_nonce_unavailable",
-];
-
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RequestDistribution {
     count: u64,
     errors: u64,
@@ -202,53 +196,6 @@ impl RequestDistribution {
     }
 }
 
-#[derive(Default)]
-struct RequestDistributions {
-    series: HashMap<Key, RequestDistribution>,
-    dropped: [u64; 4],
-}
-
-impl RequestDistributions {
-    fn add(&mut self, key: &Key, seconds: f64, outcome: &str, nonce_available: bool) {
-        let reason = if !nonce_available {
-            Some(3)
-        } else if !self.series.contains_key(key) && self.series.len() >= REQUEST_SERIES_LIMIT {
-            Some(2)
-        } else {
-            self.series
-                .entry(key.clone())
-                .or_default()
-                .add(seconds, outcome)
-                .err()
-        };
-        if let Some(reason) = reason {
-            self.dropped[reason] = self.dropped[reason].saturating_add(1);
-        }
-    }
-
-    fn put(&self, out: &mut Building, nonce: Option<&str>) {
-        if let Some(nonce) = nonce {
-            for (key, distribution) in &self.series {
-                distribution.put(out, key, nonce);
-            }
-        }
-        for (reason, count) in DROP_REASONS.iter().zip(self.dropped) {
-            if count != 0 {
-                let key = Key::from_parts(
-                    crate::telemetry::REQUEST_PHASE_DROPPED,
-                    vec![metrics::Label::new("reason", *reason)],
-                );
-                put(
-                    out,
-                    SCRAPE_KIND_COUNTER,
-                    &key,
-                    vec![("", None, count.to_string())],
-                );
-            }
-        }
-    }
-}
-
 struct ProcessEpoch {
     nonce: Option<String>,
     /// The nonce's 16 bytes, all zero when the fill failed.
@@ -304,8 +251,7 @@ pub struct RequestSnapshot {
     pub identities: Vec<RequestIdentity>,
     pub omitted_identities: u64,
     /// invalid_duration, integer_overflow, series_capacity, boot_nonce_unavailable,
-    /// histogram_capacity, unregistered_labels. The last two are independent atomic reads;
-    /// coherence is guaranteed for each identity's count/sum/bins, not all drop counters.
+    /// histogram_capacity, unregistered_labels. Copied with the same numeric state as identities.
     pub dropped: [u64; 6],
 }
 
@@ -326,25 +272,11 @@ fn unix_millis(time: SystemTime) -> Option<u64> {
     u64::try_from(time.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
-fn request_labels(key: &Key) -> Option<[&str; 4]> {
-    let mut values = [None; 4];
-    for label in key.labels() {
-        let index = ["plane", "phase", "pool", "ingress_protocol"]
-            .iter()
-            .position(|name| *name == label.key())?;
-        if label.value().len() > 256 || values[index].replace(label.value()).is_some() {
-            return None;
-        }
-    }
-    let values = [values[0]?, values[1]?, values[2]?, values[3]?];
-    matches!(values[1], "LlmProducerDrive" | "MountedResponseReady").then_some(values)
-}
-
 pub struct Source {
     registry: Registry<Key, GenerationalStorage<Stamped>>,
     help: Mutex<HashMap<String, String>>,
     distributions: Mutex<HashMap<Key, Rolling>>,
-    request_distributions: Mutex<RequestDistributions>,
+    requests: Arc<request_store::RequestStore>,
     process_boot_nonce: Option<&'static str>,
     gauges_seen: Mutex<HashMap<Key, (Generation, Instant)>>,
     width: Duration,
@@ -425,11 +357,35 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
 impl Source {
     #[must_use]
     pub fn new(width: Duration, buckets: std::num::NonZeroU32, gauge_idle: Duration) -> Self {
+        Self::with_requests(
+            width,
+            buckets,
+            gauge_idle,
+            Arc::clone(request_store::process()),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn isolated(width: Duration, buckets: std::num::NonZeroU32, gauge_idle: Duration) -> Self {
+        Self::with_requests(
+            width,
+            buckets,
+            gauge_idle,
+            Arc::new(request_store::RequestStore::new(false)),
+        )
+    }
+
+    fn with_requests(
+        width: Duration,
+        buckets: std::num::NonZeroU32,
+        gauge_idle: Duration,
+        requests: Arc<request_store::RequestStore>,
+    ) -> Self {
         Source {
             registry: Registry::new(GenerationalStorage::new(Stamped)),
             help: Mutex::default(),
             distributions: Mutex::default(),
-            request_distributions: Mutex::default(),
+            requests,
             process_boot_nonce: process_boot_nonce(),
             gauges_seen: Mutex::default(),
             width,
@@ -440,26 +396,7 @@ impl Source {
 
     pub fn drain(&self) {
         let mut dists = lock(&self.distributions);
-        let mut requests = lock(&self.request_distributions);
         for (key, h) in self.registry.get_histogram_handles() {
-            if key.name() == crate::telemetry::REQUEST_PHASE_DURATION {
-                let outcome = key
-                    .labels()
-                    .find(|label| label.key() == "outcome")
-                    .map_or("", |label| label.value());
-                // Each outcome has a bounded bank slot, but all outcomes fold into one cohort.
-                let cohort = Key::from_parts(
-                    crate::telemetry::REQUEST_PHASE_DURATION,
-                    key.labels()
-                        .filter(|label| label.key() != "outcome")
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                );
-                for (seconds, _) in h.get_inner().take() {
-                    requests.add(&cohort, seconds, outcome, self.process_boot_nonce.is_some());
-                }
-                continue;
-            }
             let d = dists.entry(key).or_default();
             let (width, n) = (self.width, self.buckets);
             for (v, at) in h.get_inner().take() {
@@ -487,7 +424,11 @@ impl Source {
     }
 
     #[must_use]
-    pub fn snapshot(&self) -> Vec<Family> {
+    pub fn snapshot(&self) -> Option<Vec<Family>> {
+        if self.process_boot_nonce.is_none() {
+            request_store::unavailable();
+            return None;
+        }
         self.drain();
         let mut out = Building::new();
         for (key, c) in self.registry.get_counter_handles() {
@@ -511,7 +452,7 @@ impl Source {
         }
         // One captured set supplies count, sum, and all exclusive bins, even while another
         // exporter drains concurrently. Rolling-window expiration never affects these totals.
-        lock(&self.request_distributions).put(&mut out, self.process_boot_nonce);
+        self.requests.put(&mut out)?;
         let help = lock(&self.help);
         let family =
             |((kind, mut name), series): ((u8, SnapshotName), BTreeMap<SeriesSlot, Series>)| {
@@ -523,61 +464,12 @@ impl Source {
                     samples: series.into_values().flat_map(|s| s.samples).collect(),
                 }
             };
-        out.into_iter().map(family).collect()
+        Some(out.into_iter().map(family).collect())
     }
 
     /// Select at most 32 stable lexical identities without constructing the generic scrape.
     pub fn request_snapshot(&self, limit: usize) -> Option<RequestSnapshot> {
-        self.process_boot_nonce?;
-        self.drain();
-        let state = lock(&self.request_distributions);
-        let captured_at_unix_ms = unix_millis(SystemTime::now())?;
-        let limit = limit.min(32);
-        let mut selected: Vec<([&str; 4], &RequestDistribution)> = Vec::with_capacity(limit);
-        for (key, distribution) in &state.series {
-            let Some(labels) = request_labels(key) else {
-                continue;
-            };
-            let position = selected
-                .binary_search_by(|(held, _)| held.cmp(&labels))
-                .unwrap_or_else(|i| i);
-            if position < limit {
-                if selected.len() == limit {
-                    selected.pop();
-                }
-                selected.insert(position, (labels, distribution));
-            }
-        }
-        let (nonce, uptime_ms) = process_generation()?;
-        let bank_dropped = crate::telemetry::request_phase_dropped();
-        Some(RequestSnapshot {
-            process_boot_nonce: nonce.to_string(),
-            uptime_ms,
-            captured_at_unix_ms,
-            omitted_identities: (state.series.len() - selected.len()) as u64,
-            dropped: [
-                state.dropped[0],
-                state.dropped[1],
-                state.dropped[2],
-                state.dropped[3],
-                bank_dropped[0],
-                bank_dropped[1],
-            ],
-            identities: selected
-                .into_iter()
-                .map(|(labels, d)| RequestIdentity {
-                    plane: labels[0].to_string(),
-                    phase: labels[1].to_string(),
-                    pool: labels[2].to_string(),
-                    ingress_protocol: labels[3].to_string(),
-                    count: d.count,
-                    errors: d.errors,
-                    client_errors: d.client_errors,
-                    sum_us: d.sum_us,
-                    bins: d.bins,
-                })
-                .collect(),
-        })
+        self.requests.snapshot(limit)
     }
 
     fn describe(&self, name: &KeyName, help: &str) {
@@ -608,6 +500,11 @@ impl Recorder for &'static Source {
             .get_or_create_gauge(&key, |g| g.clone().into())
     }
     fn register_histogram(&self, key: &Key, _: &Metadata<'_>) -> Histogram {
+        if key.name() == crate::telemetry::REQUEST_PHASE_DURATION {
+            return self
+                .requests
+                .register(key.labels().map(|label| (label.key(), label.value())));
+        }
         let key = key.to_retained();
         self.registry
             .get_or_create_histogram(&key, |h| h.clone().into())
