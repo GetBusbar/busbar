@@ -10,6 +10,10 @@ use std::sync::{Arc, RwLock};
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
 pub mod drain;
+
+#[cfg(test)]
+#[path = "tests/current_credential_tests.rs"]
+mod current_credential_tests;
 pub(crate) mod exact_debt;
 pub mod persistence;
 pub mod principal_transition;
