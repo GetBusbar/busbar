@@ -577,17 +577,19 @@ impl CoreStore {
                 .map_err(AccessError::Backend)?;
             read += page.rows.len().max(1);
             sweeps.cursor = page.next.clone();
-            let seal = crate::seal::lend();
-            for (at, value) in page.rows {
-                let Some(gen8) = owner_gen8(&at.key) else {
-                    continue;
-                };
-                let Ok(writer) = <[u8; 16]>::try_from(value.expose(&seal).as_slice()) else {
-                    continue;
-                };
-                if writer == own {
-                    continue;
-                }
+            // Decode the page first: no seal is held across a crossing.
+            let foreign: Vec<_> = {
+                let seal = crate::seal::lend();
+                page.rows
+                    .into_iter()
+                    .filter_map(|(at, value)| {
+                        let gen8 = owner_gen8(&at.key)?;
+                        let writer = <[u8; 16]>::try_from(value.expose(&seal).as_slice()).ok()?;
+                        (writer != own).then_some((gen8, writer, at, value))
+                    })
+                    .collect()
+            };
+            for (gen8, writer, at, value) in foreign {
                 if !closed.contains_key(&writer) {
                     let row = self.closed_writer_row(writer).await?;
                     closed.insert(writer, row);
