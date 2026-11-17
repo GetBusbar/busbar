@@ -841,7 +841,17 @@ mod exact_number_tests {
     fn settings_keep_exact_json_numbers_and_physical_marker_keys() {
         let raw = r#"{"$serde_json::private::Number":"123","n":1e999,"fraction":1.00000000000000001,"wide":18446744073709551616,"nested":{"$serde_json::private::Number":"456","other":true},"duplicate":"old-secret","duplicate":"new-secret"}"#;
         let settings: Settings = serde_json::from_str(raw).unwrap();
-        let expected = crate::abi::sdk::typed_json::parse_value(raw.as_bytes()).unwrap();
+        // The tree `raw` means: literal marker keys, each number exactly as written, the last
+        // duplicate kept.
+        let number = |lexeme: &str| serde_json::from_str::<serde_json::Value>(lexeme).unwrap();
+        let expected = serde_json::json!({
+            "$serde_json::private::Number": "123",
+            "n": number("1e999"),
+            "fraction": number("1.00000000000000001"),
+            "wide": number("18446744073709551616"),
+            "nested": {"$serde_json::private::Number": "456", "other": true},
+            "duplicate": "new-secret"
+        });
         assert_eq!(serde_json::to_value(settings.writing()).unwrap(), expected);
 
         // Value-backed deserialization must keep a real marker object as an object too.
