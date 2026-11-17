@@ -361,10 +361,12 @@ async fn native_refusal_full_queue_retains_and_transfers_only_its_frozen_origina
     let mut pending = event(91, "request.refused");
     pending.confirmation = Some(confirmed.clone());
     let suffix = pending.suffix.clone();
+    let suffix_pointer = pending.suffix.as_ptr();
     let mut held = Some(pending);
     assert!(super::native_refusal::transfer_original(&queue, &mut held).is_err());
     assert_eq!(held.as_ref().unwrap().operation, [91; 16]);
     assert_eq!(held.as_ref().unwrap().suffix, suffix);
+    assert_eq!(held.as_ref().unwrap().suffix.as_ptr(), suffix_pointer);
     assert_eq!(queue.len(), 1);
     let waiting = super::native_refusal::wait_confirmation(&log, &confirmed, || {
         super::native_refusal::transfer_original(&queue, &mut held)
@@ -387,6 +389,7 @@ async fn native_refusal_full_queue_retains_and_transfers_only_its_frozen_origina
         let transferred = rows.queued.front().unwrap();
         assert_eq!(transferred.operation, [91; 16]);
         assert_eq!(transferred.suffix, suffix);
+        assert_eq!(transferred.suffix.as_ptr(), suffix_pointer);
         assert!(Arc::ptr_eq(
             transferred.confirmation.as_ref().unwrap(),
             &confirmed

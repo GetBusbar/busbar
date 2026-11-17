@@ -7,8 +7,8 @@ use super::*;
 use crate::auth::native_data::DataRefused;
 use crate::inbound::native::{PhysicalRefusal, RouteTarget};
 
-/// Retains the actual physical owner and the observer of its one queued original.
-/// Dropping a confirmation future never removes or replaces that queued operation.
+/// Retains the physical owner and its one frozen original before and after queue acceptance.
+/// Dropping a confirmation future never removes or replaces that operation.
 pub struct NativeRefusalAudit {
     refusal: PhysicalRefusal,
     native: Arc<NativeAudit>,
@@ -41,7 +41,8 @@ impl NativeRefusalAudit {
         self.confirmed.load(Ordering::Acquire)
     }
 
-    /// Observe the existing queue's actual progress without creating another retry owner.
+    /// On existing queue progress, transfer any still-held original and observe its confirmation.
+    /// Store work remains with the existing queue driver; no new retry owner is created.
     pub async fn wait_original_confirmation(&self) {
         wait_confirmation(&AUDIT_LOG, &self.confirmed, || self.transfer_original()).await;
     }
