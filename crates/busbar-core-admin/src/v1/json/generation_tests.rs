@@ -7,26 +7,55 @@ use axum::http::HeaderMap;
 #[test]
 fn original_precondition_keeps_multiplicity_and_bytes_before_translation() {
     let mut headers = HeaderMap::new();
-    assert_eq!(OriginalConfigPrecondition::capture(&headers).require_strong().unwrap_err().status(), StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(
+        OriginalConfigPrecondition::capture(&headers)
+            .require_strong()
+            .unwrap_err()
+            .status(),
+        StatusCode::PRECONDITION_REQUIRED
+    );
     let wire = HeaderValue::from_static("\"dep_original.7\"");
     headers.insert(header::IF_MATCH, wire.clone());
     let original = OriginalConfigPrecondition::capture(&headers);
     headers.insert(header::IF_MATCH, HeaderValue::from_static("\"12\""));
     assert_eq!(original.require_strong().unwrap(), &wire);
-    for malformed in ["*", "W/\"dep_original.7\"", "\"one\", \"two\"", " \"one\"", "\"one two\"", "7"] {
+    for malformed in [
+        "*",
+        "W/\"dep_original.7\"",
+        "\"one\", \"two\"",
+        " \"one\"",
+        "\"one two\"",
+        "7",
+    ] {
         headers.insert(header::IF_MATCH, HeaderValue::from_str(malformed).unwrap());
-        assert_eq!(OriginalConfigPrecondition::capture(&headers).require_strong().unwrap_err().status(), StatusCode::BAD_REQUEST, "{malformed}");
+        assert_eq!(
+            OriginalConfigPrecondition::capture(&headers)
+                .require_strong()
+                .unwrap_err()
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "{malformed}"
+        );
     }
     headers.insert(header::IF_MATCH, wire.clone());
     headers.append(header::IF_MATCH, wire);
-    assert_eq!(OriginalConfigPrecondition::capture(&headers).require_strong().unwrap_err().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        OriginalConfigPrecondition::capture(&headers)
+            .require_strong()
+            .unwrap_err()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[test]
 fn answer_round_trip_retains_exact_long_header_and_original_etag() {
     let content_type = format!("application/json; profile=\"{}\"", "x".repeat(300));
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap());
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&content_type).unwrap(),
+    );
     headers.insert(header::ETAG, HeaderValue::from_static("\"dep_original.7\""));
     let bytes = encode_answer(201, 10, 7, &[9; 32], &headers, b"original reply").unwrap();
     let decoded = decode_answer(&bytes).unwrap();
@@ -35,17 +64,26 @@ fn answer_round_trip_retains_exact_long_header_and_original_etag() {
     assert_eq!(decoded.generation, 7);
     assert_eq!(decoded.body, b"original reply");
     let replay = replay(&bytes, &[9; 32]);
-    assert_eq!(replay.headers()[header::CONTENT_TYPE], headers[header::CONTENT_TYPE]);
+    assert_eq!(
+        replay.headers()[header::CONTENT_TYPE],
+        headers[header::CONTENT_TYPE]
+    );
     assert_eq!(replay.headers()[header::ETAG], headers[header::ETAG]);
     assert_eq!(replay.headers()[REPLAYED], "true");
-    assert_eq!(super::replay(&bytes, &[8; 32]).status(), StatusCode::CONFLICT);
+    assert_eq!(
+        super::replay(&bytes, &[8; 32]).status(),
+        StatusCode::CONFLICT
+    );
 }
 
 #[test]
 fn answer_distinguishes_absent_and_empty_header() {
     let empty = HeaderMap::new();
     let bytes = encode_answer(200, 10, 7, &[9; 32], &empty, b"reply").unwrap();
-    assert!(replay(&bytes, &[9; 32]).headers().get(header::CONTENT_TYPE).is_none());
+    assert!(replay(&bytes, &[9; 32])
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_none());
     let mut present = empty;
     present.insert(header::CONTENT_TYPE, HeaderValue::from_static(""));
     let bytes = encode_answer(200, 10, 7, &[9; 32], &present, b"reply").unwrap();
@@ -69,7 +107,10 @@ fn legacy_answer_has_no_invented_generation_etag() {
     assert!(response.headers().get(header::ETAG).is_none());
     assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
     bytes[0] = 1;
-    assert_eq!(replay(&bytes, &[9; 32]).status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        replay(&bytes, &[9; 32]).status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[test]

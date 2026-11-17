@@ -32,21 +32,95 @@ const NO_DEPLOYMENT: &str = "dep_00000000000000000000000000000000";
 /// The most body bytes the layer buffers, request or response.
 const BODY_CAP: usize = 16 * 1024 * 1024;
 const REPLAYED: &str = "idempotent-replayed";
-// Both layouts bind the versioned, length-framed request fingerprint producer.
-const ANSWER_LAYOUT: u8 = 2;
+// Both Answer layouts and the intent bind the same versioned, length-framed fingerprint.
+const LEGACY_ANSWER_LAYOUT: u8 = 2;
+const ANSWER_LAYOUT: u8 = 4;
 const INTENT_LAYOUT: u8 = 3;
+
+/// Original wire fields, before the shared generation check translates the value for handlers.
+/// Keeping every field prevents a strict consumer from accepting a collapsed duplicate header.
+#[derive(Clone)]
+pub(crate) struct OriginalConfigPrecondition(Vec<HeaderValue>);
+
+impl OriginalConfigPrecondition {
+    fn capture(headers: &axum::http::HeaderMap) -> Self {
+        Self(headers.get_all(header::IF_MATCH).iter().cloned().collect())
+    }
+
+    pub(crate) fn require_strong(&self) -> Result<&HeaderValue, Box<Response>> {
+        if self.0.is_empty() {
+            return Err(Box::new(refusal(
+                428,
+                "invalid_request",
+                "if_match_required",
+                "this write needs one strong If-Match config ETag",
+            )));
+        }
+        if let [value] = self.0.as_slice() {
+            let bytes = value.as_bytes();
+            if bytes.len() >= 2
+                && bytes[0] == b'"'
+                && bytes[bytes.len() - 1] == b'"'
+                && bytes[1..bytes.len() - 1]
+                    .iter()
+                    .all(|b| *b == b'!' || (b'#'..=b'~').contains(b) || *b >= 0x80)
+            {
+                return Ok(value);
+            }
+        }
+        Err(Box::new(err_json_cond(
+            &AdminError::Validation("expected exactly one strong If-Match config ETag".into()),
+            Cond::MalformedIfMatch,
+        )))
+    }
+}
+
+/// Frozen under the config transaction's guard, alongside the response readback. A later
+/// publication must neither replace this tag nor change the generation retained for replay.
+#[derive(Clone)]
+pub(crate) struct ConfigResponseEtag {
+    generation: u64,
+    value: HeaderValue,
+}
+
+impl ConfigResponseEtag {
+    pub(crate) fn capture(app: &App) -> Self {
+        let generation = app
+            .config_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        Self {
+            generation,
+            value: HeaderValue::from_str(&etag_at(generation)).expect("config ETag is ASCII"),
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn attach(self, mut response: Response) -> Response {
+        response
+            .headers_mut()
+            .insert(header::ETAG, self.value.clone());
+        response.extensions_mut().insert(self);
+        response
+    }
+}
 
 /// The strong, shared ETag of every config resource: `"<deployment_id>.<config_generation>"`.
 pub(crate) fn config_etag(app: &App) -> String {
+    etag_at(
+        app.config_generation
+            .load(std::sync::atomic::Ordering::Acquire),
+    )
+}
+
+fn etag_at(generation: u64) -> String {
     let deployment = busbar_kernel::persistence::boot_identity::live().map_or_else(
         || NO_DEPLOYMENT.to_string(),
         |l| l.deployment_id().to_string(),
     );
-    format!(
-        "\"{deployment}.{}\"",
-        app.config_generation
-            .load(std::sync::atomic::Ordering::Acquire)
-    )
+    format!("\"{deployment}.{generation}\"")
 }
 
 fn rel_path(path: &str) -> &str {
@@ -165,9 +239,8 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
     let if_none = req.headers().contains_key(header::IF_NONE_MATCH);
 
     if config && !is_read {
-        if let Err(response) = check_if_match(&mut req, &app, &rel) {
-            return *response;
-        }
+        let original = OriginalConfigPrecondition::capture(req.headers());
+        req.extensions_mut().insert(original);
     }
     if !is_read {
         use busbar_kernel::audit::auditlog::{note_generation_source, note_idempotency_key};
@@ -188,8 +261,13 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
             .headers()
             .get("idempotency-key")
             .map(|v| v.to_str().unwrap_or("").to_string());
-        if let Some(key) = key {
-            return idempotent(req, next, &app, key).await;
+        if let Some(key) = key.filter(|_| !self_idempotent(&req, &rel)) {
+            return idempotent(req, next, &app, &handle, key).await;
+        }
+    }
+    if config && !is_read {
+        if let Err(response) = check_if_match(&mut req, &app, &rel) {
+            return *response;
         }
     }
     if config && is_read {
@@ -237,15 +315,20 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
-/// Replaces the handlers' process-local ETag with the generation ETag, read from the handle so a
-/// mutation's answer carries the generation it installed.
+/// Preserve a transaction-frozen tag. Legacy handlers still receive the existing live-generation
+/// stamp; a producer needing snapshot-bound readback must attach ConfigResponseEtag under its lock.
 fn restamp(response: &mut Response, handle: &Arc<AppHandle>) {
+    if let Some(frozen) = response.extensions().get::<ConfigResponseEtag>() {
+        let value = frozen.value.clone();
+        response.headers_mut().insert(header::ETAG, value);
+        return;
+    }
     if let Ok(value) = HeaderValue::from_str(&config_etag(&handle.load())) {
         response.headers_mut().insert(header::ETAG, value);
     }
 }
 
-fn valid_key(key: &str) -> bool {
+pub(crate) fn valid_idempotency_key(key: &str) -> bool {
     (1..=128).contains(&key.len())
         && key
             .bytes()
@@ -274,12 +357,15 @@ fn principal_of(req: &Request) -> String {
         .map_or_else(|| "anonymous".to_string(), |p| p.actor_id().to_string())
 }
 
-async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Response {
+async fn idempotent(
+    req: Request,
+    next: Next,
+    app: &Arc<App>,
+    handle: &Arc<AppHandle>,
+    key: String,
+) -> Response {
     let rel = rel_path(req.uri().path()).to_string();
-    if self_idempotent(&req, &rel) {
-        return next.run(req).await;
-    }
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return refusal(
             400,
             "invalid_request",
@@ -324,18 +410,11 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
     let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
+    // Replay is not a new mutation: its original precondition can be stale precisely because
+    // the retained mutation succeeded. Keep replay and exclusion in the one held-claim engine.
     let claim = match durable::claim_held(&store, &claim_key, now).await {
         Err(Refused::Answer(answer)) => return replay(&answer, &fingerprint),
-        Err(Refused::Retained(receipt)) => {
-            let Some(intent) = decode_intent(&receipt) else {
-                return unreadable_replay();
-            };
-            return if intent.fingerprint == fingerprint.as_slice() {
-                in_flight()
-            } else {
-                mismatch()
-            };
-        }
+        Err(Refused::Retained(receipt)) => return retained(&receipt, &fingerprint),
         Err(Refused::InFlight | Refused::Applied(_)) => return in_flight(),
         Err(Refused::Unavailable(why)) => {
             tracing::warn!(error = %why, "idempotency claim failed; nothing was done");
@@ -348,6 +427,15 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
         }
         Ok(claim) => claim,
     };
+    let mut req = Request::from_parts(parts, Body::from(bytes));
+    if config_resource(&rel) {
+        if let Err(response) = check_if_match(&mut req, app, &rel) {
+            // This is the only release here: no handler or intent has been dispatched.
+            // A failed acknowledgement cannot turn this refusal into an execution.
+            settle(&store, &claim, &Settled::Released).await;
+            return *response;
+        }
+    }
     let generation = app
         .config_generation
         .load(std::sync::atomic::Ordering::Acquire);
@@ -361,9 +449,10 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
             "the Store could not retain this operation's intent; nothing was dispatched",
         );
     }
-    let response = next
-        .run(Request::from_parts(parts, Body::from(bytes)))
-        .await;
+    let mut response = next.run(req).await;
+    if config_resource(&rel) && response.status().is_success() {
+        restamp(&mut response, handle);
+    }
     let (rparts, rbody) = response.into_parts();
     let Ok(rbytes) = axum::body::to_bytes(rbody, BODY_CAP).await else {
         // The handler may have committed. Keep its acknowledged intent and permanent
@@ -373,21 +462,27 @@ async fn idempotent(req: Request, next: Next, app: &Arc<App>, key: String) -> Re
     let status = rparts.status;
     // Dispatch may have committed an effect even when its public reply is 5xx or 429.
     // A response status cannot authorize another execution of the same action.
-    let content_type = rparts
-        .headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let settled = Settled::Answer(encode_answer(
+    let generation = rparts.extensions.get::<ConfigResponseEtag>().map_or_else(
+        || {
+            app.config_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+        },
+        ConfigResponseEtag::generation,
+    );
+    let answer = encode_answer(
         status.as_u16(),
         now,
-        app.config_generation
-            .load(std::sync::atomic::Ordering::Acquire),
+        generation,
         &fingerprint,
-        content_type,
+        &rparts.headers,
         &rbytes,
-    ));
-    settle(&store, &claim, &settled).await;
+    );
+    if let Some(answer) = answer {
+        settle(&store, &claim, &Settled::Answer(answer)).await;
+    } else {
+        // Never truncate a reply header or release a possibly committed operation.
+        tracing::warn!("admin reply headers exceeded the retained layout; intent remains held");
+    }
     Response::from_parts(rparts, Body::from(rbytes))
 }
 
@@ -408,6 +503,17 @@ fn mismatch() -> Response {
         "idempotency_mismatch",
         "Idempotency-Key is bound to different request bytes",
     )
+}
+
+fn retained(receipt: &[u8], fingerprint: &[u8; 32]) -> Response {
+    let Some(intent) = decode_intent(receipt) else {
+        return unreadable_replay();
+    };
+    if intent.fingerprint == fingerprint.as_slice() {
+        in_flight()
+    } else {
+        mismatch()
+    }
 }
 
 fn in_flight() -> Response {
@@ -457,25 +563,35 @@ fn decode_intent(bytes: &[u8]) -> Option<Intent<'_>> {
     })
 }
 
-/// A settled answer: layout, status, received_at, generation, request digest, content type, body.
+/// A settled answer: layout, status, received_at, generation, request digest, exact optional
+/// Content-Type and ETag fields, body. Layout 2 remains readable without inventing its lost ETag.
 fn encode_answer(
     status: u16,
     received_at: u64,
     generation: u64,
     fingerprint: &[u8; 32],
-    content_type: &str,
+    headers: &axum::http::HeaderMap,
     body: &[u8],
-) -> Vec<u8> {
-    let content_type = &content_type.as_bytes()[..content_type.len().min(255)];
+) -> Option<Vec<u8>> {
     let mut out = vec![ANSWER_LAYOUT];
     out.extend_from_slice(&status.to_be_bytes());
     out.extend_from_slice(&received_at.to_be_bytes());
     out.extend_from_slice(&generation.to_be_bytes());
     out.extend_from_slice(fingerprint);
-    out.push(u8::try_from(content_type.len()).unwrap_or(u8::MAX));
-    out.extend_from_slice(content_type);
+    for name in [header::CONTENT_TYPE, header::ETAG] {
+        match headers.get(name) {
+            None => out.push(0),
+            Some(value) => {
+                let bytes = value.as_bytes();
+                let len = u32::try_from(bytes.len()).ok()?;
+                out.push(1);
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(bytes);
+            }
+        }
+    }
     out.extend_from_slice(body);
-    out
+    Some(out)
 }
 
 struct Answer<'a> {
@@ -483,13 +599,14 @@ struct Answer<'a> {
     received_at: u64,
     generation: u64,
     fingerprint: &'a [u8],
-    content_type: &'a [u8],
+    content_type: Option<&'a [u8]>,
+    etag: Option<&'a [u8]>,
     body: &'a [u8],
 }
 
 fn decode_answer(bytes: &[u8]) -> Option<Answer<'_>> {
     let (&layout, rest) = bytes.split_first()?;
-    if layout != ANSWER_LAYOUT || rest.len() < 2 + 8 + 8 + 32 + 1 {
+    if !matches!(layout, ANSWER_LAYOUT | LEGACY_ANSWER_LAYOUT) || rest.len() < 2 + 8 + 8 + 32 {
         return None;
     }
     let status = u16::from_be_bytes(rest[..2].try_into().ok()?);
@@ -497,22 +614,47 @@ fn decode_answer(bytes: &[u8]) -> Option<Answer<'_>> {
     let received_at = u64::from_be_bytes(rest[2..10].try_into().ok()?);
     let generation = u64::from_be_bytes(rest[10..18].try_into().ok()?);
     let fingerprint = &rest[18..50];
-    let type_len = usize::from(rest[50]);
-    let tail = &rest[51..];
-    if tail.len() < type_len {
-        return None;
-    }
-    if type_len != 0 {
-        HeaderValue::from_bytes(&tail[..type_len]).ok()?;
-    }
+    let mut tail = &rest[50..];
+    let (content_type, etag) = if layout == LEGACY_ANSWER_LAYOUT {
+        let (&len, rest) = tail.split_first()?;
+        let value = rest.get(..usize::from(len))?;
+        tail = &rest[usize::from(len)..];
+        let content_type = if value.is_empty() {
+            None
+        } else {
+            HeaderValue::from_bytes(value).ok()?;
+            Some(value)
+        };
+        (content_type, None)
+    } else {
+        (decode_header(&mut tail)?, decode_header(&mut tail)?)
+    };
     Some(Answer {
         status,
         received_at,
         generation,
         fingerprint,
-        content_type: &tail[..type_len],
-        body: &tail[type_len..],
+        content_type,
+        etag,
+        body: tail,
     })
+}
+
+fn decode_header<'a>(tail: &mut &'a [u8]) -> Option<Option<&'a [u8]>> {
+    let (&present, rest) = tail.split_first()?;
+    *tail = rest;
+    match present {
+        0 => Some(None),
+        1 => {
+            let len = usize::try_from(u32::from_be_bytes(tail.get(..4)?.try_into().ok()?)).ok()?;
+            let end = 4usize.checked_add(len)?;
+            let value = tail.get(4..end)?;
+            HeaderValue::from_bytes(value).ok()?;
+            *tail = &tail[end..];
+            Some(Some(value))
+        }
+        _ => None,
+    }
 }
 
 fn replay(answer: &[u8], fingerprint: &[u8; 32]) -> Response {
@@ -524,9 +666,15 @@ fn replay(answer: &[u8], fingerprint: &[u8; 32]) -> Response {
     }
     let mut response = Response::new(Body::from(answer.body.to_vec()));
     *response.status_mut() = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::OK);
-    if let Ok(value) = HeaderValue::from_bytes(answer.content_type) {
-        if !answer.content_type.is_empty() {
-            response.headers_mut().insert(header::CONTENT_TYPE, value);
+    for (name, bytes) in [
+        (header::CONTENT_TYPE, answer.content_type),
+        (header::ETAG, answer.etag),
+    ] {
+        if let Some(bytes) = bytes {
+            // decode_answer validated every stored field before any reply is emitted.
+            if let Ok(value) = HeaderValue::from_bytes(bytes) {
+                response.headers_mut().insert(name, value);
+            }
         }
     }
     response
@@ -556,7 +704,7 @@ pub(crate) async fn get_operation(
         );
     }
     let missing = || err_json(&AdminError::not_found("operation"));
-    if !valid_key(&key) {
+    if !valid_idempotency_key(&key) {
         return missing();
     }
     let Some(store) = operation_store(&app) else {
@@ -641,3 +789,7 @@ pub(crate) async fn get_operation(
     )
         .into_response()
 }
+
+#[cfg(test)]
+#[path = "generation_tests.rs"]
+mod tests;
