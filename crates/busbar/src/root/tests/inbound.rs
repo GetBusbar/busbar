@@ -42,7 +42,7 @@ fn captured_rates() -> std::collections::BTreeMap<String, busbar_kernel::config:
     std::collections::BTreeMap::from([("priced-context".into(), entry)])
 }
 
-async fn app(
+pub(super) async fn app(
     with_llm: bool,
 ) -> (
     Arc<busbar_kernel::state::App>,
