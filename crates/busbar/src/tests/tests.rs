@@ -239,7 +239,7 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 
 #[cfg(unix)]
 #[path = "native_listener.rs"]
-mod native_listener;
+pub(crate) mod native_listener;
 
 #[cfg(unix)]
 #[tokio::test]

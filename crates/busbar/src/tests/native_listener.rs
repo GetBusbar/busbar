@@ -7,6 +7,27 @@
 use super::*;
 
 pub(super) async fn assert_real_http() {
+    with_real_http(Some, |addr| async move {
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}{}", busbar_kernel::auth::LIVEZ_PATH))
+            .send()
+            .await
+            .expect("serve_listener must actually accept and answer a real HTTP request");
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    })
+    .await
+    .expect("the actual declared supplier serves the fixture");
+}
+
+pub(crate) async fn with_real_http<W, F, Fut>(wrap: W, exercise: F) -> std::io::Result<()>
+where
+    W: FnOnce(
+        Arc<dyn busbar_ports::transport::TransportPort>,
+    ) -> Option<Arc<dyn busbar_ports::transport::TransportPort>>,
+    F: FnOnce(std::net::SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     use crate::test_common::plugins;
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 
@@ -119,6 +140,14 @@ pub(super) async fn assert_real_http() {
         keys: node.kernel_and_keys().1,
         core: root::min3_listener_plan::core_lines(&app, &served).into(),
     };
+    let port = wrap(Arc::clone(&transport.port));
+    let suppliers = port
+        .iter()
+        .map(|port| root::min3_boot::transports::ServedTransport {
+            instance: identity.trim().into(),
+            port: Arc::clone(port),
+        })
+        .collect();
     let plan = root::min3_listener_plan::NativeListenerPlan::new(
         root::boot::ListenerNeeds {
             root_required: true,
@@ -132,17 +161,24 @@ pub(super) async fn assert_real_http() {
                 max_conns: ROOT_BIND_LIMITS.max_conns as u64,
             }],
         },
-        &root::min3_framers::NativeFramers::new(vec![
-            root::min3_boot::transports::ServedTransport {
-                instance: identity.trim().into(),
-                port: transport.port.clone(),
-            },
-        ]),
+        &root::min3_framers::NativeFramers::new(suppliers),
     )
-    .expect("select the actual declared initial listener supplier");
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let port = port.expect("successful planning requires the declared supplier");
     let slots = plan
         .assemble(&app, &served, &owners)
         .expect("assemble every canonical public route before publishing App");
+    let slot = slots
+        .get("listen")
+        .expect("the actual initial slot was assembled");
+    assert!(
+        slot.prepared().core_lines().any(|(path, method, auth)| {
+            path == busbar_kernel::auth::LIVEZ_PATH
+                && method == busbar_contract::abi::mechanism::route::RouteMethod::Get
+                && auth == busbar_contract::abi::mechanism::route::RouteAuth::None
+        }),
+        "the prepared listener must retain the canonical declared public liveness route"
+    );
     root::serve::install_native_slots(&mut app, slots).unwrap();
     let resolver = Arc::clone(&app.secret_resolver);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
@@ -151,7 +187,7 @@ pub(super) async fn assert_real_http() {
         root::listener_native::NativeListener::new(
             handle,
             "listen".into(),
-            transport.port.clone(),
+            Arc::clone(&port),
             budget,
             AdmissionClass::Data,
             Arc::new(root::serve::native_slot),
@@ -180,9 +216,7 @@ pub(super) async fn assert_real_http() {
         listener,
         native,
         node,
-        transport
-            .port
-            .alpn(busbar_plugin_abi::transport::ROLE_SERVER)
+        port.alpn(busbar_plugin_abi::transport::ROLE_SERVER)
             .to_vec(),
         None,
         resolver,
@@ -191,13 +225,7 @@ pub(super) async fn assert_real_http() {
         None,
         true,
     ));
-    let resp = reqwest::Client::new()
-        .get(format!("http://{addr}{}", busbar_kernel::auth::LIVEZ_PATH))
-        .send()
-        .await
-        .expect("serve_listener must actually accept and answer a real HTTP request");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
+    exercise(addr).await;
     shutdown_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
         .await
@@ -208,4 +236,5 @@ pub(super) async fn assert_real_http() {
         .await
         .expect("join the actual transport fixture workers");
     drop(transport);
+    Ok(())
 }
