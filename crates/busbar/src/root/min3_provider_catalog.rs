@@ -48,6 +48,9 @@ pub(crate) struct Association {
     pub(crate) destination: DestinationId,
     pub(crate) need: NeedId,
     pub(crate) definition: Arc<UpstreamDef>,
+    pub(crate) attempt_timeout_ms: Option<u64>,
+    pub(crate) context_max: Option<usize>,
+    pub(crate) credential_mode: busbar_contract::config::UpstreamCreds,
 }
 
 struct StagedRow {
@@ -57,6 +60,9 @@ struct StagedRow {
     target: MemberTarget,
     provider: String,
     connection_required: bool,
+    attempt_timeout_ms: Option<u64>,
+    context_max: Option<usize>,
+    credential_mode: busbar_contract::config::UpstreamCreds,
 }
 
 /// Private preparation facts. They cannot be used as a runnable target table before auth seal.
@@ -137,6 +143,9 @@ impl StagedCatalog {
                     destination: row.allocation.destination,
                     need: row.allocation.need,
                     definition: Arc::clone(&row.definition),
+                    attempt_timeout_ms: row.attempt_timeout_ms,
+                    context_max: row.context_max,
+                    credential_mode: row.credential_mode,
                 },
             );
             // Retain the definition in the closure too: replacing a generation's registry
@@ -320,6 +329,9 @@ pub(crate) fn prepare(
                 provider: target.provider.clone(),
                 connection_required: target.credential_mode
                     == busbar_contract::config::UpstreamCreds::Connection,
+                attempt_timeout_ms: target.attempt_timeout_ms,
+                context_max: target.context_max,
+                credential_mode: target.credential_mode,
             },
         );
     }
