@@ -56,6 +56,7 @@ async fn final_ticket_admission_uses_the_actual_key_and_spends_the_record_once()
         module,
         principal,
         resolved,
+        ..
     } = verdict
     else {
         panic!("ticket admission must identify its real key")

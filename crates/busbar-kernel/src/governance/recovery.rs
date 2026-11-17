@@ -362,6 +362,9 @@ pub(crate) struct RecoveryEntry {
     driver: std::sync::Arc<super::BudgetFlushRunner>,
     sent_clock: Option<std::time::Instant>,
     adoption: Option<RecoveryAdoption>,
+    /// FEE-DEBT r1: live transferred fee obligations pinning this exact owner until their
+    /// settled proof is read; changed only under the entries lock.
+    pub(crate) fee_holds: usize,
 }
 
 #[derive(Clone)]
@@ -1171,6 +1174,40 @@ impl super::GovState {
     }
 
     /// Local successful roots need no live administrative custody after their
+    /// FEE-DEBT r1: pin the exact selected owner (operation, at least `revision`, same body)
+    /// for one transferred fee obligation. Refuses when that exact owner is not retained.
+    pub(super) fn fee_hold(&self, operation_id: [u8; 16], revision: u64, body: [u8; 32]) -> bool {
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = entries.get_mut(&operation_id) else {
+            return false;
+        };
+        let exact = entry
+            .selected
+            .as_ref()
+            .is_some_and(|event| event.revision >= revision && event.body_fingerprint == body);
+        let Some(holds) = entry.fee_holds.checked_add(1).filter(|_| exact) else {
+            return false;
+        };
+        entry.fee_holds = holds;
+        true
+    }
+
+    /// Release one transferred fee obligation's pin on its exact owner.
+    pub(super) fn fee_release(&self, operation_id: [u8; 16]) {
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = entries.get_mut(&operation_id) {
+            entry.fee_holds = entry.fee_holds.saturating_sub(1);
+        }
+    }
+
     pub(super) fn forget_confirmed_recovery(&self, operation_id: [u8; 16]) {
         let mut entries = self
             .recovery_book
@@ -1187,6 +1224,7 @@ impl super::GovState {
             || event.state != RecoveryState::Settled
             || entry.pending.is_some()
             || entry.ever_quarantined
+            || entry.fee_holds != 0
             || event.revision > 2
             || entry.adoption.is_some()
         {

@@ -3,6 +3,7 @@
 
 pub(crate) mod admission;
 pub mod input_body;
+pub mod output;
 pub mod process_admission;
 
 use crate::config::{
@@ -56,3 +57,7 @@ pub(crate) fn default_policy_timeout_ms() -> u64 {
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/output_tests.rs"]
+mod output_tests;

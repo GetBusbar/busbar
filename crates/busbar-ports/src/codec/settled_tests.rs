@@ -36,11 +36,16 @@ fn an_open_answer_with_only_an_instance_has_no_settled_part() {
 }
 
 #[test]
-fn converting_open_requires_config_and_canonical_open_refuses_core_fragments() {
+fn converting_open_without_config_is_unchanged_and_canonical_open_refuses_core_fragments() {
     const CONVERT_UNSTAMPED: bool = true;
     const CANONICAL: bool = false;
     let empty = open();
-    assert!(for_purpose(Records::new(empty.as_bytes()), CONVERT_UNSTAMPED).is_err());
+    // #432: a converting open that answers no CONFIG leaves the bag unchanged; core settles it as bound.
+    assert!(
+        for_purpose(Records::new(empty.as_bytes()), CONVERT_UNSTAMPED)
+            .unwrap()
+            .is_none()
+    );
     assert!(for_purpose(Records::new(empty.as_bytes()), CANONICAL)
         .unwrap()
         .is_none());
