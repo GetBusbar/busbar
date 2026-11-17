@@ -149,15 +149,22 @@ fn a_fips_backend_refuses_every_drop_in_that_is_not_busbar_s_own_release() {
         );
         let skipped = registry.skipped();
         assert_eq!(skipped.len(), 1, "{case}: the refusal is a skip");
+        // AGREED l.474: invalid proof from a known publisher is verified before backend policy and
+        // refused as tampering, never hidden as the backend's policy refusal.
+        let expected = if case == "claims-busbar-without-its-key" {
+            "tampered"
+        } else {
+            "external_crypto"
+        };
         assert_eq!(
             skipped[0].kind.code(),
-            "external_crypto",
+            expected,
             "{case}: refused as the backend's refusal: {}",
             skipped[0].reason
         );
         let rows = busbar_contract::plugin_rows::PluginRows::skipped(&registry);
         assert_eq!(
-            rows[0].code, "external_crypto",
+            rows[0].code, expected,
             "{case}: the code the boot logger seals on the audit chain"
         );
         let refused = registry.secret_refusal(NAME);

@@ -2093,7 +2093,7 @@ pub const ADMIN_AUTH_RETRY_AFTER: &str = crate::limits::admission::OVERLOADED_RE
 /// §4.2a, condition B-C1): `approve`/`revoke` exactly when the door admits `POST /trust/approve` /
 /// `POST /trust/revoke` under the gate's own rules (full scope; a non-empty verb list must name the
 /// verb). An open door is `anonymous`; a refused door, or one admitting neither, grants none.
-pub(crate) fn trust_decision_authority(
+pub fn trust_decision_authority(
     door: &AdminDoor,
 ) -> Option<crate::host_services::TrustDecisionAuthority> {
     let principal = match door {

@@ -41,6 +41,10 @@ pub use verbs::{required_scope, Verbs};
 #[path = "tests/table_matches_openapi.rs"]
 mod table_matches_openapi;
 
+#[cfg(test)]
+#[path = "tests/trust_authority_verb_list_tests.rs"]
+mod trust_authority_verb_list_tests;
+
 pub use v1::json::generation::valid_idempotency_key;
 pub use v1::json::trust_inventory;
 pub use v1::service::mark_start;
