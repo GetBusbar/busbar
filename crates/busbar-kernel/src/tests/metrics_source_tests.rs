@@ -68,7 +68,7 @@ fn workload() {
 
 #[test]
 fn source_preserves_the_kinds_raw_metric_vector() {
-    let source: &'static Source = Box::leak(Box::new(Source::new(
+    let source: &'static Source = Box::leak(Box::new(Source::isolated(
         Duration::from_secs(20),
         std::num::NonZeroU32::new(3).unwrap(),
         Duration::from_secs(60),
@@ -77,7 +77,12 @@ fn source_preserves_the_kinds_raw_metric_vector() {
     let expected: Vec<Family> =
         json::parse_str(busbar_contract::abi::sdk::test_support::metrics::SNAPSHOT)
             .expect("the kind's raw snapshot vector");
-    let actual = source.snapshot();
+    // Adopted request-recorder health is additional to the unchanged kind recording vector.
+    let all = source.snapshot().unwrap();
+    let actual: Vec<_> = all
+        .into_iter()
+        .filter(|family| !family.name.starts_with("busbar_telemetry_request_"))
+        .collect();
     assert_eq!(ordered_families(&actual), ordered_families(&expected));
     assert_eq!(
         actual.len(),
@@ -108,7 +113,7 @@ fn the_window_rolls_while_count_and_sum_never_reset() {
 }
 
 fn identity_source() -> &'static Source {
-    Box::leak(Box::new(Source::new(
+    Box::leak(Box::new(Source::isolated(
         crate::snapshot::GAUGE_IDLE_TIMEOUT,
         crate::snapshot::SUMMARY_BUCKETS,
         crate::snapshot::GAUGE_IDLE_TIMEOUT,
@@ -149,7 +154,7 @@ fn raw_label_values_keep_distinct_exported_series() {
             gauges[at].set(value as f64);
             histograms[at].record(value as f64);
         }
-        let first = source.snapshot();
+        let first = source.snapshot().unwrap();
         assert_eq!(identity_values(&first, COUNTER), ["17", "23"]);
         assert_eq!(identity_values(&first, GAUGE), ["17", "23"]);
         assert_eq!(identity_values(&first, SUMMARY_SUM), ["17", "23"]);
@@ -194,7 +199,7 @@ fn raw_label_values_keep_distinct_exported_series() {
                 .collect::<Vec<_>>(),
             expected_names
         );
-        let again = source.snapshot();
+        let again = source.snapshot().unwrap();
         assert_eq!(identity_values(&again, COUNTER), ["17", "23"]);
         assert_eq!(identity_values(&again, SUMMARY_COUNT), ["1", "1"]);
         std::thread::scope(|threads| {
@@ -203,7 +208,7 @@ fn raw_label_values_keep_distinct_exported_series() {
         });
         gauges[0].set(41.0);
         histograms[1].record(7.0);
-        let updated = source.snapshot();
+        let updated = source.snapshot().unwrap();
         assert_eq!(identity_values(&updated, COUNTER), ["22", "30"]);
         assert_eq!(identity_values(&updated, GAUGE), ["23", "41"]);
         assert_eq!(identity_values(&updated, SUMMARY_SUM), ["17", "30"]);
@@ -229,7 +234,7 @@ fn raw_duplicate_labels_keep_registry_identity_and_existing_display_semantics() 
         metrics::counter!(COUNTER, displayed).increment(11);
         metrics::counter!(COUNTER, duplicate).increment(2);
     });
-    let families = source.snapshot();
+    let families = source.snapshot().unwrap();
     assert_eq!(identity_values(&families, COUNTER), ["11", "7"]);
     let family = families
         .iter()
@@ -259,7 +264,7 @@ fn series_order_uses_raw_labels_without_wire_encoding() {
         }
     });
     for _ in [(), ()] {
-        let families = source.snapshot();
+        let families = source.snapshot().unwrap();
         let family = families
             .iter()
             .find(|family| family.name == COUNTER)
