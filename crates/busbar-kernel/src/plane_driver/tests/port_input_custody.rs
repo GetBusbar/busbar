@@ -192,6 +192,7 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
             .serve(ServeIn {
                 invocation: None,
                 request,
+                admission: None,
                 route: 1,
                 http: HttpIn {
                     method: "GET".into(),

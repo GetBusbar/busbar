@@ -869,6 +869,7 @@ async fn audit_keys_page(
     body.insert(
         "next_cursor",
         page.next_cursor
+            .as_deref()
             .map_or_else(json::Value::new_null, json::Value::from),
     );
     json::to_vec(&json::Value::from(body))

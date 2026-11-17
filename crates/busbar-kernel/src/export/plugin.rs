@@ -173,7 +173,8 @@ pub(super) fn deliver_to(
     let mut handed = Handed {
         completion: CaptureCompletion {
             capture: Some(capture),
-            ..CaptureCompletion::default()
+            sinks: Vec::new(),
+            finished: false,
         },
         ..Handed::default()
     };
@@ -199,7 +200,8 @@ pub(crate) fn deliver_on(
     let mut handed = Handed {
         completion: CaptureCompletion {
             capture: Some(capture),
-            ..CaptureCompletion::default()
+            sinks: Vec::new(),
+            finished: false,
         },
         ..Handed::default()
     };

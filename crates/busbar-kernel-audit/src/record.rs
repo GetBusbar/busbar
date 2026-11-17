@@ -622,13 +622,6 @@ impl AuditChain {
         self.signer.as_ref().map(|k| k.derived_secret(label))
     }
 
-    /// A key derived from the deployment keyset seed this chain signs with, by HKDF-SHA256 under
-    /// `salt` and `info` ([`crate::sign::AuditSigningKey::derived_key`]); `None` unsigned.
-    #[must_use]
-    pub fn derived_key(&self, salt: &[u8], info: &[u8]) -> Option<[u8; 32]> {
-        self.signer.as_ref().map(|k| k.derived_key(salt, info))
-    }
-
     /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).
     #[must_use]
     pub fn sealing_as(mut self, node: u64) -> Self {

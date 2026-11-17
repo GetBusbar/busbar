@@ -269,7 +269,7 @@ impl PredecessorFence {
             let bytes = value.expose(&crate::seal::lend());
             let Ok(assignment) = Assignment::parse(bytes) else {
                 let id = (bytes.len() == 8)
-                    .then(|| bytes.try_into().ok().map(u64::from_be_bytes))
+                    .then(|| bytes.as_slice().try_into().ok().map(u64::from_be_bytes))
                     .flatten();
                 if id != Some(own) {
                     out.refused.push(RefusedNode {
