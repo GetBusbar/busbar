@@ -850,6 +850,17 @@ impl Registry {
             ))
         })?
         else {
+            // #432: a converting open with no CONFIG answer is "unchanged"; core settles the bag as bound.
+            if s.purpose == OpenPurpose::ConvertUnstamped {
+                self.keep_settled(
+                    s.name,
+                    Settled {
+                        config_json: SecureVec::from(s.config_json.to_vec()),
+                        core_cfg: Vec::new(),
+                        answered: false,
+                    },
+                );
+            }
             return Ok(());
         };
         let config_json = SecureVec::from(
@@ -883,6 +894,7 @@ impl Registry {
             Settled {
                 config_json,
                 core_cfg,
+                answered: true,
             },
         );
         Ok(())

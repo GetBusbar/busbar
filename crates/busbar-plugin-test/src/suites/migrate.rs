@@ -7,8 +7,8 @@
 //!
 //! The cases, in order:
 //! 1. Open the case's `bag` as its kind with explicit purpose and limits. `Settled { config, core_cfg }`: the open
-//!    succeeds; the settled CONFIG equals `config` (canonical JSON compare; `None` = unchanged bag, permitting
-//!    absent CONFIG only on a Canonical case) and CORE_CFG fragments equal `core_cfg`. `Refused(code)`: the open
+//!    succeeds; the settled CONFIG equals `config` (canonical JSON compare; `None` = unchanged bag: an equal echo, or
+//!    no CONFIG, which a conversion settles as the bag, #432) and CORE_CFG fragments equal `core_cfg`. `Refused(code)`: the open
 //!    fails REFUSED `code`, nothing is settled and the plugin wrote nothing.
 //! 2. Fixed point: open the settled CONFIG (or the bag when none came back) again. It must open, answer either
 //!    no CONFIG or an equal JSON-tree echo, no CORE_CFG, and write nothing (current data costs one marker read
@@ -168,7 +168,9 @@ fn settled_case(
             got.config_json.to_vec()
         }
         (None, None) if case.purpose == OpenPurpose::Canonical => bag.to_vec(),
-        (None, None) => panic!("migrate: conversion requires CONFIG even for an unchanged bag"),
+        (None, None) => {
+            panic!("migrate: a conversion settled nothing; core settles an unchanged bag (#432)")
+        }
     };
 
     let mut got: Vec<(u32, String, String)> = settled

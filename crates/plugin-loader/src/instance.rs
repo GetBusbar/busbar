@@ -1562,6 +1562,8 @@ pub enum BootPhase {
 pub struct Settled {
     pub config_json: busbar_contract::secure::SecureVec,
     pub core_cfg: Vec<CoreCfg>,
+    /// False when a converting open answered no CONFIG (#432): `config_json` is then the bag as bound, unchanged.
+    pub answered: bool,
 }
 
 /// section = abi::core_cfg::*; value_json in that section's grammar.

@@ -42,8 +42,8 @@ pub struct MigrateCase<'a> {
 }
 
 /// config: Some requires emitted CONFIG equal to the expected operator-form JSON tree; None requires
-/// unchanged settings (an equal CONFIG echo, or no CONFIG on an explicitly Canonical case). Conversion
-/// always requires CONFIG. core_cfg: (section, name, value).
+/// unchanged settings (an equal CONFIG echo, or no CONFIG, which on a conversion core settles as the bag,
+/// #432). core_cfg: (section, name, value).
 pub enum MigrateExpect<'a> {
     Settled {
         config: Option<&'a [u8]>,
@@ -206,7 +206,7 @@ pub fn migrate(plugin: &'static Plugin, bag: &[u8], needs: FakeNeeds, expect: Mi
 }
 
 /// Run the migration suite with explicit initial purpose and instance limits. Use Canonical for an
-/// already canonical input; ConvertUnstamped still requires CONFIG even when its contents are unchanged.
+/// already canonical input. A ConvertUnstamped open that answers no CONFIG settles the bag unchanged (#432).
 pub fn migrate_case(
     plugin: &'static Plugin,
     case: MigrateCase<'_>,

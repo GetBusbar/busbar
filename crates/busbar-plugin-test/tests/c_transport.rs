@@ -68,6 +68,7 @@ fn case_spec_preserves_explicit_limits_and_endpoint_observations() {
         .expect("core settles the unchanged bag");
     assert_eq!(settled.config_json.as_slice(), config.as_slice());
     assert!(settled.core_cfg.is_empty());
+    assert!(!settled.answered, "the plugin answered no CONFIG");
 }
 
 /// One endpoint-declaring fixture per kind, with an instance name of that kind ("no kind changes the verdict").
