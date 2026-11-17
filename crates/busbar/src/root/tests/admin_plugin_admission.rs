@@ -142,15 +142,15 @@ fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::Plu
 async fn serve_admission(
     dir: PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
-    hook_env: Option<busbar_kernel::hooks::HookEnv>,
+    registry: Option<Arc<dyn busbar_contract::plugin_rows::PluginRows>>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    serve_admission_with_inputs(dir, cfg, hook_env, None).await
+    serve_admission_with_inputs(dir, cfg, registry, None).await
 }
 
 async fn serve_admission_with_inputs(
     dir: PathBuf,
     cfg: busbar_kernel::config::PluginsCfg,
-    hook_env: Option<busbar_kernel::hooks::HookEnv>,
+    registry: Option<Arc<dyn busbar_contract::plugin_rows::PluginRows>>,
     disk_paths: Option<(PathBuf, PathBuf)>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     busbar_core_admin::install();
@@ -258,8 +258,8 @@ async fn serve_admission_with_inputs(
     app.plugins_dir = dir;
     app.plugins_cfg = cfg;
     app.plugin_admission = Some(&ADMISSION);
-    if let Some(env) = hook_env {
-        app.hook_env = env;
+    if let Some(registry) = registry {
+        app.plugin_registry = registry;
     }
     if let Some((config, providers)) = disk_paths {
         app.overlay_path = Some(
@@ -292,26 +292,20 @@ async fn serve_with_plugins_dir(
     serve_admission(dir, unsigned_ok_posture(), None).await
 }
 
-async fn serve_with_plugins_dir_and_hook_env(
+async fn serve_with_plugins_dir_and_registry(
     dir: PathBuf,
-    hook_env: busbar_kernel::hooks::HookEnv,
+    registry: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    serve_admission(dir, unsigned_ok_posture(), Some(hook_env)).await
+    serve_admission(dir, unsigned_ok_posture(), Some(registry)).await
 }
 
-fn scanned_hook_env(dir: &std::path::Path) -> busbar_kernel::hooks::HookEnv {
+fn scanned_registry(dir: &std::path::Path) -> Arc<dyn busbar_contract::plugin_rows::PluginRows> {
     let policy = crate::root::loader::sign::TrustPolicy {
         allow_untrusted: true,
         ..Default::default()
     };
     let registry = crate::root::loader::scan_and_validate(dir, &policy).unwrap();
-    let rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    let axis = crate::root::hooks::axis(&rows).expect("the registry's hook axis");
-    busbar_kernel::hooks::HookEnv::with_axis(
-        rows,
-        axis,
-        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
+    Arc::new(registry)
 }
 
 /// The upload body `POST /plugins` and `POST /plugins/inspect` take, by the admin contract's field
@@ -1278,8 +1272,8 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     let tarball = unsigned_tarball(m, &lib);
 
     std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let list: serde_json::Value = client
@@ -1379,8 +1373,8 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     )
     .unwrap();
 
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let list: serde_json::Value = client
@@ -1568,8 +1562,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let dir = tmp_plugins_dir("schema");
 
     std::fs::write(dir.join(file), &tarball).unwrap();
-    let hook_env = scanned_hook_env(&dir);
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let registry = scanned_registry(&dir);
+    let (addr, handle) = serve_with_plugins_dir_and_registry(dir.clone(), registry).await;
     let client = reqwest::Client::new();
 
     let got_resp = client
@@ -1594,8 +1588,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 
     let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
-    let hook_env2 = scanned_hook_env(&dir);
-    let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
+    let registry2 = scanned_registry(&dir);
+    let (addr2, handle2) = serve_with_plugins_dir_and_registry(dir.clone(), registry2).await;
     let got2: serde_json::Value = client
         .get(format!(
             "http://{addr2}/api/v1/admin/plugins/acme-store-junk/schema"
@@ -1631,9 +1625,9 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_tarball = unsigned_tarball(bad_m, &bad_lib);
     let bad_dir = tmp_plugins_dir("badschema");
     std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
-    let bad_hook_env = scanned_hook_env(&bad_dir);
+    let bad_registry = scanned_registry(&bad_dir);
     let (bad_addr, bad_handle) =
-        serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
+        serve_with_plugins_dir_and_registry(bad_dir.clone(), bad_registry).await;
     let got_bad: serde_json::Value = client
         .get(format!(
             "http://{bad_addr}/api/v1/admin/plugins/acme-store-badschema/schema"
