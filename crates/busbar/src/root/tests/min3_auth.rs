@@ -664,3 +664,26 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
     assert!(prepared.claim().await);
     assert_eq!(owners.0.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn native_data_chain_rejects_empty_and_repeated_real_reservations() {
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+        native: false,
+    });
+    let owners = Arc::new(Owners(AtomicUsize::new(0)));
+    let owners = Arc::new(AuthOwners {
+        issued: owners.clone(),
+        replay: owners,
+        cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+    });
+    assert!(NativeChain::data(7, Vec::new(), owners.clone()).is_err());
+    let opened = instance(42, port);
+    assert!(NativeChain::data(7, vec![opened.clone(), opened.clone()], owners.clone()).is_err());
+    let data = NativeChain::data(7, vec![opened], owners).unwrap();
+    assert!(data.is_data());
+    assert_eq!(data.epoch(), 7);
+    assert!(data.matches_names(&["provider-42".into()]));
+    assert!(!data.matches_names(&["another-provider".into()]));
+}
