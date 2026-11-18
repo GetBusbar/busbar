@@ -2187,7 +2187,7 @@ impl EgressFarEnd<'_> {
                 bytes: buf[..piece.len].to_vec(),
                 ..FarPiece::default()
             }),
-            PieceKind::Body => self.first(token, &piece, buf[..piece.len].to_vec()),
+            PieceKind::Body => self.first_piece(token, &piece, buf[..piece.len].to_vec()),
         };
 
         drop(scratch);
@@ -2231,7 +2231,7 @@ impl EgressFarEnd<'_> {
                     .then(|| (name.into_bytes(), v.to_vec()))
             })
             .collect();
-        let mut answer = self.first(token, piece, Vec::new());
+        let mut answer = self.first_piece(token, piece, Vec::new());
         if !answer.fail_over {
             answer.head = head;
         }
@@ -2393,7 +2393,7 @@ impl EgressFarEnd<'_> {
         }
     }
 
-    fn first(
+    fn first_piece(
         &self,
         token: &Pass<Route>,
         piece: &busbar_contract::conn::Piece,
