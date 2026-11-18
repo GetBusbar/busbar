@@ -218,37 +218,33 @@ impl NativeChain {
     ) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
         let request = Request::new(req);
         async move {
-            let callers: Vec<_> = self
-                .instances
-                .iter()
-                .map(|instance| {
-                    let opened = &instance.opened;
-                    Caller {
-                        plugin: &opened.who.plugin,
-                        kind: KindCode::Auth,
-                        name: &opened.who.name,
-                        instance: opened.who.instance,
-                        slot: opened.who.slot,
-                        chain: 0,
-                        deadline: cx.deadline,
-                        stack: cx.stack,
-                        out_of_process: opened.out_of_process,
-                        limits: opened.limits,
-                    }
-                })
-                .collect();
-            let chain: Vec<_> = self
-                .instances
-                .iter()
-                .zip(&callers)
-                .map(|(instance, caller)| ChainInstance {
+            // One caller and one chain position per configured instance, on the stack for an ordinary chain.
+            let mut callers: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+            for instance in &self.instances {
+                let opened = &instance.opened;
+                callers.push(Caller {
+                    plugin: &opened.who.plugin,
+                    kind: KindCode::Auth,
+                    name: &opened.who.name,
+                    instance: opened.who.instance,
+                    slot: opened.who.slot,
+                    chain: 0,
+                    deadline: cx.deadline,
+                    stack: cx.stack,
+                    out_of_process: opened.out_of_process,
+                    limits: opened.limits,
+                });
+            }
+            let mut chain: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+            for (instance, caller) in self.instances.iter().zip(&callers) {
+                chain.push(ChainInstance {
                     id: instance.opened.who.instance,
                     port: instance.opened.port.as_ref(),
                     caller,
                     keys: &instance.keys,
                     holds: &instance.holds,
-                })
-                .collect();
+                });
+            }
             let services = AuthServices {
                 issued: self.owners.issued.as_ref(),
                 replay: self.owners.replay.as_ref(),

@@ -1268,11 +1268,11 @@ fn matched_handin_line<'a>(
     if auth_line != Some(requested) {
         return None;
     }
-    let fields: Vec<(&str, &[u8])> = head
-        .fields
-        .iter()
-        .map(|(n, v)| (n.as_str(), v.as_slice()))
-        .collect();
+    // The head's fields as borrowed pairs, on the stack for any ordinary head.
+    let mut fields: smallvec::SmallVec<[(&str, &[u8]); 32]> = smallvec::SmallVec::new();
+    for (n, v) in &head.fields {
+        fields.push((n.as_str(), v.as_slice()));
+    }
     match guests.matched(&head.method, &head.target, &fields) {
         Matched::Line(m) if std::ptr::eq::<Line>(m, line) => Some(line),
         _ => None,

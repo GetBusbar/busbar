@@ -413,12 +413,12 @@ pub struct Request {
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.method.zeroize();
-        self.path.zeroize();
-        self.query.zeroize();
-        self.authority.zeroize();
-        self.peer.zeroize();
+        use busbar_contract::secure::wipe_string;
+        wipe_string(&mut self.method);
+        wipe_string(&mut self.path);
+        wipe_string(&mut self.query);
+        wipe_string(&mut self.authority);
+        wipe_string(&mut self.peer);
     }
 }
 impl Request {
