@@ -335,7 +335,9 @@ pub(crate) mod peer {
             let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let (mut framing, first) =
                 DatagramFraming::accept_minted(framer, socket.local_addr().unwrap()).unwrap();
-            let yielded = framing.rendezvous(offer, Instant::now()).unwrap();
+            let yielded = framing
+                .rendezvous(offer, busbar_core_connector::framer::At::of(Instant::now()))
+                .unwrap();
             let answer = description(&yielded);
             (
                 Self {
@@ -348,8 +350,14 @@ pub(crate) mod peer {
         }
 
         pub(crate) fn answer(&mut self, answer: &[u8]) {
-            self.pending
-                .push_back(self.framing.rendezvous(answer, Instant::now()).unwrap());
+            self.pending.push_back(
+                self.framing
+                    .rendezvous(
+                        answer,
+                        busbar_core_connector::framer::At::of(Instant::now()),
+                    )
+                    .unwrap(),
+            );
         }
 
         pub(crate) fn run(

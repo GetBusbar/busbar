@@ -19,7 +19,7 @@ use busbar_contract::abi::transport::{
 };
 
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
-use crate::framer::{instant_of, ready, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
+use crate::framer::{instant_of, ready, At, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
 use crate::off_path::datagram::head_value;
 use crate::publication::{Custody, Memory};
 use crate::DialJudge;
@@ -237,7 +237,12 @@ impl Opened {
 #[must_use = "drain the turn or drop it to finish its accepted operation"]
 pub struct DatagramTurn<'f> {
     framing: &'f mut DatagramFraming,
+    /// The instant the operation began: what its yields are taken at, kept across a pause.
     now: Instant,
+    /// The clock reading of the step driving the turn now (the step that started it, or the one
+    /// that resumed its continuation): what every crossing of that step states to the framer. It
+    /// is never kept across a pause; a resumed turn is handed the resuming step's reading.
+    at: At,
     first: Option<Yielded>,
     recall: Option<Op<'static>>,
     recalls: crate::framer::Recalls,
@@ -275,10 +280,11 @@ impl<'f> DatagramTurn<'f> {
         continuation
     }
 
-    fn resume(framing: &'f mut DatagramFraming, continuation: Continuation) -> Self {
+    fn resume(framing: &'f mut DatagramFraming, continuation: Continuation, at: At) -> Self {
         Self {
             framing,
             now: continuation.now,
+            at,
             first: continuation.first,
             recall: continuation.recall,
             recalls: continuation.recalls,
@@ -288,10 +294,11 @@ impl<'f> DatagramTurn<'f> {
             custody: continuation.custody,
         }
     }
-    fn settling(framing: &'f mut DatagramFraming, now: Instant) -> Self {
+    fn settling(framing: &'f mut DatagramFraming, at: At) -> Self {
         Self {
             framing,
-            now,
+            now: at.instant(),
+            at,
             first: None,
             recall: None,
             recalls: crate::framer::Recalls::default(),
@@ -302,8 +309,8 @@ impl<'f> DatagramTurn<'f> {
         }
     }
 
-    fn start(framing: &'f mut DatagramFraming, op: Op<'_>, now: Instant) -> Result<Self, Refused> {
-        let mut turn = Self::settling(framing, now);
+    fn start(framing: &'f mut DatagramFraming, op: Op<'_>, at: At) -> Result<Self, Refused> {
+        let mut turn = Self::settling(framing, at);
         match turn.cross(op) {
             Ok(batch) => turn.first = Some(batch),
             Err(error) => {
@@ -327,7 +334,7 @@ impl<'f> DatagramTurn<'f> {
             })
             .transpose()?
             .unwrap_or_default();
-        let answer = self.framing.cross_once(op)?;
+        let answer = self.framing.cross_once(op, self.at)?;
         let mut batch = Yielded::default();
         batch.producer = producer;
         batch.custody = custody;
@@ -371,7 +378,7 @@ impl<'f> DatagramTurn<'f> {
         match self.advance() {
             Err(error) if needs_credit(&error) => Err(error),
             Err(error) => {
-                self.framing.finish();
+                self.framing.finish_at(self.at);
                 self.complete = true;
                 Err(error)
             }
@@ -487,7 +494,7 @@ impl<'f> DatagramTurn<'f> {
 impl Drop for DatagramTurn<'_> {
     fn drop(&mut self) {
         if !self.complete {
-            self.framing.finish();
+            self.framing.finish_at(self.at);
         }
     }
 }
@@ -605,8 +612,9 @@ impl DatagramFraming {
         &mut self,
         from: SocketAddr,
         bytes: &[u8],
-        now: Instant,
+        at: At,
     ) -> Result<LineStep, Refused> {
+        let now = at.instant();
         if self.continuing() {
             return Err(fault("fresh datagram while a same-op continuation is owed"));
         }
@@ -618,7 +626,7 @@ impl DatagramFraming {
             .as_ref()
             .is_some_and(|secure| secure.unadmitted_check(from, bytes));
         if unadmitted && !self.admit_heard(from, now) {
-            return self.settle_step(now, true);
+            return self.settle_step(at, true);
         }
         let Some(secure) = self.secure.as_mut() else {
             self.credit = None;
@@ -626,12 +634,12 @@ impl DatagramFraming {
         };
         let raw = secure.ingest(from, bytes, now) == Verdict::Raw && secure.knows(from);
         if !raw {
-            return self.settle_step(now, true);
+            return self.settle_step(at, true);
         }
         let known =
             |address: SocketAddr| secure.knows(address) || secure.bound_path() == Some(address);
         if self.book.number(from, known).is_none() {
-            return self.settle_step(now, true);
+            return self.settle_step(at, true);
         }
         self.start_step(
             Op::Ingest {
@@ -640,12 +648,13 @@ impl DatagramFraming {
                 bytes,
                 end: false,
             },
-            now,
+            at,
         )
     }
 
     /// The clock, producing at most one checked output batch. Continuations retain same-op
-    pub fn timeout_step(&mut self, now: Instant) -> Result<LineStep, Refused> {
+    pub fn timeout_step(&mut self, at: At) -> Result<LineStep, Refused> {
+        let now = at.instant();
         if self.continuing() {
             return Err(fault("fresh timer while a same-op continuation is owed"));
         }
@@ -657,21 +666,21 @@ impl DatagramFraming {
         }
         if self.deadline_ns.is_some_and(|ns| instant_of(ns) <= now) {
             self.deadline_ns = None;
-            self.start_step(Op::Timer, now)
+            self.start_step(Op::Timer, at)
         } else {
-            self.settle_step(now, false)
+            self.settle_step(at, false)
         }
     }
 
-    fn start_step(&mut self, op: Op<'_>, now: Instant) -> Result<LineStep, Refused> {
-        let mut turn = DatagramTurn::start(self, op, now)?;
+    fn start_step(&mut self, op: Op<'_>, at: At) -> Result<LineStep, Refused> {
+        let mut turn = DatagramTurn::start(self, op, at)?;
         let result = turn.next_batch();
         let continuation = turn.pause();
         self.keep_step(continuation, result, true)
     }
 
-    fn settle_step(&mut self, now: Instant, accepted: bool) -> Result<LineStep, Refused> {
-        let mut turn = DatagramTurn::settling(self, now);
+    fn settle_step(&mut self, at: At, accepted: bool) -> Result<LineStep, Refused> {
+        let mut turn = DatagramTurn::settling(self, at);
         let result = turn.next_batch();
         let continuation = turn.pause();
         match self.keep_step(continuation, result, accepted)? {
@@ -757,12 +766,12 @@ impl DatagramFraming {
         &mut self,
         input: Option<&Across>,
         text: bool,
-        now: Instant,
+        at: At,
     ) -> Result<LineStep, Refused> {
         let continuation = self.continuation.take();
         let accepted = continuation.is_none() && input.is_some();
         let mut turn = if let Some(continuation) = continuation {
-            DatagramTurn::resume(self, continuation)
+            DatagramTurn::resume(self, continuation, at)
         } else if let Some(input) = input {
             match self.reserve_output() {
                 Ok(credit) => self.credit = Some(credit),
@@ -777,7 +786,7 @@ impl DatagramFraming {
                     end_of_frame: input.end_of_frame,
                     text,
                 },
-                now,
+                at,
             )?
         } else {
             return Ok(LineStep::Complete);
@@ -880,12 +889,13 @@ impl DatagramFraming {
             continuation: None,
             retirement: None,
         };
-        let y = f.run(Op::Begin(opening), crate::framer::now())?;
+        // Beginning an association is one operation: its one reading.
+        let y = f.run(Op::Begin(opening), At::now())?;
         Ok((f, y))
     }
 
     /// The far end's description. The framer's own description comes back as a piece, and the
-    pub fn rendezvous(&mut self, description: &[u8], now: Instant) -> Result<Yielded, Refused> {
+    pub fn rendezvous(&mut self, description: &[u8], at: At) -> Result<Yielded, Refused> {
         let y = self.run(
             Op::Ingest {
                 lane: LANE_RENDEZVOUS,
@@ -893,7 +903,7 @@ impl DatagramFraming {
                 bytes: description,
                 end: false,
             },
-            now,
+            at,
         )?;
         if self.secure.is_none() {
             return Err(fault("the framer answered a rendezvous with no terms"));
@@ -902,29 +912,25 @@ impl DatagramFraming {
     }
 
     /// One datagram the port read from `from`. Before the rendezvous settled terms nothing on the
-    pub fn datagram(
-        &mut self,
-        from: SocketAddr,
-        bytes: &[u8],
-        now: Instant,
-    ) -> Result<Yielded, Refused> {
+    pub fn datagram(&mut self, from: SocketAddr, bytes: &[u8], at: At) -> Result<Yielded, Refused> {
+        let now = at.instant();
         let unadmitted = self
             .secure
             .as_ref()
             .is_some_and(|s| s.unadmitted_check(from, bytes));
         if unadmitted && !self.admit_heard(from, now) {
-            return self.settle(Yielded::default(), now);
+            return self.settle(Yielded::default(), at);
         }
         let Some(secure) = self.secure.as_mut() else {
             return Ok(Yielded::default());
         };
         let up = secure.ingest(from, bytes, now) == Verdict::Raw && secure.knows(from);
         if !up {
-            return self.settle(Yielded::default(), now);
+            return self.settle(Yielded::default(), at);
         }
         let known = |a: SocketAddr| secure.knows(a) || secure.bound_path() == Some(a);
         if self.book.number(from, known).is_none() {
-            return self.settle(Yielded::default(), now);
+            return self.settle(Yielded::default(), at);
         }
         self.run(
             Op::Ingest {
@@ -933,7 +939,7 @@ impl DatagramFraming {
                 bytes,
                 end: false,
             },
-            now,
+            at,
         )
     }
 
@@ -944,7 +950,7 @@ impl DatagramFraming {
         bytes: &[u8],
         end_of_frame: bool,
         text: bool,
-        now: Instant,
+        at: At,
     ) -> Result<Yielded, Refused> {
         self.run(
             Op::Emit {
@@ -953,7 +959,7 @@ impl DatagramFraming {
                 end_of_frame,
                 text,
             },
-            now,
+            at,
         )
     }
 
@@ -964,7 +970,7 @@ impl DatagramFraming {
         bytes: &[u8],
         end_of_frame: bool,
         text: bool,
-        now: Instant,
+        at: At,
     ) -> Result<DatagramTurn<'_>, Refused> {
         DatagramTurn::start(
             self,
@@ -974,20 +980,21 @@ impl DatagramFraming {
                 end_of_frame,
                 text,
             },
-            now,
+            at,
         )
     }
 
     /// The clock: the secure layer's timers, and the framer's deadline when it has passed.
-    pub fn timeout(&mut self, now: Instant) -> Result<Yielded, Refused> {
+    pub fn timeout(&mut self, at: At) -> Result<Yielded, Refused> {
+        let now = at.instant();
         if let Some(secure) = self.secure.as_mut() {
             secure.handle_timeout(now);
         }
         if self.deadline_ns.is_some_and(|ns| instant_of(ns) <= now) {
             self.deadline_ns = None;
-            return self.run(Op::Timer, now);
+            return self.run(Op::Timer, at);
         }
-        self.settle(Yielded::default(), now)
+        self.settle(Yielded::default(), at)
     }
 
     /// When [`Self::timeout`] is next owed.
@@ -1080,9 +1087,9 @@ impl DatagramFraming {
     }
 
     /// `first`, its `YIELD_MORE` re-calls, then whatever the secure layer owes the framer.
-    fn run(&mut self, first: Op<'_>, now: Instant) -> Result<Yielded, Refused> {
+    fn run(&mut self, first: Op<'_>, at: At) -> Result<Yielded, Refused> {
         let mut y = Yielded::default();
-        let mut turn = DatagramTurn::start(self, first, now)?;
+        let mut turn = DatagramTurn::start(self, first, at)?;
         while let Some(batch) = turn.next_batch()? {
             append_batch(&mut y, batch);
         }
@@ -1090,8 +1097,8 @@ impl DatagramFraming {
     }
 
     /// Drain the secure layer: its datagrams to the port, its plaintext to the framer, and the
-    fn settle(&mut self, mut y: Yielded, now: Instant) -> Result<Yielded, Refused> {
-        let mut turn = DatagramTurn::settling(self, now);
+    fn settle(&mut self, mut y: Yielded, at: At) -> Result<Yielded, Refused> {
+        let mut turn = DatagramTurn::settling(self, at);
         while let Some(batch) = turn.next_batch()? {
             append_batch(&mut y, batch);
         }
@@ -1099,7 +1106,9 @@ impl DatagramFraming {
         Ok(y)
     }
 
-    fn cross_once(&mut self, op: Op<'_>) -> Result<FramerOut, Refused> {
+    /// One crossing of `op`, stating `at` (the reading of the step driving it) to the framer. The
+    /// sink's pointers are taken here, for this crossing alone.
+    fn cross_once(&mut self, op: Op<'_>, at: At) -> Result<FramerOut, Refused> {
         if self.token == 0 && !matches!(op, Op::Begin(_)) {
             return Err(fault("the association's framing is closed"));
         }
@@ -1178,7 +1187,7 @@ impl DatagramFraming {
                     i.fields_len = fields.len();
                 }
                 i.lane = &lane;
-                i.sink = self.bufs.sink();
+                i.sink = self.bufs.sink(at);
                 self.door.cross(Call::Begin(&mut i, &mut o))
             }
             Op::Ingest { bytes, end, .. } => {
@@ -1188,7 +1197,7 @@ impl DatagramFraming {
                 i.len = bytes.len();
                 i.end = u32::from(end);
                 i.lane = &lane;
-                i.sink = self.bufs.sink();
+                i.sink = self.bufs.sink(at);
                 self.door.cross(Call::Ingest(&mut i, &mut o))
             }
             Op::Emit {
@@ -1205,14 +1214,14 @@ impl DatagramFraming {
                 i.end_of_frame = u32::from(end_of_frame);
                 i.flags = if text { EMIT_TEXT } else { 0 };
                 i.lane = &lane;
-                i.sink = self.bufs.sink();
+                i.sink = self.bufs.sink(at);
                 self.door.cross(Call::Emit(&mut i, &mut o))
             }
             Op::Timer => {
                 let mut i: FramingIn = blank_in();
                 i.framing = self.token;
                 i.lane = &lane;
-                i.sink = self.bufs.sink();
+                i.sink = self.bufs.sink(at);
                 self.door.cross(Call::Timer(&mut i, &mut o))
             }
         };
@@ -1633,7 +1642,8 @@ impl Associations {
     ) -> Option<(u64, Result<Yielded, Refused>)> {
         let id = self.find(from, bytes)?;
         let mut f = self.framings.remove(&id)?;
-        let answer = f.datagram(from, bytes, now);
+        // The datagram is one operation at the caller's instant `now`: its one reading.
+        let answer = f.datagram(from, bytes, At::of(now));
         if answer.is_ok() {
             self.route(id, from, &f);
         }
@@ -1861,15 +1871,17 @@ impl PortAssociations {
         now: Instant,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> Answered {
-        self.incremental_admission(id, op, now, send, false)
+        // The step is one operation at the caller's instant `now`: its one reading.
+        self.incremental_admission(id, op, At::of(now), send, false)
             .expect("trusted queued operations do not use raw readiness refusal")
     }
 
+    /// One admission step, every crossing of it stating `at`, the step's one reading.
     fn incremental_admission(
         &self,
         id: u64,
         op: Owed<'_>,
-        now: Instant,
+        at: At,
         send: &dyn Fn(SocketAddr, &[u8]),
         drop_busy: bool,
     ) -> Result<Answered, BusyIngress> {
@@ -1920,8 +1932,8 @@ impl PortAssociations {
             _ => None,
         };
         let result = match &op {
-            Owed::Datagram(from, bytes) => f.datagram_step(*from, bytes, now),
-            Owed::Timer => f.timeout_step(now),
+            Owed::Datagram(from, bytes) => f.datagram_step(*from, bytes, at),
+            Owed::Timer => f.timeout_step(at),
             Owed::Emit {
                 stream,
                 bytes,
@@ -1936,7 +1948,7 @@ impl PortAssociations {
                             end_of_frame: *end_of_frame,
                             text: *text,
                         },
-                        now,
+                        at,
                     )
                 } else {
                     Ok(LineStep::Credit)
@@ -1956,7 +1968,7 @@ impl PortAssociations {
             drop(assocs);
             if result.is_ok() {
                 if let Some(framing) = taken.framing.as_mut() {
-                    let _ = framing.close(send);
+                    let _ = framing.close_at(Some(send), at);
                 }
             }
             drop(taken.framing.take());
@@ -2022,7 +2034,8 @@ impl PortAssociations {
         now: Instant,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> std::task::Poll<Result<LineStep, Refused>> {
-        self.poll_line_inner(id, Some(cx), input, text, now, send)
+        // The poll is one operation at the caller's instant `now`: its one reading.
+        self.poll_line_inner(id, Some(cx), input, text, At::of(now), send)
     }
 
     // A serving turn may help only a parked producer. It must neither create a fresh
@@ -2033,7 +2046,7 @@ impl PortAssociations {
         cx: Option<&mut std::task::Context<'_>>,
         input: Option<&Across>,
         text: bool,
-        now: Instant,
+        at: At,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> std::task::Poll<Result<LineStep, Refused>> {
         let ready_only = cx.is_none();
@@ -2097,8 +2110,8 @@ impl PortAssociations {
             .as_mut()
             .expect("the producer owns its framing");
         let mut result = match owed.as_ref() {
-            Some(Owed::Datagram(from, bytes)) => f.datagram_step(*from, bytes, now),
-            Some(Owed::Timer) => f.timeout_step(now),
+            Some(Owed::Datagram(from, bytes)) => f.datagram_step(*from, bytes, at),
+            Some(Owed::Timer) => f.timeout_step(at),
             Some(Owed::Emit {
                 stream,
                 bytes,
@@ -2113,13 +2126,13 @@ impl PortAssociations {
                             end_of_frame: *end_of_frame,
                             text: *text,
                         },
-                        now,
+                        at,
                     )
                 } else {
                     Ok(LineStep::Credit)
                 }
             }
-            None => f.line_step(input, text, now),
+            None => f.line_step(input, text, at),
         };
         if owed.is_some() {
             if let Ok(LineStep::Batch { accepted, .. }) = &mut result {
@@ -2149,7 +2162,7 @@ impl PortAssociations {
             drop(assocs);
             if result.is_ok() {
                 if let Some(framing) = taken.framing.as_mut() {
-                    let _ = framing.close(send);
+                    let _ = framing.close_at(Some(send), at);
                 }
             }
             drop(taken.framing.take());
@@ -2294,11 +2307,19 @@ impl PortAssociations {
             emission.ready.notify_waiters();
             emission.wake.wake();
         }
-        for mut framing in gone
+        // The framings that still owe a FINISH (one already retired or never opened crosses
+        // nothing and is dropped as it is reached, as before).
+        let mut owing = gone
             .into_iter()
             .chain(pending.and_then(|out| out.continuing))
-        {
-            let _ = framing.close_inner(send);
+            .filter(|framing| framing.retired().is_none())
+            .peekable();
+        if owing.peek().is_some() {
+            // The removal is one operation: one reading for every FINISH it crosses.
+            let at = At::now();
+            for mut framing in owing {
+                let _ = framing.retire(send, at);
+            }
         }
     }
 
@@ -2463,19 +2484,22 @@ impl PortAssociations {
         let mut op = first;
         let mut emitted = None;
         let mut answered = Vec::new();
+        // The turn is one operation at the caller's instant `now`: its one reading, for `first`
+        // and for what was owed the association while it was out.
+        let at = At::of(now);
         loop {
             let f = taken.framing.as_mut().expect("the association is out");
             let mut spent = None;
             let (failed, routed) = match op {
                 Owed::Datagram(from, bytes) => {
-                    let answer = f.datagram(from, &bytes, now);
+                    let answer = f.datagram(from, &bytes, at);
                     let failed = answer.is_err();
                     answered.push((id, answer));
                     spent = Some(bytes);
                     (failed, (!failed).then_some(from))
                 }
                 Owed::Timer => {
-                    let answer = f.timeout(now);
+                    let answer = f.timeout(at);
                     let failed = answer.is_err();
                     answered.push((id, answer));
                     (failed, None)
@@ -2486,7 +2510,7 @@ impl PortAssociations {
                     end_of_frame,
                     text,
                 } => {
-                    let answer = f.emit(stream, &bytes, end_of_frame, text, now);
+                    let answer = f.emit(stream, &bytes, end_of_frame, text, at);
                     let failed = answer.is_err();
                     emitted.get_or_insert(!failed);
                     answered.push((id, answer));
@@ -2512,7 +2536,7 @@ impl PortAssociations {
                 }
                 if !failed {
                     if let Some(framing) = taken.framing.as_mut() {
-                        let _ = framing.close(send);
+                        let _ = framing.close_at(Some(send), at);
                     }
                 }
                 drop(taken.framing.take());
@@ -3040,6 +3064,29 @@ impl DatagramFraming {
         let _ = self.close_inner(None);
     }
 
+    /// Retire within the step whose reading is `at`: a turn that failed, or was dropped with its
+    /// operation unfinished. Nothing crosses when the framing is already retired or closed.
+    fn finish_at(&mut self, at: At) {
+        let _ = self.close_at(None, at);
+    }
+
+    /// [`Self::close`] within the step whose reading is `at`: the FINISH states that reading.
+    fn close_at(&mut self, send: RetirementSender<'_>, at: At) -> Result<(), Refused> {
+        match self.retired() {
+            Some(done) => done,
+            None => self.retire(send, at),
+        }
+    }
+
+    /// The retirement's result when no FINISH is left to cross: the recorded one, or `Ok` for a
+    /// framing that never opened or is already closed. `None` = a FINISH is owed.
+    fn retired(&self) -> Option<Result<(), Refused>> {
+        if let Some(result) = &self.retirement {
+            return Some(result.clone());
+        }
+        (self.token == 0).then_some(Ok(()))
+    }
+
     /// Retire synchronously, sending checked closing datagrams through the port's existing
     /// bounded sender. The callback must enqueue or try-send, never wait for network progress.
     /// Repeated calls return the original result without entering the door again.
@@ -3055,18 +3102,23 @@ impl DatagramFraming {
     }
 
     fn close_inner(&mut self, send: RetirementSender<'_>) -> Result<(), Refused> {
-        if let Some(result) = &self.retirement {
-            return result.clone();
+        match self.retired() {
+            Some(done) => done,
+            // A retirement outside any step is its own operation: its one reading, taken only
+            // when a FINISH is about to cross.
+            None => self.retire(send, At::now()),
         }
+    }
+
+    /// Cross FINISH for a framing that owes one (`token` set, no retirement recorded), stating
+    /// `at` on every re-call.
+    fn retire(&mut self, send: RetirementSender<'_>, at: At) -> Result<(), Refused> {
         let token = std::mem::take(&mut self.token);
-        if token == 0 {
-            return Ok(());
-        }
         // Publish the tombstone before crossing: unwinding or a reentrant association removal
         // must never retry a broken FINISH from Drop.
         self.retirement = Some(Err(fault("datagram retirement was interrupted")));
         self.ended = true;
-        let result = self.drain_finish(token, send);
+        let result = self.drain_finish(token, send, at);
         self.bufs.wipe_output();
         if let Err(error) = &result {
             tracing::error!(
@@ -3082,7 +3134,12 @@ impl DatagramFraming {
         result
     }
 
-    fn drain_finish(&mut self, token: u64, send: RetirementSender<'_>) -> Result<(), Refused> {
+    fn drain_finish(
+        &mut self,
+        token: u64,
+        send: RetirementSender<'_>,
+        at: At,
+    ) -> Result<(), Refused> {
         let untold = self.book.untold_texts();
         let paths = lent_paths(&untold);
         let verified = self.verified();
@@ -3132,7 +3189,7 @@ impl DatagramFraming {
             self.bufs.wipe_output();
             i.framing = token;
             i.lane = &lane;
-            i.sink = self.bufs.sink();
+            i.sink = self.bufs.sink(at);
             let mut o: FramerOut = blank_out();
             let crossed = self.door.cross(Call::Finish(&mut i, &mut o));
             self.bufs.validate(crossed.outcome, &o)?;

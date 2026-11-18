@@ -321,21 +321,28 @@ impl FramerDoor for Dispatched {
         }
     }
 
+    /// Framer deadlines and CLOCK_NOW have distinct epochs: a request head's deadline is stated
+    /// on the provider clock the plugin reads when preparing its signed head, `timeout_ms` after
+    /// one reading of it. With no host clock the locate is refused, as a failed crossing was.
+    fn request_deadline(&self, timeout_ms: u64) -> Result<u64, crate::framer::Refused> {
+        let Some(provider) = self.on.host_services() else {
+            return Err(crate::cold::framing::refusal(
+                Outcome::Failed,
+                format_args!("request head deadline requires the host clock"),
+            ));
+        };
+        Ok(provider
+            .now()
+            .mono_ns
+            .saturating_add(timeout_ms.saturating_mul(1_000_000))
+            .max(1))
+    }
+
     fn cross(&self, call: Call<'_>) -> Crossed {
         let p = &self.live.plugin;
         match call {
-            Call::Locate(i, o) => {
-                if i.head.deadline_ns != 0 {
-                    let Some(provider) = self.on.host_services() else {
-                        return crate::cold::egress::no_host_clock();
-                    };
-                    // Framer deadlines and CLOCK_NOW have distinct epochs. Cross the ABI using
-                    // the same provider clock the plugin reads when preparing its signed head.
-                    let remaining = i.head.deadline_ns.saturating_sub(crate::framer::now_ns());
-                    i.head.deadline_ns = provider.now().mono_ns.saturating_add(remaining).max(1);
-                }
-                go(p, slot::LOCATE, i, o)
-            }
+            // A head deadline is already on the provider's clock (`request_deadline`).
+            Call::Locate(i, o) => go(p, slot::LOCATE, i, o),
             Call::Begin(i, o) => go(p, slot::BEGIN, i, o),
             Call::Ingest(i, o) => go(p, slot::INGEST, i, o),
             Call::Emit(i, o) => go(p, slot::EMIT, i, o),
