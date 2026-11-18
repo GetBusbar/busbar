@@ -95,13 +95,13 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "dd9a736cb2e1ffc650dfbe0634d8be28c49b8b6c",
+      "commit": "9215146350b750191fd53f5a07c5cd7e0b6888d1",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
       "image": "libbusbar_plane_llm_plugin.so",
       "declares": "plane-llm/declares.json",
-      "lock_sha256": "0b5640a12caa329497f7c804d01ab2863331637e2815d1fd7de20959b81db0ff"
+      "lock_sha256": "8490e4ed6153b3f94a275aba1bddcf50addd25ac14eb685eccc36476cb0873b8"
     },
     {
       "repo": "busbar-secret-env",
@@ -139,13 +139,13 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "19e69206fbf92e33263bd452006ca105a0df12ac",
+      "commit": "931d17d372f22935fda599e9712f1b0a05fd86dd",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "0ea52d44d42b2db8ecb68bbdc055ce9fb0680d89df17088e20e9c3dc55708206",
+      "lock_sha256": "471478698b7d2f927b62f643722917ed1d33855293030f47024c58439087a64c",
       "former_names": [
         "busbar-store-sqlite-plugin"
       ]
@@ -233,13 +233,13 @@
     {
       "repo": "busbar-auth-oauth",
       "url": "https://github.com/GetBusbar/busbar-auth-oauth",
-      "commit": "79cef95ffdcb25816224bc7df54464a8aca4b0f9",
+      "commit": "2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577",
       "package": "busbar-auth-oauth-plugin",
       "kind": "auth",
       "alias": "oauth",
       "image": "libbusbar_auth_oauth_plugin.so",
       "declares": "auth-oauth/declares.json",
-      "lock_sha256": "e7a8287faf6c159e1c741dbd9458682d721d6613ba39197586a70088562a0d3b"
+      "lock_sha256": "a29987cbf448a4d35c0d91577904ef093b0210691de3b4251fe420d9ed6a3381"
     },
     {
       "repo": "busbar-auth-oidc",
@@ -366,13 +366,13 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "f8cddb2f600a5db8c6a1abdd87ea49f92cfa1a81",
+      "commit": "bd473e4265e2d006034c4897dc101c0382f6455a",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "9785080fdb89d71c1963e0f8a252eb0244eb87faed677b5e70d4fb1907966923",
+      "lock_sha256": "7330a31a63d8adcaba0d07c39f5e710823f1eccdb55998a19b6cd8c7668c8301",
       "former_names": [
         "busbar-store-postgres-plugin"
       ]

@@ -722,10 +722,10 @@ members = ["."]
 
 [workspace.dependencies]
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "bea74851f4c7da848c4ad4cbf5d811d0defb656f" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "4102868e504e32b22f1c6f19e6f5a363c1c1d980" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "eb40baa7b52c6a3209357bf298fa513fe48ab46e" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "931d17d372f22935fda599e9712f1b0a05fd86dd" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "bd473e4265e2d006034c4897dc101c0382f6455a" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "9215146350b750191fd53f5a07c5cd7e0b6888d1" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
@@ -784,7 +784,7 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
 # busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "c17f2e437dccb852b458cf4622cefe50dc4ab0b4" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (row `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a

@@ -378,16 +378,13 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=c17f2e437dccb852b458cf4622cefe50dc4ab0b4#c17f2e437dccb852b458cf4622cefe50dc4ab0b4"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577#2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "http",
+ "busbar-plugin-abi",
+ "percent-encoding",
  "serde",
- "serde_json",
- "tracing",
- "zeroize",
+ "sonic-rs",
 ]
 
 [[package]]
@@ -969,7 +966,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=f9e6247ddce2fdecdf266d1ed9cc48062b354573#f9e6247ddce2fdecdf266d1ed9cc48062b354573"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=9215146350b750191fd53f5a07c5cd7e0b6888d1#9215146350b750191fd53f5a07c5cd7e0b6888d1"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1131,34 +1128,29 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=eb40baa7b52c6a3209357bf298fa513fe48ab46e#eb40baa7b52c6a3209357bf298fa513fe48ab46e"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=bd473e4265e2d006034c4897dc101c0382f6455a#bd473e4265e2d006034c4897dc101c0382f6455a"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "fallible-iterator 0.2.0",
  "foldhash 0.2.0",
  "percent-encoding",
  "postgres-protocol",
  "postgres-types",
- "serde",
  "serde_json",
  "stringprep",
- "tracing",
  "zeroize",
 ]
 
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=4102868e504e32b22f1c6f19e6f5a363c1c1d980#4102868e504e32b22f1c6f19e6f5a363c1c1d980"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=931d17d372f22935fda599e9712f1b0a05fd86dd#931d17d372f22935fda599e9712f1b0a05fd86dd"
 dependencies = [
- "busbar-contract",
- "foldhash 0.2.0",
- "getrandom 0.3.4",
+ "busbar-plugin-abi",
  "rusqlite",
  "serde_json",
- "winapi-util",
 ]
 
 [[package]]
@@ -4547,15 +4539,6 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
-name = "winapi-util"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"
