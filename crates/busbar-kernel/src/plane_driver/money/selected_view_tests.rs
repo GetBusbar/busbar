@@ -13,8 +13,8 @@ fn checkpoint() -> UnitCheckpoint {
         selected_pool: "plane\u{1f}route".into(),
         resource: Some(subject.into()),
         usage: UsagePartition {
-            lane: format!("plane\u{1f}{subject}"),
-            provider: Some(format!("provider-{subject}")),
+            lane: format!("plane\u{1f}{subject}").as_str().into(),
+            provider: Some(format!("provider-{subject}").as_str().into()),
             classes: BTreeMap::from([(
                 "input".into(),
                 ClassFacts {
@@ -98,7 +98,7 @@ async fn selected_quantity_fold_retains_both_attempts_without_legacy_attribution
         Some(vec![(INPUT, Count::from(20u64))])
     );
     assert_eq!(
-        r.money.serving(UnitKey::new(1)).as_deref(),
+        r.money.serving(UnitKey::new(1), str::to_owned).as_deref(),
         Some("plane\u{1f}B")
     );
     let view = r.money.usage_view(UnitKey::new(1)).unwrap();

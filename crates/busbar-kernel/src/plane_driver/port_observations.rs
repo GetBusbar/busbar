@@ -192,7 +192,7 @@ impl ObsCustody {
         const REFUSED: &str = "usage observation refused";
         if unit.policy.instance != **instance
             || !unit.money.observations_supported()
-            || unit.money.serving(unit.unit).is_none()
+            || unit.money.serving(unit.unit, |_| ()).is_none()
         {
             return Err(REFUSED);
         }

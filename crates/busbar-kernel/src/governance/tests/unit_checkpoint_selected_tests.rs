@@ -88,6 +88,55 @@ async fn governance() -> GovState {
         .unwrap()
 }
 
+/// A selected checkpoint with every name the partition records hold: three attempts, a session
+/// partition with its own class, and (when `cancelled`) a cancel reason.
+fn every_name(cancelled: bool) -> UnitCheckpoint {
+    let mut value = selected_value();
+    value["partitions"]["declared_classes"] = json::json!(["session.seconds", "work"]);
+    value["partitions"]["session"] = json::json!({
+        "lane": "plane\u{1f}",
+        "provider": null,
+        "classes": { "session.seconds": source_facts(Some(3), None, None) },
+    });
+    if cancelled {
+        value["partitions"]["disposition"] = json::json!({ "cancel": { "reason": "client_gone" } });
+        value["partitions"]["final_target"] = json::json!(null);
+    }
+    decode(&value)
+}
+
+/// The stored bytes of a selected checkpoint do not change with how its names are held. The
+/// expected bytes are what this same fixture wrote at a3456db589, when every name in the
+/// partition records was an owned `String`; the records now hold shared text and must write
+/// the same bytes, and read them back to the same record.
+#[test]
+fn selected_checkpoint_stored_bytes_are_the_bytes_written_before_shared_names() {
+    let snapshots = [every_name(false), every_name(true)];
+    let written = snapshots
+        .each_ref()
+        .map(|snapshot| json::to_string(snapshot).unwrap());
+    assert_eq!(
+        written,
+        [
+            format!("{STORED_BODY}{STORED_END}"),
+            format!("{STORED_BODY}{STORED_CANCEL}"),
+        ],
+        "stored bytes changed"
+    );
+    for (snapshot, written) in snapshots.iter().zip(&written) {
+        let read: UnitCheckpoint = json::parse_str(written).unwrap();
+        assert_eq!(&read, snapshot);
+        assert_eq!(&json::to_string(&read).unwrap(), written);
+    }
+}
+
+/// What a3456db589 wrote for [`every_name`], up to the disposition (the two cases differ only
+/// from there).
+const STORED_BODY: &str = r#"{"id":[162,162,162,162,162,162,162,162,162,162,162,162,162,162,162,162],"revision":1,"unit":17,"principal":"race-principal","group":"","arrived":1700000000,"lane":"","provider":null,"era_at":42,"era_entry":null,"units":{},"targets":[{"bucket":"race-principal","window":0,"group":null}],"metered":true,"ended":true,"terminal":null,"audit":[123,125],"partitions":{"version":1,"request_pool":"plane\u001fpool","routing_generation":0,"attempt_limit":3,"declared_classes":["session.seconds","work"],"attempt_classes":["work"],"physical_classes":["work"],"session_origin":{"instance":"plane","lane":"plane\u001f","provider":null},"fee":{"state":"not_owner","basis":{"lane":null,"era":{"effective_from":42,"entry_id":null}}},"session":{"lane":"plane\u001f","provider":null,"classes":{"session.seconds":{"reported":3,"floor":null,"estimated":null,"rate_high_water":3}}},"attempts":[{"preparation":1,"dispatch":null,"kind":"model","instance":"plane","selected_pool":"plane\u001fpool","resource":"declined","usage":{"lane":"plane\u001fdeclined","provider":"provider-declined","classes":{"work":{"reported":null,"floor":null,"estimated":null,"rate_high_water":0}}},"transport":"no_send","finality":"unknown"},{"preparation":2,"dispatch":1,"kind":"model","instance":"plane","selected_pool":"plane\u001fpool","resource":"A","usage":{"lane":"plane\u001fA","provider":"provider-A","classes":{"work":{"reported":12,"floor":18,"estimated":20,"rate_high_water":20}}},"transport":"committed","finality":"complete"},{"preparation":3,"dispatch":2,"kind":"model","instance":"plane","selected_pool":"plane\u001fpool","resource":"B","usage":{"lane":"plane\u001fB","provider":"provider-B","classes":{"work":{"reported":8,"floor":null,"estimated":null,"rate_high_water":8}}},"transport":"committed","finality":"complete"}],"far_end_answered":true,"caller_bytes_committed":true,"#;
+const STORED_END: &str = r#""disposition":"end","final_target":3}}"#;
+const STORED_CANCEL: &str =
+    r#""disposition":{"cancel":{"reason":"client_gone"}},"final_target":null}}"#;
+
 fn initial_selected() -> UnitCheckpoint {
     let mut value = selected_value();
     value["revision"] = json::json!(0);

@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use busbar_contract::kept::Text;
 use busbar_contract::Count;
 use serde::{Deserialize, Serialize};
 
@@ -29,16 +30,19 @@ fn invalid(message: &str) -> RecordStoreError {
     RecordStoreError(message.to_owned())
 }
 
+/// The selected unit's stored usage custody. Every name in it is shared text ([`Text`]): it is
+/// written and read as the same string it always was (the stored bytes do not change), and a
+/// copy of the record (each accepted update starts from one) copies no name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionedUsageV1 {
     pub version: u8,
-    pub request_pool: String,
+    pub request_pool: Text,
     pub routing_generation: u64,
     pub attempt_limit: u32,
-    pub declared_classes: BTreeSet<String>,
-    pub attempt_classes: BTreeSet<String>,
-    pub physical_classes: BTreeSet<String>,
+    pub declared_classes: BTreeSet<Text>,
+    pub attempt_classes: BTreeSet<Text>,
+    pub physical_classes: BTreeSet<Text>,
     pub session_origin: SessionOrigin,
     pub fee: CapturedFee,
     pub session: Option<UsagePartition>,
@@ -53,17 +57,17 @@ pub struct PartitionedUsageV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionOrigin {
-    pub instance: String,
-    pub lane: String,
-    pub provider: Option<String>,
+    pub instance: Text,
+    pub lane: Text,
+    pub provider: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsagePartition {
-    pub lane: String,
-    pub provider: Option<String>,
-    pub classes: BTreeMap<String, ClassFacts>,
+    pub lane: Text,
+    pub provider: Option<Text>,
+    pub classes: BTreeMap<Text, ClassFacts>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,9 +85,9 @@ pub struct AttemptPartition {
     pub preparation: u32,
     pub dispatch: Option<u32>,
     pub kind: TargetKind,
-    pub instance: String,
-    pub selected_pool: String,
-    pub resource: Option<String>,
+    pub instance: Text,
+    pub selected_pool: Text,
+    pub resource: Option<Text>,
     pub usage: UsagePartition,
     pub transport: Transport,
     pub finality: Finality,
@@ -119,7 +123,7 @@ pub enum Disposition {
     Running,
     End,
     Failed,
-    Cancel { reason: String },
+    Cancel { reason: Text },
     RecoveredRunning,
 }
 
@@ -148,11 +152,11 @@ pub enum PartitionScope {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionIdentity {
-    pub lane: String,
-    pub provider: Option<String>,
-    pub instance: String,
-    pub selected_pool: Option<String>,
-    pub resource: Option<String>,
+    pub lane: Text,
+    pub provider: Option<Text>,
+    pub instance: Text,
+    pub selected_pool: Option<Text>,
+    pub resource: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,7 +172,7 @@ pub struct ProjectedPartition {
     pub identity: PartitionIdentity,
     pub transport: Option<Transport>,
     pub finality: Finality,
-    pub classes: BTreeMap<String, ProjectedClass>,
+    pub classes: BTreeMap<Text, ProjectedClass>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,8 +184,8 @@ pub enum LogicalMeterIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogicalMeter {
     pub identity: LogicalMeterIdentity,
-    pub lane: String,
-    pub provider: Option<String>,
+    pub lane: Text,
+    pub provider: Option<Text>,
 }
 
 #[derive(Clone, Debug)]
@@ -194,7 +198,7 @@ pub struct ProjectedCommon {
     pub arrived: u64,
     pub era: RawRateEra,
     pub targets: Vec<UnitTarget>,
-    pub request_pool: String,
+    pub request_pool: Text,
     pub routing_generation: u64,
 }
 
@@ -260,6 +264,8 @@ impl ClassFacts {
 }
 
 impl ProjectedPartition {
+    /// The partition's billed classes with a count that is not zero, as the ledger's owned map
+    /// keys them.
     pub fn billed_counts(&self) -> BTreeMap<String, Count> {
         self.classes
             .iter()
@@ -267,9 +273,19 @@ impl ProjectedPartition {
                 facts
                     .billed
                     .filter(|quantity| !quantity.count.is_zero())
-                    .map(|quantity| (class.clone(), quantity.count))
+                    .map(|quantity| (class.as_str().to_owned(), quantity.count))
             })
             .collect()
+    }
+
+    /// Whether [`Self::billed_counts`] would hold anything: some class is billed a count that is
+    /// not zero. It reads the classes where they lie and builds no map.
+    pub fn has_bill(&self) -> bool {
+        self.classes.values().any(|facts| {
+            facts
+                .billed
+                .is_some_and(|quantity| !quantity.count.is_zero())
+        })
     }
 }
 
@@ -280,7 +296,7 @@ impl UsageProjection {
         for partition in &self.partitions {
             for (class, count) in partition.billed_counts() {
                 let total = lanes
-                    .entry(partition.identity.lane.clone())
+                    .entry(partition.identity.lane.as_str().to_owned())
                     .or_default()
                     .entry(class)
                     .or_default();
@@ -308,22 +324,28 @@ impl ValidatedSelectedCheckpoint<'_> {
             Disposition::Cancel { .. } => usage.far_end_answered && usage.caller_bytes_committed,
             Disposition::Running | Disposition::End | Disposition::RecoveredRunning => true,
         };
-        let project_classes = |raw: &UsagePartition, classes: &BTreeSet<String>, billable: bool| {
+        // One partition's classes, projected over the class names it is read under: each name is
+        // the record's own shared text, and the names are walked where they lie (the session's
+        // are the declared classes less the attempt classes, read without making that set).
+        fn project_classes<'c>(
+            raw: &UsagePartition,
+            classes: impl Iterator<Item = &'c Text>,
+            billed: bool,
+        ) -> BTreeMap<Text, ProjectedClass> {
             classes
-                .iter()
                 .map(|name| {
                     let facts = raw.classes.get(name).cloned().unwrap_or_default();
                     (
                         name.clone(),
                         ProjectedClass {
                             selected: facts.selected(),
-                            billed: (billable && eligible).then(|| facts.billable()).flatten(),
+                            billed: billed.then(|| facts.billable()).flatten(),
                             rate_high_water: facts.rate_high_water,
                         },
                     )
                 })
                 .collect()
-        };
+        }
         let mut partitions =
             Vec::with_capacity(usage.attempts.len() + usize::from(usage.session.is_some()));
         for attempt in &usage.attempts {
@@ -343,17 +365,12 @@ impl ValidatedSelectedCheckpoint<'_> {
                 finality: attempt.finality,
                 classes: project_classes(
                     &attempt.usage,
-                    &usage.attempt_classes,
-                    attempt.transport == Transport::Committed,
+                    usage.attempt_classes.iter(),
+                    attempt.transport == Transport::Committed && eligible,
                 ),
             });
         }
         if let Some(session) = &usage.session {
-            let classes = usage
-                .declared_classes
-                .difference(&usage.attempt_classes)
-                .cloned()
-                .collect();
             partitions.push(ProjectedPartition {
                 scope: PartitionScope::Session,
                 identity: PartitionIdentity {
@@ -370,7 +387,11 @@ impl ValidatedSelectedCheckpoint<'_> {
                     Disposition::RecoveredRunning => Finality::Unknown,
                     _ => Finality::Partial,
                 },
-                classes: project_classes(session, &classes, true),
+                classes: project_classes(
+                    session,
+                    usage.declared_classes.difference(&usage.attempt_classes),
+                    eligible,
+                ),
             });
         }
         let logical_request = if !snapshot.metered {
@@ -440,16 +461,18 @@ fn in_instance(lane: &str, instance: &str) -> bool {
             .is_some_and(|(owner, subject)| owner == instance && !subject.contains('\u{1f}'))
 }
 
+/// `allowed` says whether a class name may appear in this partition: asked of the record's own
+/// sets where they lie, so no set is made to ask it.
 fn validate_classes(
     raw: &UsagePartition,
-    allowed: &BTreeSet<String>,
-    physical: &BTreeSet<String>,
+    allowed: impl Fn(&Text) -> bool,
+    physical: &BTreeSet<Text>,
 ) -> RecordStoreResult<()> {
     if raw.classes.len() > MAX_CLASSES || !optional_identity(raw.provider.as_deref()) {
         return Err(invalid("selected usage identity or class bound is invalid"));
     }
     for (class, facts) in &raw.classes {
-        if !allowed.contains(class)
+        if !allowed(class)
             || facts.rate_high_water.is_negative()
             || [facts.reported, facts.floor, facts.estimated]
                 .into_iter()
@@ -562,12 +585,14 @@ impl PartitionedUsageV1 {
             {
                 return Err(invalid("session usage changed its original host identity"));
             }
-            let classes = self
-                .declared_classes
-                .difference(&self.attempt_classes)
-                .cloned()
-                .collect();
-            validate_classes(session, &classes, &BTreeSet::new())?;
+            // The session's classes are the declared classes less the attempt classes.
+            validate_classes(
+                session,
+                |class| {
+                    self.declared_classes.contains(class) && !self.attempt_classes.contains(class)
+                },
+                &BTreeSet::new(),
+            )?;
         }
         let mut preparation = 0;
         let mut dispatch = 0;
@@ -594,7 +619,7 @@ impl PartitionedUsageV1 {
             }
             validate_classes(
                 &attempt.usage,
-                &self.attempt_classes,
+                |class| self.attempt_classes.contains(class),
                 &self.physical_classes,
             )?;
             if attempt.finality == Finality::Complete

@@ -92,7 +92,8 @@ pub mod rate_hold {
     pub struct Bench {
         rates: Arc<SelectedRates>,
         terms: Vec<RateTerms>,
-        classes: Vec<&'static str>,
+        /// The class names as a prepared attempt hands them to the governor: shared text.
+        classes: Vec<busbar_contract::kept::Text>,
         view: EffectiveTokenView<'static>,
         /// Holds reserved in earlier minutes and never committed: they keep those minutes' cells.
         _earlier: Vec<RateHold>,
@@ -126,11 +127,11 @@ pub mod rate_hold {
                 })
                 .collect();
             // The rig is built a few times per run; the leak is the rig's, in a test-support build.
-            let classes: Vec<&'static str> = (0..classes)
+            let names: Vec<&'static str> = (0..classes)
                 .map(|j| &*Box::leak(format!("tokens.c{j:02}").into_boxed_str()))
                 .collect();
             let view = EffectiveTokenView(
-                classes
+                names
                     .iter()
                     .map(|class| EffectiveToken {
                         class,
@@ -139,12 +140,16 @@ pub mod rate_hold {
                     })
                     .collect(),
             );
+            let classes: Vec<busbar_contract::kept::Text> = names
+                .iter()
+                .map(|class| busbar_contract::kept::Text::fixed(class))
+                .collect();
             let mut earlier = Vec::new();
             for minute in 0..earlier_minutes {
                 clock.store(minute * 60_000, Ordering::Relaxed);
                 earlier.push(
                     rates
-                        .reserve_terms(terms.iter().cloned(), &classes)
+                        .reserve_shared(terms.iter().cloned(), &classes)
                         .unwrap(),
                 );
             }
@@ -162,7 +167,7 @@ pub mod rate_hold {
         pub fn cycle(&mut self) -> bool {
             let Ok(mut hold) = self
                 .rates
-                .reserve_terms(self.terms.iter().cloned(), &self.classes)
+                .reserve_shared(self.terms.iter().cloned(), &self.classes)
             else {
                 return false;
             };

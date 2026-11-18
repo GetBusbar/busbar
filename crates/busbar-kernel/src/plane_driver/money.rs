@@ -1205,8 +1205,10 @@ impl PlaneMoney {
         })
     }
 
+    /// The lane the unit is being served under, read where it lies: `read` is lent the name and
+    /// nothing is copied (the callers that only ask whether a unit is being served copy none).
     #[must_use]
-    pub fn serving(&self, key: UnitKey) -> Option<String> {
+    pub fn serving<R>(&self, key: UnitKey, read: impl FnOnce(&str) -> R) -> Option<R> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key).get(&key).and_then(|open| {
             if let Some(native) = &open.native {
@@ -1216,9 +1218,9 @@ impl PlaneMoney {
                     .attempts
                     .iter()
                     .find(|attempt| attempt.preparation == target)
-                    .map(|attempt| attempt.usage.lane.clone());
+                    .map(|attempt| read(&attempt.usage.lane));
             }
-            Some(open.money.lane.clone())
+            Some(read(&open.money.lane))
         })
     }
 

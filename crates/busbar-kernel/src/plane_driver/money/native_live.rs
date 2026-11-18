@@ -246,7 +246,8 @@ impl NativeAttempt {
             end,
         )
         .map_err(|_| NativeAttemptError::Usage)?;
-        let physical_classes = prepared.physical_classes().to_vec();
+        // The shared list itself: no class name is copied to observe.
+        let physical_classes = Arc::clone(prepared.physical_classes());
         let rate_view = effective_tokens(&physical_classes, &staged.partition);
         *parts
             .attempts
@@ -257,12 +258,7 @@ impl NativeAttempt {
             .map_err(NativeAttemptError::Custody)?
             .partitions
             .iter()
-            .any(|partition| {
-                partition
-                    .billed_counts()
-                    .iter()
-                    .any(|(_, count)| !count.is_zero())
-            });
+            .any(|partition| partition.has_bill());
         let published = native.publish_incurred(&self.service.money.gov, snapshot);
         // The checkpoint book lock is released before entering rate cells. The money shard
         // retains the current attempt's source/authority while both owners observe the batch.
@@ -334,14 +330,14 @@ impl Drop for NativeAttempt {
 }
 
 pub(super) fn effective_tokens<'a>(
-    classes: &'a [Box<str>],
+    classes: &'a [busbar_contract::kept::Text],
     attempt: &AttemptPartition,
 ) -> EffectiveTokenView<'a> {
     EffectiveTokenView(
         classes
             .iter()
             .map(|class| {
-                let facts = attempt.usage.classes.get(class.as_ref());
+                let facts = attempt.usage.classes.get(class);
                 EffectiveToken {
                     class,
                     quantity: facts

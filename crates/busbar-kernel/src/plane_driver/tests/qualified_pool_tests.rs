@@ -286,7 +286,10 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
 
     let serving = if lane == "m" { "m" } else { "tp\u{1f}fallback" };
     r.money.served(&ctx(), serving, "provider");
-    assert_eq!(r.money.serving(ctx().key).as_deref(), Some(serving));
+    assert_eq!(
+        r.money.serving(ctx().key, str::to_owned).as_deref(),
+        Some(serving)
+    );
 
     assert_eq!(
         r.money.checkpoint(&ctx(), &report(49_987)),

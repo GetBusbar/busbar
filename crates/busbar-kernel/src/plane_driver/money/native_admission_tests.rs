@@ -274,7 +274,7 @@ async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_att
             unread: None,
             partitions: Some(PartitionedUsageV1 {
                 version: 1,
-                request_pool: unit.pool.clone(),
+                request_pool: unit.pool.as_str().into(),
                 routing_generation: 0,
                 attempt_limit: 1,
                 declared_classes: BTreeSet::from(["tokens.in".into()]),

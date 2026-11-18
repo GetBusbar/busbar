@@ -164,7 +164,7 @@ pub(crate) enum RateObservationError {
 #[derive(Debug)]
 pub(crate) struct RateFinalSnapshot {
     pub(crate) rules: Vec<RateSnapshot>,
-    pub(crate) highwater: Vec<(Box<str>, Count)>,
+    pub(crate) highwater: Vec<(busbar_contract::kept::Text, Count)>,
 }
 
 struct RateClock {
@@ -364,7 +364,7 @@ impl SelectedRates {
         }
         let result = Self::terms(resolved).and_then(|terms| {
             self.sweep_next();
-            self.reserve_terms(terms, prepared.physical_classes())
+            self.reserve_shared(terms, prepared.physical_classes())
         });
         match result {
             Ok(hold) => Ok(RateReservation { hold, prepared }),
@@ -545,17 +545,17 @@ impl SelectedRates {
         })
     }
 
-    pub(crate) fn reserve_terms<C: AsRef<str>>(
+    /// Reserve over `classes`, the prepared attempt's physical class names. They are shared
+    /// text (the checkpoint's own), so the hold names its classes without copying one.
+    pub(crate) fn reserve_shared(
         self: &Arc<Self>,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
-        classes: &[C],
+        classes: &[busbar_contract::kept::Text],
     ) -> Result<RateHold, RateRefusal> {
         if classes.len() > MAX_CLASSES
             || classes.iter().enumerate().any(|(at, class)| {
-                class_text(class.as_ref().as_bytes()).is_err()
-                    || classes[..at]
-                        .iter()
-                        .any(|old| old.as_ref() == class.as_ref())
+                class_text(class.as_bytes()).is_err()
+                    || classes[..at].iter().any(|old| old == class)
             })
         {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
@@ -610,7 +610,7 @@ impl SelectedRates {
             classes: classes
                 .iter()
                 .map(|class| ClassHighwater {
-                    class: class.as_ref().into(),
+                    class: class.clone(),
                     amount: Count::ZERO,
                     authoritative: false,
                 })
@@ -646,7 +646,7 @@ enum Phase {
 }
 
 struct ClassHighwater {
-    class: Box<str>,
+    class: busbar_contract::kept::Text,
     amount: Count,
     authoritative: bool,
 }

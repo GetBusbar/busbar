@@ -204,11 +204,7 @@ impl NativeRequestMoney {
                 .map_err(NativeAdmissionError::Custody)?
                 .partitions
                 .iter()
-                .any(|part| {
-                    part.billed_counts()
-                        .iter()
-                        .any(|(_, count)| !count.is_zero())
-                });
+                .any(|part| part.has_bill());
             snapshot.metered = match snapshot
                 .partitions
                 .as_ref()
@@ -338,8 +334,9 @@ fn delivery_facts(
     let disposition = match ending {
         Ending::End => Disposition::End,
         Ending::Failed => Disposition::Failed,
+        // The cause's word is fixed in the program: named, not copied.
         Ending::Cancel { cause, .. } => Disposition::Cancel {
-            reason: cause.as_str().to_owned(),
+            reason: busbar_contract::kept::Text::fixed(cause.as_str()),
         },
     };
     Ok((
@@ -405,7 +402,7 @@ impl PlaneMoney {
             parts.disposition = match native.work {
                 Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
                     Disposition::Cancel {
-                        reason: cause.as_str().to_owned(),
+                        reason: busbar_contract::kept::Text::fixed(cause.as_str()),
                     }
                 }
                 None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,
