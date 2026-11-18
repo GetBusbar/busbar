@@ -67,11 +67,11 @@ pub const OFFSET: usize = 32;
 /// A payload's length: small for jemalloc, with filler on both sides of the canary.
 pub const PAYLOAD_LEN: usize = 128;
 /// A short payload's length: at most 30 bytes, so a small-string type stores it inline.
-pub const SHORT_PAYLOAD_LEN: usize = 24;
+const SHORT_PAYLOAD_LEN: usize = 24;
 /// Characters in a short text canary (at least [`WINDOW`]).
-pub const SHORT_CANARY_LEN: usize = 20;
+const SHORT_CANARY_LEN: usize = 20;
 /// Where a short canary sits in its payload: two filler bytes on each side.
-pub const SHORT_OFFSET: usize = 2;
+const SHORT_OFFSET: usize = 2;
 /// The filler around the canary.
 const FILLER: u8 = 0xA5;
 /// The filler around a text canary (ASCII, so the payload is a `String`).

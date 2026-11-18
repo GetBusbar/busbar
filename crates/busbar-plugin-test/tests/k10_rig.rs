@@ -45,8 +45,8 @@ pub const CONNECTED: &str = "github";
 /// The grant the fake authorization server issues on COMPLETE.
 pub const GRANT: &[u8] = b"gho_refresh-token-1";
 /// The plane instance the arms run as.
-pub const PLANE_PLUGIN: &str = "plane-mcp";
-pub const PLANE_NAME: &str = "tools";
+const PLANE_PLUGIN: &str = "plane-mcp";
+const PLANE_NAME: &str = "tools";
 /// The verified principal.
 pub const SUBJECT: &str = "alice";
 

@@ -57,7 +57,7 @@ impl StoreHarness {
         Self::from_harness(Harness::admit_admitted(image, needs)?)
     }
     /// Verify the image kind; the harness supplies its private test factory at each open.
-    pub fn from_harness(inner: Harness) -> Result<Self, Refusal> {
+    fn from_harness(inner: Harness) -> Result<Self, Refusal> {
         if inner.kind() != KindCode::Store {
             return Err(Refusal::new(
                 RefusalCode::Integrity,

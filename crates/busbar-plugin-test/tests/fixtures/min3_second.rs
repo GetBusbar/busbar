@@ -734,7 +734,7 @@ pub fn registry<N: Needs>(_needs: Arc<N>, max_steps: u32, plugins: &[&'static Pl
         },
     );
     for plugin in plugins {
-        let admitted = admit_header(*plugin).unwrap_or_else(|r| panic!("admit: {r:?}"));
+        let admitted = admit_header(plugin).unwrap_or_else(|r| panic!("admit: {r:?}"));
         images
             .admit(admitted)
             .unwrap_or_else(|r| panic!("add: {r:?}"));

@@ -99,13 +99,16 @@ fn render(port: &dyn ExportPort, scope: u32) -> (Result<(), PortError>, Vec<u8>)
     (got, body)
 }
 
+/// What [`raw_render`] answers: the status, the records as (tag, body), and the FAIL code with the answer's record count.
+type Rendered = (Status, Vec<(u16, Vec<u8>)>, Option<(u32, usize)>);
+
 /// One raw `render` over busbar-ffi's host API on a lease that grows up to `max_out`: the status and the
 /// answer's records as (tag, body).
 fn raw_render(
     instance: &busbar_ffi::host::Instance<busbar_plugin_abi::export::Marker>,
     scope: u32,
     max_out: usize,
-) -> (Status, Vec<(u16, Vec<u8>)>, Option<(u32, usize)>) {
+) -> Rendered {
     let mut lease =
         OutLease::new(vec![0; 4096], max_out).unwrap_or_else(|| panic!("the ACTIVE stack is full"));
     let status = instance.call2(

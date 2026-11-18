@@ -64,25 +64,25 @@ pub const DATASET: [u8; 16] = *b"fixture.dataset\0";
 pub const DOMAIN: [u8; 16] = *b"fixture.domain\0\0";
 pub const AUTHORITY: [u8; 16] = *b"fixture.clock.a\0";
 /// The authority `"authority": "wrong"` stamps instead.
-pub const WRONG_AUTHORITY: [u8; 16] = *b"fixture.clock.z\0";
+const WRONG_AUTHORITY: [u8; 16] = *b"fixture.clock.z\0";
 pub const PHYSICAL_VERSION: u32 = 3;
 /// The `observed_at` of every answer.
 pub const OBSERVED_AT: u64 = 1_800_000_000;
 
 /// The lane image's declared ceilings: CEIL_OPEN 3,600 s, commit 60 s, and a scan ceiling of 500 s that core
 /// clamps to the lane range's 120 s.
-pub const LANE_OPEN_US: u64 = 3_600_000_000;
-pub const LANE_COMMIT_US: u64 = 60_000_000;
+const LANE_OPEN_US: u64 = 3_600_000_000;
+const LANE_COMMIT_US: u64 = 60_000_000;
 pub const LANE_SCAN_US: u64 = 500_000_000;
 pub const LANE_SCAN_CLAMPED_US: u64 = 120_000_000;
 
 /// The stall image's describe runs this long (the describe ceiling is 5 s).
-pub const STALL_DESCRIBE: Duration = Duration::from_secs(6);
+const STALL_DESCRIBE: Duration = Duration::from_secs(6);
 
 /// The password in the URL an `"install"` refusal names (core's scrub masks URL userinfo).
 pub const INSTALL_PASSWORD: &str = "pw-install-7781";
 /// The text a wrong install binding refuses with.
-pub const INSTALL_REFUSAL: &str =
+const INSTALL_REFUSAL: &str =
     "the install binding https://installer:pw-install-7781@licence.example names another deployment";
 
 /// What one config `"id"` saw.

@@ -79,8 +79,10 @@ fn the_file_matches_describe_and_every_number_the_suite_saw() {
         .iter()
         .filter(|(t, _)| *t == tag::D_ERRORS)
         .flat_map(|(_, body)| {
-            body.chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            body.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
                 .collect::<Vec<_>>()
         })
         .collect();

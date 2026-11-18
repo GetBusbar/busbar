@@ -797,81 +797,6 @@ impl Needs for FakeNeeds {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_script_replays_expect_and_reply_in_order() {
-        let mut script = ConnScript::new()
-            .expect(b"PING\r\n")
-            .reply(b"+PONG\r\n")
-            .eof();
-        assert_eq!(script.read(64), Err(NeedErr::Timeout));
-        assert_eq!(script.wrote(b"PI"), Ok(()));
-        assert_eq!(script.wrote(b"NG\r\n"), Ok(()));
-        assert_eq!(script.read(3), Ok(Read::Bytes(b"+PO".to_vec())));
-        assert_eq!(script.read(64), Ok(Read::Bytes(b"NG\r\n".to_vec())));
-        assert_eq!(script.read(64), Ok(Read::Eof));
-        assert_eq!(script.read(64), Ok(Read::Eof));
-    }
-
-    #[test]
-    fn a_wrong_or_extra_write_is_invalid_and_a_reset_closes() {
-        let mut script = ConnScript::new().expect(b"AB").reset();
-        assert_eq!(script.wrote(b"AC"), Err(NeedErr::Invalid));
-        let mut script = ConnScript::new().expect(b"AB").expect(b"CD").reset();
-        assert_eq!(script.wrote(b"ABC"), Ok(()));
-        assert_eq!(script.wrote(b"DE"), Err(NeedErr::Closed));
-        assert_eq!(script.read(1), Err(NeedErr::Closed));
-        let mut spent = ConnScript::new();
-        assert_eq!(spent.wrote(b"x"), Err(NeedErr::Invalid));
-        assert_eq!(spent.read(0), Err(NeedErr::Invalid));
-    }
-
-    /// C-POOL-STATE (a), the FakeNeeds side (round 19): ids per instance start at 1 and never repeat.
-    #[test]
-    fn ids_are_minted_per_instance_from_one_and_never_repeat() {
-        let mut ids = BTreeMap::new();
-        assert_eq!(mint(&mut ids, 7), Ok(1));
-        assert_eq!(mint(&mut ids, 9), Ok(1));
-        let mut last = 1;
-        for _ in 0..10_000 {
-            let id = mint(&mut ids, 7).unwrap();
-            assert!(id > last);
-            last = id;
-        }
-    }
-
-    #[test]
-    fn deny_and_the_endpoint_match_compare_hosts() {
-        assert_eq!(host_of("db.test:5432"), "db.test");
-        assert_eq!(host_of("https://user:pw@api.test:8443/v1?x=1"), "api.test");
-        assert_eq!(host_of("[::1]:6379"), "::1");
-        assert_eq!(host_of("unix:/run/x.sock"), "unix:/run/x.sock");
-        let mut needs = FakeNeeds::new();
-        needs.deny("https://169.254.169.254/latest");
-        let state = needs.state();
-        assert!(state.denies("169.254.169.254:80"));
-        assert!(!state.denies("api.test:443"));
-        state.seen.push(Seen {
-            op: "open",
-            dest: "db.test:5432".to_owned(),
-            tls: true,
-            egress: 0,
-        });
-        state.seen.push(Seen {
-            op: "fetch",
-            dest: "http://api.test/x".to_owned(),
-            tls: false,
-            egress: 0,
-        });
-        let undeclared = needs.undeclared(&[("db.test:5432", true), ("api.test:443", true)]);
-        assert_eq!(undeclared.len(), 1);
-        assert_eq!(undeclared[0].dest, "http://api.test/x");
-    }
-}
-
 pub(crate) struct OpenAnswer {
     pub id: u64,
     pub pooled: u64,
@@ -1045,5 +970,80 @@ impl Drop for SocketRoute<'_> {
         if !self.keep {
             self.host.lock().socket_routes.remove(&self.key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_script_replays_expect_and_reply_in_order() {
+        let mut script = ConnScript::new()
+            .expect(b"PING\r\n")
+            .reply(b"+PONG\r\n")
+            .eof();
+        assert_eq!(script.read(64), Err(NeedErr::Timeout));
+        assert_eq!(script.wrote(b"PI"), Ok(()));
+        assert_eq!(script.wrote(b"NG\r\n"), Ok(()));
+        assert_eq!(script.read(3), Ok(Read::Bytes(b"+PO".to_vec())));
+        assert_eq!(script.read(64), Ok(Read::Bytes(b"NG\r\n".to_vec())));
+        assert_eq!(script.read(64), Ok(Read::Eof));
+        assert_eq!(script.read(64), Ok(Read::Eof));
+    }
+
+    #[test]
+    fn a_wrong_or_extra_write_is_invalid_and_a_reset_closes() {
+        let mut script = ConnScript::new().expect(b"AB").reset();
+        assert_eq!(script.wrote(b"AC"), Err(NeedErr::Invalid));
+        let mut script = ConnScript::new().expect(b"AB").expect(b"CD").reset();
+        assert_eq!(script.wrote(b"ABC"), Ok(()));
+        assert_eq!(script.wrote(b"DE"), Err(NeedErr::Closed));
+        assert_eq!(script.read(1), Err(NeedErr::Closed));
+        let mut spent = ConnScript::new();
+        assert_eq!(spent.wrote(b"x"), Err(NeedErr::Invalid));
+        assert_eq!(spent.read(0), Err(NeedErr::Invalid));
+    }
+
+    /// C-POOL-STATE (a), the FakeNeeds side (round 19): ids per instance start at 1 and never repeat.
+    #[test]
+    fn ids_are_minted_per_instance_from_one_and_never_repeat() {
+        let mut ids = BTreeMap::new();
+        assert_eq!(mint(&mut ids, 7), Ok(1));
+        assert_eq!(mint(&mut ids, 9), Ok(1));
+        let mut last = 1;
+        for _ in 0..10_000 {
+            let id = mint(&mut ids, 7).unwrap();
+            assert!(id > last);
+            last = id;
+        }
+    }
+
+    #[test]
+    fn deny_and_the_endpoint_match_compare_hosts() {
+        assert_eq!(host_of("db.test:5432"), "db.test");
+        assert_eq!(host_of("https://user:pw@api.test:8443/v1?x=1"), "api.test");
+        assert_eq!(host_of("[::1]:6379"), "::1");
+        assert_eq!(host_of("unix:/run/x.sock"), "unix:/run/x.sock");
+        let mut needs = FakeNeeds::new();
+        needs.deny("https://169.254.169.254/latest");
+        let state = needs.state();
+        assert!(state.denies("169.254.169.254:80"));
+        assert!(!state.denies("api.test:443"));
+        state.seen.push(Seen {
+            op: "open",
+            dest: "db.test:5432".to_owned(),
+            tls: true,
+            egress: 0,
+        });
+        state.seen.push(Seen {
+            op: "fetch",
+            dest: "http://api.test/x".to_owned(),
+            tls: false,
+            egress: 0,
+        });
+        let undeclared = needs.undeclared(&[("db.test:5432", true), ("api.test:443", true)]);
+        assert_eq!(undeclared.len(), 1);
+        assert_eq!(undeclared[0].dest, "http://api.test/x");
     }
 }

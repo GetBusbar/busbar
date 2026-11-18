@@ -70,10 +70,12 @@ fn the_c_fixture_is_admitted_as_a_dropped_in_secret_plugin() {
     use busbar_plugin_loader::refusal::RefusalCode;
     use busbar_plugin_loader::test_host::{admit_bytes, test_manifest};
 
-    assert!(
-        busbar_contract::crypto::EXTERNAL_PLUGINS,
-        "the default backend admits external plugins"
-    );
+    const {
+        assert!(
+            busbar_contract::crypto::EXTERNAL_PLUGINS,
+            "the default backend admits external plugins"
+        );
+    }
     let bytes = std::fs::read(fixture_library()).expect("the fixture library");
     let manifest = test_manifest(&bytes, &["secret-c"]).expect("the fixture's own stamp scans");
     let admitted =

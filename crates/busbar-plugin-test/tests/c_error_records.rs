@@ -50,7 +50,8 @@ fn the_shim_writes_error_only_when_the_number_is_set() {
     use crate::bridge_fixture::{self as fx, Status};
 
     let instance = fx::instance();
-    let cases: [(&[u8], Status, &[u16], Option<u32>); 4] = [
+    type Case<'a> = (&'a [u8], Status, &'a [u16], Option<u32>);
+    let cases: [Case<'_>; 4] = [
         (
             b"fail-error",
             Status::FAILED,

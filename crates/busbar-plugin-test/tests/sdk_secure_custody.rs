@@ -24,8 +24,8 @@ fn sdk_secure_custody_surface_and_identity() {
         drop(need::read_into(conn, 128, bytes));
     }
     let _ = read_surface;
-    let contract = busbar_contract::secure::SecureString::from("credential").into_bytes();
-    let bytes: SecureVec = contract;
+    let from_contract = busbar_contract::secure::SecureString::from("credential").into_bytes();
+    let bytes: SecureVec = from_contract;
     let contract: busbar_contract::secure::SecureVec = bytes;
     assert_eq!(contract.as_slice(), b"credential");
     let fetched = need::Fetched {
@@ -150,7 +150,7 @@ mod fixture {
 
     pub const URL: &str = "https://custody.test/token";
     pub const DEST: &str = "custody.test:443";
-    pub static SCRATCH_DROPS: std::sync::atomic::AtomicUsize =
+    pub(super) static SCRATCH_DROPS: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
     struct Scratch(SecureVec);
     impl Drop for Scratch {
