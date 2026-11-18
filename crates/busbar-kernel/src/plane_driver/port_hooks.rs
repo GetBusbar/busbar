@@ -14,7 +14,7 @@ use busbar_ports::hook::HookPort;
 use crate::config::{PolicyOnError, PromptAccess, UserAccess};
 use crate::cost::CostModel;
 use crate::hooks::RequestedSignals;
-use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
+use crate::snapshot::ROUTE_POLICY_REJECTIONS_TOTAL;
 
 use super::hooks::{CallerKey, HookRead};
 
@@ -126,27 +126,28 @@ struct CandidateView {
     lane: String,
 }
 
+/// The stage's expected quantity per declared class, written into the stage's own `out` (cleared first).
 fn quantities(
     classes: &[UsageClass],
     expected: &[ExpectItem],
-) -> Result<Vec<(Box<str>, f64)>, SessionError> {
+    out: &mut Vec<(Box<str>, f64)>,
+) -> Result<(), SessionError> {
     if expected.iter().any(|item| {
         item.scale > super::usage::MAX_SCALE
             || !classes.iter().any(|class| class.class == item.class)
     }) {
         return Err(SessionError::Encode);
     }
-    Ok(classes
-        .iter()
-        .filter_map(|class| {
-            let quantity = expected
-                .iter()
-                .find(|item| item.class == class.class)
-                .map(|item| item.amount as f64 / 10_f64.powi(item.scale as i32))
-                .or(class.expected_units)?;
-            (quantity.is_finite() && quantity >= 0.0).then(|| (class.class.clone(), quantity))
-        })
-        .collect())
+    out.clear();
+    out.extend(classes.iter().filter_map(|class| {
+        let quantity = expected
+            .iter()
+            .find(|item| item.class == class.class)
+            .map(|item| item.amount as f64 / 10_f64.powi(item.scale as i32))
+            .or(class.expected_units)?;
+        (quantity.is_finite() && quantity >= 0.0).then(|| (class.class.clone(), quantity))
+    }));
+    Ok(())
 }
 
 /// One configured call, including its finite, boot-validated fallback chain.
@@ -173,44 +174,24 @@ impl Call {
 }
 
 /// The 4xx statuses a hook refusal can carry (`RefusalMap::for_hook` clamps to 400..=499).
-const REJECT_STATUSES: usize = 100;
+pub(crate) const REJECT_STATUSES: usize = 100;
 
 /// `busbar_route_policy_{selections,rejections}_total` for one bound walk pool: a handle per name
 /// that can decide the walk (every rewrite, gate and base policy of the pool's scope and their
 /// fallbacks, by [`Call::decider`]), resolved once when the walk is bound.
 pub struct RouteCounters {
-    pool: Arc<str>,
-    deciders: BTreeMap<Arc<str>, Decider>,
+    pub(crate) pool: Arc<str>,
+    pub(crate) deciders: BTreeMap<Arc<str>, Decider>,
 }
 
-struct Decider {
-    selections: metrics::Counter,
+pub(crate) struct Decider {
+    pub(crate) selections: metrics::Counter,
     /// Rejections by status, slot `status - 400`. A slot registers its series on the first
     /// rejection at that status, so an unused status never shows as a zero series.
-    rejections: Box<[OnceLock<metrics::Counter>; REJECT_STATUSES]>,
+    pub(crate) rejections: Box<[OnceLock<metrics::Counter>; REJECT_STATUSES]>,
 }
 
 impl RouteCounters {
-    pub fn bind<'c>(pool: &str, calls: impl IntoIterator<Item = &'c Arc<Call>>) -> Self {
-        let pool: Arc<str> = Arc::from(pool);
-        let mut deciders = BTreeMap::new();
-        let mut pending: Vec<&Arc<Call>> = calls.into_iter().collect();
-        while let Some(call) = pending.pop() {
-            pending.extend(&call.fallbacks);
-            deciders
-                .entry(Arc::clone(call.decider()))
-                .or_insert_with_key(|policy: &Arc<str>| Decider {
-                    selections: metrics::counter!(
-                        ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => Arc::clone(policy),
-                        "pool" => Arc::clone(&pool),
-                    ),
-                    rejections: Box::new(std::array::from_fn(|_| OnceLock::new())),
-                });
-        }
-        Self { pool, deciders }
-    }
-
     /// The reconcile installed an order or a preferred set decided by `decider`.
     pub(crate) fn selected(&self, decider: &str) {
         if let Some(decider) = self.deciders.get(decider) {

@@ -298,7 +298,11 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }
         }
-        stage.quantities = super::quantities(&invocation.classes, &stage.projection.expects)?;
+        super::quantities(
+            &invocation.classes,
+            &stage.projection.expects,
+            &mut stage.quantities,
+        )?;
         stage.taps(&stage.selected.taps.request, Vec::new());
         let selection = stage.selection();
         let input = stage.input(&selection, &[]);

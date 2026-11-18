@@ -183,7 +183,7 @@ pub struct Ran {
 pub(super) fn absorb(
     ran: &mut Ran,
     forward: &mut Option<Forward>,
-    answers: Vec<Answer>,
+    answers: impl IntoIterator<Item = Answer>,
     books: &dyn Books,
 ) {
     for answer in answers {
@@ -468,7 +468,7 @@ fn drive_answers<K: Calls + ?Sized>(
             .resolver
             .resolve(&end_intents, &last.lent, &mut task.held);
     }
-    absorb(&mut ran, &mut None, vec![last], drive.books);
+    absorb(&mut ran, &mut None, [last], drive.books);
     ran.usage = task.usage().clone();
     drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
