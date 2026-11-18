@@ -97,7 +97,7 @@ fn egress_over(pool_name: &str) -> Egress {
                 floor: WeightedFloor::new(),
             },
         )]),
-        routes: HashMap::from([(
+        routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {
                 ride_anchors: Vec::new(),

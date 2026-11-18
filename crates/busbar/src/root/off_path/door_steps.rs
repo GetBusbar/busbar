@@ -281,7 +281,7 @@ pub(crate) fn compose_egress(
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
     let mut members: BTreeMap<String, Member> = BTreeMap::new();
-    let mut sealed = std::collections::HashMap::new();
+    let mut sealed = foldhash::HashMap::default();
     let mut names = Vec::new();
     for (entry, id) in pools.entries().iter().zip(0u64..) {
         let Some(route) = routes.get(entry) else {

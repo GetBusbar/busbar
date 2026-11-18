@@ -23,6 +23,7 @@ pub(crate) fn first_text_cut(
 
 // Sections as submodules (cold/<section>.rs), so the slices that fill them do not collide.
 pub(crate) mod auth;
+pub(crate) mod far_end;
 pub(crate) mod governance;
 pub(crate) mod host;
 // --- plane_driver::far_end ---

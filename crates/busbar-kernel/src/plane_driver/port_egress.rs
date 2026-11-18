@@ -24,8 +24,7 @@
 //! service's side of the same walk (`PortProbes`).
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -142,6 +141,9 @@ pub trait PortUpstream: Send + Sync {
     fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend));
 }
 
+/// The member in hand: its candidate, its preparation number, its provider and its target definition.
+type InHand = (Candidate, u32, Box<str>, Option<TargetDefinition>);
+
 /// One session's walk over a [`FarEnd`] built from the session's wants.
 struct Shared<'a, F: FarEnd> {
     make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
@@ -149,7 +151,7 @@ struct Shared<'a, F: FarEnd> {
     request_walk: Option<RequestWalk>,
     pending: Option<Arc<super::port_admission::Pending>>,
     admitted: OnceCell<AdmittedRequest>,
-    selected: RefCell<Option<(Candidate, u32, Box<str>, Option<TargetDefinition>)>>,
+    selected: RefCell<Option<InHand>>,
     token: &'a Pass<Route>,
     handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
@@ -223,8 +225,7 @@ pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F:
     effects: &dyn super::port_session::Effects,
     pending: Arc<super::port_admission::Pending>,
     walk: EgressWalk<'w, F>,
-    dialect: &str,
-    model: &str,
+    (dialect, model): (&str, &str),
 ) -> Result<
     (
         super::port_session::Task<'k, K>,
@@ -598,6 +599,21 @@ impl<F: FarEnd> UpChunks for Chunks<'_, F> {
     }
 }
 
+/// The rest of a reply's body, read to its end: the first body chunk's own buffer becomes the body and a later
+/// chunk is appended to it (trailers are not body).
+fn whole_body<'a>(rest: &mut (dyn UpChunks + 'a)) -> Result<Vec<u8>, SendFailed> {
+    let mut body: Option<Vec<u8>> = None;
+    while let Some(chunk) = rest.next()? {
+        if let Chunk::Body(bytes) = chunk {
+            match &mut body {
+                None => body = Some(bytes),
+                Some(body) => body.extend_from_slice(&bytes),
+            }
+        }
+    }
+    Ok(body.unwrap_or_default())
+}
+
 /// Sends `exchange` through `far` and reads the reply's head.
 fn open_on<'a, F: FarEnd>(
     far: &'a F,
@@ -700,16 +716,10 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
 
     fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
         let mut open = self.open(member, exchange)?;
-        let mut body = Vec::new();
-        while let Some(chunk) = open.rest.next()? {
-            if let Chunk::Body(bytes) = chunk {
-                body.extend_from_slice(&bytes);
-            }
-        }
         Ok(UpReply {
             status: open.status,
+            body: whole_body(&mut *open.rest)?,
             headers: open.headers,
-            body,
         })
     }
 
@@ -734,11 +744,10 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
     }
 }
 
-/// The affinity key as the walk's sticky-routing number.
+/// The affinity key as the walk's sticky-routing number: the sanctioned hasher (foldhash, ruling 311) under its
+/// fixed seed, so a key maps to the same number in every process of a build, as before.
 fn affinity_of(key: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
+    foldhash::fast::FixedState::default().hash_one(key)
 }
 
 /// The route one session walks under, from what the plane wanted (§8.6).
@@ -806,143 +815,11 @@ pub struct SeatPool {
     /// The pool the instance's sessions walk.
     pub pool: String,
     pub pools: foldhash::HashMap<String, busbar_kernel_egress::Pool>,
-    pub routes: std::collections::HashMap<DestinationId, super::far_end::MemberRoute>,
+    pub routes: foldhash::HashMap<DestinationId, super::far_end::MemberRoute>,
     pub members: Vec<SeatMember>,
 }
 
-impl SeatPool {
-    /// The pool `instance` walks over `upstreams`.
-    ///
-    /// # Errors
-    /// An upstream states a TLS check this path cannot enforce (more than one `pin_spki`, or a `client_identity`).
-    pub fn of(
-        instance: &str,
-        upstreams: &crate::upstreams::ConfiguredUpstreams,
-    ) -> Result<Self, String> {
-        use crate::upstreams::Upstreams;
-        use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
-        let mut members = Vec::new();
-        let mut walked = Vec::new();
-        let mut routes = std::collections::HashMap::new();
-        for name in upstreams.names() {
-            let Some(def) = upstreams.get(name) else {
-                continue;
-            };
-            let Some(url) = def.url.as_deref() else {
-                continue;
-            };
-            if def.tls.client_identity.is_some() {
-                return Err(format!(
-                    "`upstreams.{name}.tls.client_identity` is set, and plane `{instance}` cannot present a client \
-                     identity to an upstream yet: remove it or reach the upstream another way"
-                ));
-            }
-            let key_pin = match def.tls.pin_spki.as_slice() {
-                [] => None,
-                [one] => Some(busbar_contract::abi::sdk::digest::tagged(one)),
-                _ => {
-                    return Err(format!(
-                        "`upstreams.{name}.tls.pin_spki` names more than one key, and plane `{instance}` can hold \
-                         an upstream to one pinned key only: keep the key the server presents now"
-                    ));
-                }
-            };
-            let index =
-                u32::try_from(members.len()).map_err(|_| "too many upstreams".to_owned())?;
-            let destination = DestinationId::new(u64::from(index));
-            let lane = format!("{instance}{}{name}", crate::governance::PLANE_LANE_SEP);
-            walked.push(busbar_kernel_egress::Member::new(destination, lane, 1));
-            routes.insert(
-                destination,
-                super::far_end::MemberRoute {
-                    connection_required: false,
-                    need: NeedId(index),
-                    base_url: url.to_owned(),
-                    auth: None,
-                    provider: name.to_owned(),
-                    keep: super::far_end::ResponseKeep {
-                        mode: KEEP_ALL_EXCEPT_DENIED,
-                        kept: Vec::new(),
-                        denied: Vec::new(),
-                    },
-                    rides: Vec::new(),
-                    anchors: busbar_contract::transport::trust::Anchors {
-                        extra_anchors: def
-                            .tls
-                            .trust
-                            .as_ref()
-                            .map(|anchor| anchor.der.clone())
-                            .unwrap_or_default(),
-                        key_pin,
-                        client_identity: None,
-                        private_reach: def.allow_private,
-                    },
-                    ride_anchors: Vec::new(),
-                    spelled: Vec::new(),
-                },
-            );
-            members.push(SeatMember {
-                destination,
-                upstream: name.into(),
-                need: NeedId(index),
-                url: url.into(),
-            });
-        }
-        let mut pools = foldhash::HashMap::default();
-        pools.insert(
-            instance.to_owned(),
-            busbar_kernel_egress::Pool::new(instance, walked),
-        );
-        Ok(Self {
-            pool: instance.to_owned(),
-            pools,
-            routes,
-            members,
-        })
-    }
-
-    /// The probe service's members: each walked member's destination and configured upstream name.
-    #[must_use]
-    pub fn probe_members(&self) -> Vec<ProbeTarget> {
-        self.members
-            .iter()
-            .map(|member| ProbeTarget {
-                destination: member.destination,
-                pool: self.pool.clone(),
-                qualified_member: format!(
-                    "{}{}{}",
-                    self.pool,
-                    crate::governance::PLANE_LANE_SEP,
-                    member.upstream
-                ),
-            })
-            .collect()
-    }
-}
-
-/// How a configured upstream reads as the plane's `Target` (§6.1): an upstream the instance's table names is a
-/// bare target (no plane-owned provider keys, base path or parameters: an upstream carries none, IF §12.1); any
-/// other name is not this instance's and the walk passes it over.
-#[must_use]
-pub fn upstream_targets(
-    instance: &str,
-    upstreams: Arc<dyn crate::upstreams::Upstreams>,
-) -> Targets {
-    let pool = instance.to_owned();
-    let prefix = format!("{instance}{}", crate::governance::PLANE_LANE_SEP);
-    Arc::new(move |selected_pool, member| {
-        if selected_pool != pool {
-            return None;
-        }
-        let name = member.strip_prefix(&prefix)?;
-        let upstream = upstreams.get(name)?;
-        let mut target = MemberTarget::bare();
-        target.registered_upstream = Some(name.into());
-        target.resource.clone_from(&upstream.resource);
-        target.definition = Some(TargetDefinition::new(upstream));
-        Some(target)
-    })
-}
+pub use crate::off_path::plane_port_egress::upstream_targets;
 
 /// The production [`PortUpstream`]: the instance's pool walked over the kernel's [`Egress`].
 pub struct PortEgress {
@@ -980,7 +857,6 @@ impl PortEgress {
     #[must_use]
     pub fn probes(&self, members: Vec<ProbeTarget>) -> EgressProbes {
         EgressProbes {
-            pool: self.pool.clone(),
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
             handle: self.handle.clone(),
@@ -1027,7 +903,6 @@ impl PortUpstream for PortEgress {
 /// The probe service's far end: one probe exchange to one member, judged like any other dial, and the finding
 /// handed to the breaker.
 pub struct EgressProbes {
-    pool: String,
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
     handle: Handle,
@@ -1069,16 +944,10 @@ impl UpSend for ProbeSender {
         };
         let request = request_of(&name, &pool, 1, exchange).ok_or(SendFailed)?;
         let mut open = open_on(&far, &token, &self.handle, request)?;
-        let mut body = Vec::new();
-        while let Some(chunk) = open.rest.next()? {
-            if let Chunk::Body(bytes) = chunk {
-                body.extend_from_slice(&bytes);
-            }
-        }
         Ok(UpReply {
             status: open.status,
+            body: whole_body(&mut *open.rest)?,
             headers: open.headers,
-            body,
         })
     }
 }

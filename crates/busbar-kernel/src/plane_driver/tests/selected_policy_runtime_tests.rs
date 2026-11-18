@@ -505,8 +505,7 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
         &effects,
         pending.clone(),
         walk,
-        "",
-        "",
+        ("", ""),
     )
     .unwrap();
     assert_eq!(money.open_units(), 1);
@@ -915,8 +914,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
         &effects,
         pending.clone(),
         walk,
-        "",
-        "",
+        ("", ""),
     )
     .expect("a selected attempt over a catalog pool is prepared");
     let unit_key = prepared.receipt().unit();

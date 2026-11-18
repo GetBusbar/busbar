@@ -2364,7 +2364,7 @@ async fn the_hooks_constraint_orders_and_restricts_the_pick() {
         None,
     );
     let t = token();
-    let described = Arc::new(HashMap::from([(
+    let described = Arc::new(foldhash::HashMap::from_iter([(
         "m2".to_string(),
         MemberFacts {
             tags: vec!["baa".to_string()],

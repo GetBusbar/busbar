@@ -43,7 +43,6 @@
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
 //! composition root.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -246,7 +245,7 @@ pub struct Egress {
 
     pub pools: foldhash::HashMap<String, Pool>,
 
-    pub routes: HashMap<DestinationId, MemberRoute>,
+    pub routes: foldhash::HashMap<DestinationId, MemberRoute>,
 
     pub stream_ceiling_secs: u64,
 
@@ -404,6 +403,7 @@ impl Egress {
             signals: None,
             constraint: Mutex::new(None),
             scratch: Mutex::new(Vec::new()),
+            url: Mutex::new(String::new()),
         }
     }
 
@@ -485,6 +485,7 @@ impl Egress {
             signals: None,
             constraint: Mutex::new(None),
             scratch: Mutex::new(Vec::new()),
+            url: Mutex::new(String::new()),
         }
     }
 }
@@ -516,7 +517,9 @@ struct Live {
 
     error_left: Option<usize>,
 
-    keep: ResponseKeep,
+    /// The need the attempt's far request named (`OutboundRequest::need`): its keep rule is the route's, read
+    /// by borrow when the head arrives. `None` until the attempt's open succeeds (keeps nothing).
+    need: Option<u32>,
 
     unjudged: Option<Unjudged>,
 
@@ -707,13 +710,16 @@ pub struct EgressFarEnd<'e> {
 
     probe_of: Option<DestinationId>,
 
-    described: Option<Arc<HashMap<String, MemberFacts>>>,
+    described: Option<Arc<foldhash::HashMap<String, MemberFacts>>>,
 
     signals: Option<Arc<dyn MemberSignals>>,
 
     constraint: Mutex<Option<Constraint>>,
 
     scratch: Mutex<Vec<u8>>,
+
+    /// The attempt's joined target URL, reused attempt to attempt ([`UrlBuf`]).
+    url: Mutex<String>,
 }
 
 /// ONE MEMBER'S LIVE STANDING, as the ranking hooks read it (1.5.5 fed every candidate these from
@@ -755,7 +761,7 @@ pub struct MemberFacts {
 
 impl EgressFarEnd<'_> {
     #[must_use]
-    pub fn described(mut self, facts: Arc<HashMap<String, MemberFacts>>) -> Self {
+    pub fn described(mut self, facts: Arc<foldhash::HashMap<String, MemberFacts>>) -> Self {
         self.described = Some(facts);
         self
     }
@@ -919,22 +925,70 @@ fn class_code(class: Option<WireStatusClass>) -> u32 {
     })
 }
 
-fn join(base: &str, target: &[u8]) -> String {
-    let base: std::borrow::Cow<'_, str> = match base.split_once("://") {
-        Some((scheme, _))
-            if base.contains('\\')
-                && busbar_contract::net::UrlFamily::of(&scheme.to_ascii_lowercase())
-                    == busbar_contract::net::UrlFamily::Web =>
-        {
-            std::borrow::Cow::Owned(base.replace('\\', "/"))
+/// `base` joined with `target` into `out` (cleared first): `base` less its trailing `/`s, a web URL's `\`s
+/// read as `/`, then `target` as text (each invalid UTF-8 sequence one U+FFFD, as `from_utf8_lossy`).
+fn join_into(out: &mut String, base: &str, target: &[u8]) {
+    out.clear();
+    let web_backslashes = base
+        .split_once("://")
+        .is_some_and(|(scheme, _)| base.contains('\\') && web_scheme(scheme));
+    if web_backslashes {
+        // The trailing `/`s are trimmed after the `\` became `/`.
+        let kept = base.trim_end_matches(['/', '\\']).len();
+        out.extend(
+            base[..kept]
+                .chars()
+                .map(|c| if c == '\\' { '/' } else { c }),
+        );
+    } else {
+        out.push_str(base.trim_end_matches('/'));
+    }
+    for chunk in target.utf8_chunks() {
+        out.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            out.push(char::REPLACEMENT_CHARACTER);
         }
-        _ => std::borrow::Cow::Borrowed(base),
+    }
+}
+
+/// Whether `scheme` is a web scheme (`UrlFamily::Web`) in any letter case: lowered on the stack (no web
+/// scheme is longer than five bytes).
+fn web_scheme(scheme: &str) -> bool {
+    let mut lower = [0u8; 5];
+    let Some(at) = lower.get_mut(..scheme.len()) else {
+        return false;
     };
-    format!(
-        "{}{}",
-        base.trim_end_matches('/'),
-        String::from_utf8_lossy(target)
-    )
+    at.copy_from_slice(scheme.as_bytes());
+    at.make_ascii_lowercase();
+    std::str::from_utf8(at).is_ok_and(|scheme| {
+        busbar_contract::net::UrlFamily::of(scheme) == busbar_contract::net::UrlFamily::Web
+    })
+}
+
+/// The far end's URL buffer, lent to one attempt and handed back when it is done (as [`Scratch`]).
+struct UrlBuf<'a> {
+    buf: String,
+    home: &'a Mutex<String>,
+}
+
+impl<'a> UrlBuf<'a> {
+    fn lend(home: &'a Mutex<String>) -> Self {
+        let buf = std::mem::take(
+            &mut *home
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        UrlBuf { buf, home }
+    }
+}
+
+impl Drop for UrlBuf<'_> {
+    fn drop(&mut self) {
+        *self
+            .home
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::mem::take(&mut self.buf);
+    }
 }
 
 /// The audit action of an upstream dial the instance's `insecure_transport` does not cover (the connector's own
@@ -1254,7 +1308,7 @@ impl EgressFarEnd<'_> {
             delivered: false,
             ended: false,
             error_left: None,
-            keep: ResponseKeep::default(),
+            need: None,
             unjudged: None,
             failing: None,
             stated: None,
@@ -1355,21 +1409,21 @@ impl EgressFarEnd<'_> {
             if let Some(destination) = self.probe_of {
                 self.breaker().probed(destination, outcome, now, token);
             } else {
-                let pool = Self::metric_pool(&live.pool, &live.member).to_string();
+                let pool = Self::metric_pool(&live.pool, &live.member);
                 let destination = live.member.destination;
                 if self
                     .breaker()
                     .observe(&live.pool, destination, outcome, now, token)
                 {
-                    e.telemetry.breaker_trip(&pool, destination);
+                    e.telemetry.breaker_trip(pool, destination);
                 }
                 e.telemetry.upstream_failure_stated(
-                    &pool,
+                    pool,
                     destination,
                     failure,
                     live.stated.as_ref(),
                 );
-                e.telemetry.failover(&pool, failover);
+                e.telemetry.failover(pool, failover);
             }
             live.probe = None;
             self.lock().failed = Some(failover);
@@ -1384,23 +1438,23 @@ impl EgressFarEnd<'_> {
     /// walk is refused as internal (500, no Retry-After, no fail-over: every member would meet the
     /// same framer), the unit is audited `Internal`, and one diagnostic explains it.
     fn local_fault(&self, _token: &Pass<Route>, cause: &ConnCause) -> FarPiece {
-        let named = self.lock().live.as_ref().map(|live| {
-            (
-                Self::metric_pool(&live.pool, &live.member).to_string(),
-                live.member.name.clone(),
-            )
-        });
-        let (pool, member) = named.unwrap_or_default();
-        tracing::error!(
-            diag = %crate::diagnostics::EGRESS_LOCAL_FRAMER_FAILED.banner(),
-            pool = %pool,
-            member = %member,
-            error = %cause.text,
-            "the host's own framer could not render the request for the upstream; refused as an \
-             internal error and not charged to the member"
-        );
         {
+            // One lock: the diagnostic names the live attempt by borrow, then the refusal is set.
             let mut w = self.lock();
+            let (pool, member) = w.live.as_ref().map_or(("", ""), |live| {
+                (
+                    Self::metric_pool(&live.pool, &live.member),
+                    live.member.name.as_str(),
+                )
+            });
+            tracing::error!(
+                diag = %crate::diagnostics::EGRESS_LOCAL_FRAMER_FAILED.banner(),
+                pool = %pool,
+                member = %member,
+                error = %cause.text,
+                "the host's own framer could not render the request for the upstream; refused as an \
+                 internal error and not charged to the member"
+            );
             w.local = Some(RefusalCode::Internal);
             if w.walking {
                 w.walk_refusal = Some(Shed::internal());
@@ -1617,15 +1671,12 @@ impl EgressFarEnd<'_> {
             self.settle_attempt(&record);
             return false;
         }
-        let Some(route) = e.routes.get(&destination).cloned() else {
+        let Some(route) = e.routes.get(&destination) else {
             self.lock().unsent = Some(RefusalCode::UnsentNoRoute);
             return false;
         };
 
-        let Some((need, keep, base_url)) = route
-            .ride(request.need)
-            .map(|r| (r.need, r.keep.clone(), r.base_url.to_string()))
-        else {
+        let Some((need, base_url)) = route.ride(request.need).map(|r| (r.need, r.base_url)) else {
             self.lock().unsent = Some(RefusalCode::UnsentNeedUnbound);
             self.settle_attempt(&record);
             return false;
@@ -1673,14 +1724,16 @@ impl EgressFarEnd<'_> {
             self.settle_attempt(&record);
             return false;
         };
-        let url = join(&base_url, &request.target);
-        if !dial_admitted(self.route.accept, &url) {
-            let destination = split(&url).0.rsplit('@').next().unwrap_or_default();
+        let mut url_buf = UrlBuf::lend(&self.url);
+        join_into(&mut url_buf.buf, base_url, &request.target);
+        let url = url_buf.buf.as_str();
+        if !dial_admitted(self.route.accept, url) {
+            let destination = split(url).0.rsplit('@').next().unwrap_or_default();
             // TRANSPORT-SECURITY-POLICY §4 "Visibility": every refusal is an audit row, as the connector writes
             // for a Need (`dest:<host>:<instance>`; the walk's pool is the plane instance's).
             crate::audit_ring::AUDIT.record_by(
                 INSECURE_TRANSPORT_REFUSED,
-                &format!("dest:{destination}:{}", self.route.pool),
+                &crate::cold::far_end::insecure_dial_resource(destination, &self.route.pool),
                 crate::audit_ring::OUTCOME_REJECTED,
                 "system",
             );
@@ -1694,9 +1747,7 @@ impl EgressFarEnd<'_> {
             return false;
         }
 
-        let (located, carried) = match e
-            .conns
-            .locate_head(e.caller, need, &url, self.attempt_cap())
+        let (located, carried) = match e.conns.locate_head(e.caller, need, url, self.attempt_cap())
         {
             Ok(located) => located,
             Err(_) => {
@@ -1721,10 +1772,10 @@ impl EgressFarEnd<'_> {
             || self.route.connection_required;
         let presented = if let Some(pending) = pending {
             pending
-                .take(need.0, &member, &url, e.clock.now_secs())
+                .take(need.0, &member, url, e.clock.now_secs())
                 .map(crate::host_outbound::Presentation::Body)
         } else {
-            delegated.and_then(|bound| bound.present(need.0, &member, &url, e.clock.now_secs()))
+            delegated.and_then(|bound| bound.present(need.0, &member, url, e.clock.now_secs()))
         };
         if bound && presented.is_none() {
             self.lock().refused = Some(ReasonCode::CredentialUnavailable);
@@ -1777,7 +1828,7 @@ impl EgressFarEnd<'_> {
                 return false;
             };
             match self
-                .auth_fields(binding, handle, &request, &url, extensions, &defaults)
+                .auth_fields(binding, handle, &request, url, extensions, &defaults)
                 .await
             {
                 Some(fields) => auth = fields,
@@ -1802,7 +1853,7 @@ impl EgressFarEnd<'_> {
             let result = match bindings.select(&selected_pool, &qualified_member, destination) {
                 Ok(crate::auth_bindings::native::SelectedCredential::None) => Ok(None),
                 Ok(crate::auth_bindings::native::SelectedCredential::Required(binding)) => self
-                    .native_credential(binding, &request, &url, scope.as_deref(), &defaults)
+                    .native_credential(binding, &request, url, scope.as_deref(), &defaults)
                     .await
                     .map(Some),
                 Err(error) => Err(error),
@@ -1831,7 +1882,7 @@ impl EgressFarEnd<'_> {
             .map(|fields| fields.sealed_names())
             .unwrap_or_default();
         let native_selected = matches!(&route.auth, Some(AuthBinding::Native(_)));
-        let (_, path) = split(&url);
+        let (_, path) = split(url);
 
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::OutboundHead);
         let mut head = busbar_contract::conn::OwnedHead::with_capacity(
@@ -1943,7 +1994,7 @@ impl EgressFarEnd<'_> {
             need,
             &OpenDesc {
                 completed_head: None,
-                target: &url,
+                target: url,
                 fields: &[],
 
                 body: if let Some(prepared) = prepared {
@@ -1961,7 +2012,7 @@ impl EgressFarEnd<'_> {
                 member: &route.provider,
 
                 unit: self.route.unit.get(),
-                plaintext_accepted: !url_is_tls(&url),
+                plaintext_accepted: !url_is_tls(url),
             },
             head,
             require_secure,
@@ -1982,7 +2033,7 @@ impl EgressFarEnd<'_> {
                     }
                     w.sent = true;
                     if let Some(live) = w.live.as_mut() {
-                        live.keep = keep;
+                        live.need = Some(request.need);
                         live.conn = Some(conn);
                         live.anchor_ms = now_ms;
                         live.anchor_us = now_us;
@@ -2159,10 +2210,16 @@ impl EgressFarEnd<'_> {
         block: &[u8],
     ) -> FarPiece {
         use busbar_contract::abi::transport::fields::lines;
-        let keep = {
+        let ride = {
             let w = self.lock();
-            w.live.as_ref().map(|l| l.keep.clone()).unwrap_or_default()
+            w.live
+                .as_ref()
+                .and_then(|l| Some((l.member.destination, l.need?)))
         };
+        let no_keep = ResponseKeep::default();
+        let keep = ride
+            .and_then(|(destination, need)| self.egress.routes.get(&destination)?.ride(need))
+            .map_or(&no_keep, |ride| ride.keep);
         let nominated: Vec<&[u8]> = lines(block)
             .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
             .map(|(_, v)| v)
