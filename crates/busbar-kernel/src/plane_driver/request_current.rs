@@ -63,11 +63,10 @@ impl RequestRoutes {
         else {
             return false;
         };
-        let allowed = |name: &str| {
-            self.scope_kind
-                .as_ref()
-                .is_none_or(|kind| current_key.scope_allowed(kind, name))
-        };
+        // The admission rule again, on the current key and the request's own selection:
+        // a key narrowed after admission loses the walk (K2, PM ruling 1 on #462).
+        let allowed =
+            |name: &str| self.scope_admits(current_key, request.selection.as_deref(), name);
         if let RequestDomain::Registration(name) = request.domain() {
             return self.registration.as_ref().is_some_and(|registration| {
                 &registration.pool == name
@@ -78,6 +77,25 @@ impl RequestRoutes {
                         .iter()
                         .any(|m| &*m.upstream == member_name)
             });
+        }
+        if let RequestDomain::NamedPool(name) = request.domain() {
+            if self.section_pools.contains_key(name) {
+                // A section walk reaches its own pool and that pool's one fallback; the current
+                // key must still hold both and the selected member (#108).
+                let selection = request.selection.as_deref();
+                let fallback = self
+                    .section_pools
+                    .get(name)
+                    .and_then(|pool| pool.fallback.as_deref());
+                return (name.as_str() == selected_pool || fallback == Some(selected_pool))
+                    && self.section_walk_admits(current_key, selection, name)
+                    && self.section_member_admits(
+                        current_key,
+                        selection,
+                        selected_pool,
+                        member_name,
+                    );
+            }
         }
         let Some(catalog) = &self.catalog else {
             return false;
