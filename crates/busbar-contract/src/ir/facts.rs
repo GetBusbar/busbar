@@ -179,7 +179,7 @@ impl ContentItem<'_> {
         framed(&mut buf, text.as_bytes());
         let digest = crate::sha256_hex(&buf);
         // The hash's block function leaves pieces of the framed text in its stack frames.
-        crate::secret_json::wipe_stack();
+        crate::secret_json::wipe_stack(0);
         digest
     }
 }

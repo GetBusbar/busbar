@@ -34,7 +34,11 @@ use crate::secure::{SecureString, SecureVec};
 /// deeper than `json::MAX_JSON_DEPTH`. Wiped on drop; `Clone` copies into new custody of exact size;
 /// equality is constant-time; `Debug` prints the length only.
 #[derive(Clone, PartialEq, Eq)]
-pub struct SecretJson(SecureString);
+pub struct SecretJson {
+    text: SecureString,
+    /// How deeply the document nests (a scalar is 0): it sizes the stack a read of it wipes.
+    depth: usize,
+}
 
 /// Why a text was not taken into custody. Its text is fixed words and a position, never input.
 #[derive(Debug, Clone, Copy)]
@@ -69,7 +73,12 @@ impl SecretJson {
     /// buffer cannot be allocated.
     pub fn from_secure(text: SecureVec) -> Result<Self, SecretJsonError> {
         let taken = Self::canonical(text);
-        wipe_stack();
+        // A refused text may have been read to any depth it holds (at most the maximum).
+        wipe_stack(
+            taken
+                .as_ref()
+                .map_or(json::MAX_JSON_DEPTH, |held| held.depth),
+        );
         taken
     }
 
@@ -91,7 +100,7 @@ impl SecretJson {
             out.len() <= text.len(),
             "canonical JSON is never longer than its input"
         );
-        Ok(Self::adopt(out))
+        Ok(Self::adopt(out, view.depth()))
     }
 
     /// The canonical text of a public tree: for fixtures, and for a plugin that builds its
@@ -108,15 +117,18 @@ impl SecretJson {
 
     /// The writer's bytes, adopted: they are UTF-8 by construction (strings it was handed as `&str`
     /// and ASCII punctuation).
-    fn adopt(out: SecureVec) -> Self {
+    fn adopt(out: SecureVec, depth: usize) -> Self {
         let text = String::from_utf8(out.into_vec()).expect("the JSON writer writes UTF-8");
-        Self(SecureString::from(text))
+        Self {
+            text: SecureString::from(text),
+            depth,
+        }
     }
 
     /// The canonical text, borrowed. Copy it only into custody: a plain copy is a leak (R4).
     #[must_use]
     pub fn as_json(&self) -> &str {
-        self.0.as_str()
+        self.text.as_str()
     }
 
     /// The document as a borrowed [`JsonView`]: its strings borrow the text, or `arena` where an
@@ -143,12 +155,12 @@ impl SecretJson {
         &'a self,
         arena: &'a mut SecureVec,
     ) -> Result<T, json::BorrowedError> {
-        let len = self.0.len();
+        let len = self.text.len();
         if arena.len() < len {
             *arena = SecureVec::zeroed(len);
         }
-        let read = json::from_slice_borrowed(self.0.as_bytes(), &mut arena[..]);
-        wipe_stack();
+        let read = json::from_slice_borrowed(self.text.as_bytes(), &mut arena[..]);
+        wipe_stack(self.depth);
         read
     }
 
@@ -166,46 +178,72 @@ impl SecretJson {
 
     /// Append the canonical text to `out` (an egress body in custody).
     pub fn write_into(&self, out: &mut SecureVec) {
-        out.extend_from_slice(self.0.as_bytes());
+        out.extend_from_slice(self.text.as_bytes());
     }
 
     /// The canonical text's bytes, still in custody, without a copy.
     #[must_use]
     pub fn into_secure(self) -> SecureVec {
-        self.0.into_bytes()
+        self.text.into_bytes()
     }
 }
 
-/// How much stack [`wipe_stack`] overwrites below its caller's frame, in 8-byte words (64 KiB).
-/// A scan of the thread's stack after a secret read finds the reader's residue within about
-/// 36 KiB below the caller (DES-SONIC-WIPE r3 §7: `invoke_request_wipe`'s probes); this leaves
-/// room for an unoptimised build's larger frames and stays far inside any thread's stack.
-const STACK_WIPE_WORDS: usize = 8 * 1024;
+/// The stack a read of secret text writes below its caller, as a base plus a step per level the
+/// document nests, measured on engine-devbox-3 by painting the stack and reading back the lowest
+/// byte written (from_secure, decode, digest_of; flat documents of 41 B and 1.2 KiB, nested 16,
+/// 64 and 128 deep). Optimised: at most 2.1 KiB flat, 752 B per level, digest_of 0.9 KiB.
+/// Unoptimised (this crate at opt-level 0, its dependencies at 3): about 3.1 KiB per level, and
+/// the flat residue the wipe tests found lay within 36 KiB of the caller. Each bound is about
+/// twice what was measured.
+#[cfg(not(debug_assertions))]
+const WIPE_BASE: usize = 4 * 1024;
+#[cfg(not(debug_assertions))]
+const WIPE_PER_LEVEL: usize = 1024;
+#[cfg(debug_assertions)]
+const WIPE_BASE: usize = 64 * 1024;
+#[cfg(debug_assertions)]
+const WIPE_PER_LEVEL: usize = 6 * 1024;
+/// One frame of [`wipe_chunks`].
+const WIPE_CHUNK: usize = 4 * 1024;
 
-/// Overwrite the stack the call that just returned used. The SIMD JSON reader and writer, the
-/// UTF-8 check and the SHA-256 block function keep 16- to 64-byte pieces of their input in
-/// registers that spill into their own frames, and nothing wipes a frame when it returns: a short
-/// secret (one load holds all of it) survives there whole. Every reader of secret text calls this
-/// on every exit, after the work and before its result goes back to the caller, so the next
-/// frames to use that stack are this one's (wiped) and the caller's own.
+/// Overwrite the stack the read that just returned used, for a document nesting `depth` levels.
+/// The SIMD JSON reader and writer, the UTF-8 check and the SHA-256 block function keep 16- to
+/// 64-byte pieces of their input in registers that spill into their own frames, and nothing wipes
+/// a frame when it returns: a short secret (one load holds all of it) survives there whole. Every
+/// reader of secret text calls this on every exit, after the work and before its result goes back
+/// to the caller, so the next frames to use that stack are these (zeroed) and the caller's own.
+/// A plain zero fill, as every hot wipe here is (`secure` rule 5).
+pub(crate) fn wipe_stack(depth: usize) {
+    let bytes = WIPE_BASE + depth.min(json::MAX_JSON_DEPTH) * WIPE_PER_LEVEL;
+    wipe_chunks(bytes.div_ceil(WIPE_CHUNK));
+}
+
+/// `left` frames of zeroed [`WIPE_CHUNK`] bytes, one below the other. The array is observed after
+/// the inner call too, so each frame stays live (no tail call reuses it) and its zeros are stored.
 #[inline(never)]
-pub(crate) fn wipe_stack() {
-    let mut area = [0_u64; STACK_WIPE_WORDS];
-    area.zeroize();
-    std::hint::black_box(&mut area);
+fn wipe_chunks(left: usize) {
+    let area = [0_u8; WIPE_CHUNK];
+    std::hint::black_box(&area);
+    if left > 1 {
+        wipe_chunks(left - 1);
+    }
+    std::hint::black_box(&area);
 }
 
 /// `null`, as an absent document reads (so `std::mem::take` leaves one behind).
 impl Default for SecretJson {
     fn default() -> Self {
-        Self(SecureString::from("null"))
+        Self {
+            text: SecureString::from("null"),
+            depth: 0,
+        }
     }
 }
 
 impl fmt::Debug for SecretJson {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretJson")
-            .field("len", &self.0.len())
+            .field("len", &self.text.len())
             .finish()
     }
 }
@@ -228,6 +266,19 @@ pub enum JsonView<'a> {
 }
 
 impl<'a> JsonView<'a> {
+    /// How deeply this value nests: a scalar is 0, an array or object one more than its deepest
+    /// item.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        match self {
+            JsonView::Array(items) => 1 + items.iter().map(JsonView::depth).max().unwrap_or(0),
+            JsonView::Object(members) => {
+                1 + members.values().map(JsonView::depth).max().unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
     /// The value at the JSON pointer `pointer` (RFC 6901: `""` is this value; `/`-separated
     /// tokens, `~1` for `/` and `~0` for `~`; an array index is decimal without a leading zero).
     #[must_use]
