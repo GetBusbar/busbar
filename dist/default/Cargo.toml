@@ -827,7 +827,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "17620de2b816da4f9c38f4c32c2c0ee5d400ff1e" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a63691561995d34a307567b85ba0a36f62b5e66c" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "2493436985d38203790eed5cba0c44b673272b42" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
 busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "316652515c7a01aaa9a87b95f12d1ec33ee615bb" }
 # Published MIN-3 A2A implementation, linked through its PLUGIN header.

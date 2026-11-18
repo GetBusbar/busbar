@@ -316,13 +316,13 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "0fe33ef5207a828457976be8e165f07300cca4da",
+      "commit": "2493436985d38203790eed5cba0c44b673272b42",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
       "image": "libbusbar_plane_mcp_plugin.so",
       "declares": "plane-mcp/declares.json",
-      "lock_sha256": "2ff0e08bb0fc842cf6a9b9ffe1914839b30d4dc3ae7d2652d1854bc32c000cad"
+      "lock_sha256": "3e89e35fe74e2e51610683927dfdec6cff2983b73d27f46171cb927f20bc3469"
     },
     {
       "repo": "busbar-plane-streaming",
