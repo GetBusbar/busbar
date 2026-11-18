@@ -3,24 +3,12 @@
 
 //! The sealing of an opening's credential values (`crate::seal`), done once as an opening is sealed
 //! (the seal lifecycle event), never per request byte: the sealed names and query pairs taken out
-//! of an opening, the streams that wait on a seal, a stream's seals dropped and the spliced seals
-//! let go of.
+//! of an opening and the streams that wait on a seal. Dropping a stream's seals and splicing are
+//! `crate::seal`'s own: they empty slots the connection keeps.
 
 use busbar_contract::secure::SecureVec;
-use foldhash::HashMap;
 
 use crate::seal::Seal;
-
-/// One seal on `stream` is no longer pending: its count drops, and a stream with none left is
-/// forgotten.
-fn released(counts: &mut HashMap<u64, usize>, stream: u64) {
-    if let std::collections::hash_map::Entry::Occupied(mut held) = counts.entry(stream) {
-        *held.get_mut() -= 1;
-        if *held.get() == 0 {
-            held.remove();
-        }
-    }
-}
 
 /// The names the opener's [`busbar_contract::conn::SEALED_FIELDS_FIELD`] states, taken out of
 /// `fields` (the field itself is removed).
@@ -65,28 +53,4 @@ pub(crate) fn pending_streams(seals: &[Seal]) -> Vec<u64> {
         }
     }
     streams
-}
-
-/// Drop every seal held on `stream`.
-pub(crate) fn drop_stream(seals: &mut Vec<Seal>, stream: u64) {
-    seals.retain(|seal| seal.stream != stream);
-}
-
-/// Splice into `wire` every seal whose filler stood at a position in `positions` (one per seal, in
-/// order), and let those seals go; a seal whose filler was not found stays.
-pub(crate) fn splice_found(
-    seals: &mut Vec<Seal>,
-    positions: &[Option<usize>],
-    wire: &mut [u8],
-    counts: &mut HashMap<u64, usize>,
-) {
-    let mut at = positions.iter();
-    seals.retain(|s| match at.next().copied().flatten() {
-        Some(i) => {
-            wire[i..i + s.filler.len()].copy_from_slice(&s.value);
-            released(counts, s.stream);
-            false
-        }
-        None => true,
-    });
 }

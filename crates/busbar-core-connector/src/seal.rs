@@ -3,6 +3,7 @@
 
 //! SEALED CREDENTIAL VALUES (TSEAL; the "plane never sees credential bytes" family): the bound
 
+use busbar_contract::kept::Kept;
 use busbar_contract::secure::SecureVec;
 use foldhash::HashMap;
 
@@ -19,41 +20,106 @@ pub const SEAL_BROKEN: &str = "the framer did not render a sealed value verbatim
 /// The filler's alphabet: legal in any field value and never transformed by a literal rendering.
 const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/// One sealed value: the filler the framer was handed and the real bytes it stands for.
+/// One sealed value: the filler the framer was handed and the real bytes it stands for. A seal is
+/// a slot of [`Seals`]: spliced or cleared, it is emptied (its value wiped) and filled again by the
+/// connection's next seal in the storage it already has.
+#[derive(Default)]
 pub(crate) struct Seal {
     pub(crate) stream: u64,
     pub(crate) filler: Vec<u8>,
     pub(crate) value: SecureVec,
 }
 
-/// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire, the connection's reused list
-/// of where each seal's filler stands, and how many seals wait on each stream (kept current as a
-/// seal is held, spliced or cleared, so asking after a stream is no scan).
+impl Kept for Seal {
+    fn clear(&mut self) {
+        self.stream = 0;
+        self.filler.clear();
+        self.value.clear();
+    }
+}
+
+/// THE SEALS A CONNECTION HOLDS: those not yet spliced into its wire (the first `live` slots of
+/// `held`, in the order they were sealed; the slots past them keep their storage for the next
+/// seals), the connection's reused list of where each seal's filler stands, and how many seals
+/// wait on each stream (kept current as a seal is held, spliced or cleared, so asking after a
+/// stream is no scan).
 #[derive(Default)]
-pub(crate) struct Seals(Vec<Seal>, Vec<Option<usize>>, HashMap<u64, usize>);
+pub(crate) struct Seals {
+    held: Vec<Seal>,
+    live: usize,
+    positions: Vec<Option<usize>>,
+    counts: HashMap<u64, usize>,
+}
 
 impl std::fmt::Debug for Seals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Seals({} pending)", self.0.len())
+        write!(f, "Seals({} pending)", self.live)
     }
 }
 
 pub(crate) use crate::off_path::seal::take_sealed_names;
 
-fn filler(len: usize) -> Option<Vec<u8>> {
-    let mut bytes = vec![0_u8; len];
-    busbar_contract::crypto::fill(&mut bytes).ok()?;
-    for b in &mut bytes {
+/// Fill `bytes` with `len` bytes of filler, in its own storage. False when the host's random
+/// source failed.
+fn filler_into(bytes: &mut Vec<u8>, len: usize) -> bool {
+    bytes.clear();
+    bytes.resize(len, 0);
+    if busbar_contract::crypto::fill(bytes).is_err() {
+        return false;
+    }
+    for b in bytes.iter_mut() {
         *b = ALPHABET[usize::from(*b) % ALPHABET.len()];
     }
-    Some(bytes)
+    true
+}
+
+/// The host's random source failed while a filler was made.
+const RANDOM_FAILED: &str = "the host's random source failed";
+
+fn released(counts: &mut HashMap<u64, usize>, stream: u64) {
+    if let std::collections::hash_map::Entry::Occupied(mut held) = counts.entry(stream) {
+        *held.get_mut() -= 1;
+        if *held.get() == 0 {
+            held.remove();
+        }
+    }
 }
 
 impl Seals {
-    /// Hold `seal` until it is spliced or cleared.
-    fn hold(&mut self, seal: Seal) {
-        *self.2.entry(seal.stream).or_default() += 1;
-        self.0.push(seal);
+    /// The next seal for `stream`, emptied, its filler made `len` long; `None` when the host's
+    /// random source failed (nothing is held then). The slot is made only the first time a
+    /// connection holds this many seals at once.
+    fn hold(&mut self, stream: u64, len: usize) -> Option<&mut Seal> {
+        if self.live == self.held.len() {
+            self.held.push(Seal::default());
+        }
+        let seal = &mut self.held[self.live];
+        seal.clear();
+        if !filler_into(&mut seal.filler, len) {
+            seal.clear();
+            return None;
+        }
+        seal.stream = stream;
+        self.live += 1;
+        *self.counts.entry(stream).or_default() += 1;
+        Some(seal)
+    }
+
+    /// Keep the live seals `keep` answers true for, in their order; every other one is emptied
+    /// (its value wiped) and its slot kept for reuse.
+    fn retain(&mut self, mut keep: impl FnMut(usize, &mut Seal) -> bool) {
+        let mut kept = 0;
+        for at in 0..self.live {
+            if keep(at, &mut self.held[at]) {
+                self.held.swap(kept, at);
+                kept += 1;
+            } else {
+                let stream = self.held[at].stream;
+                released(&mut self.counts, stream);
+                self.held[at].clear();
+            }
+        }
+        self.live = kept;
     }
 
     /// Remove the host's query metadata before framing and append it only to the wire target.
@@ -123,13 +189,9 @@ impl Seals {
             target.extend_from_slice(&pair[..=at]);
             let value = &pair[at + 1..];
             if sealing && !value.is_empty() {
-                let fill = filler(value.len()).ok_or("the host's random source failed")?;
-                target.extend_from_slice(&fill);
-                self.hold(Seal {
-                    stream,
-                    filler: fill,
-                    value: SecureVec::from(value),
-                });
+                let seal = self.hold(stream, value.len()).ok_or(RANDOM_FAILED)?;
+                target.extend_from_slice(&seal.filler);
+                seal.value.extend_from_slice(value);
             } else {
                 target.extend_from_slice(value);
             }
@@ -177,54 +239,61 @@ impl Seals {
             return Err(SEALED_IN_CLEAR);
         }
         for (_, v) in fields.iter_mut().filter(|(n, v)| named(n) && !v.is_empty()) {
-            let fill = filler(v.len()).ok_or("the host's random source failed")?;
-            let value = SecureVec::from(std::mem::replace(v, fill.clone()));
-            self.hold(Seal {
-                stream,
-                filler: fill,
-                value,
-            });
+            let seal = self.hold(stream, v.len()).ok_or(RANDOM_FAILED)?;
+            // The real bytes go into the seal's wiping buffer; the field's own bytes are then
+            // written over with the filler (the same length), so the credential leaves the field
+            // without a copy left behind in it.
+            seal.value.extend_from_slice(v);
+            v.copy_from_slice(&seal.filler);
         }
         Ok(())
     }
 
     /// Whether any seal waits to be spliced.
     pub(crate) fn pending(&self) -> bool {
-        !self.0.is_empty()
+        self.live != 0
     }
 
     pub(crate) fn pending_on(&self, stream: u64) -> bool {
-        self.2.contains_key(&stream)
+        self.counts.contains_key(&stream)
     }
 
     pub(crate) fn streams(&self) -> Vec<u64> {
-        crate::off_path::seal::pending_streams(&self.0)
+        crate::off_path::seal::pending_streams(&self.held[..self.live])
     }
 
+    /// Clear every seal `stream` holds: each is emptied (its value wiped) and its slot kept.
     pub(crate) fn clear_on(&mut self, stream: u64) {
-        self.2.remove(&stream);
-        crate::off_path::seal::drop_stream(&mut self.0, stream);
+        self.retain(|_, seal| seal.stream != stream);
+        self.counts.remove(&stream);
     }
 
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
     pub(crate) fn splice(&mut self, wire: &mut [u8]) -> Result<(), &'static str> {
         // The connection's reused list of where each seal's filler stands in `wire`.
-        let mut positions = std::mem::take(&mut self.1);
+        let mut positions = std::mem::take(&mut self.positions);
         positions.clear();
-        for s in &self.0 {
+        for s in &self.held[..self.live] {
             let n = s.filler.len();
             let mut at = wire.windows(n).enumerate().filter(|(_, w)| *w == s.filler);
             match (at.next().map(|(i, _)| i), at.next()) {
                 (Some(i), None) => positions.push(Some(i)),
                 (Some(_), Some(_)) => {
-                    self.1 = positions;
+                    self.positions = positions;
                     return Err(SEAL_BROKEN);
                 }
                 (None, _) => positions.push(None),
             }
         }
-        crate::off_path::seal::splice_found(&mut self.0, &positions, wire, &mut self.2);
-        self.1 = positions;
+        // A spliced seal leaves (emptied, its slot kept); one whose filler is not in `wire` stays.
+        self.retain(|at, seal| match positions[at] {
+            Some(i) => {
+                wire[i..i + seal.filler.len()].copy_from_slice(&seal.value);
+                false
+            }
+            None => true,
+        });
+        self.positions = positions;
         Ok(())
     }
 }
