@@ -20,7 +20,7 @@ use crate::plane_driver::request_admission::AdmittedRequest;
 pub(crate) enum NativeAttemptError {
     Unavailable,
     Binding,
-    Custody(busbar_contract::records::RecordStoreError),
+    Custody,
     /// The answer's usage records were refused (the session reports BadRecords).
     Usage,
     /// The rate owner refused the observation or the seal.
@@ -80,9 +80,9 @@ impl NativeMoney {
                 self.unpublished = None;
                 Ok(())
             }
-            Err(error) => {
+            Err(_) => {
                 self.unpublished = Some(Arc::new(snapshot));
-                Err(NativeAttemptError::Custody(error))
+                Err(NativeAttemptError::Custody)
             }
         }
     }
@@ -105,11 +105,7 @@ impl NativeRequestMoney {
             self.money
                 .post
                 .checkpoint_facts(self.request.unit())
-                .ok_or_else(|| {
-                    NativeAttemptError::Custody(busbar_contract::records::RecordStoreError(
-                        "selected request lost its original audit capture owner".into(),
-                    ))
-                })?,
+                .ok_or_else(|| NativeAttemptError::Custody)?,
         );
         Ok(())
     }
@@ -214,7 +210,7 @@ impl NativeRequestMoney {
             .money
             .gov
             .stage_selected_checkpoint(snapshot, Some(before.revision))
-            .map_err(NativeAttemptError::Custody)?;
+            .map_err(|_| NativeAttemptError::Custody)?;
         native.accepted = accepted;
         Ok(PreparedRateAttempt {
             request: self.request.clone(),

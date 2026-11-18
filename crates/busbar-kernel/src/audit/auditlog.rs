@@ -130,6 +130,15 @@ fn push_opt(out: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
+/// The bytes scheme 3 seals for one row (the recipe is on `AuditEntry::hash`): the tests build the
+/// legacy rows the verifier must keep reading with it; nothing seals under scheme 3 any more.
+#[cfg(test)]
+pub(crate) fn row_suffix(ts: u64, row: &AuditRowInput) -> Vec<u8> {
+    let mut out = vec![ROW_SUFFIX_MARKER];
+    push_row_fields(&mut out, ts, row);
+    out
+}
+
 /// The bytes scheme 4 seals for one row (ADMIN-API-1.6-ONE-MODEL section 7.1; the recipe is on
 /// `AuditEntry::hash`): scheme 3's fields after a 0x04 marker, `ts` being `at_ms / 1000`, then `at_ms`
 /// (8 bytes, big-endian), `client_request_id`, `trace_id`, `operation_id` and `on_behalf_of`

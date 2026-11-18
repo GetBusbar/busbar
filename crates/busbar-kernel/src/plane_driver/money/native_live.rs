@@ -254,7 +254,7 @@ impl NativeAttempt {
             .ok_or(NativeAttemptError::Binding)? = staged.partition.clone();
         snapshot.metered = ValidatedSelectedCheckpoint::try_from(&snapshot)
             .and_then(|checked| checked.project())
-            .map_err(NativeAttemptError::Custody)?
+            .map_err(|_| NativeAttemptError::Custody)?
             .partitions
             .iter()
             .any(|partition| {

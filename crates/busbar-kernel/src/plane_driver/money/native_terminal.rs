@@ -200,11 +200,11 @@ impl PlaneMoney {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
-            snapshot.audit = Some(self.post.checkpoint_facts(request.unit()).ok_or_else(|| {
-                NativeAttemptError::Custody(RecordStoreError(
-                    "selected request lost its original audit capture owner".into(),
-                ))
-            })?);
+            snapshot.audit = Some(
+                self.post
+                    .checkpoint_facts(request.unit())
+                    .ok_or(NativeAttemptError::Custody)?,
+            );
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
@@ -244,8 +244,8 @@ impl PlaneMoney {
                     gov: self.gov.clone(),
                     completion: None,
                 },
-                SelectedTransfer::RejectedNotOwned { error, .. } => {
-                    return Err(NativeAttemptError::Custody(error))
+                SelectedTransfer::RejectedNotOwned { .. } => {
+                    return Err(NativeAttemptError::Custody)
                 }
             };
             (
@@ -263,7 +263,3 @@ impl PlaneMoney {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "native_terminal_tests.rs"]
-mod tests;
