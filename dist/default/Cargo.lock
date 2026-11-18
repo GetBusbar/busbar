@@ -1178,7 +1178,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=725ccf6416439a08107485f358a08148de0c949c#725ccf6416439a08107485f358a08148de0c949c"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4#c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4"
 dependencies = [
  "busbar-contract",
  "foldhash 0.2.0",

@@ -807,7 +807,9 @@ busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-compl
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "725ccf6416439a08107485f358a08148de0c949c" }
+# c599ed8 (house/oss-green): its root test builds the dispatcher over the serving Services (LateServices is
+# gone, 395b97f138); the crate source differs from 725ccf6 only in test plumbing (tests moved out of src/).
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4" }
 # THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
 # pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
