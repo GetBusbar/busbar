@@ -362,4 +362,5 @@ Single Rust binary, MSRV 1.97, Apache-2.0. Docs at
 [`docs/`](docs/): [getting started](docs/getting-started.md),
 [architecture](docs/architecture.md), [roadmap](docs/roadmap.md), [testing](docs/testing.md),
 [security practices](docs/security/achievements.md) and the
-[1.5.5 to 1.6.0 migration guide](docs/migration-1.6.md).
+[1.5.5 to 1.6.0 migration guide](docs/migration-1.6.md). How to contribute and how the
+project is run: [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md).
