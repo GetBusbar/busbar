@@ -353,6 +353,9 @@ mod c_zeroize_fresh;
 mod c_zeroize_grow;
 #[path = "c_zeroize_sync.rs"]
 mod c_zeroize_sync;
+// W2-FU2 (ce0eea0192): /metrics/hooks series across reload; added without wiring.
+#[path = "fu2-metrics-hooks-reload.rs"]
+mod fu2_metrics_hooks_reload;
 #[path = "fu3-check-crypto-failed.rs"]
 mod fu3_check_crypto_failed;
 // W1-K10: the shared rig of its arms (C-ENTITLE, C-MINT, C-SIGN, C-CONNECT, C-MCP-CONNECT, C-LOGIN-PKCE,
