@@ -185,7 +185,7 @@ fn a_message_item_has_no_line_form() {
 #[test]
 fn the_carrier_end_argument_is_one_u64_record_holding_the_id() {
     let arg = carrier_end_arg(42);
-    let mut recs = Records::new(&arg);
+    let mut recs = Records::new(arg.as_bytes());
     let rec = recs.next().unwrap().unwrap();
     assert_eq!(rec.tag, g::TEXT);
     assert_eq!(rec.pod::<U64Rec>().unwrap().value, 42);
