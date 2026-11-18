@@ -20,14 +20,6 @@ impl ArrivalCtx {
     }
 }
 
-pub struct ArrivalPayload {
-    pub host: Arc<dyn crate::plane_driver::EngineHost>,
-
-    pub gov: busbar_contract::records::PlaneRequestCtx,
-
-    pub caller_token: Option<crate::auth::CallerCredential>,
-}
-
 pub trait ArrivalHost: Send + Sync {
     fn finish_rejected(
         &self,
