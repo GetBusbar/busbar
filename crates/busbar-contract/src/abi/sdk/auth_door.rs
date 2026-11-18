@@ -34,17 +34,17 @@ pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 /// Encode inert presentation for `Life::extensions`. Validation remains mandatory at
 /// the receiving host boundary. This shape contains only strings and integers, so JSON
 /// serialization cannot encounter unsupported numeric values or non-string object keys.
-#[must_use]
-pub fn presentation_extensions(presentation: &crate::auth_calls::LoginPresentation) -> Vec<u8> {
-    // The JSON is written straight into the entry: one buffer.
-    let mut out = Vec::new();
+pub fn presentation_extensions(
+    presentation: &crate::auth_calls::LoginPresentation,
+    out: &mut Vec<u8>,
+) {
+    // The JSON is written straight into the entry, appended to the caller's buffer.
     crate::abi::mechanism::extensions::entry_into(
-        &mut out,
+        out,
         crate::auth_calls::presentation::EXT_LOGIN_PRESENTATION,
         |value| serde_json::to_writer(value, presentation),
     )
     .expect("presentation consists of JSON strings and integers");
-    out
 }
 
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
@@ -446,17 +446,15 @@ pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refus
     T::open_refusing(settings, &[]).map(drop)
 }
 
-pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin) -> Vec<u8> {
-    plugin.carriers().map_or_else(Vec::new, |carriers| {
-        let mut out = Vec::new();
+pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin, out: &mut Vec<u8>) {
+    if let Some(carriers) = plugin.carriers() {
         crate::abi::mechanism::extensions::entry_into(
-            &mut out,
+            out,
             crate::abi::auth::EXT_CARRIERS,
             |value| serde_json::to_writer(value, &carriers),
         )
         .expect("carrier names serialize as JSON");
-        out
-    })
+    }
 }
 
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
@@ -489,8 +487,8 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
         T::open_refusing(settings, secrets).map(Verifier)
     }
 
-    fn extensions(&self) -> Vec<u8> {
-        carrier_extensions(&self.0)
+    fn extensions(&self, out: &mut Vec<u8>) {
+        carrier_extensions(&self.0, out);
     }
 
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {

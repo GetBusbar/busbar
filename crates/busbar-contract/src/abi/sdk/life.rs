@@ -260,6 +260,23 @@ impl Leases {
         blob
     }
 
+    /// As [`Leases::blob`], the bytes written by `write` straight into the new lease's own buffer:
+    /// the lease owns what the host reads after the call, so the table, not the writer, makes the
+    /// one buffer. Nothing written answers an absent blob.
+    ///
+    /// # Errors
+    /// `write`'s error; nothing is held then.
+    pub fn blob_written<E>(
+        &self,
+        head: &mut OutHead,
+        fmt: u32,
+        write: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
+    ) -> Result<Blob, E> {
+        let mut bytes = Vec::new();
+        write(&mut bytes)?;
+        Ok(self.blob(head, bytes, fmt))
+    }
+
     /// As [`Leases::blob`], for secret material: the blob is flagged secret and the bytes are
     pub fn secret_blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
         if bytes.is_empty() {
@@ -420,8 +437,10 @@ pub trait Life: Send + Sync + Sized + 'static {
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
     /// Instance metadata carried in successful OPEN and REFRESH reply extensions. The SDK leases
-    fn extensions(&self) -> Vec<u8> {
-        Vec::new()
+    ///
+    /// Appended to `out`, the lease's own buffer; nothing appended = no metadata.
+    fn extensions(&self, out: &mut Vec<u8>) {
+        let _ = out;
     }
 
     /// `open` over the host tables the call hands it (`OpenIn.host`; `None` when none): what the
@@ -565,11 +584,13 @@ fn entry(counted: Option<Counted>) -> MetricEntry {
 
 /// Lease the instance's metadata and report its one declared diagnostic, when present.
 fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
-    head.extensions = h.leases.blob(
-        head,
-        h.life.extensions(),
-        crate::abi::mechanism::call::BLOB_OCTETS,
-    );
+    let Ok(extensions) =
+        h.leases
+            .blob_written(head, crate::abi::mechanism::call::BLOB_OCTETS, |out| {
+                h.life.extensions(out);
+                Ok::<(), std::convert::Infallible>(())
+            });
+    head.extensions = extensions;
     let Some(flag) = h.life.flagged() else {
         return;
     };

@@ -55,18 +55,14 @@ pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
     if let Err(error) = requirements.validate() {
         return out.fail(Refusal::refused(error));
     }
-    // The leased bytes are the host's to read after this call: the one owned buffer, written in place.
-    let mut bytes = Vec::new();
-    match serde_json::to_writer(&mut bytes, &requirements) {
-        Ok(()) => {
-            out.lease(
-                |o| &o.findings,
-                held.leases(),
-                bytes,
-                crate::abi::mechanism::call::BLOB_JSON,
-            );
-            Outcome::Ready
-        }
+    // The host reads the findings after this call: they are written into the lease's own buffer.
+    match out.lease_written(
+        |o| &o.findings,
+        held.leases(),
+        crate::abi::mechanism::call::BLOB_JSON,
+        |bytes| serde_json::to_writer(bytes, &requirements),
+    ) {
+        Ok(()) => Outcome::Ready,
         Err(error) => out.fail(Refusal::failed(super::cold::wire::display_text(&error))),
     }
 }

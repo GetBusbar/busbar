@@ -769,7 +769,11 @@ impl<B: Backend> SafeSlot for Open<B> {
                     return Outcome::Fault;
                 }
                 let head = &mut out.raw().head;
-                head.extensions = held.leases().blob(head, served.extensions(), BLOB_OCTETS);
+                let Ok(extensions) = held.leases().blob_written(head, BLOB_OCTETS, |out| {
+                    served.extensions(out);
+                    Ok::<(), std::convert::Infallible>(())
+                });
+                head.extensions = extensions;
                 Outcome::Ready
             }
         }

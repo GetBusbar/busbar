@@ -1133,6 +1133,24 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, blob);
     }
 
+    /// As [`Out::lease`], the bytes written by `write` into the lease's own buffer
+    /// ([`Leases::blob_written`]).
+    ///
+    /// # Errors
+    /// `write`'s error; nothing is leased or set then.
+    pub fn lease_written<E>(
+        &mut self,
+        pick: impl FnOnce(&T) -> &Blob,
+        leases: &Leases,
+        fmt: u32,
+        write: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let blob = leases.blob_written(self.head(), fmt, write)?;
+        self.held_by(&leases.alive);
+        self.put(pick, blob);
+        Ok(())
+    }
+
     /// As [`Out::lease`], for secret material (flagged secret, zeroized on release).
     pub fn lease_secret(
         &mut self,

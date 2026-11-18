@@ -31,27 +31,32 @@ impl Life for Choice {
             last_generation: AtomicU64::new(1),
         })
     }
-    fn extensions(&self) -> Vec<u8> {
-        use busbar_contract::abi::mechanism::extensions::encode;
+    fn extensions(&self, out: &mut Vec<u8>) {
+        use busbar_contract::abi::mechanism::extensions::encode_into;
         use busbar_contract::auth_calls::presentation::EXT_LOGIN_PRESENTATION;
         if self.variant == "absent" {
-            return Vec::new();
+            return;
         }
         let refreshed = self.refreshed.load(Ordering::Acquire);
         if self.variant == "bad-open"
             || (self.variant == "bad-refresh" && self.refresh_count.load(Ordering::Acquire) == 1)
         {
-            return encode(&[(
-                EXT_LOGIN_PRESENTATION,
-                br#"{"label":"private-malformed","icon":"<svg>"}"#,
-            )]);
+            encode_into(
+                out,
+                &[(
+                    EXT_LOGIN_PRESENTATION,
+                    br#"{"label":"private-malformed","icon":"<svg>"}"#,
+                )],
+            );
+            return;
         }
         busbar_contract::abi::sdk::auth_door::presentation_extensions(
             &busbar_contract::auth_calls::LoginPresentation {
                 label: if refreshed { "Changed" } else { "Original" }.into(),
                 icon: None,
             },
-        )
+            out,
+        );
     }
     fn refresh(&self, _: &[u8], _: &[&[u8]], generation: u64) -> Result<Refreshed, Refusal> {
         assert!(
