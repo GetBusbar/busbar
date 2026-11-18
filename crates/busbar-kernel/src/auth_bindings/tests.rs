@@ -55,7 +55,9 @@ fn rows() -> Vec<(&'static str, Vec<DialectAuthOwned>)> {
 fn styles() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
         ("hdr", vec!["bearer", "api-key"]),
-        ("oauth", vec!["oauth-connection"]),
+        // auth-oauth declares `oauth-token-exchange` too (busbar_contract::config::dialect_styles::TOKEN_EXCHANGE);
+        // 7247f5d1f1 binds an operator instance of it.
+        ("oauth", vec!["oauth-connection", "oauth-token-exchange"]),
     ]
 }
 
