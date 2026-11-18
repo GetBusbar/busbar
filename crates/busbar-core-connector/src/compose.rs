@@ -1038,7 +1038,7 @@ impl Planned {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(crate::off_path::compose::display_text(&addr)),
+            &Dest::Authority(crate::StackText::<{ crate::SOCKET_TEXT }>::of(&addr).as_str()),
         )
         .map_err(dial_failure)
         .map_err(|f| (dialled, f))?;
@@ -1109,7 +1109,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(crate::off_path::compose::unix_authority(path)),
+            &Dest::Authority(&crate::off_path::compose::unix_authority(path)),
         )
         .map_err(dial_failure)?;
         Self::open_dialled(
@@ -1225,7 +1225,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone(), env.clone(), supervision_key),
+            &Dest::Program(program, env, supervision_key),
         )
         .map_err(dial_failure)?;
         let established = Established {
@@ -2068,7 +2068,7 @@ impl Connection {
         let redialled = Carried::dial(
             Arc::clone(&f.door),
             Arc::clone(&f.io),
-            &Dest::Authority(crate::off_path::compose::display_text(&next)),
+            &Dest::Authority(crate::StackText::<{ crate::SOCKET_TEXT }>::of(&next).as_str()),
         );
         Some(
             redialled

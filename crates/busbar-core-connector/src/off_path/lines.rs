@@ -7,27 +7,7 @@
 //! the boot proxy posture, the node's own ports, a member's lease tail and spawn dial, a program's
 //! resolved environment and the Windows system directory.
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Field};
 use busbar_contract::conn::Program;
-
-use crate::carrier::abi;
-
-/// A program destination's argument and environment arrays, as the carrier's `dial` hands them to
-/// the entry: built once per program spawn (process spawn setup), each naming `program`'s own
-/// bytes.
-pub(crate) fn program_destination(program: &Program) -> (Vec<AbiStr>, Vec<Field>) {
-    (
-        program.args.iter().map(|a| abi(a.as_bytes())).collect(),
-        program
-            .env
-            .iter()
-            .map(|(k, v)| Field {
-                name: abi(k.as_bytes()),
-                value: abi(v.as_bytes()),
-            })
-            .collect(),
-    )
-}
 
 /// One segment of the host's handle table, `len` empty slots: allocated once in the process's
 /// life, the first time the table grows into it.

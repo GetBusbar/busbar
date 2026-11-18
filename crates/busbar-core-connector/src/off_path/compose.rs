@@ -5,17 +5,10 @@
 //! dial, accept, TLS upgrade or handshake settlement copies once, as the connection is built or
 //! its handshake completes, never per byte or message it then carries.
 
-use std::fmt::Display;
-
 /// An owned copy of `text`, kept by a connection's own record (its authority, offered name,
 /// claim or sealed field name) as the connection is dialled, upgraded or sealed.
 pub(crate) fn owned(text: &str) -> String {
     text.to_owned()
-}
-
-/// `value` as the text a dial names its destination by.
-pub(crate) fn display_text<T: Display + ?Sized>(value: &T) -> String {
-    value.to_string()
 }
 
 /// The destination text of a dial of the UNIX-domain socket at `path`.

@@ -165,7 +165,7 @@ fn dial(door: &Arc<Dialer>, io: &Arc<HostIo>, at: &str) -> Result<Carried, DialF
     Carried::dial(
         Arc::clone(door) as Arc<dyn FramerDoor>,
         Arc::clone(io),
-        &Dest::Authority(at.to_owned()),
+        &Dest::Authority(at),
     )
 }
 
