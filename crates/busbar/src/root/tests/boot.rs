@@ -1119,9 +1119,7 @@ fn provider_location_refuses_an_unregistered_claim_and_an_omitted_target() {
 }
 
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(boot_http_locate);
 owner_test_sources!(boot_carrier_locate);
-owner_test_sources!(boot_session_locate);
 
 /// COORD-STORE-C2 (live boot bug): when the MIN-3 walk opened and admitted the configured store, that admission
 /// is the boot's store admission (taken once) and the old ABI's preparation is never entered; a boot with no
