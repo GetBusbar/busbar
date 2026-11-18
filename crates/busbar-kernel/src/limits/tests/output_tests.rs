@@ -170,10 +170,11 @@ fn real_json_facade_escape_scratch_fits_the_preflight_credit() {
     crate::ThreadAllocated::reset();
     busbar_contract::json::to_writer(&mut body, &Document { text: &text }).unwrap();
     let allocated = crate::ThreadAllocated::bytes();
-    assert!(
-        allocated > 0,
-        "the real facade owns an escape buffer before forwarding"
-    );
+    // Since b59a82e4f6 ("Stream JSON into fallible sinks without temporary string buffers") and the
+    // sonic-rs fork's 6169267 ("compact I/O serialization without string staging"), the real facade
+    // escapes straight into the bounded sink: no escape buffer exists, so whatever it allocates fits
+    // the preflight credit, and the escaped text itself lands in the funded body.
+    assert_eq!(allocated, 0, "the real facade stages no escape buffer");
     assert!(allocated <= u64::try_from(scratch).unwrap());
     let encoded = body.into_bytes().unwrap();
     assert!(encoded.len() > text.len());
