@@ -2170,7 +2170,7 @@ type HookOpened = Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>;
 #[derive(Debug)]
 pub enum OpenError {
     Refused {
-        refusal: Refusal,
+        refusal: Box<Refusal>,
         error: Option<PluginCode>,
     },
     Config {
