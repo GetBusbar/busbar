@@ -824,12 +824,477 @@ impl<'de> Visitor<'de> for RawTree {
     fn visit_str<E: de::Error>(self, text: &str) -> Result<Tree, E> {
         // This parser uses input-span provenance to distinguish real object keys
         // from numeric transport tags; decoded strings and partial trees are wiped.
-        let mut held = crate::abi::sdk::cred::settings_json::document(text.as_bytes(), false)
+        let mut held = guarded_reader::document(text.as_bytes(), false)
             .map_err(|_| E::custom("invalid settings JSON (values not echoed)"))?;
         Ok(Tree(std::mem::take(&mut held.0)))
     }
     fn visit_string<E: de::Error>(self, text: String) -> Result<Tree, E> {
         self.visit_str(&SecureString::from(text))
+    }
+}
+
+/// THE GUARDED SETTINGS READER: neither it nor its callers hand `serde_json` a material-bearing
+/// string byte. serde reads a view of the document whose string contents are masked (`x`, same
+/// length, so every position is the document's), and each string the reader keeps is decoded from
+/// the real bytes into a buffer wiped when it is released. [`guarded_reader::document`] reads a
+/// settings document with it; the old SDK's credential-reply selectors walk with the same parts.
+pub(crate) mod guarded_reader {
+    use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
+    use serde_json::Value;
+    use zeroize::Zeroize;
+
+    use crate::secure::{SecureString, SecureVec};
+
+    /// What a parse filled a buffer with.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Held {
+        /// The document copy serde reads, before and after its strings are masked.
+        View,
+        /// A decoded object key.
+        Key,
+        /// A decoded string value, or a written value's JSON text.
+        Value,
+    }
+
+    /// Where a parse reports each buffer it fills from the document, while that buffer is live. Tests
+    /// watch these to prove each one is wiped before it is freed; production passes [`Unwatched`].
+    pub(crate) trait Custody: Copy {
+        /// `bytes`, the initialised start of a live buffer, hold document bytes of kind `what`.
+        fn held(self, what: Held, bytes: &[u8]);
+    }
+
+    /// The production [`Custody`]: nothing is watched.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Unwatched;
+
+    impl Custody for Unwatched {
+        fn held(self, what: Held, bytes: &[u8]) {
+            #[cfg(any(test, feature = "test-seal"))]
+            OBSERVER.with(|slot| {
+                if let Some(observe) = slot.get() {
+                    observe(
+                        match what {
+                            Held::View => "parse view",
+                            Held::Key => "parsed key",
+                            Held::Value => "parsed value",
+                        },
+                        bytes,
+                    );
+                }
+            });
+            let _ = (what, bytes);
+        }
+    }
+
+    /// A copy of `body` with every byte inside a string (escapes included) replaced by `x`.
+    pub(crate) fn masked<C: Custody>(body: &[u8], custody: C) -> SecureVec {
+        let mut view = SecureVec::from(body);
+        custody.held(Held::View, &view);
+        let mut inside = false;
+        let mut escaped = false;
+        for byte in view.iter_mut() {
+            if !inside {
+                inside = *byte == b'"';
+            } else if !escaped && *byte == b'"' {
+                inside = false;
+            } else {
+                let escape = !escaped && *byte == b'\\';
+                *byte = b'x';
+                escaped = escape;
+            }
+        }
+        view
+    }
+
+    /// `serde_json`'s control-character refusal.
+    const CONTROL: &str = "control character (\\u0000-\\u001F) found while parsing a string";
+
+    /// The document a reader walks: its real bytes, the masked view serde reads, and the custody
+    /// every buffer filled from it is reported to.
+    #[derive(Clone, Copy)]
+    pub(crate) struct Doc<'a, C> {
+        pub(crate) body: &'a [u8],
+        pub(crate) view: &'a [u8],
+        pub(crate) custody: C,
+    }
+
+    impl<'a, C: Custody> Doc<'a, C> {
+        /// The real bytes of the string serde read as `masked` from the view.
+        pub(crate) fn raw<E: Error>(self, masked: &str) -> Result<&'a [u8], E> {
+            (masked.as_ptr() as usize)
+                .checked_sub(self.view.as_ptr() as usize)
+                .and_then(|start| self.body.get(start..start.checked_add(masked.len())?))
+                .ok_or_else(|| E::custom("invalid JSON string span"))
+        }
+
+        /// The string serde read as `masked`, decoded from the real bytes into a guarded buffer.
+        pub(crate) fn decoded<E: Error>(self, masked: &str, what: Held) -> Result<SecureString, E> {
+            let raw = self.raw::<E>(masked)?;
+            let mut decoded = SecureString::with_capacity(raw.len());
+            let result = decode(raw, &mut decoded);
+            self.custody.held(what, decoded.as_bytes());
+            result.map_err(E::custom)?;
+            Ok(decoded)
+        }
+
+        /// Refuse the string serde read as `masked` unless it decodes, copying it nowhere.
+        pub(crate) fn validated<E: Error>(self, masked: &str) -> Result<(), E> {
+            let raw = self.raw::<E>(masked)?;
+            decode(raw, &mut Discard).map_err(E::custom)
+        }
+    }
+
+    /// An actual object key, or serde_json's synthetic arbitrary-precision number tag.
+    /// Actual keys always borrow from the masked view. Checking that provenance before the tag
+    /// prevents a document key with serde's private spelling from impersonating a number.
+    pub(crate) enum ObjectKey {
+        Text(SecureString),
+        Number,
+    }
+
+    pub(crate) struct AnyKey<'a, C>(pub(crate) Doc<'a, C>);
+
+    impl<'de, C: Custody> DeserializeSeed<'de> for AnyKey<'_, C> {
+        type Value = ObjectKey;
+
+        fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<ObjectKey, D::Error> {
+            de.deserialize_str(self)
+        }
+    }
+
+    impl<'de, C: Custody> Visitor<'de> for AnyKey<'_, C> {
+        type Value = ObjectKey;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object key or a serde_json number tag")
+        }
+
+        fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<ObjectKey, E> {
+            if self.0.raw::<E>(value).is_ok() {
+                self.0.decoded(value, Held::Key).map(ObjectKey::Text)
+            } else if value == "$serde_json::private::Number" {
+                Ok(ObjectKey::Number)
+            } else {
+                Err(E::custom("invalid JSON string span"))
+            }
+        }
+    }
+
+    /// Only the synthetic number map supplies an owned string. JSON strings still use the guarded
+    /// decoder above; this numeric token has already been validated by serde_json's lexer.
+    pub(crate) struct NumberText;
+
+    impl<'de> DeserializeSeed<'de> for NumberText {
+        type Value = serde_json::Number;
+
+        fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+            de.deserialize_string(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for NumberText {
+        type Value = serde_json::Number;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("serde_json's numeric token")
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+            value.parse().map_err(E::custom)
+        }
+
+        fn visit_string<E: Error>(self, value: String) -> Result<Self::Value, E> {
+            self.visit_str(&SecureString::from(value))
+        }
+    }
+
+    /// Where [`decode`] writes a string's characters.
+    trait Sink {
+        fn put(&mut self, text: &str);
+    }
+
+    impl Sink for String {
+        fn put(&mut self, text: &str) {
+            self.push_str(text);
+        }
+    }
+
+    impl Sink for SecureString {
+        fn put(&mut self, text: &str) {
+            self.push_str(text);
+        }
+    }
+
+    /// A [`Sink`] that keeps nothing: validation alone.
+    struct Discard;
+
+    impl Sink for Discard {
+        fn put(&mut self, _: &str) {}
+    }
+
+    /// Decode the JSON string contents `raw` (between its quotes) into `out`, refusing what
+    /// `serde_json` refuses, in its words. `out` never needs more than `raw.len()` bytes.
+    fn decode(mut raw: &[u8], out: &mut impl Sink) -> Result<(), &'static str> {
+        // serde validates UTF-8 only after the closing quote, after judging every escape.
+        let mut invalid_unicode = false;
+        while !raw.is_empty() {
+            let end = raw
+                .iter()
+                .position(|byte| *byte == b'\\' || *byte < 0x20)
+                .unwrap_or(raw.len());
+            match std::str::from_utf8(&raw[..end]) {
+                Ok(text) => out.put(text),
+                Err(_) => invalid_unicode = true,
+            }
+            raw = &raw[end..];
+            let Some((&first, tail)) = raw.split_first() else {
+                break;
+            };
+            if first != b'\\' {
+                return Err(CONTROL);
+            }
+            let Some((&escape, tail)) = tail.split_first() else {
+                return Err("EOF while parsing a string");
+            };
+            raw = tail;
+            let ch = match escape {
+                b'"' => '"',
+                b'\\' => '\\',
+                b'/' => '/',
+                b'b' => '\u{8}',
+                b'f' => '\u{c}',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                b'u' => {
+                    let first = hex4(&mut raw)?;
+                    let code = if (0xD800..0xDC00).contains(&first) {
+                        raw = raw
+                            .strip_prefix(b"\\u")
+                            .ok_or("unexpected end of hex escape")?;
+                        let low = hex4(&mut raw)?;
+                        if !(0xDC00..0xE000).contains(&low) {
+                            return Err("lone leading surrogate in hex escape");
+                        }
+                        0x10000 + ((first - 0xD800) << 10) + (low - 0xDC00)
+                    } else {
+                        first
+                    };
+                    char::from_u32(code).ok_or("lone leading surrogate in hex escape")?
+                }
+                _ => return Err("invalid escape"),
+            };
+            out.put(ch.encode_utf8(&mut [0; 4]));
+        }
+        if invalid_unicode {
+            Err("invalid unicode code point")
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The four hex digits of a `\u` escape at the start of `raw`, consumed.
+    fn hex4(raw: &mut &[u8]) -> Result<u32, &'static str> {
+        let digits = raw.get(..4).ok_or("EOF while parsing a string")?;
+        let mut value = 0;
+        for byte in digits {
+            value = value * 16 + char::from(*byte).to_digit(16).ok_or("invalid escape")?;
+        }
+        *raw = &raw[4..];
+        Ok(value)
+    }
+
+    #[cfg(any(test, feature = "test-seal"))]
+    type Observer = fn(&'static str, &[u8]);
+    #[cfg(any(test, feature = "test-seal"))]
+    thread_local! {
+        static OBSERVER: std::cell::Cell<Option<Observer>> = const { std::cell::Cell::new(None) };
+    }
+    #[cfg(any(test, feature = "test-seal"))]
+    pub(crate) fn observing<T>(observe: Observer, action: impl FnOnce() -> T) -> T {
+        struct Restore(Option<Observer>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                OBSERVER.with(|slot| slot.set(self.0));
+            }
+        }
+        let _restore = Restore(OBSERVER.with(|slot| slot.replace(Some(observe))));
+        action()
+    }
+
+    /// A settings JSON value whose strings and object keys wipe on drop, including partially parsed
+    /// trees and replaced duplicate values. This is for readable configuration, not extracted secret
+    /// responses (those use [`crate::abi::sdk::cred::SelectedJson`]). Numeric scratch in serde_json is not zeroized.
+    #[derive(Clone)]
+    pub struct SettingsValue(pub(crate) Value);
+
+    impl std::fmt::Debug for SettingsValue {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("SettingsValue(<redacted>)")
+        }
+    }
+
+    impl std::ops::Deref for SettingsValue {
+        type Target = Value;
+        fn deref(&self) -> &Value {
+            &self.0
+        }
+    }
+
+    impl From<Value> for SettingsValue {
+        fn from(value: Value) -> Self {
+            Self(value)
+        }
+    }
+
+    impl SettingsValue {
+        /// Mutably visit a configuration value by JSON pointer. Any value moved out must be put
+        /// into another wiping owner by the caller; dropping this document only wipes what remains.
+        pub fn pointer_mut(&mut self, pointer: &str) -> Option<&mut Value> {
+            self.0.pointer_mut(pointer)
+        }
+
+        fn object() -> Self {
+            Self(Value::Object(serde_json::Map::new()))
+        }
+        fn put(&mut self, key: &mut String, value: &mut Value) {
+            if let Value::Object(items) = &mut self.0 {
+                if let Some(previous) = items.get_mut(key.as_str()) {
+                    std::mem::swap(previous, value);
+                } else {
+                    items.insert(std::mem::take(key), std::mem::take(value));
+                }
+            }
+        }
+        fn push(&mut self, value: &mut Value) {
+            if let Value::Array(items) = &mut self.0 {
+                items.push(std::mem::take(value));
+            }
+        }
+        /// Move a configuration member out, leaving null under its wiping key.
+        pub fn take(&mut self, key: &str) -> Option<Self> {
+            self.0.get_mut(key).map(|value| Self(std::mem::take(value)))
+        }
+        /// Move a configuration string out. The caller owns its cleanup from here.
+        pub fn into_string(mut self) -> Option<String> {
+            match &mut self.0 {
+                Value::String(s) => Some(std::mem::take(s)),
+                _ => None,
+            }
+        }
+    }
+
+    impl Drop for SettingsValue {
+        fn drop(&mut self) {
+            wipe(&mut self.0);
+        }
+    }
+
+    pub(crate) fn wipe(v: &mut Value) {
+        match v {
+            Value::String(s) => s.zeroize(),
+            Value::Number(_) => *v = Value::from(0u64),
+            Value::Bool(b) => *b = false,
+            Value::Array(items) => items.iter_mut().for_each(wipe),
+            Value::Object(map) => {
+                for (mut key, mut value) in std::mem::take(map) {
+                    key.zeroize();
+                    wipe(&mut value);
+                }
+            }
+            Value::Null => {}
+        }
+    }
+
+    pub(crate) fn document(
+        body: &[u8],
+        unique_root: bool,
+    ) -> Result<SettingsValue, serde_json::Error> {
+        let view = masked(body, Unwatched);
+        let doc = Doc {
+            body,
+            view: &view,
+            custody: Unwatched,
+        };
+        let mut de = serde_json::Deserializer::from_slice(&view);
+        Tree(doc, unique_root)
+            .deserialize(&mut de)
+            .and_then(|value| de.end().map(|()| value))
+    }
+
+    /// Any value, kept whole (the token's reference).
+    struct Tree<'a, C>(Doc<'a, C>, bool);
+
+    impl<'de, C: Custody> DeserializeSeed<'de> for Tree<'_, C> {
+        type Value = SettingsValue;
+
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            de: D,
+        ) -> Result<SettingsValue, D::Error> {
+            de.deserialize_any(self)
+        }
+    }
+
+    impl<'de, C: Custody> Visitor<'de> for Tree<'_, C> {
+        type Value = SettingsValue;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a JSON value")
+        }
+
+        fn visit_unit<E: Error>(self) -> Result<SettingsValue, E> {
+            Ok(SettingsValue(Value::Null))
+        }
+
+        fn visit_bool<E: Error>(self, value: bool) -> Result<SettingsValue, E> {
+            Ok(SettingsValue(Value::Bool(value)))
+        }
+
+        fn visit_i64<E: Error>(self, value: i64) -> Result<SettingsValue, E> {
+            Ok(SettingsValue(Value::from(value)))
+        }
+
+        fn visit_u64<E: Error>(self, value: u64) -> Result<SettingsValue, E> {
+            Ok(SettingsValue(Value::from(value)))
+        }
+
+        fn visit_f64<E: Error>(self, value: f64) -> Result<SettingsValue, E> {
+            Ok(SettingsValue(Value::from(value)))
+        }
+
+        fn visit_borrowed_str<E: Error>(self, value: &'de str) -> Result<SettingsValue, E> {
+            let text = self.0.decoded::<E>(value, Held::Value)?;
+            Ok(SettingsValue(Value::String(text.into_string())))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<SettingsValue, A::Error> {
+            let mut items = SettingsValue(Value::Array(Vec::new()));
+            while let Some(mut item) = seq.next_element_seed(Tree(self.0, false))? {
+                items.push(&mut item.0);
+            }
+            Ok(items)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SettingsValue, A::Error> {
+            let mut tree = SettingsValue::object();
+            while let Some(key) = map.next_key_seed(AnyKey(self.0))? {
+                let ObjectKey::Text(key) = key else {
+                    return Ok(SettingsValue(Value::Number(
+                        map.next_value_seed(NumberText)?,
+                    )));
+                };
+                if self.1 && tree.0.get(key.as_str()).is_some() {
+                    return Err(A::Error::custom("duplicate configuration field"));
+                }
+                let mut value = map.next_value_seed(Tree(self.0, false))?;
+                let mut key = key.into_string();
+                tree.put(&mut key, &mut value.0);
+                // A duplicate leaves the key here: wipe it on the way out.
+                drop(crate::secure::SecureString::from(key));
+            }
+            Ok(tree)
+        }
     }
 }
 

@@ -155,6 +155,7 @@ pub(crate) mod write;
 use crate::secure::SecureVec;
 use zeroize::Zeroize;
 
+pub use crate::plugin_settings::guarded_reader::SettingsValue;
 pub use crate::secret_fields::SECRET_MARKER;
 pub use form_body::{FormBody, FormValue};
 pub use protected_json::{json_text_members, select_json, SelectedJson};
@@ -162,7 +163,7 @@ pub use redact::redact_encoded_echoes;
 pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::settings_lent;
 pub use settings::{settings, SettingsError};
-pub use settings_json::{settings_document, SettingsValue};
+pub use settings_json::settings_document;
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
