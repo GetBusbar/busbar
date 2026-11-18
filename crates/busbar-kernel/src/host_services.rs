@@ -996,6 +996,9 @@ pub struct KernelServices {
     trust: Arc<TrustBook>,
 
     trust_resync: Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>,
+    /// Store upkeep jobs admitted to the pool and not yet finished or dropped unrun: `drain`
+    /// certifies nothing while one is outstanding.
+    upkeep: Arc<std::sync::atomic::AtomicUsize>,
 
     judge: Option<Arc<dyn DestJudge>>,
     demotions: Option<Demotions>,
@@ -1244,6 +1247,23 @@ impl Drop for TrustResync {
     }
 }
 
+/// One admitted Store upkeep job, counted from its admission to the pool until it finishes or
+/// is dropped unrun, so a record drain never certifies an empty queue while it is outstanding.
+struct Upkeep(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Upkeep {
+    fn admit(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Upkeep {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 impl Default for KernelServices {
     fn default() -> Self {
         Self::new()
@@ -1282,6 +1302,7 @@ impl KernelServices {
             signer: inputs.signer,
             trust: Arc::default(),
             trust_resync: Arc::default(),
+            upkeep: Arc::default(),
             judge: Some(inputs.judge),
             demotions: Some(Demotions {
                 record: inputs.demotions,
@@ -1329,6 +1350,7 @@ impl KernelServices {
             signer: None,
             trust: Arc::default(),
             trust_resync: Arc::default(),
+            upkeep: Arc::default(),
             judge: None,
             demotions: None,
             work: Arc::default(),
@@ -2657,7 +2679,9 @@ impl KernelServices {
             return;
         };
         let store = Arc::clone(store);
+        let upkeep = Upkeep::admit(&self.upkeep);
         pool.run_async(Box::pin(async move {
+            let _upkeep = upkeep;
             if let Err(error) = store.sweep_claim_scope().await {
                 tracing::warn!(
                     ?error,
@@ -2683,8 +2707,9 @@ impl KernelServices {
         let resync = TrustResync(Arc::clone(&self.trust_resync));
         last.store(now, Ordering::Relaxed);
         let (record, trust) = (Arc::clone(&d.record), Arc::clone(&self.trust));
+        let upkeep = Upkeep::admit(&self.upkeep);
         pool.run_async(Box::pin(async move {
-            let _resync = resync;
+            let (_resync, _upkeep) = (resync, upkeep);
             let snapshot = trust.decision_snapshot();
             match record.decisions().await {
                 Ok(rows) => trust.resync_decided(&snapshot, &rows),
@@ -2706,7 +2731,7 @@ impl KernelServices {
     pub fn drain(&self, deadline: std::time::Duration) -> bool {
         crate::off_path::host_services::drain_until(
             deadline,
-            || self.batcher.idle(),
+            || self.batcher.idle() && self.upkeep.load(std::sync::atomic::Ordering::Acquire) == 0,
             || self.flush_tick(),
         )
     }
