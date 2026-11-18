@@ -67,8 +67,9 @@ pub(crate) trait SelfGroupProvisioner: Send + Sync {
     /// `child_default` (inherit-only when none up the chain) — exactly the admin auto-provision shape.
     /// IDEMPOTENT: a no-op (never a reset) when `leaf` already exists under `parent`, so N logins
     /// for one subject leave exactly one leaf with its usage intact. A different parent is refused;
-    /// a mint cannot re-home an existing leaf. `Err(msg)` fails the mint closed.
-    async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String>;
+    /// a mint cannot re-home an existing leaf. `Err(msg)` fails the mint closed. The leaf's name
+    /// is handed over: a provision that installs the group keeps it, so it is never copied.
+    async fn ensure_leaf(&self, leaf: String, parent: &str) -> Result<(), String>;
 }
 
 pub(crate) struct DeterministicEd25519Keys<'a> {
@@ -113,9 +114,9 @@ impl<'a> DeterministicEd25519Keys<'a> {
         let now = busbar_kernel::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         self.provisioner
-            .ensure_leaf(&Self::self_group(principal), &self.team)
+            .ensure_leaf(Self::self_group(principal), &self.team)
             .await
-            .map_err(ExchangeError::MintFailed)?;
+            .map_err(|detail| ExchangeError::MintFailed(detail.into()))?;
 
         mint_provisioned_self_key(
             Arc::clone(&self.gov),
@@ -154,7 +155,7 @@ async fn mint_provisioned_self_key(
     .map_err(|e| match e {
         crate::governance::SelfMintError::Refused(reason) => ExchangeError::Held(reason),
         crate::governance::SelfMintError::Store(e) => {
-            ExchangeError::MintFailed(crate::cold::auth::keys::mint_store_failed(&e))
+            ExchangeError::MintFailed(crate::cold::auth::keys::mint_store_failed(&e).into())
         }
     })?;
     Ok(IssuedKey {
@@ -199,17 +200,19 @@ impl HandleProvisioner {
 
 #[async_trait]
 impl SelfGroupProvisioner for HandleProvisioner {
-    async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
-        let (leaf, parent, actor) =
-            crate::cold::auth::keys::provision_parts(leaf, parent, &self.actor);
+    async fn ensure_leaf(&self, leaf: String, parent: &str) -> Result<(), String> {
+        // The transaction's body runs here, in this call: it reads the parent and the actor in
+        // place. Only a provision that installs the group keeps names (the leaf, handed in, and
+        // the actor, copied once for the persist that outlives this call).
+        let actor = self.actor.as_str();
         crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
 
             let Some(installed) = crate::governance::group_provision::plan_mint_group(
                 current,
                 &leaf,
-                Some(&parent),
-                &actor,
+                Some(parent),
+                actor,
             )?
             else {
                 return Ok(txn.done(()));
@@ -218,7 +221,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
             let persist = crate::governance::group_provision::persist_provisioned_group_async(
                 installed.clone(),
                 leaf,
-                actor,
+                actor.to_owned(),
             );
             Ok(txn.commit_async(installed, persist, ()))
         })
@@ -252,8 +255,9 @@ pub(crate) enum ExchangeError {
     /// block `max_ttl`/`binding_modes` and the per-role `mint_ceilings`) → 403. The detail is the
     /// policy's own message, naming the ceiling that bit.
     OverCeiling(String),
-    /// The mint itself failed (no signing key, store error) → 500.
-    MintFailed(String),
+    /// The mint itself failed (no signing key, store error) → 500. The detail is a fixed text, or
+    /// the failing store's or provision's own message.
+    MintFailed(std::borrow::Cow<'static, str>),
     /// The presented credential's sender constraint (RFC 9449 DPoP) was not met or cannot be
     /// verified here → 401 `sender_constrained`. No key is minted.
     SenderConstraint(super::dpop::Refusal),

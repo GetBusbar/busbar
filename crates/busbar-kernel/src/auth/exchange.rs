@@ -39,9 +39,14 @@ pub(crate) async fn exchange(
         crate::auth::dpop::Surface::Exchange,
     )
     .await;
-    let candidate = match judged {
-        crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
-        crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
+    // A proven token is read in place off the request's head; the chain below only reads it.
+    let candidate: Option<std::borrow::Cow<'_, str>> = match judged {
+        crate::auth::dpop::SenderConstraint::Unconstrained => {
+            candidate.map(std::borrow::Cow::Owned)
+        }
+        crate::auth::dpop::SenderConstraint::Proven(token) => {
+            Some(std::borrow::Cow::Borrowed(token))
+        }
         crate::auth::dpop::SenderConstraint::Refused(reason) => {
             if let Some(admission) = req.extensions().get::<crate::inbound::RequestAdmission>() {
                 admission.refuse(
@@ -107,7 +112,7 @@ pub(crate) async fn exchange(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let provider = crate::cold::auth::keys::self_key_provider(provider);
+    // The provider's name is read off the verdict for the length of this exchange: no copy.
     let keys = DeterministicEd25519Keys::new(gov, provider, team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
@@ -150,9 +155,9 @@ async fn admit_exchange_mint<'a>(
         return Err(ExchangeError::Unauthorized);
     };
     let Some(gov) = governance.cloned() else {
-        return Err(ExchangeError::MintFailed(
-            crate::cold::auth::keys::governance_disabled(),
-        ));
+        return Err(ExchangeError::MintFailed(std::borrow::Cow::Borrowed(
+            "governance is disabled: cannot mint keys",
+        )));
     };
     if let Some(claim) = claim {
         if !claim.win().await {
