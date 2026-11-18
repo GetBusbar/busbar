@@ -360,7 +360,9 @@ pub(crate) struct RecoveryEntry {
     runner: std::sync::Arc<super::BudgetFlushRunner>,
     resolution_runner: std::sync::Arc<super::BudgetFlushRunner>,
     driver: std::sync::Arc<super::BudgetFlushRunner>,
-    sent_clock: Option<std::time::Instant>,
+    /// This process sent the operation (revision 0 with a first-send time). Only the fact is
+    /// kept: how long ago never matters (see `recovery_sent_here`).
+    sent_here: bool,
     adoption: Option<RecoveryAdoption>,
     /// FEE-DEBT r1: live transferred fee obligations pinning this exact owner until their
     /// settled proof is read; changed only under the entries lock.
@@ -506,8 +508,8 @@ impl RecoveryBook {
             payload,
         };
         event.follows(entry.selected.as_ref())?;
-        if event.revision == 0 && event.first_sent_at_ms.is_some() && entry.sent_clock.is_none() {
-            entry.sent_clock = Some(crate::cold::governance::runtime::recovery_first_send_clock());
+        if event.revision == 0 && event.first_sent_at_ms.is_some() {
+            entry.sent_here = true;
         }
         if let Some(pending) = &entry.pending {
             if pending != &event {
@@ -539,23 +541,20 @@ impl RecoveryBook {
 
     /// Several operations' keeps in one sink call (SHUTDOWN-HANG F3.1 `keep_batch`): per event the
     /// same bookkeeping as `keep`, and a busy runner fails only its own event. A batch of one is
-    /// `keep`.
-    async fn keep_batch(&self, events: &[RecoveryEvent]) -> Vec<Result<(), RecoveryError>> {
+    /// `keep`. The answers are the store's error type, rendered once where each failure arises.
+    async fn keep_batch(&self, events: &[RecoveryEvent]) -> Vec<super::RecordStoreResult<()>> {
+        use crate::governance::store_error;
         if let [event] = events {
-            return vec![self.keep(event).await];
+            return vec![self.keep(event).await.map_err(store_error)];
         }
-        let missing = || RecoveryError::Unavailable("recovery keep batch result missing".into());
+        let missing = || store_error("recovery keep batch result missing");
         let Some(sink) = self.sink.get() else {
             return events
                 .iter()
-                .map(|_| {
-                    Err(RecoveryError::Unavailable(
-                        "recovery Store is not attached".into(),
-                    ))
-                })
+                .map(|_| Err(store_error("recovery Store is not attached")))
                 .collect();
         };
-        let mut out: Vec<Option<Result<(), RecoveryError>>> = Vec::with_capacity(events.len());
+        let mut out: Vec<Option<super::RecordStoreResult<()>>> = Vec::with_capacity(events.len());
         out.resize_with(events.len(), || None);
         let mut runners = Vec::with_capacity(events.len());
         let mut admitted_at = Vec::with_capacity(events.len());
@@ -564,8 +563,8 @@ impl RecoveryBook {
                 .iter()
                 .any(|earlier| earlier.operation_id == event.operation_id)
             {
-                out[at] = Some(Err(RecoveryError::Conflict(
-                    "a recovery operation repeats in one keep batch".into(),
+                out[at] = Some(Err(store_error(
+                    "a recovery operation repeats in one keep batch",
                 )));
                 continue;
             }
@@ -575,7 +574,7 @@ impl RecoveryBook {
                     admitted_at.push(at);
                 }
                 Ok(None) => out[at] = Some(Ok(())),
-                Err(why) => out[at] = Some(Err(why)),
+                Err(why) => out[at] = Some(Err(store_error(why))),
             }
         }
         // The guards borrow `runners`, declared before them, so they drop first.
@@ -589,15 +588,15 @@ impl RecoveryBook {
                     admitted.push(events[at].clone());
                     members.push(at);
                 }
-                Err(reason) => out[at] = Some(Err(RecoveryError::Conflict(reason.into()))),
+                Err(reason) => out[at] = Some(Err(store_error(reason))),
             }
         }
         if !admitted.is_empty() {
             let mut results = sink.persist_batch(&admitted).await.into_iter();
             for at in members {
                 out[at] = Some(match results.next() {
-                    Some(Ok(())) => self.kept(&**sink, &events[at]),
-                    Some(Err(why)) => Err(why),
+                    Some(Ok(())) => self.kept(&**sink, &events[at]).map_err(store_error),
+                    Some(Err(why)) => Err(store_error(why)),
                     None => Err(missing()),
                 });
             }
@@ -1126,9 +1125,10 @@ impl super::GovState {
         )
     }
 
-    /// Move an operation's first send from this process `by` into the past.
+    /// State that an operation's first send from this process is `_by` in the past. The age is not
+    /// kept (no rule reads it): the send only has to be one this process made.
     #[cfg(test)]
-    pub(super) fn backdate_recovery_send(&self, operation_id: [u8; 16], by: std::time::Duration) {
+    pub(super) fn backdate_recovery_send(&self, operation_id: [u8; 16], _by: std::time::Duration) {
         let mut entries = self
             .recovery_book
             .entries
@@ -1137,8 +1137,7 @@ impl super::GovState {
         let entry = entries
             .get_mut(&operation_id)
             .expect("a selected operation");
-        let sent = entry.sent_clock.expect("sent from this process");
-        entry.sent_clock = Some(sent.checked_sub(by).expect("a representable instant"));
+        assert!(entry.sent_here, "sent from this process");
     }
 
     /// Whether this process sent the operation, so it may resend it: its slot is held until it
@@ -1150,7 +1149,7 @@ impl super::GovState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&operation_id)
-            .is_some_and(|entry| entry.sent_clock.is_some())
+            .is_some_and(|entry| entry.sent_here)
     }
 
     pub(super) async fn confirm_pending_recovery(
@@ -1363,7 +1362,7 @@ impl super::GovState {
             entry.initial = Some(selection.initial);
             entry.selected = Some(selection.selected);
             entry.pending = None;
-            entry.sent_clock = None;
+            entry.sent_here = false;
             entry.ever_quarantined = true;
             let mut confirmed = adoption.clone();
             confirmed.imported = true;
@@ -1531,12 +1530,7 @@ impl super::GovState {
         &self,
         events: &[RecoveryEvent],
     ) -> Vec<super::RecordStoreResult<()>> {
-        self.recovery_book
-            .keep_batch(events)
-            .await
-            .into_iter()
-            .map(|result| result.map_err(crate::governance::store_error))
-            .collect()
+        self.recovery_book.keep_batch(events).await
     }
 }
 
