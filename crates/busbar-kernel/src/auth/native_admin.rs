@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_ports::auth::Identity;
 use busbar_ports::{CallCx, PortError};
 
 use crate::inbound::request_snapshot::ChargedRequestSnapshot;
