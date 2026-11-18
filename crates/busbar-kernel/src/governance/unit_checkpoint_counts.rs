@@ -239,7 +239,7 @@ impl GovState {
                     let index = shards
                         .binary_search(&self.budget.shard_index(&target.bucket))
                         .expect("target shard held");
-                    let cell = guards[index].get(&target.bucket);
+                    let cell = guards[index].get(target.bucket.as_str());
                     if cell.is_some_and(|cell| {
                         cell.dirty || cell.flushing != 0 || cell.correction.is_some()
                     }) || crate::off_path::governance::runtime::unit_checkpoint_counts_in_flight(
@@ -317,7 +317,7 @@ impl GovState {
             let index = shards
                 .binary_search(&self.budget.shard_index(&target.bucket))
                 .expect("target shard held");
-            if !same_checkpoint_cell(previous.as_ref(), guards[index].get(&target.bucket))
+            if !same_checkpoint_cell(previous.as_ref(), guards[index].get(target.bucket.as_str()))
                 || crate::off_path::governance::runtime::unit_checkpoint_counts_in_flight(
                     &flights,
                     &target.bucket,
@@ -339,12 +339,7 @@ impl GovState {
                 let index = shards
                     .binary_search(&self.budget.shard_index(&target.bucket))
                     .expect("target shard held");
-                match guards[index].get_mut(&target.bucket) {
-                    Some(slot) => *slot = cell,
-                    None => {
-                        guards[index].insert(target.bucket.as_str().into(), cell);
-                    }
-                }
+                crate::governance::sharded::put(&mut guards[index], &target.bucket, cell);
             }
         }
         Ok(())
@@ -571,12 +566,7 @@ impl GovState {
         // meter lock order through the final infallible publication of every budget cell.
         let publication = before_commit()?;
         for (index, bucket, cell) in changes {
-            match guards[index].get_mut(bucket) {
-                Some(slot) => *slot = cell,
-                None => {
-                    guards[index].insert(bucket.into(), cell);
-                }
-            }
+            crate::governance::sharded::put(&mut guards[index], bucket, cell);
         }
         drop(publication);
         Ok(())

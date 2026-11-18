@@ -1670,15 +1670,15 @@ async fn test_budget_sweep_is_window_agnostic_across_cotenants() {
     {
         let mut map = gov.budget.write("survivor");
 
-        map.insert("total-cotenant".to_string(), seeded(0, 4999, true));
+        map.insert("total-cotenant".into(), seeded(0, 4999, true));
 
         map.insert(
-            "monthly-cotenant".to_string(),
+            "monthly-cotenant".into(),
             seeded(budget_window(WINDOW_MONTH, now), 1234, true),
         );
 
         map.insert(
-            "stale-cotenant".to_string(),
+            "stale-cotenant".into(),
             seeded(now - 32 * SECS_PER_DAY, 1, false),
         );
     }
@@ -1751,23 +1751,14 @@ async fn test_budget_sweep_staleness_boundary_is_exact() {
     {
         let mut map = gov.budget.write("survivor2");
 
+        map.insert("bounded-at-boundary".into(), seeded(now - max_window, now));
         map.insert(
-            "bounded-at-boundary".to_string(),
-            seeded(now - max_window, now),
-        );
-        map.insert(
-            "bounded-just-under".to_string(),
+            "bounded-just-under".into(),
             seeded(now - max_window + 1, now),
         );
 
-        map.insert(
-            "alltime-at-boundary".to_string(),
-            seeded(0, now - max_window),
-        );
-        map.insert(
-            "alltime-just-under".to_string(),
-            seeded(0, now - max_window + 1),
-        );
+        map.insert("alltime-at-boundary".into(), seeded(0, now - max_window));
+        map.insert("alltime-just-under".into(), seeded(0, now - max_window + 1));
     }
 
     gov.budget.sweep_ticker_for("survivor2").store(
@@ -1832,7 +1823,7 @@ async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
 
     {
         let mut map = gov.budget.write("k1");
-        map.insert("stale".to_string(), stale());
+        map.insert("stale".into(), stale());
     }
 
     assert_eq!(gov.budget.sweep_ticker_for("k1").load(Ordering::Relaxed), 0);
@@ -1853,7 +1844,7 @@ async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
 
     {
         let mut map = gov.budget.write("k1");
-        map.insert("stale2".to_string(), stale());
+        map.insert("stale2".into(), stale());
     }
     gov.budget
         .sweep_ticker_for("k1")
@@ -3284,13 +3275,13 @@ async fn delete_key_drops_its_budget_cell() {
 
     gov.record_usage(&cost, &key, "prod", "m", &tt(10), 1_700_000_000);
     assert!(
-        gov.budget.read(&key.id).contains_key(&key.id),
+        gov.budget.read(&key.id).contains_key(key.id.as_str()),
         "precondition: use accrues an attribution cell"
     );
 
     gov.delete_key(&key.id).await.expect("delete");
     assert!(
-        !gov.budget.read(&key.id).contains_key(&key.id),
+        !gov.budget.read(&key.id).contains_key(key.id.as_str()),
         "the deleted key's budget cell is reclaimed, not retained for the process lifetime"
     );
 }
@@ -3332,24 +3323,18 @@ async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() 
     {
         let mut map = gov.budget.write("survivor");
 
+        map.insert("vk_deleted".into(), all_time(17, false, now - idle_for));
         map.insert(
-            "vk_deleted".to_string(),
-            all_time(17, false, now - idle_for),
-        );
-        map.insert(
-            "user:alice@example.com".to_string(),
+            "user:alice@example.com".into(),
             all_time(3, false, now - idle_for),
         );
 
         map.insert(
-            "group:acme@total".to_string(),
+            "group:acme@total".into(),
             all_time(4999, false, now - idle_for),
         );
 
-        map.insert(
-            "vk_unflushed".to_string(),
-            all_time(9, true, now - idle_for),
-        );
+        map.insert("vk_unflushed".into(), all_time(9, true, now - idle_for));
     }
 
     gov.budget.sweep_ticker_for("survivor").store(
@@ -4485,11 +4470,11 @@ async fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     };
     {
         let mut map = gov.budget.write("survivor3");
-        map.insert("group:capped@total".to_string(), idle());
-        map.insert("group:gone@total".to_string(), idle());
-        map.insert("group:uncapped@total".to_string(), idle());
+        map.insert("group:capped@total".into(), idle());
+        map.insert("group:gone@total".into(), idle());
+        map.insert("group:uncapped@total".into(), idle());
 
-        map.insert("group:gone@month".to_string(), {
+        map.insert("group:gone@month".into(), {
             let mut c = idle();
             c.window_start = 0;
             c.dirty = true;
@@ -4562,11 +4547,11 @@ async fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     ] {
         let mut owned = cell.clone();
         owned.group_owners.insert("doomed".to_string());
-        gov.budget.write(id).insert(id.to_string(), owned);
+        gov.budget.write(id).insert(id.into(), owned);
     }
 
     for id in ["group:keeper@total", "group:doomed-2@total"] {
-        gov.budget.write(id).insert(id.to_string(), cell.clone());
+        gov.budget.write(id).insert(id.into(), cell.clone());
     }
 
     assert_eq!(
@@ -4714,8 +4699,8 @@ async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters
     };
     {
         let mut map = gov.budget.write("survivor-delim");
-        map.insert("group:user:alice\x40corp.com@total".to_string(), idle());
-        map.insert("group:team#eng@total".to_string(), idle());
+        map.insert("group:user:alice\x40corp.com@total".into(), idle());
+        map.insert("group:team#eng@total".into(), idle());
     }
 
     gov.budget.sweep_ticker_for("survivor-delim").store(
@@ -4783,7 +4768,7 @@ async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_p
     ] {
         let mut owned = cell.clone();
         owned.group_owners.insert(owner.to_string());
-        gov.budget.write(id).insert(id.to_string(), owned);
+        gov.budget.write(id).insert(id.into(), owned);
     }
 
     assert_eq!(
@@ -6545,7 +6530,7 @@ async fn exhausted_unit_checkpoint_adds_no_lane_row() {
     let cell = gov
         .budget
         .read(&key.id)
-        .get(&key.id)
+        .get(key.id.as_str())
         .cloned()
         .expect("the admitted cell");
     assert!(
@@ -6583,7 +6568,7 @@ async fn exhausted_terminal_checkpoint_records_custody() {
         let grant = gov.try_admit(&cost, &key, "", at).expect("admitted");
         if correction_open {
             let mut cells = gov.budget.write(&key.id);
-            let cell = cells.get_mut(&key.id).expect("the admitted cell");
+            let cell = cells.get_mut(key.id.as_str()).expect("the admitted cell");
             let mut accepted = cell.clone();
             accepted.correction = None;
             cell.correction = Some(Box::new(CorrectionBranch {
@@ -6601,7 +6586,7 @@ async fn exhausted_terminal_checkpoint_records_custody() {
         let cell = gov
             .budget
             .read(&key.id)
-            .get(&key.id)
+            .get(key.id.as_str())
             .cloned()
             .expect("the admitted cell");
         assert_eq!(cell.requests, 1);

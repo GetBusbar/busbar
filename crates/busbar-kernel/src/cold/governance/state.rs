@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, RwLock};
 
 use busbar_contract::count::{Count, COUNT_SCALE};
+use busbar_contract::kept::Text;
 use busbar_contract::records::ScopeRef;
 
 use crate::governance::{BudgetCell, LimitBlocked, MeterKey, UsageDelta};
@@ -81,15 +82,20 @@ pub(crate) fn state_per_request_one() -> BTreeMap<String, Count> {
     one
 }
 
-/// `state`: a bucket's cell, keyed once, the first time the bucket is charged.
+/// `state`: a bucket's cell, keyed once, the first time the bucket is charged: the one allocation
+/// of the bucket's name, which the map keeps as its key for the cell's life. It answers the key
+/// with the cell, so the charge that made it names it by sharing the key.
 #[cold]
 pub(crate) fn state_fresh_cell<'m>(
-    map: &'m mut foldhash::HashMap<String, BudgetCell>,
+    map: &'m mut foldhash::HashMap<Text, BudgetCell>,
     bucket: &str,
     window: u64,
-) -> &'m mut BudgetCell {
-    map.entry(bucket.to_owned())
-        .or_insert_with(|| BudgetCell::fresh(window))
+) -> (Text, &'m mut BudgetCell) {
+    let name = Text::from(Arc::<str>::from(bucket));
+    let cell = map
+        .entry(name.clone())
+        .or_insert_with(|| BudgetCell::fresh(window));
+    (name, cell)
 }
 
 /// `state`: a bucket learns an owning group once, the first time it is charged through it.

@@ -11,7 +11,7 @@ const LATER_INPUT: u64 = 11;
 fn accrue_plain(gov: &GovState, bucket: &str, count: u64) {
     let mut cells = gov.budget.write(bucket);
     let cell = cells
-        .entry(bucket.to_string())
+        .entry(bucket.into())
         .or_insert_with(|| BudgetCell::fresh(0));
     cell.accrue(MODEL, 0, &tt(count));
     cell.dirty = true;
@@ -257,7 +257,7 @@ async fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_posi
 
     {
         let mut cells = gov.budget.write(&key.id);
-        let cell = cells.get_mut(&key.id).unwrap();
+        let cell = cells.get_mut(key.id.as_str()).unwrap();
         cell.mutate(|cell| {
             let units = &mut cell
                 .models

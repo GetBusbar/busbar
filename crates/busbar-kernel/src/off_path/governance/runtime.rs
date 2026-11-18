@@ -352,12 +352,6 @@ pub(crate) fn exact_debt_all_zero<K>(segments: &std::collections::BTreeMap<K, i1
     segments.values().all(|count| *count == 0)
 }
 
-/// `exact_debt`: a bucket name a flush flight or a deletion hold owns, once per flight or
-/// deletion.
-pub(crate) fn exact_debt_bucket(bucket: &str) -> String {
-    bucket.to_owned()
-}
-
 /// `exact_debt`: the windows a cell has debt in, ascending: its current window and every parked
 /// one (the flusher, once per cell).
 pub(crate) fn exact_debt_flush_windows(
@@ -371,22 +365,9 @@ pub(crate) fn exact_debt_flush_windows(
     windows
 }
 
-/// `exact_debt`: one flush flight per window that captures one, in window order (the flusher).
-pub(crate) fn exact_debt_capture_windows<T>(
-    windows: std::collections::BTreeSet<u64>,
-    capture: impl FnMut(u64) -> Option<T>,
-) -> Vec<T> {
-    windows.into_iter().filter_map(capture).collect()
-}
-
 /// `exact_debt`: drop a window's parked debt once its flight captured it (the flusher).
 pub(crate) fn exact_debt_unpark<T>(parked: &mut Vec<(u64, T)>, window: u64) {
     parked.retain(|(at, _)| *at != window);
-}
-
-/// `exact_debt`: the flight-table address of a finished flight (the flusher).
-pub(crate) fn exact_debt_flight_address(bucket: &str, window: u64) -> (String, u64) {
-    (bucket.to_owned(), window)
 }
 
 /// `exact_debt`: every in-flight flush flight (the flusher's resume pass).
@@ -399,7 +380,10 @@ pub(crate) fn exact_debt_flights<'a>(
 /// `exact_debt`: a deleted bucket's in-flight flush flights, settled once at key or group
 /// deletion.
 pub(crate) fn exact_debt_bucket_flights(
-    flights: &std::collections::BTreeMap<(String, u64), std::sync::Arc<BudgetFlushFlight>>,
+    flights: &std::collections::BTreeMap<
+        (busbar_contract::kept::Text, u64),
+        std::sync::Arc<BudgetFlushFlight>,
+    >,
     bucket: &str,
 ) -> Vec<std::sync::Arc<BudgetFlushFlight>> {
     flights
@@ -557,7 +541,10 @@ pub(crate) fn unit_checkpoint_counts_try_collect<T>(
 /// `unit_checkpoint_counts`: whether an ordinary flush flight still holds this bucket
 /// (recovered-unit reload).
 pub(crate) fn unit_checkpoint_counts_in_flight(
-    flights: &std::collections::BTreeMap<(String, u64), std::sync::Arc<BudgetFlushFlight>>,
+    flights: &std::collections::BTreeMap<
+        (busbar_contract::kept::Text, u64),
+        std::sync::Arc<BudgetFlushFlight>,
+    >,
     bucket: &str,
 ) -> bool {
     flights.keys().any(|(held, _)| held == bucket)

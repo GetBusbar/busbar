@@ -780,7 +780,7 @@ impl Custody {
                     .expect("target shard held");
                 let cell = guards[index]
                     .1
-                    .get(bucket)
+                    .get(bucket.as_str())
                     .ok_or_else(|| unresolved("raw custody cell missing"))?;
                 let branch = cell
                     .correction

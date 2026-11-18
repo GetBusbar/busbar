@@ -13,7 +13,9 @@ use foldhash::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use busbar_contract::kept::Text;
 use std::time::{Duration, Instant};
 
 use super::GOV_SHARDS;
@@ -32,13 +34,16 @@ const _: () = assert!(
     "the budget flush backstop stays within [10 s, 10 min]"
 );
 
-pub(super) struct MapShard<V> {
-    map: RwLock<HashMap<String, V>>,
+/// One shard: a map from a cell's key to the cell. The key type is the owner's: the budget cells
+/// are keyed by shared text (a charge names its cell by sharing the key), the selected-resource
+/// scopes by their own built key.
+pub(super) struct MapShard<V, K = String> {
+    map: RwLock<HashMap<K, V>>,
     maybe_dirty: AtomicBool,
     sweep_ticker: AtomicU32,
 }
 
-impl<V> Default for MapShard<V> {
+impl<V, K> Default for MapShard<V, K> {
     fn default() -> Self {
         Self {
             map: RwLock::new(HashMap::default()),
@@ -48,17 +53,17 @@ impl<V> Default for MapShard<V> {
     }
 }
 
-impl<V> MapShard<V> {
+impl<V, K> MapShard<V, K> {
     /// A mutable view; marks the shard as possibly dirty once the lock is held.
     #[inline]
-    pub(super) fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, V>> {
+    pub(super) fn write(&self) -> RwLockWriteGuard<'_, HashMap<K, V>> {
         let guard = self.map.write().unwrap_or_else(|p| p.into_inner());
         self.maybe_dirty.store(true, Ordering::Release);
         guard
     }
 
     #[inline]
-    pub(super) fn read(&self) -> RwLockReadGuard<'_, HashMap<String, V>> {
+    pub(super) fn read(&self) -> RwLockReadGuard<'_, HashMap<K, V>> {
         self.map.read().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -68,8 +73,21 @@ impl<V> MapShard<V> {
     }
 }
 
-pub(super) struct Sharded<V> {
-    shards: Box<[MapShard<V>; GOV_SHARDS]>,
+/// Put `cell` under the bucket `name` (hydration, recovery and corrections; never a served
+/// request). A bucket the map already holds keeps its key, the name its charges, flights and
+/// captures share, and takes the new cell. A bucket new to the map is keyed here: its name is
+/// made shared once, and the map keeps it for the cell's life.
+pub(super) fn put<V>(map: &mut HashMap<Text, V>, name: &str, cell: V) {
+    match map.get_mut(name) {
+        Some(held) => *held = cell,
+        None => {
+            map.insert(Text::from(Arc::<str>::from(name)), cell);
+        }
+    }
+}
+
+pub(super) struct Sharded<V, K = String> {
+    shards: Box<[MapShard<V, K>; GOV_SHARDS]>,
     /// When the flush last walked every shard (the backstop).
     last_full_walk: Mutex<Option<Instant>>,
     #[cfg(test)]
@@ -78,7 +96,7 @@ pub(super) struct Sharded<V> {
     pub(super) flush_cells_visited: AtomicU64,
 }
 
-impl<V> Sharded<V> {
+impl<V, K> Sharded<V, K> {
     pub(super) fn new() -> Self {
         Self {
             shards: Box::new(std::array::from_fn(|_| MapShard::default())),
@@ -91,7 +109,7 @@ impl<V> Sharded<V> {
     }
 
     #[inline]
-    fn shard_for(&self, key_id: &str) -> &MapShard<V> {
+    fn shard_for(&self, key_id: &str) -> &MapShard<V, K> {
         &self.shards[self.shard_index(key_id)]
     }
 
@@ -101,24 +119,22 @@ impl<V> Sharded<V> {
     }
 
     #[inline]
-    pub(super) fn shard_at(&self, idx: usize) -> &MapShard<V> {
+    pub(super) fn shard_at(&self, idx: usize) -> &MapShard<V, K> {
         &self.shards[idx]
     }
 
     #[inline]
-    pub(super) fn write(&self, key_id: &str) -> RwLockWriteGuard<'_, HashMap<String, V>> {
+    pub(super) fn write(&self, key_id: &str) -> RwLockWriteGuard<'_, HashMap<K, V>> {
         self.shard_for(key_id).write()
     }
 
     #[inline]
-    pub(super) fn read(&self, key_id: &str) -> RwLockReadGuard<'_, HashMap<String, V>> {
+    pub(super) fn read(&self, key_id: &str) -> RwLockReadGuard<'_, HashMap<K, V>> {
         self.shard_for(key_id).read()
     }
 
     /// Every shard, mutably; marks every shard as possibly dirty.
-    pub(super) fn write_all(
-        &self,
-    ) -> impl Iterator<Item = RwLockWriteGuard<'_, HashMap<String, V>>> {
+    pub(super) fn write_all(&self) -> impl Iterator<Item = RwLockWriteGuard<'_, HashMap<K, V>>> {
         self.shards.iter().map(MapShard::write)
     }
 
@@ -134,7 +150,7 @@ impl<V> Sharded<V> {
     pub(super) fn write_masked(
         &self,
         mask: u64,
-    ) -> impl Iterator<Item = (usize, RwLockWriteGuard<'_, HashMap<String, V>>)> {
+    ) -> impl Iterator<Item = (usize, RwLockWriteGuard<'_, HashMap<K, V>>)> {
         // Visit only the set bits, lowest first: the walk costs the masked shards, not all of them.
         let mut rest = mask & (u64::MAX >> (64 - GOV_SHARDS));
         std::iter::from_fn(move || {
@@ -194,7 +210,7 @@ impl<V> Sharded<V> {
     }
 
     #[cfg(test)]
-    pub(super) fn shard_lock_for(&self, key_id: &str) -> &RwLock<HashMap<String, V>> {
+    pub(super) fn shard_lock_for(&self, key_id: &str) -> &RwLock<HashMap<K, V>> {
         &self.shard_for(key_id).map
     }
 }

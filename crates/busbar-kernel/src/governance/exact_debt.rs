@@ -505,7 +505,8 @@ struct FlightDebt {
 }
 
 pub(crate) struct BudgetFlushFlight {
-    pub(crate) bucket: String,
+    /// The bucket, by the budget map's own key: shared, not copied.
+    pub(crate) bucket: Text,
     pub(crate) window: u64,
     debt: std::sync::Mutex<FlightDebt>,
     runner: BudgetFlushRunner,
@@ -615,29 +616,35 @@ impl GovState {
             .contains(bucket)
     }
 
+    /// Capture `cell`'s flush flights, one per window that has debt, in window order, handing
+    /// each to `keep` as it is captured: no list is made per cell. The flight table holds every
+    /// flight too, so a walk that keeps none hands them nowhere.
     pub(super) fn capture_budget_flushes(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         settled: &super::raw_recovery::ForeignSettledSnapshot,
-    ) -> Vec<Arc<BudgetFlushFlight>> {
+        mut keep: impl FnMut(Arc<BudgetFlushFlight>),
+    ) {
         if self.budget_bucket_deleting(bucket) {
-            return Vec::new();
+            return;
         }
         let windows = crate::off_path::governance::runtime::exact_debt_flush_windows(
             cell.window_start,
             cell.rolled.iter().map(|(window, _)| *window),
             cell.rolled_eras.iter().map(|(window, _)| *window),
         );
-        crate::off_path::governance::runtime::exact_debt_capture_windows(windows, |window| {
-            self.capture_budget_flush(bucket, cell, settled, window)
-        })
+        for window in windows {
+            if let Some(flight) = self.capture_budget_flush(bucket, cell, settled, window) {
+                keep(flight);
+            }
+        }
     }
 
     /// One window's flush flight, captured from the cell (the flusher, one call per window).
     fn capture_budget_flush(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         settled: &super::raw_recovery::ForeignSettledSnapshot,
         window: u64,
@@ -656,7 +663,7 @@ impl GovState {
                 Ok(None) => return None,
                 Err(e) => {
                     tracing::warn!(
-                        bucket = bucket,
+                        bucket = bucket.as_str(),
                         window = window,
                         error = ?e,
                         "take_correction_positives failed; \
@@ -750,7 +757,7 @@ impl GovState {
             .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
             .unwrap_or_default();
         let flight = Arc::new(BudgetFlushFlight {
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket: bucket.clone(),
             window,
             debt: std::sync::Mutex::new(FlightDebt {
                 plain,
@@ -765,7 +772,7 @@ impl GovState {
         self.budget_flushes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((bucket.into(), window), flight.clone());
+            .insert((bucket.clone(), window), flight.clone());
         cell.mutate(|cell| {
             if !correcting {
                 crate::off_path::governance::runtime::exact_debt_unpark(&mut cell.rolled, window);
@@ -800,7 +807,7 @@ impl GovState {
     /// immutable capture; it performs no Store write and is never labelled Applied.
     fn capture_fee_no_write(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         window: u64,
     ) -> Option<Arc<BudgetFlushFlight>> {
@@ -819,7 +826,7 @@ impl GovState {
             true,
         );
         let flight = Arc::new(BudgetFlushFlight {
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket: bucket.clone(),
             window,
             debt: std::sync::Mutex::new(FlightDebt {
                 plain: ExactUsageDelta::default(),
@@ -834,7 +841,7 @@ impl GovState {
         self.budget_flushes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((bucket.into(), window), flight.clone());
+            .insert((bucket.clone(), window), flight.clone());
         cell.mutate(|cell| {
             cell.fee_captured = cell.fee_sequence;
             cell.flushing += 1;
@@ -920,10 +927,8 @@ impl GovState {
                         .budget_flushes
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let address = crate::off_path::governance::runtime::exact_debt_flight_address(
-                        &flight.bucket,
-                        flight.window,
-                    );
+                    // The flight's own shared bucket name: the address copies nothing.
+                    let address = (flight.bucket.clone(), flight.window);
                     if flights
                         .get(&address)
                         .is_some_and(|held| Arc::ptr_eq(held, flight))
