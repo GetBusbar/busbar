@@ -2032,6 +2032,12 @@ diagnostics! {
         "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
         "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
 
+    /// RETIRED: nothing emits it; the restore quarantine (the `--restore-quarantine` flag) was removed. The number is kept so a log line from a pre-release build still resolves.
+    STORE_RESTORED = 9026, Boot, Actionable, "store-restored", "1.6.0", true,
+        "This node is in restore quarantine: the Store was restored and is not yet declared — RETIRED",
+        "RETIRED. Nothing emits this code: the restore quarantine and its --restore-quarantine flag were removed.",
+        "Nothing emits this code.";
+
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",

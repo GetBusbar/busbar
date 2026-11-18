@@ -57,8 +57,8 @@ fn the_manifest_is_classified_by_its_format_and_tail() {
 #[test]
 fn decode_still_admits_only_a_current_manifest() {
     assert!(Manifest::decode(&manifest([1; 4], 0)).is_ok());
-    assert!(Manifest::decode(&manifest([2; 4], 0)).is_ok());
     for bytes in [
+        manifest([2; 4], 0),
         manifest([3; 4], 0),
         manifest([1; 4], 2),
         manifest([0; 4], 0),
