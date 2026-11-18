@@ -699,9 +699,11 @@ pub struct AuthInstance {
 
     settings: SecureVec,
 
-    /// What the instance was lent (re-lent on rotation), and that material's fingerprint.
+    /// What the instance was lent (re-lent on rotation), and that material's fingerprint: `None`
+    /// when it could not be fingerprinted (the OS random source did not key the process), which a
+    /// re-lend reads as "changed" and lends again.
     secrets: Mutex<Arc<KeptSecrets>>,
-    lent_fingerprint: Mutex<[u8; 32]>,
+    lent_fingerprint: Mutex<Option<[u8; 32]>>,
     label: String,
     lifecycle: Mutex<()>,
 
@@ -740,16 +742,19 @@ impl KeptSecrets {
         Self(secrets)
     }
 
+    /// The kept material's fingerprint, for "did it change" only; `None` when the process could
+    /// not be keyed, so nothing can be compared and the material is treated as changed.
     fn fingerprint(
         &self,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-    ) -> [u8; 32] {
+    ) -> Option<[u8; 32]> {
         match seal {
             Some(seal) => busbar_contract::redacted::fingerprint(
                 self.0.iter().map(|s| s.expose(seal).as_slice()),
             ),
             None => busbar_contract::redacted::fingerprint(std::iter::empty()),
         }
+        .ok()
     }
 
     /// One secret blob per kept secret, pointing into the material `self` holds.
@@ -1135,13 +1140,17 @@ impl AuthCalls for AuthInstance {
         let (_, secrets) = split_secrets(&self.shared.plugin, settings);
         let secrets = KeptSecrets::new(secrets);
         let fingerprint = secrets.fingerprint(self.shared.dispatcher.seal());
-        let unchanged = busbar_contract::redacted::constant_time_eq(
+        // Unchanged only when both were fingerprinted and are the same: an unknown is a change.
+        let unchanged = match (
             &*self
                 .lent_fingerprint
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             &fingerprint,
-        );
+        ) {
+            (Some(lent), Some(now)) => busbar_contract::redacted::constant_time_eq(lent, now),
+            _ => false,
+        };
         if unchanged {
             return Ok(AuthRelent::Unchanged);
         }

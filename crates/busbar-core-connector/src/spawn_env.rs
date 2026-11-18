@@ -131,18 +131,21 @@ mod refresher {
         }
     }
 
-    /// Keep `env`, first due one lease from now (its load has just resolved it).
-    pub(crate) fn keep(env: &Arc<SpawnEnv>) {
+    /// Keep `env`, first due one lease from now (its load has just resolved it); the reason if
+    /// the process's refresher did not start (the environment is then not kept fresh).
+    pub(crate) fn keep(env: &Arc<SpawnEnv>) -> Result<(), &'static str> {
         busbar_kernel::refresh::keep(
             Arc::downgrade(env) as Weak<dyn busbar_kernel::refresh::Refreshable>,
             crate::off_path::lines::first_spawn_env_due(),
-        );
+        )
     }
 
     /// Refresh every live held item NOW, on the calling thread (a cell that rotates a reference).
     #[cfg(test)]
     pub(crate) fn refresh_all() {
-        busbar_kernel::refresh::process().refresh_all_now();
+        busbar_kernel::refresh::process()
+            .expect("the process refresher started")
+            .refresh_all_now();
     }
 }
 

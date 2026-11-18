@@ -1884,16 +1884,17 @@ pub(crate) fn upstream_credential_binding(
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<busbar_kernel::plane_driver::ConfiguredAuthBinding>, String> {
-    Ok(
-        upstream_credential(member_name, registration, reach, scope)?.map(|(binding, per)| {
-            let first = per.first_due(std::time::Instant::now(), busbar_kernel::retry::unit());
-            busbar_kernel::refresh::keep(
-                Arc::downgrade(&per) as std::sync::Weak<dyn busbar_kernel::refresh::Refreshable>,
-                first,
-            );
-            binding
-        }),
+    let Some((binding, per)) = upstream_credential(member_name, registration, reach, scope)? else {
+        return Ok(None);
+    };
+    let first = per.first_due(std::time::Instant::now(), busbar_kernel::retry::unit());
+    // A credential that cannot be kept fresh is not bound: the member is refused.
+    busbar_kernel::refresh::keep(
+        Arc::downgrade(&per) as std::sync::Weak<dyn busbar_kernel::refresh::Refreshable>,
+        first,
     )
+    .map_err(|e| format!("member '{member_name}' {e}"))?;
+    Ok(Some(binding))
 }
 
 pub(crate) fn upstream_credential(
@@ -1996,6 +1997,9 @@ pub(crate) fn upstream_credential(
     })?;
 
     let seal = busbar_kernel::seal::lend();
+    // Fingerprinted before the auth is opened: a process that cannot be keyed opens nothing.
+    let digest = busbar_kernel::refresh::fingerprint([credential.expose(&seal).as_slice()])
+        .map_err(|e| format!("member '{member_name}' {e}"))?;
     let handle = auth
         .open_outbound(style, credential.expose(&seal), &settings)
         .map_err(|e| format!("member '{member_name}' {e}"))?;
@@ -2010,7 +2014,7 @@ pub(crate) fn upstream_credential(
             header,
             lease,
         },
-        busbar_kernel::refresh::fingerprint([credential.expose(&seal).as_slice()]),
+        digest,
         handle,
         minted,
         &busbar_kernel::refresh::HOST_REPORT,
@@ -2270,7 +2274,15 @@ impl PerHop {
         };
         let expires_at = now + self.lent.lease;
         let seal = busbar_kernel::seal::lend();
-        let digest = busbar_kernel::refresh::fingerprint([value.expose(&seal).as_slice()]);
+        // The process was keyed when this binding was opened (its first digest), so this cannot
+        // fail here; were it to, nothing is compared or swapped and the attempt comes back.
+        let Ok(digest) = busbar_kernel::refresh::fingerprint([value.expose(&seal).as_slice()])
+        else {
+            return (
+                Attempt::Busy,
+                now + busbar_kernel::retry::FLOOR.max(std::time::Duration::from_secs(1)),
+            );
+        };
         let held = self.held.load_full();
         let same = |d: &[u8; 32]| busbar_contract::redacted::constant_time_eq(d, &digest);
         let reuse = match held.as_deref() {
@@ -2619,7 +2631,9 @@ impl std::fmt::Debug for PerHop {
 
 #[cfg(test)]
 pub(crate) fn refresh_credentials() {
-    busbar_kernel::refresh::process().refresh_all_now();
+    busbar_kernel::refresh::process()
+        .expect("the process refresher started")
+        .refresh_all_now();
 }
 
 pub(crate) fn bind_member_fetches(

@@ -492,10 +492,11 @@ pub(crate) mod relend {
             calls,
             &crate::refresh::HOST_REPORT,
         ));
+        // An auth that cannot be kept fresh is not handed out: the open is refused.
         crate::refresh::keep(
             Arc::downgrade(&relending) as Weak<dyn crate::refresh::Refreshable>,
             Instant::now() + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
-        );
+        )?;
         Ok(relending)
     }
 

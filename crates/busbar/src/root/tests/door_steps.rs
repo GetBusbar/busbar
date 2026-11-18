@@ -3965,7 +3965,7 @@ fn per_hop_on(
             header: None,
             lease,
         },
-        busbar_kernel::refresh::fingerprint([value.as_slice()]),
+        busbar_kernel::refresh::fingerprint([value.as_slice()]).expect("the process is keyed"),
         handle,
         minted,
         report,
