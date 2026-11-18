@@ -324,8 +324,8 @@ fn the_book_holds_no_signing_capability() {
     impl<T: NoSigner> NoSigner for Option<T> {}
     impl<T: NoSigner> NoSigner for Vec<T> {}
     fn no_signer<T: NoSigner>(_: &T) {}
-    // A compile-time field audit: naming the fn type-checks it; it never runs.
-    let _: fn(&Durability) = audit;
+    // A compile-time field audit: naming it keeps it compiled, with no dead-code escape (BP06).
+    const _: fn(&Durability) = audit;
     fn audit(book: &Durability) {
         let Durability {
             journal,

@@ -588,7 +588,7 @@ async fn a_self_signed_leaf_as_its_member_root_is_reached_under_its_pin_and_refu
     let mispinned = rooted(&served, need, &url, ("cert_spki", &other.pin), &leaf.pem);
     seal(&c, &served, need, "rooted-mispinned", &origin, &mispinned);
     let cause = refused_cause(&c, need, &url, "rooted-mispinned").await;
-    assert_eq!(cause, busbar_core_connector::compose::PIN_REFUSED);
+    assert_eq!(cause, busbar_core_connector::test_support::PIN_REFUSED);
     assert!(
         saw(&mut rx).await.is_none_or(|(_, bytes)| bytes.is_empty()),
         "no request byte reached the far end"

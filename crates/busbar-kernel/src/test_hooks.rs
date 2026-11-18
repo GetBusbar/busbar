@@ -66,3 +66,12 @@ pub mod operator {
         crate::config::operator_provider()
     }
 }
+
+/// The boot's merge of installed and built-in plane declarations, for a dependent's registry
+/// tests (dist registry_cross_plane): kept crate-private outside the test hooks (BP14).
+pub fn merged_boot_plane_decls(
+    installed: &[&'static crate::plane_driver::registry::PlaneDecl],
+    builtins: &[&'static crate::plane_driver::registry::PlaneDecl],
+) -> Vec<&'static crate::plane_driver::registry::PlaneDecl> {
+    crate::off_path::plane_registry::merged_boot_plane_decls(installed, builtins)
+}

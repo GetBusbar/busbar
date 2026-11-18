@@ -4,9 +4,9 @@
 use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
 use busbar_kernel::plane_driver::registry::{
-    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
-    PlaneDeclaration,
+    build_dispatch, install_planes, plane_decl_for, BuildCtx, PlaneDecl, PlaneDeclaration,
 };
+use busbar_kernel::test_hooks::merged_boot_plane_decls;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
