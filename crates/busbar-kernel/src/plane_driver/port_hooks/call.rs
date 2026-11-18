@@ -171,10 +171,7 @@ async fn invoke(
     let content =
         input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
     let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
-    let mut signals = super::view::signals(&input.projection.facts, call);
-    if !content {
-        signals.retain(|(key, _)| *key != busbar_plugin_abi::fail::fact::PJ_TEXT_COMPLETE);
-    }
+    let mut signals = super::view::signals(&input.projection.facts, call, content);
     signals.push((abi::S_POOL, FactRef::Text(input.selection.pool)));
     signals.push((
         abi::S_INGRESS_PROTOCOL,
