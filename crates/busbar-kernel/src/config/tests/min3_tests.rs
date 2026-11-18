@@ -354,6 +354,7 @@ store:
   insecure_transport: { accept: plaintext, reason: "pg sidecar on the pod network, INFRA-142" }
 secrets:
   vault:
+    module: vault
     insecure_transport: { accept: [plaintext, unverified_tls], reason: "dev vault, CHG-9" }
 "#,
     );
