@@ -68,13 +68,15 @@ impl std::fmt::Display for KeyMutationError {
                 f,
                 "{operation} applied to key '{key_id}'; cache reconciliation incomplete"
             ),
-            Self::Revoked { key_id } => f.write_str(&crate::diagnostics::coded(
-                &crate::diagnostics::REVOKED_KEY_REENABLE_REFUSED,
-                format_args!(
-                    "key '{key_id}' is revoked, and a revoked key is never re-enabled; delete it \
-                     instead, and a self-serve subject's next sign-in issues a new key"
-                ),
-            )),
+            Self::Revoked { key_id } => {
+                let banner = crate::diagnostics::REVOKED_KEY_REENABLE_REFUSED.banner();
+                write!(
+                    f,
+                    "{banner}: key '{key_id}' is revoked, and a revoked key is never re-enabled; delete it \
+                     instead, and a self-serve subject's next sign-in issues a new key. See {}{banner}",
+                    crate::diagnostics::ERROR_DOCS_BASE
+                )
+            }
         }
     }
 }
@@ -682,35 +684,28 @@ impl GovState {
         now: u64,
         era: RawRateEra,
     ) -> Result<(), CountError> {
-        match split_plane_lane(lane) {
+        let (model, provider, add) = match split_plane_lane(lane) {
             ("", _) => {
-                if let Some(provider) = provider {
-                    let add = MeterCounts::request(units);
-                    self.try_record_metered_request_in_era(
-                        key_id,
-                        key_group_at_use,
-                        lane,
-                        provider,
-                        add,
-                        now,
-                        era,
-                    )?;
-                }
+                let Some(provider) = provider else {
+                    return Ok(());
+                };
+                (lane, provider, MeterCounts::request(units))
             }
-            (plane, subject) => {
-                let add = MeterCounts::request(&std::collections::BTreeMap::new());
-                self.try_record_metered_request_in_era(
-                    key_id,
-                    key_group_at_use,
-                    subject,
-                    plane,
-                    add,
-                    now,
-                    era,
-                )?;
-            }
-        }
-        Ok(())
+            (plane, subject) => (
+                subject,
+                plane,
+                MeterCounts::request(&std::collections::BTreeMap::new()),
+            ),
+        };
+        self.try_record_metered_request_in_era(
+            key_id,
+            key_group_at_use,
+            model,
+            provider,
+            add,
+            now,
+            era,
+        )
     }
 
     pub fn record_metering(
