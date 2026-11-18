@@ -112,13 +112,16 @@ fn sse_clones_pending_cancellation_and_unwind_wipe_their_final_owners() {
     proof.assert_absent("an owner dropped by unwinding");
 }
 
+/// One producer: its name and the call that renders a body through it.
+type Producer<'a> = (&'a str, &'a dyn Fn(&[u8]) -> Vec<u8>);
+
 #[test]
 fn every_jsonrpc_producer_output_is_wiped_by_its_secure_owner() {
     const ID: &[u8] = br#""private-id""#;
     const OPEN: &[u8] = br#"{"credential":""#;
     const CLOSE: &[u8] = br#""}"#;
     let text = "private\u{0}\n\r\t\"\\雪".repeat(4096);
-    let producers: [(&str, &dyn Fn(&[u8]) -> Vec<u8>); 4] = [
+    let producers: [Producer<'_>; 4] = [
         ("result", &|body: &[u8]| jsonrpc::result_bytes(ID, body)),
         ("request", &|body: &[u8]| {
             jsonrpc::request_bytes(ID, &text, Some(body))

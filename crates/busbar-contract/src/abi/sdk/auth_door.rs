@@ -36,12 +36,15 @@ pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 /// serialization cannot encounter unsupported numeric values or non-string object keys.
 #[must_use]
 pub fn presentation_extensions(presentation: &crate::auth_calls::LoginPresentation) -> Vec<u8> {
-    let json = serde_json::to_vec(presentation)
-        .expect("presentation consists of JSON strings and integers");
-    crate::abi::mechanism::extensions::encode(&[(
+    // The JSON is written straight into the entry: one buffer.
+    let mut out = Vec::new();
+    crate::abi::mechanism::extensions::entry_into(
+        &mut out,
         crate::auth_calls::presentation::EXT_LOGIN_PRESENTATION,
-        &json,
-    )])
+        |value| serde_json::to_writer(value, presentation),
+    )
+    .expect("presentation consists of JSON strings and integers");
+    out
 }
 
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
@@ -445,8 +448,14 @@ pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refus
 
 pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin) -> Vec<u8> {
     plugin.carriers().map_or_else(Vec::new, |carriers| {
-        let value = serde_json::to_vec(&carriers).expect("carrier names serialize as JSON");
-        crate::abi::mechanism::extensions::encode(&[(crate::abi::auth::EXT_CARRIERS, &value)])
+        let mut out = Vec::new();
+        crate::abi::mechanism::extensions::entry_into(
+            &mut out,
+            crate::abi::auth::EXT_CARRIERS,
+            |value| serde_json::to_writer(value, &carriers),
+        )
+        .expect("carrier names serialize as JSON");
+        out
     })
 }
 

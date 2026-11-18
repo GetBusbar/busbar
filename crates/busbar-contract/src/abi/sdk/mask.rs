@@ -21,24 +21,23 @@ const SECRET_WORDS: &[&str] = &[
 ];
 
 /// `url` with its userinfo and every secret-looking query or fragment value masked (the module
-#[must_use]
-pub fn mask_url(url: &str) -> String {
+///
+/// Appended to `out`, the caller's buffer.
+pub fn mask_url(url: &str, out: &mut String) {
     let Some((scheme, rest)) = url.split_once("://") else {
-        let unmasked = url.to_string();
-        return unmasked;
+        out.push_str(url);
+        return;
     };
-    let mut out = String::with_capacity(url.len() + MASK.len());
     out.push_str(scheme);
     out.push_str("://");
     match rest.rfind('@') {
         Some(at) => {
             out.push_str(MASK);
             out.push('@');
-            mask_pairs(&mut out, &rest[at + 1..], rest[..at].contains(['?', '#']));
+            mask_pairs(out, &rest[at + 1..], rest[..at].contains(['?', '#']));
         }
-        None => mask_pairs(&mut out, rest, false),
+        None => mask_pairs(out, rest, false),
     }
-    out
 }
 
 /// `s` onto `out`, its secret-looking pair values masked: from its first `?` or `#`, or from its

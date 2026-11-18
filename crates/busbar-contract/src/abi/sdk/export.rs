@@ -55,8 +55,10 @@ pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
     if let Err(error) = requirements.validate() {
         return out.fail(Refusal::refused(error));
     }
-    match serde_json::to_vec(&requirements) {
-        Ok(bytes) => {
+    // The leased bytes are the host's to read after this call: the one owned buffer, written in place.
+    let mut bytes = Vec::new();
+    match serde_json::to_writer(&mut bytes, &requirements) {
+        Ok(()) => {
             out.lease(
                 |o| &o.findings,
                 held.leases(),
@@ -115,14 +117,15 @@ impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for Quiet<L> {
     }
 }
 
-/// The instance names `check` is handed, in configuration order (an absent name reads empty).
-#[must_use]
-pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
+/// The instance names `check` is handed, in configuration order (an absent name reads empty),
+/// borrowed from the host's `in` for the call (lossily UTF-8: a copy only where a name is not).
+pub fn instance_names<'a>(
+    input: Lent<'a, CheckIn>,
+) -> impl ExactSizeIterator<Item = std::borrow::Cow<'a, str>> + 'a {
     input
         .instances()
         .iter()
-        .map(|c| String::from_utf8_lossy(c.field(|c| &c.name).bytes()).into_owned())
-        .collect()
+        .map(|c| String::from_utf8_lossy(c.field(|c| &c.name).bytes()))
 }
 
 /// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
@@ -133,22 +136,6 @@ pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
-}
-
-/// THE `one_instance` LIMITS CHECK WORDED BY THE SINK (deprecated: the host words the refusal
-#[must_use]
-pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
-    let Some((first, rest)) = names.split_first() else {
-        return Vec::new();
-    };
-    rest.iter()
-        .map(|name| {
-            format!(
-                "export.{name}: a second `module: {alias}` instance (already defined as \
-                 '{first}'). {why}"
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]

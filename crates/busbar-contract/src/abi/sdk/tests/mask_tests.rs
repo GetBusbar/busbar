@@ -5,6 +5,13 @@
 
 use super::*;
 
+// The masker writes into the caller's buffer; the tests read it back owned.
+fn mask_url(url: &str) -> String {
+    let mut out = String::new();
+    super::mask_url(url, &mut out);
+    out
+}
+
 /// 1.5.5's masked form for an ordinary URL with userinfo: host, port and path kept.
 #[test]
 fn userinfo_is_masked_as_1_5_5_masked_it() {

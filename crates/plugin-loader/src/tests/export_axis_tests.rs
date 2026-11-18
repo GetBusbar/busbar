@@ -14,7 +14,11 @@ use crate::sign::Manifest;
 
 #[test]
 fn trace_diagnostics_mask_userinfo_even_when_the_endpoint_is_malformed() {
-    let mask = busbar_contract::abi::sdk::mask::mask_url;
+    let mask = |url: &str| {
+        let mut out = String::new();
+        busbar_contract::abi::sdk::mask::mask_url(url, &mut out);
+        out
+    };
     assert_eq!(
         mask("https://user:secret@collector:bad/v1/traces"),
         "https://***@collector:bad/v1/traces"

@@ -79,7 +79,17 @@ pub const KEY_PIN_TAG: &str = crate::abi::sdk::digest::SHA256_TAG;
 /// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
 #[must_use]
 pub fn key_pin(subject_public_key_info: &[u8]) -> String {
-    crate::abi::sdk::digest::sha256_tagged(subject_public_key_info)
+    let mut pin = String::with_capacity(crate::abi::sdk::digest::TAGGED_LEN);
+    crate::abi::sdk::digest::sha256_tagged(subject_public_key_info, &mut pin);
+    pin
+}
+
+/// [`key_pin`] of a SubjectPublicKeyInfo already digested (`digest` is its SHA-256).
+#[must_use]
+pub fn digest_key_pin(digest: &[u8; 32]) -> String {
+    let mut pin = String::with_capacity(crate::abi::sdk::digest::TAGGED_LEN);
+    crate::abi::sdk::digest::tagged(digest, &mut pin);
+    pin
 }
 
 /// A written key pin that names no SHA-256 digest: why, never the value itself.
@@ -117,7 +127,7 @@ pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
             "it is neither `sha256/` and the standard, padded base64 of 32 bytes, nor that base64 \
              alone",
         ))?;
-    Ok(crate::abi::sdk::digest::tagged(&digest))
+    Ok(digest_key_pin(&digest))
 }
 
 /// THE TRUST ANCHORS OF ONE DESTINATION a need reaches: the

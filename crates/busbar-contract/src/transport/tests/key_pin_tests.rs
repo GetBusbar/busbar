@@ -104,5 +104,9 @@ fn red_a_tagged_value_of_31_or_33_bytes_is_refused() {
 /// The tagged spelling is the contract's ONE tagged-digest renderer's: the key pin of a key info is
 #[test]
 fn the_key_pin_is_the_one_tagged_digest() {
-    assert_eq!(key_pin(SPKI), crate::abi::sdk::digest::sha256_tagged(SPKI));
+    let mut tagged = String::new();
+    crate::abi::sdk::digest::sha256_tagged(SPKI, &mut tagged);
+    assert_eq!(key_pin(SPKI), tagged);
+    let digest = crate::abi::sdk::digest::sha256(SPKI);
+    assert_eq!(super::digest_key_pin(&digest), tagged);
 }
