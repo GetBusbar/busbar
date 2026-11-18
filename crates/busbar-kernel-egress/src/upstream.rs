@@ -34,6 +34,10 @@ pub const ERR_NET_TIMEOUT: &str = "timeout";
 /// pair), and the framer's own protocol handshake lines (IF §13 round 23: `upgrade`, `connection`,
 /// `sec-websocket-key`, `sec-websocket-version`, a closed list), which the framer writes after auth
 /// `outbound`, so no auth style sees or signs them and the wire never carries two of one.
+///
+/// busbar asks a provider for no content coding (as 1.5.5): a client's `accept-encoding` is
+/// dropped here and none is sent, so busbar never spends CPU or latency decoding what it reads
+/// to meter.
 pub(crate) const RE_DERIVED: &[&str] = &[
     "host",
     "content-length",
@@ -50,39 +54,6 @@ pub(crate) const RE_DERIVED: &[&str] = &[
     "sec-websocket-key",
     "sec-websocket-version",
 ];
-
-/// The content coding busbar asks a provider for. 1.6.0 has one choice, `Identity` (as 1.5.5):
-/// busbar sends no `accept-encoding`, so it never spends CPU or latency decoding what it reads to
-/// meter. A later config gate (gzip or br, with decompression limits) adds a variant here and its
-/// decoding on the answer side; every caller already asks [`upstream_encoding`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UpstreamEncoding {
-    /// No content coding: no `accept-encoding` is sent.
-    Identity,
-}
-
-impl UpstreamEncoding {
-    /// The `accept-encoding` value busbar sends for this choice, or `None` to send none.
-    #[must_use]
-    pub const fn accept_encoding(self) -> Option<&'static str> {
-        match self {
-            Self::Identity => None,
-        }
-    }
-}
-
-/// THE ONE PLACE the upstream encoding is chosen. There is no gate in 1.6.0.
-#[must_use]
-pub const fn upstream_encoding() -> UpstreamEncoding {
-    UpstreamEncoding::Identity
-}
-
-/// Write busbar's own `accept-encoding` choice ([`upstream_encoding`]) onto an upstream head that
-pub fn apply_upstream_encoding(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
-    if let Some(value) = upstream_encoding().accept_encoding() {
-        crate::cold::push_field(fields, b"accept-encoding", value.as_bytes());
-    }
-}
 
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
 pub(crate) const CONTROL_PREFIX: &str = "x-busbar-";

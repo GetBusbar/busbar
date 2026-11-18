@@ -430,12 +430,14 @@ impl PieceBufs {
             .unwrap_or_default()
     }
 
-    fn fields_of(&self, written: u32) -> HeadFields {
+    /// The first `written` head fields the plane wrote, each copied once out of the arena (the
+    /// arena is rewritten by the plane's next piece; the head is kept past it). Yielded one by
+    /// one, so a caller that already has a list adds to it and none is made in between.
+    fn fields_of(&self, written: u32) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         self.fields
             .iter()
             .take(written as usize)
             .map(|f| (self.arena(f.name).to_vec(), self.arena(f.value).to_vec()))
-            .collect()
     }
 }
 
@@ -1712,7 +1714,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let head = first && piece.status.is_some();
                 let status = piece.status.filter(|_| first || piece.fields);
                 if head {
-                    run.bufs.head = FieldList::new(piece.head.clone());
+                    // The far end's head is handed to the list the plane is lent, as the piece's
+                    // bytes were handed to its input: nothing below reads the piece's own head.
+                    run.bufs.head = FieldList::new(std::mem::take(&mut piece.head));
                 }
                 first = false;
                 let streamed = {
@@ -2125,7 +2129,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             st.facts.status = out.reply_status;
                         }
 
-                        let fields = bufs.fields_of(out.fields_written);
+                        let fields: HeadFields = bufs.fields_of(out.fields_written).collect();
                         self.caller.head(out.reply_status, fields);
                     }
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;

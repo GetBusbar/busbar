@@ -760,7 +760,7 @@ type LentFields = smallvec::SmallVec<[Field; 32]>;
 /// What a host lists to the plane for one call (a catalog's names), on the stack up to 32.
 type LentNames = smallvec::SmallVec<[AbiStr; 32]>;
 
-/// The empty frame every encode that renders no refusal answers with: one shared allocation.
+/// The empty frame every encode answers with: one shared allocation.
 static EMPTY_FRAME: std::sync::LazyLock<Arc<[u8]>> =
     std::sync::LazyLock::new(|| -> Arc<[u8]> { Arc::new([0u8; 0]) });
 
@@ -1130,17 +1130,20 @@ impl PlaneDriver {
         self.render_refusal(input, None)
     }
 
+    /// The head is lent where the caller already holds it: `head` yields each field's name and
+    /// value as the caller's own bytes, borrowed for this call only (the catalog call is answered
+    /// before it returns, and nothing keeps the head after it).
     #[must_use]
-    pub fn catalog_unitless(
+    pub fn catalog_unitless<'h>(
         &self,
         method: &[u8],
         target: &[u8],
-        head: &[(Vec<u8>, Vec<u8>)],
+        head: impl IntoIterator<Item = (&'h [u8], &'h [u8])>,
         names: &[String],
     ) -> Option<Rendered> {
         use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
         let mut fields: LentFields = smallvec::SmallVec::new();
-        fields.extend(head.iter().map(|(n, v)| Field {
+        fields.extend(head.into_iter().map(|(n, v)| Field {
             name: AbiStr::over(n),
             value: AbiStr::over(v),
         }));
@@ -1497,16 +1500,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             let mut st = self.lock();
             (st.facts.streamed || st.rendered.is_some(), st.trail.take())
         };
-        let body = match reason {
-            Some(reason) if !pending => {
-                let (retry_after, said) = self.steps.refused_words();
-                let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
-                let body = crate::cold::refusal_frame(&rendered.body);
-                self.lock().rendered = Some(rendered);
-                body
-            }
-            _ => Arc::clone(&EMPTY_FRAME),
-        };
+        // A refusal is rendered once and kept for the caller (`take_rendered`). The frame this
+        // step answers with carries no bytes for any outcome: the teller is its only reader and
+        // reads none, so the rendered body is not copied into it.
+        if let Some(reason) = reason.filter(|_| !pending) {
+            let (retry_after, said) = self.steps.refused_words();
+            let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
+            self.lock().rendered = Some(rendered);
+        }
         if let Some(trail) = trail {
             self.summarize(_ctx, &trail, Some(outcome));
         }
@@ -1515,7 +1516,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(body),
+                bytes: busbar_contract::SlabBytes::new(Arc::clone(&EMPTY_FRAME)),
                 meta: busbar_contract::FrameMeta::default(),
             },
         )
