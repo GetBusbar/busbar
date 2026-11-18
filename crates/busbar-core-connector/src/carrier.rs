@@ -167,7 +167,7 @@ impl Dest<'_> {
     /// What the host admits for a dial to this destination: exactly it.
     fn admission(&self) -> Admission {
         match self {
-            Self::Authority(a) => Admission::Dial(vec![String::from(*a)]),
+            Self::Authority(a) => Admission::Dial(String::from(*a)),
             Self::Program(p, env, _) => Admission::Spawn((*p).clone(), (*env).clone()),
         }
     }

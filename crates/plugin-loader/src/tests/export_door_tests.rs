@@ -297,7 +297,7 @@ impl busbar_contract::io_host::IoHost for Reaps {
         _: u64,
         _: busbar_contract::abi::mechanism::ticket::Ticket,
         _: &str,
-    ) -> busbar_contract::io_host::IoResult<(u64, String)> {
+    ) -> busbar_contract::io_host::IoResult<(u64, busbar_contract::io_host::AddrText)> {
         Err(busbar_contract::io_host::IoRefusal::unknown())
     }
     fn accept(
@@ -306,7 +306,9 @@ impl busbar_contract::io_host::IoHost for Reaps {
         _: busbar_contract::abi::mechanism::ticket::Ticket,
         _: u64,
         _: &std::task::Waker,
-    ) -> std::task::Poll<busbar_contract::io_host::IoResult<(u64, String)>> {
+    ) -> std::task::Poll<
+        busbar_contract::io_host::IoResult<(u64, busbar_contract::io_host::AddrText)>,
+    > {
         std::task::Poll::Ready(Err(busbar_contract::io_host::IoRefusal::unknown()))
     }
     fn read(
