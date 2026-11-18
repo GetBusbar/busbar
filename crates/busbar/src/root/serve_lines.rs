@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use busbar_kernel::channels::frame::{stays_one_message, Framing};
 use busbar_kernel::limits::process_admission::{
     AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
 };
@@ -44,8 +45,8 @@ pub(crate) struct LineCaller<R> {
 /// Complete output lines awaiting the writer; individual body sizing is separate.
 const LINE_OUTPUT_QUEUE_CAPACITY: usize = 16;
 
-/// `bytes` as one newline-terminated output line: allocated here at its final size, moved to the
-/// writer, and freed by the writer once it is written.
+/// `bytes`, already judged [`one_line`], as one newline-terminated output line: allocated here at its final
+/// size, moved to the writer, and freed by the writer once it is written.
 fn output_line(bytes: &[u8]) -> Vec<u8> {
     let mut line = Vec::with_capacity(bytes.len() + 1);
     line.extend_from_slice(bytes);
@@ -87,12 +88,16 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(output_line(bytes)).await.is_ok()
+        one_line(bytes) && self.out.send(output_line(bytes)).await.is_ok()
     }
 }
 
 impl<R> LineCaller<R> {
+    /// A refused line (not one line) is not written and does not end the session.
     fn emit(&self, bytes: &[u8]) -> bool {
+        if !one_line(bytes) {
+            return false;
+        }
         match self.out.try_send(output_line(bytes)) {
             Ok(()) => true,
             Err(error) => {
@@ -110,6 +115,23 @@ impl<R> LineCaller<R> {
     }
 }
 
+/// Whether a plane's `bytes` go out as one line of standard output: one trailing `\n` is the line's own end; any
+/// other `\n`, or any `\r` (a universal-newline reader ends a line on a lone `\r`), would make the caller read more
+/// than one line. A refused line is counted and logged.
+fn one_line(bytes: &[u8]) -> bool {
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if stays_one_message(Framing::Ndjson, body) {
+        return true;
+    }
+    metrics::counter!(busbar_kernel::snapshot::LINE_BREAK_REFUSED_TOTAL).increment(1);
+    tracing::warn!(
+        len = bytes.len(),
+        "an output line holding a line break was refused"
+    );
+    false
+}
+
+/// Ends a line already judged [`one_line`] with its one `\n`.
 fn terminate(line: &mut Vec<u8>) {
     if !line.ends_with(b"\n") {
         line.push(b'\n');
@@ -223,8 +245,10 @@ where
                         .await
                     {
                         Ok(mut body) if !body.is_empty() => {
-                            terminate(&mut body);
-                            let _ = caller.out.send(body).await;
+                            if one_line(&body) {
+                                terminate(&mut body);
+                                let _ = caller.out.send(body).await;
+                            }
                         }
                         Ok(_) => {}
                         Err(refused) => {

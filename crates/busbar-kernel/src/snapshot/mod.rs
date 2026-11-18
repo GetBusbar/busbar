@@ -203,6 +203,10 @@ pub const PLANE_CHANNEL_UNATTRIBUTED_TOTAL: &str = "busbar_plane_channel_unattri
 /// Channel messages dropped because the receiving slot's queue was full.
 pub const PLANE_CHANNEL_SLOT_FULL_TOTAL: &str = "busbar_plane_channel_slot_full_total";
 
+/// Messages refused before they were written because a line break inside would make them more than one framed
+/// message: a plane channel write, or a line of busbar's own standard output.
+pub const LINE_BREAK_REFUSED_TOTAL: &str = "busbar_line_break_refused_total";
+
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
 /// Plugin inspections refused because the process opened its cap of distinct images for inspection (DES-443 r3).
