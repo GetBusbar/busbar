@@ -254,3 +254,99 @@ fn declared_class_grammar_and_bounds_refuse_whole_records() {
     line.unit.records.user = Some("x".repeat(4097));
     assert!(journal_body(&line).is_err());
 }
+
+/// `n` V9 (link.v2) lines with billing evidence, linked from the genesis as a chain seals them.
+fn v9_chain(n: u64) -> Vec<AuditRecord> {
+    let mut previous = String::new();
+    (1..=n)
+        .map(|k| {
+            let mut line = record(PartitionedBillingV1::new(facts(2)).unwrap());
+            line.what.unit_key = UnitKey::new(k);
+            line.seq = k;
+            line.linked_ms = 21_000 + k;
+            line.prev_hash = std::mem::take(&mut previous);
+            line.hash = digest_record(&line);
+            previous.clone_from(&line.hash);
+            line
+        })
+        .collect()
+}
+
+/// PM ruling D-AUDIT (2026-11-17): every tampering case is detected on a V9 chain. An edited line or
+/// an edited count is a digest mismatch; an edited, dropped or reordered link breaks the walk; a
+/// truncated tail walks (a prefix is a chain) but no longer ends at the head the chain published.
+#[test]
+fn every_tampering_of_a_v9_chain_is_detected() {
+    use crate::record::{AuditBreakKind, AuditChain};
+    let lines = v9_chain(4);
+    assert!(lines.iter().all(|l| l.recipe == Recipe::V9));
+    assert_eq!(AuditChain::verify_chain(&lines), Ok(()));
+    let head = lines.last().unwrap().hash.clone();
+    let kind = |chain: &[AuditRecord]| AuditChain::verify_chain(chain).map_err(|b| b.kind);
+
+    let mut edited = lines.clone();
+    edited[1].wall += 1;
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "edit a line"
+    );
+
+    let mut edited = lines.clone();
+    edited[2].usage.fee_count += 1;
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "change a count"
+    );
+    let mut edited = lines.clone();
+    edited[2].unit.billing = Some(PartitionedBillingV1::new(facts(3)).unwrap());
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "change the partition count"
+    );
+
+    let mut edited = lines.clone();
+    edited[2].prev_hash = lines[0].hash.clone();
+    assert!(
+        kind(&edited).is_err(),
+        "edit a prev link to another real line"
+    );
+    let mut rehashed = edited.clone();
+    rehashed[2].hash = digest_record(&rehashed[2]);
+    assert!(
+        kind(&rehashed).is_err(),
+        "an edited prev link stays detected even when its line is rehashed"
+    );
+
+    let mut dropped = lines.clone();
+    dropped.remove(1);
+    assert!(
+        matches!(
+            kind(&dropped),
+            Err(AuditBreakKind::LinkMismatch | AuditBreakKind::SequenceMismatch { .. })
+        ),
+        "drop a line: {:?}",
+        kind(&dropped)
+    );
+
+    let mut reordered = lines.clone();
+    reordered.swap(1, 2);
+    assert!(
+        matches!(
+            kind(&reordered),
+            Err(AuditBreakKind::LinkMismatch | AuditBreakKind::SequenceMismatch { .. })
+        ),
+        "reorder two lines: {:?}",
+        kind(&reordered)
+    );
+
+    let truncated = &lines[..3];
+    assert_eq!(kind(truncated), Ok(()), "a prefix walks");
+    assert_ne!(
+        truncated.last().unwrap().hash,
+        head,
+        "a truncated tail no longer ends at the published head"
+    );
+}

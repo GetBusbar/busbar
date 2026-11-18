@@ -269,3 +269,78 @@ fn a_line_under_an_unknown_link_recipe_is_refused_as_unsupported() {
         Ok(_) => panic!("the head prefix of an unknown recipe is refused too"),
     }
 }
+
+/// PM ruling D-AUDIT (2026-11-17): every tampering case is detected on a V8 chain as `link` seals it.
+/// An edited line or count is a digest mismatch; an edited, dropped or reordered link breaks the
+/// walk; a truncated tail walks (a prefix is a chain) but no longer ends at the chain's head.
+#[test]
+fn every_tampering_of_a_v8_chain_is_detected() {
+    let (chain, lines) = linked(4);
+    assert!(lines.iter().all(|l| l.recipe == Recipe::V8));
+    assert_eq!(AuditChain::verify_chain(&lines), Ok(()));
+    let kind = |chain: &[AuditRecord]| AuditChain::verify_chain(chain).map_err(|b| b.kind);
+
+    let mut edited = lines.clone();
+    edited[1].mono += 1;
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "edit a line"
+    );
+    let mut edited = lines.clone();
+    edited[2].usage.fee_count += 1;
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "change a count"
+    );
+    let mut edited = lines.clone();
+    edited[2].usage.lines.pop();
+    assert_eq!(
+        kind(&edited),
+        Err(AuditBreakKind::DigestMismatch),
+        "drop a usage line"
+    );
+
+    let mut edited = lines.clone();
+    edited[2].prev_hash = lines[0].hash.clone();
+    assert!(
+        kind(&edited).is_err(),
+        "edit a prev link to another real line"
+    );
+    edited[2].hash = AuditChain::digest_of(&edited[2]);
+    assert!(
+        kind(&edited).is_err(),
+        "an edited prev link stays detected even when its line is rehashed"
+    );
+
+    let mut dropped = lines.clone();
+    dropped.remove(1);
+    assert!(
+        matches!(
+            kind(&dropped),
+            Err(AuditBreakKind::LinkMismatch | AuditBreakKind::SequenceMismatch { .. })
+        ),
+        "drop a line: {:?}",
+        kind(&dropped)
+    );
+    let mut reordered = lines.clone();
+    reordered.swap(1, 2);
+    assert!(
+        matches!(
+            kind(&reordered),
+            Err(AuditBreakKind::LinkMismatch | AuditBreakKind::SequenceMismatch { .. })
+        ),
+        "reorder two lines: {:?}",
+        kind(&reordered)
+    );
+
+    let truncated = &lines[..3];
+    assert_eq!(kind(truncated), Ok(()), "a prefix walks");
+    assert_eq!(chain.head(), lines[3].hash);
+    assert_ne!(
+        truncated.last().unwrap().hash,
+        chain.head(),
+        "a truncated tail no longer ends at the chain's head"
+    );
+}
