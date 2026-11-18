@@ -834,9 +834,16 @@ impl GovState {
         // T: select every terminal operation of the batch before driving any, in one keep.
         let mut intents: Vec<(usize, RecoveryEvent)> = Vec::new();
         for (at, item) in items.iter_mut().enumerate() {
-            match self.unselected_unit_terminal(&item.snapshot).await {
-                Ok(unselected) => intents.extend(unselected.into_iter().map(|event| (at, event))),
-                Err(why) => item.failed = Some(why),
+            let start = intents.len();
+            match self
+                .unselected_unit_terminal(&item.snapshot, at, &mut intents)
+                .await
+            {
+                Ok(()) => {}
+                Err(why) => {
+                    intents.truncate(start);
+                    item.failed = Some(why);
+                }
             }
         }
         intents.retain(|(at, _)| items[*at].failed.is_none());
@@ -1027,25 +1034,26 @@ impl GovState {
     }
 
     /// Phase T for one unit: restore its terminal receipts, check each selected terminal
-    /// operation is this exact identity, and return the Intents not yet selected (the pass keeps
-    /// them in one batch).
+    /// operation is this exact identity, and push the Intents not yet selected onto `intents`,
+    /// tagged with `at` (the pass keeps them in one batch).
     async fn unselected_unit_terminal(
         &self,
         snapshot: &UnitCheckpoint,
-    ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        at: usize,
+        intents: &mut Vec<(usize, RecoveryEvent)>,
+    ) -> RecordStoreResult<()> {
         self.validate_selected_terminal(snapshot)?;
-        let mut unselected = Vec::new();
         for initial in snapshot.terminal.iter().flatten() {
             self.restore_unit_terminal_receipt(initial).await?;
             if self.recovery_event(initial.operation_id).is_none() {
-                unselected.push(initial.clone());
+                intents.push((at, initial.clone()));
             } else if self.recovery_initial_event(initial.operation_id).as_ref() != Some(initial) {
                 return Err(error(
                     "terminal unit operation identity differs from recovery custody",
                 ));
             }
         }
-        Ok(unselected)
+        Ok(())
     }
 }
 
