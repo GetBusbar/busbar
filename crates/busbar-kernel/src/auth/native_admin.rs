@@ -23,7 +23,7 @@ pub trait NativeAdmin: Send + Sync {
 }
 
 pub enum PreparedAnswer {
-    Identity(Arc<dyn PreparedIdentity>),
+    Identity(Arc<PreparedIdentity>),
     NotMine,
     Rejected,
     Held,
@@ -43,7 +43,7 @@ pub enum NativeReplayClaim {
 pub struct AdminReplayDenial {
     _lease: AdmissionLease,
     invocation: Invocation,
-    _prepared: Arc<dyn PreparedIdentity>,
+    _prepared: Arc<PreparedIdentity>,
 }
 
 impl AdminReplayDenial {
@@ -61,7 +61,7 @@ impl AdminReplayDenial {
 pub struct AdminReplayUnknown {
     _lease: AdmissionLease,
     _invocation: Invocation,
-    _prepared: Arc<dyn PreparedIdentity>,
+    _prepared: Arc<PreparedIdentity>,
     _error: crate::plugin_records::RecordsDenied,
 }
 
@@ -81,32 +81,10 @@ impl std::fmt::Debug for AdminCompletionRefused {
     }
 }
 
-/// Host-only immutable verification state. Neither identity projection nor STRIP certifies that
-/// every declared credential field was verified; field provenance needs its own attestation.
-pub trait PreparedIdentity: Send + Sync {
-    fn provider(&self) -> &str;
-    fn credential_headers(&self) -> &[Box<str>];
-    fn identity(&self) -> &Identity;
-    fn request(&self) -> &Arc<ChargedRequestSnapshot>;
-    fn authorize(&self, now_s: u64) -> Result<(), u32>;
-    fn claim(&self) -> BoxFut<'_, bool>;
-    fn claim_classified(&self) -> BoxFut<'_, NativeReplayClaim> {
-        Box::pin(async move {
-            if self.claim().await {
-                NativeReplayClaim::Claimed
-            } else {
-                // Compatibility implementations expose no confirmed-false distinction.
-                NativeReplayClaim::Unknown(crate::plugin_records::RecordsDenied::Unavailable)
-            }
-        })
-    }
-}
-
-impl std::fmt::Debug for dyn PreparedIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedIdentity").finish_non_exhaustive()
-    }
-}
+/// Host-only immutable verification state: the one prepared native identity (arch lints section 3.1).
+/// Neither identity projection nor STRIP certifies that every declared credential field was verified;
+/// field provenance needs its own attestation.
+pub use super::native_chain::PreparedNativeIdentity as PreparedIdentity;
 
 /// Actual selected generation and host invocation, supplied at the request entry point. It is
 /// never captured by the App-installed callback, which would create a generation ownership cycle.
@@ -121,12 +99,12 @@ pub struct Invocation {
 
 pub(super) struct Pending {
     invocation: Invocation,
-    prepared: Arc<dyn PreparedIdentity>,
+    prepared: Arc<PreparedIdentity>,
     spent: AtomicBool,
 }
 
 impl Pending {
-    pub(super) fn new(invocation: Invocation, prepared: Arc<dyn PreparedIdentity>) -> Self {
+    pub(super) fn new(invocation: Invocation, prepared: Arc<PreparedIdentity>) -> Self {
         Self {
             invocation,
             prepared,
@@ -188,7 +166,7 @@ impl Pending {
 /// Retained by the actual execution owner through terminal effects. There is no public constructor
 /// or conversion back to pending, and cloning an Arc to this value does not mint execution rights.
 pub struct ExecutionAdmission {
-    native: Option<(AdmissionLease, Arc<dyn PreparedIdentity>)>,
+    native: Option<(AdmissionLease, Arc<PreparedIdentity>)>,
     origin: Option<Invocation>,
 }
 
@@ -199,7 +177,7 @@ impl ExecutionAdmission {
             origin: None,
         }
     }
-    pub fn native(&self) -> Option<(&AdmissionLease, &dyn PreparedIdentity)> {
+    pub fn native(&self) -> Option<(&AdmissionLease, &PreparedIdentity)> {
         self.native
             .as_ref()
             .map(|(lease, prepared)| (lease, prepared.as_ref()))

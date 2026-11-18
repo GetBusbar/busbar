@@ -400,7 +400,7 @@ fn preparation_failed(
 /// ```compile_fail,E0599
 /// use std::sync::Arc;
 /// use busbar_kernel::auth::{native_admin::PreparedIdentity, native_data::DataAuthorization};
-/// fn fabricate(identity: Arc<dyn PreparedIdentity>) -> DataAuthorization {
+/// fn fabricate(identity: Arc<PreparedIdentity>) -> DataAuthorization {
 ///     DataAuthorization::from_identity(identity)
 /// }
 /// ```

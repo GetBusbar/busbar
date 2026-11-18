@@ -295,7 +295,7 @@ impl PendingClaim {
 
     fn native(
         invocation: native_admin::Invocation,
-        prepared: std::sync::Arc<dyn native_admin::PreparedIdentity>,
+        prepared: std::sync::Arc<native_admin::PreparedIdentity>,
     ) -> Self {
         Self(PendingKind::Native(native_admin::Pending::new(
             invocation, prepared,
@@ -1179,7 +1179,7 @@ type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 /// 503 with `Retry-After`, SIGN-auth-kind 2026-10-30).
 #[derive(Debug, Default)]
 pub(crate) struct AdminCarried {
-    native: Option<std::sync::Arc<dyn native_admin::PreparedIdentity>>,
+    native: Option<std::sync::Arc<native_admin::PreparedIdentity>>,
     strips: Vec<Strip>,
     replay: Option<(String, Box<Replay>)>,
     no_verdict: bool,

@@ -8,7 +8,7 @@ use super::chain_run::{
     prepare_snapshot as verify_snapshot, run_owned_chain, AuthServices, ChainEnd, ChainInstance,
     IdentityPolicy, Request, Verdict,
 };
-use super::native_admin::{PreparedAnswer, PreparedIdentity};
+use super::native_admin::PreparedAnswer;
 use super::native_policy::ChainPolicy;
 use super::verdicts::VerdictCache;
 use crate::directory::HoldSet;
@@ -284,26 +284,20 @@ pub struct PreparedNativeIdentity {
     cutoff: Option<u64>,
 }
 
-impl PreparedIdentity for PreparedNativeIdentity {
-    fn claim_classified(
-        &self,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, super::native_admin::NativeReplayClaim>
-    {
-        Box::pin(PreparedNativeIdentity::claim_classified(self))
+impl std::fmt::Debug for PreparedNativeIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedIdentity").finish_non_exhaustive()
     }
-    fn provider(&self) -> &str {
-        &self.instance.opened.who.name
-    }
-    fn credential_headers(&self) -> &[Box<str>] {
+}
+
+impl PreparedNativeIdentity {
+    pub fn credential_headers(&self) -> &[Box<str>] {
         self.instance.opened.port.cred_headers()
     }
-    fn identity(&self) -> &busbar_ports::auth::Identity {
-        &self.identity
-    }
-    fn request(&self) -> &Arc<ChargedRequestSnapshot> {
+    pub fn request(&self) -> &Arc<ChargedRequestSnapshot> {
         &self.request
     }
-    fn authorize(&self, now_s: u64) -> Result<(), u32> {
+    pub fn authorize(&self, now_s: u64) -> Result<(), u32> {
         self.fresh(now_s)?;
         self.request
             .with_auth_input(|req| {
@@ -314,7 +308,7 @@ impl PreparedIdentity for PreparedNativeIdentity {
             })
             .map_err(|_| busbar_plugin_abi::fail::refused::R_POLICY)?
     }
-    fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
+    pub fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
         Box::pin(async move {
             match (self.identity.replay(), self.cutoff) {
                 (Some((key, _)), Some(until)) => {
@@ -377,8 +371,5 @@ impl PreparedNativeIdentity {
             return Err(busbar_plugin_abi::fail::refused::R_POLICY);
         }
         Ok(())
-    }
-    pub(crate) fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
-        <Self as PreparedIdentity>::claim(self)
     }
 }
