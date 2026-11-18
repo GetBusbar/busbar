@@ -341,7 +341,10 @@ impl AsPlane {
             return;
         };
         self.sessions.hydrate(id, &subject);
-        let (Some(key), Some(handle)) = (staked, browser.handle.as_deref()) else {
+        let (Some(key), Some(handle)) = (
+            staked,
+            browser.handle.as_ref().map(crate::consent::Handle::as_str),
+        ) else {
             return;
         };
         let key = crate::consent::handled_key(&key, handle);
@@ -357,19 +360,25 @@ impl AsPlane {
 /// [`crate::consent::pushed_key`] for a pushed request, else [`crate::consent::request_key`] over the
 /// request's exact bytes.
 fn staked_key<B>(request: &http::Request<B>) -> Option<String> {
-    let pairs = request
+    // One pass over the query, each value borrowed unless it had to be decoded.
+    let (mut client_id, mut request_uri) = (None, None);
+    for (name, value) in request
         .uri()
         .query()
-        .map(crate::routes::form_urlencoded_pairs)
-        .unwrap_or_default();
-    let param = |name: &str| {
-        pairs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.clone())
-    };
-    let client_id = param("client_id")?;
-    Some(match param("request_uri") {
+        .into_iter()
+        .flat_map(crate::routes::form_urlencoded_pairs)
+    {
+        let slot = match &*name {
+            "client_id" => &mut client_id,
+            "request_uri" => &mut request_uri,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = Some(value);
+        }
+    }
+    let client_id = client_id?;
+    Some(match request_uri {
         Some(handle) => crate::consent::pushed_key(&client_id, &handle),
         None => crate::consent::request_key(
             &client_id,
