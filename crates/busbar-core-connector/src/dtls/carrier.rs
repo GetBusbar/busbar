@@ -20,6 +20,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use busbar_contract::kept::Text;
 use busbar_kernel::media::{Carried, Lines, MediaCarrier, MediaLeg};
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_plugin_abi::host_side::caller::BoxFut;
@@ -64,7 +65,7 @@ impl MediaAudit for LogAudit {
 struct Inner {
     session: Session,
     /// The demux key registered for the session.
-    ufrag: Option<Box<[u8]>>,
+    ufrag: Option<Text>,
     /// The addresses registered for the session.
     addrs: Vec<SocketAddr>,
 }
@@ -85,7 +86,7 @@ impl Cell {
 /// A port's routes: by the local ufrag a check names, by the address a session numbered.
 #[derive(Default)]
 struct Table {
-    by_ufrag: HashMap<Box<[u8]>, Arc<Cell>>,
+    by_ufrag: HashMap<Text, Arc<Cell>>,
     by_addr: HashMap<SocketAddr, Arc<Cell>>,
 }
 
@@ -131,7 +132,6 @@ impl Port {
             session.close();
             return Err(RecordsDenied::Invalid);
         };
-        let key: Box<[u8]> = ufrag.into_boxed_bytes();
         let cell = Arc::new(Cell {
             inner: Mutex::new(Inner {
                 session,
@@ -142,17 +142,16 @@ impl Port {
         });
         {
             let mut table = self.table();
-            if table.by_ufrag.contains_key(&key[..]) {
+            if table.by_ufrag.contains_key(ufrag.as_str()) {
                 drop(table);
                 let mut inner = cell.lock();
                 inner.session.close();
                 return Err(RecordsDenied::Unavailable);
             }
-            let held: Box<[u8]> = Box::from(&key[..]);
-            table.by_ufrag.insert(held, Arc::clone(&cell));
+            table.by_ufrag.insert(ufrag.clone(), Arc::clone(&cell));
         }
         let mut inner = cell.lock();
-        inner.ufrag = Some(key);
+        inner.ufrag = Some(ufrag);
         self.after(&cell, &mut inner);
         drop(inner);
         Ok(cell)
@@ -167,11 +166,10 @@ impl Port {
             let _ = socket.send_to(bytes, to);
         });
         if let Some((_, new)) = inner.session.take_ufrag_move() {
-            let new: Box<[u8]> = new.into_boxed_bytes();
             let mut table = self.table();
             let taken = table
                 .by_ufrag
-                .get(&new[..])
+                .get(new.as_str())
                 .is_some_and(|other| !Arc::ptr_eq(other, cell));
             if taken {
                 drop(table);
@@ -180,14 +178,13 @@ impl Port {
                 if let Some(old) = inner.ufrag.take() {
                     if table
                         .by_ufrag
-                        .get(&old[..])
+                        .get(old.as_str())
                         .is_some_and(|c| Arc::ptr_eq(c, cell))
                     {
-                        table.by_ufrag.remove(&old[..]);
+                        table.by_ufrag.remove(old.as_str());
                     }
                 }
-                let held: Box<[u8]> = Box::from(&new[..]);
-                table.by_ufrag.insert(held, Arc::clone(cell));
+                table.by_ufrag.insert(new.clone(), Arc::clone(cell));
                 inner.ufrag = Some(new);
             }
         }
@@ -214,10 +211,10 @@ impl Port {
         if let Some(key) = inner.ufrag.take() {
             if table
                 .by_ufrag
-                .get(&key[..])
+                .get(key.as_str())
                 .is_some_and(|c| Arc::ptr_eq(c, cell))
             {
-                table.by_ufrag.remove(&key[..]);
+                table.by_ufrag.remove(key.as_str());
             }
         }
         for addr in inner.addrs.drain(..) {
@@ -237,7 +234,10 @@ impl Port {
         let cell = {
             let table = self.table();
             match stun::local_ufrag(bytes) {
-                Some(ufrag) => table.by_ufrag.get(ufrag).map(Arc::clone),
+                Some(ufrag) => std::str::from_utf8(ufrag)
+                    .ok()
+                    .and_then(|ufrag| table.by_ufrag.get(ufrag))
+                    .map(Arc::clone),
                 None => table.by_addr.get(&from).map(Arc::clone),
             }
         };
@@ -437,7 +437,7 @@ impl DatagramCarrier {
         route: MediaRoute,
         dial: bool,
         opening: &[u8],
-        now: Instant,
+        now_ns: u64,
     ) -> Result<Session, RecordsDenied> {
         Session::begin(
             &*self.opener,
@@ -449,7 +449,7 @@ impl DatagramCarrier {
                 opening,
                 judge: Some((Arc::clone(&self.judge), route.class)),
             },
-            now,
+            now_ns,
         )
     }
 }
@@ -467,8 +467,9 @@ impl MediaCarrier for DatagramCarrier {
                 .ok_or(RecordsDenied::Unavailable)?;
             let port = self.listener_port(media.bind)?;
             // The accept's one reading: its session begins and takes the offer at it.
-            let now = crate::framer::now();
-            let session = self.begin(&port, media, false, &[], now)?;
+            let now_ns = crate::framer::now_ns();
+            let now = crate::framer::instant_of(now_ns);
+            let session = self.begin(&port, media, false, &[], now_ns)?;
             let cell = port.admit(session)?;
             let answer = {
                 let mut inner = cell.lock();
@@ -501,7 +502,7 @@ impl MediaCarrier for DatagramCarrier {
             // A port of its own, on the listener's address: two calls to one far end would share the 5-tuple.
             let own = SocketAddr::new(media.bind.ip(), 0);
             let port = Port::open(own).map_err(|_| RecordsDenied::Unavailable)?;
-            let session = self.begin(&port, media, true, opening, crate::framer::now())?;
+            let session = self.begin(&port, media, true, opening, crate::framer::now_ns())?;
             let cell = port.admit(session)?;
             let offer = cell.lock().session.take_rendezvous();
             let Some(offer) = offer else {
