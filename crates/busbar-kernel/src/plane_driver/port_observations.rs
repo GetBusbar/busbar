@@ -34,11 +34,8 @@ use super::{ObservationPolicy, ObservationRuntimeError, PlaneMoney};
 use crate::host_services::WallMs;
 use crate::persistence::observations::Error as StoreError;
 
-/// The most units registered at once, across every instance. Every slot is made with the custody, at boot.
-pub(crate) const MAX_UNITS: usize = 4_096;
-
-/// No slot: the end of a principal's chain.
-pub(crate) const NIL: u32 = u32::MAX;
+/// The most units registered at once, across every instance.
+const MAX_UNITS: usize = 4_096;
 
 /// One billed request's observation context: its money and unit, the operator's policy for the destination it was
 /// routed to, and its declared class names (the index of a name is its class id). Every part is shared or a copy
@@ -49,12 +46,6 @@ pub struct ActiveUnit {
     pub unit: UnitKey,
     pub policy: Arc<ObservationPolicy>,
     pub classes: Arc<[String]>,
-}
-
-/// A registered unit in its slot, chained to the next unit of the same principal.
-pub(crate) struct Held {
-    pub(crate) unit: ActiveUnit,
-    pub(crate) next: u32,
 }
 
 /// A principal's (instance, subject) names as borrowed text, so a lookup needs no owned key.
@@ -95,99 +86,53 @@ impl Hash for dyn Principal + '_ {
     }
 }
 
-/// A principal's first slot, by its (instance, subject) names, shared with the caller that registered it.
-pub(crate) type ByPrincipal = foldhash::HashMap<(Arc<str>, Arc<str>), u32>;
+/// A principal's units in flight, each with the id of the registration that holds it. One unit is held in
+/// place; more spill to the heap, and the entry goes with the principal's last unit.
+pub(crate) type Units = smallvec::SmallVec<[(u64, ActiveUnit); 1]>;
 
-/// Every slot, the free ones and the map's room are made at boot (`off_path::plane_port_observations`); a
-/// registration claims a slot, a drop gives it back, and nothing here allocates, grows or shifts.
+/// By (instance, subject) names, shared with the caller that registered them: the key is a second handle on
+/// the caller's names, never a copy.
+pub(crate) type ByPrincipal = foldhash::HashMap<(Arc<str>, Arc<str>), Units>;
+
+/// The registrations in flight. Empty at boot: a principal's entry is made with its first unit and removed with
+/// its last.
+#[derive(Default)]
 pub(crate) struct Book {
-    pub(crate) slots: Vec<Option<Held>>,
-    /// Slots no registration holds.
-    pub(crate) free: Vec<u32>,
     pub(crate) by_principal: ByPrincipal,
+    pub(crate) len: usize,
+    /// The id the next registration takes (it tells two registrations of one unit apart).
+    next_id: u64,
 }
 
 impl Book {
-    /// The units registered now.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.slots.len() - self.free.len()
-    }
-
-    fn held(&self, slot: u32) -> Option<&Held> {
-        self.slots.get(slot as usize)?.as_ref()
-    }
-
-    /// A principal's units in flight, newest first.
-    fn chain(&self, first: u32) -> impl Iterator<Item = &ActiveUnit> {
-        let mut at = first;
-        std::iter::from_fn(move || {
-            let held = self.held(at)?;
-            at = held.next;
-            Some(&held.unit)
-        })
-    }
-
-    /// The unit a call of the principal whose chain starts at `first` is for: see the module docs.
-    fn pick(&self, first: u32, scope: Option<[u8; 32]>) -> Option<&ActiveUnit> {
-        let mut units = self.chain(first);
-        let only = units.next()?;
-        if units.next().is_none() {
+    /// The unit a call of the principal holding `units` is for: see the module docs.
+    fn pick(units: &Units, scope: Option<[u8; 32]>) -> Option<&ActiveUnit> {
+        if let [(_, only)] = units.as_slice() {
             return Some(only);
         }
         if let Some(scope) = scope {
-            if let Some(attached) = self
-                .chain(first)
-                .find(|c| c.money.observation_scope(c.unit) == Some(scope))
+            if let Some((_, attached)) = units
+                .iter()
+                .find(|(_, c)| c.money.observation_scope(c.unit) == Some(scope))
             {
                 return Some(attached);
             }
         }
-        let mut unattached = self
-            .chain(first)
-            .filter(|c| c.money.observation_scope(c.unit).is_none());
+        let mut unattached = units
+            .iter()
+            .filter(|(_, c)| c.money.observation_scope(c.unit).is_none());
         match (unattached.next(), unattached.next()) {
-            (Some(one), None) => Some(one),
+            (Some((_, one)), None) => Some(one),
             _ => None,
         }
     }
-
-    /// Take `slot` out of the chain of the principal `key`, and give the slot back. The unit is handed out so the
-    /// caller drops it after the lock.
-    fn release(&mut self, key: &dyn Principal, slot: u32) -> Option<ActiveUnit> {
-        let next = self.held(slot)?.next;
-        let first = *self.by_principal.get(key)?;
-        if first == slot {
-            if next == NIL {
-                self.by_principal.remove(key);
-            } else if let Some(head) = self.by_principal.get_mut(key) {
-                *head = next;
-            }
-        } else {
-            // Bounded by the principal's own units in flight.
-            let mut at = first;
-            loop {
-                let held = self.slots.get_mut(at as usize)?.as_mut()?;
-                if held.next == slot {
-                    held.next = next;
-                    break;
-                }
-                at = held.next;
-            }
-        }
-        let held = self.slots.get_mut(slot as usize)?.take()?;
-        // `free` was made with room for every slot, and a slot is given back once.
-        self.free.push(slot);
-        Some(held.unit)
-    }
 }
 
-/// The observation custody of every plane instance in the process. Clones share the registrations. Made at boot
-/// (`off_path::plane_port_observations`).
+/// The observation custody of every plane instance in the process. Clones share the registrations.
 #[derive(Clone)]
 pub struct ObsCustody {
-    pub(crate) book: Arc<Mutex<Book>>,
-    pub(crate) wall_ms: WallMs,
+    book: Arc<Mutex<Book>>,
+    wall_ms: WallMs,
 }
 
 /// A registered unit, released when this drops (the request ended: transient exchange custody only, never the
@@ -197,21 +142,41 @@ pub struct Registration {
     book: Arc<Mutex<Book>>,
     instance: Arc<str>,
     subject: Arc<str>,
-    slot: u32,
+    id: u64,
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        let released = self
-            .book
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .release(&(&*self.instance, &*self.subject), self.slot);
-        drop(released);
+        let mut book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
+        let key: &dyn Principal = &(&*self.instance, &*self.subject);
+        let Some(units) = book.by_principal.get_mut(key) else {
+            return;
+        };
+        // A registration holds the one entry for its unit; the order of a principal's units is not
+        // observed (a call picks by scope), so the entry is swapped out.
+        let Some(at) = units.iter().position(|(held, _)| *held == self.id) else {
+            return;
+        };
+        let (_, unit) = units.swap_remove(at);
+        if units.is_empty() {
+            book.by_principal.remove(key);
+        }
+        book.len -= 1;
+        drop(book);
+        // The unit's shared parts are let go after the lock.
+        drop(unit);
     }
 }
 
 impl ObsCustody {
+    #[must_use]
+    pub fn new(wall_ms: WallMs) -> Self {
+        Self {
+            book: Arc::default(),
+            wall_ms,
+        }
+    }
+
     /// Root-only activation, after admission and the verified destination selection: `subject` of plane `instance`
     /// has `unit` in flight. The caller hands the names it already shares; a registration keeps them, never a copy.
     ///
@@ -233,27 +198,27 @@ impl ObsCustody {
         }
         let mut book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
         let book = &mut *book;
-        let Some(slot) = book.free.pop() else {
+        if book.len >= MAX_UNITS {
             return Err(REFUSED);
-        };
-        let key: &dyn Principal = &(&**instance, &**subject);
-        let next = match book.by_principal.get_mut(key) {
-            Some(first) => std::mem::replace(first, slot),
-            None => {
-                // The map was made with room for twice every slot, so this insert never grows it.
-                book.by_principal
-                    .insert((Arc::clone(instance), Arc::clone(subject)), slot);
-                NIL
-            }
-        };
-        if let Some(free) = book.slots.get_mut(slot as usize) {
-            *free = Some(Held { unit, next });
         }
+        let id = book.next_id;
+        book.next_id = id.wrapping_add(1);
+        let key: &dyn Principal = &(&**instance, &**subject);
+        if let Some(units) = book.by_principal.get_mut(key) {
+            units.push((id, unit));
+        } else {
+            // The principal's first unit in flight: its entry is made now, keyed by the caller's shared names.
+            let mut units = Units::new();
+            units.push((id, unit));
+            book.by_principal
+                .insert((Arc::clone(instance), Arc::clone(subject)), units);
+        }
+        book.len += 1;
         Ok(Registration {
             book: Arc::clone(&self.book),
             instance: Arc::clone(instance),
             subject: Arc::clone(subject),
-            slot,
+            id,
         })
     }
 
@@ -267,10 +232,10 @@ impl ObsCustody {
     ) -> Option<ActiveUnit> {
         let subject = subject_of(identity)?;
         let book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
-        let first = *book
+        let units = book
             .by_principal
             .get(&(instance, subject) as &dyn Principal)?;
-        book.pick(first, scope).cloned()
+        Book::pick(units, scope).cloned()
     }
 }
 

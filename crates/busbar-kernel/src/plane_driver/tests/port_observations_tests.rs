@@ -365,7 +365,7 @@ async fn the_register_holds_its_stated_units_and_refuses_the_next() {
                 .expect("a slot is free"),
         );
     }
-    let book_len = || f.custody.book.lock().unwrap().len();
+    let book_len = || f.custody.book.lock().unwrap().len;
     assert_eq!(book_len(), MAX_UNITS);
     let late: Arc<str> = Arc::from("late");
     assert_eq!(
@@ -384,22 +384,24 @@ async fn the_register_holds_its_stated_units_and_refuses_the_next() {
     assert_eq!(book_len(), 1, "only the fixture's unit is left");
 }
 
-/// Register and drop in a churn of principals: the book ends empty, every slot is free, and neither the slots,
-/// the free list nor the principal map ever grew (the no-allocation proof).
+/// Register and drop in a churn of principals: the book ends empty, with no principal entry left (each entry goes
+/// with its principal's last unit), and nothing was reserved before the first registration.
 #[tokio::test]
-async fn registrations_churned_leave_every_slot_free_and_nothing_grown() {
+async fn registrations_churned_leave_the_book_empty() {
     let f = fixture().await;
     drop(f.registration);
     let (instance, policy) = (Arc::from("fixture"), Arc::new(policy()));
     let subjects: Vec<Arc<str>> = (0..64).map(|n| Arc::from(format!("owner-{n}"))).collect();
-    let capacities = |book: &Book| {
-        (
-            book.slots.capacity(),
-            book.free.capacity(),
-            book.by_principal.capacity(),
-        )
-    };
-    let before = capacities(&f.custody.book.lock().unwrap());
+    assert_eq!(
+        ObsCustody::new(Arc::new(|| 1))
+            .book
+            .lock()
+            .unwrap()
+            .by_principal
+            .capacity(),
+        0,
+        "a new custody reserves nothing"
+    );
     let mut live: std::collections::VecDeque<Registration> =
         std::collections::VecDeque::with_capacity(MAX_UNITS);
     for round in 0..100_000usize {
@@ -420,11 +422,11 @@ async fn registrations_churned_leave_every_slot_free_and_nothing_grown() {
     }
     drop(live);
     let book = f.custody.book.lock().unwrap();
-    assert_eq!(book.len(), 0);
-    assert_eq!(book.free.len(), MAX_UNITS, "every slot is free");
-    assert!(book.slots.iter().all(Option::is_none));
-    assert!(book.by_principal.is_empty());
-    assert_eq!(capacities(&book), before, "nothing grew");
+    assert_eq!(book.len, 0);
+    assert!(
+        book.by_principal.is_empty(),
+        "every principal's entry went with its last unit"
+    );
 }
 
 /// A principal's units are told apart after others of its chain are released from the middle.

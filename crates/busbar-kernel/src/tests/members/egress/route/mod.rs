@@ -113,7 +113,6 @@ impl Node {
             pools: HashMap::default(),
             lanes: lanes.to_vec(),
             floor: WeightedFloor::new(),
-            queued: Default::default(),
             timeout_secs: 120,
             affinity: None,
             preference: None,
