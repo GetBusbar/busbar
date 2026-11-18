@@ -45,8 +45,10 @@ use prepared::{FrozenUsage, PreparationFacts};
 pub trait Calls {
     type Session: Send + 'static;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (0, &[], &[])
+    /// The plane's usage facts and its declared classes and attempt classes, as the plane's own
+    /// shared lists: a session freezes its declaration by sharing them, never by copying.
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        (0, Arc::default(), Arc::default())
     }
 
     /// Declared resource kinds require the separate completed resource admission producer.
@@ -127,8 +129,9 @@ impl Calls for dyn PlanePort {
         PlanePort::channel(self, session, target, sink)
     }
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (self.facts(), self.usage_classes(), self.attempt_classes())
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        let (classes, attempt_classes) = self.usage_shared();
+        (self.facts(), classes, attempt_classes)
     }
 
     fn resource_scoped(&self, route: u32) -> bool {

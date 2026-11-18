@@ -86,7 +86,7 @@ pub(crate) fn build_inventory(
     ResourceInventory::from_wire(
         driver.caller(),
         epoch,
-        route.resource_kinds.clone(),
+        route.resource_kinds.to_vec(),
         &wire,
         Arc::clone(&inputs.upstreams),
         Arc::clone(&inputs.targets),

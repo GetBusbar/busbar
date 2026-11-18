@@ -48,6 +48,9 @@ impl PlanePort for BlockingPlane {
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
     }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
+    }
     fn facts(&self) -> u64 {
         0
     }
@@ -174,7 +177,7 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
             auth: AUTH_PUBLIC,
             pattern: "/input".into(),
             cred_header: None,
-            resource_kinds: Vec::new(),
+            resource_kinds: Default::default(),
         }],
         entered: Mutex::new(Some(entered)),
         release: Mutex::new(blocked),

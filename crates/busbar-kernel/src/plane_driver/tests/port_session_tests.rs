@@ -491,8 +491,12 @@ fn refused() -> PortError {
 impl Calls for Script {
     type Session = Live;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (self.facts, &self.classes, &self.attempt_classes)
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        (
+            self.facts,
+            self.classes.as_slice().into(),
+            self.attempt_classes.as_slice().into(),
+        )
     }
 
     fn request(

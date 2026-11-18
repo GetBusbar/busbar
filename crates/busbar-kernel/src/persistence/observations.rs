@@ -14,6 +14,7 @@ use super::{
 use crate::hashing::Sha256;
 use busbar_contract::{
     abi::sdk::plane::observation::{Observation, ScopeId, State},
+    kept::Text,
     persistence::{
         Address, Candidate, Decision, Durability, ExpectedValue, Mutation, NamespaceId, Predicate,
         PreparedCandidate, Read, ReadResult, CANDIDATE_VERSION,
@@ -28,18 +29,19 @@ const MAX_COMPONENTS: usize = 64;
 const MAX_SCOPES_PER_PRINCIPAL: u64 = 10_000;
 const MAX_REVISIONS_PER_SCOPE: usize = 4096;
 
-/// Immutable authenticated host identity. Never constructed from plugin output.
+/// Immutable authenticated host identity. Never constructed from plugin output. Its names are
+/// shared text (stored exactly as a string): the policy's own, shared into the binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrincipalBinding {
-    pub principal: String,
-    pub instance: String,
-    pub destination: String,
-    pub accounting_namespace: String,
+    pub principal: Text,
+    pub instance: Text,
+    pub destination: Text,
+    pub accounting_namespace: Text,
 }
 /// An operator-approved tariff snapshot, pinned at the original accounting time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RatedSubject {
-    pub name: String,
+    pub name: Text,
     /// Nano currency units per whole declared usage unit. Missing rates refuse settlement.
     pub rates_nanos: BTreeMap<u32, u64>,
 }
@@ -53,13 +55,13 @@ pub struct BudgetBinding {
 /// All authority and accounting facts fixed before a paid operation is accepted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
-    pub principal: String,
+    pub principal: Text,
     /// Group at original admission, retained through later key regrouping.
     pub group: String,
-    pub instance: String,
-    pub destination: String,
-    pub accounting_namespace: String,
-    pub serving_subject: String,
+    pub instance: Text,
+    pub destination: Text,
+    pub accounting_namespace: Text,
+    pub serving_subject: Text,
     pub rate_time: u64,
     /// Index zero must name the serving subject; other entries only choose tariffs.
     pub subjects: Vec<RatedSubject>,
@@ -168,14 +170,15 @@ pub struct DatedRecord {
 }
 impl DatedRecord {
     fn empty(binding: &Binding, subject: &RatedSubject) -> Self {
+        // The dated record is a stored row of plain strings: one copy of each name, as before.
         Self {
-            principal: binding.principal.clone(),
+            principal: binding.principal.as_str().to_owned(),
             group: binding.group.clone(),
-            instance: binding.instance.clone(),
-            destination: binding.destination.clone(),
-            accounting_namespace: binding.accounting_namespace.clone(),
-            serving_subject: binding.serving_subject.clone(),
-            rated_subject: subject.name.clone(),
+            instance: binding.instance.as_str().to_owned(),
+            destination: binding.destination.as_str().to_owned(),
+            accounting_namespace: binding.accounting_namespace.as_str().to_owned(),
+            serving_subject: binding.serving_subject.as_str().to_owned(),
+            rated_subject: subject.name.as_str().to_owned(),
             rate_time: binding.rate_time,
             classes: binding.classes.clone(),
             rates_nanos: subject.rates_nanos.clone(),
@@ -598,8 +601,8 @@ impl ObservationStore {
                 observation: observation.clone(),
                 accounting_time: binding.rate_time,
                 observed_at,
-                serving_subject: binding.serving_subject.clone(),
-                rated_subject: subject.name.clone(),
+                serving_subject: binding.serving_subject.as_str().to_owned(),
+                rated_subject: subject.name.as_str().to_owned(),
                 counts_delta: difference.clone(),
                 nanos_delta: delta,
                 quarantined: quarantine,
@@ -669,7 +672,10 @@ impl ObservationStore {
                 total.spent_nanos = apply_delta(total.spent_nanos, delta)?;
                 for (class, amount) in &difference {
                     let name = binding.classes.get(class).ok_or(Error::Corrupt)?;
-                    let units = total.units.entry(subject.name.clone()).or_default();
+                    let units = total
+                        .units
+                        .entry(subject.name.as_str().to_owned())
+                        .or_default();
                     let previous = units.get(name).copied().unwrap_or_default();
                     let next = previous
                         .micros()
