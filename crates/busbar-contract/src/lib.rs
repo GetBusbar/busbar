@@ -49,7 +49,6 @@ pub mod diagnostic;
 pub mod duration;
 pub mod export_calls;
 pub mod export_stream;
-pub mod fixed;
 pub mod framing_scope;
 pub mod grammar;
 pub mod header;
