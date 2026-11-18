@@ -641,10 +641,8 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
             &'a self,
             _: &'a RootCfg,
             _: &'a PluginsCfg,
-        ) -> BoxFut<
-            'a,
-            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
-        > {
+        ) -> BoxFut<'a, Result<Option<busbar_kernel::appbuild::CandidatePreparation>, String>>
+        {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Box::pin(async { Err("native fixture has no serving candidate owner".into()) })
         }

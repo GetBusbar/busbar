@@ -784,7 +784,7 @@ impl busbar_kernel::appbuild::RootRules for Rules {
         plugins: &'a busbar_kernel::config::PluginsCfg,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+        Result<Option<busbar_kernel::appbuild::CandidatePreparation>, String>,
     > {
         match &self.native_candidate {
             Some(candidate) => candidate.prepare(cfg),
@@ -3341,7 +3341,7 @@ mod owned_reader_tests {
             _: &'a config::PluginsCfg,
         ) -> busbar_plugin_abi::host_side::caller::BoxFut<
             'a,
-            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+            Result<Option<busbar_kernel::appbuild::CandidatePreparation>, String>,
         > {
             Box::pin(async { Err("exact candidate preparation refused".into()) })
         }

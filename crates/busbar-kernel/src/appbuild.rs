@@ -1074,15 +1074,43 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
+/// The root's act that completes one candidate once the kernel has built its app.
+pub type CandidateFinish = Box<
+    dyn for<'a> FnOnce(
+            &'a mut App,
+        )
+            -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>
+        + Send,
+>;
+
 /// Root-owned early resolver and late completion of one unpublished candidate.
 /// The containing transaction owns this object across awaits; response detachment does not abort it.
-pub trait CandidatePreparation: Send + 'static {
-    fn secret_resolver(&self) -> Arc<config::secret::SecretResolver>;
+pub struct CandidatePreparation {
+    secret_resolver: Arc<config::secret::SecretResolver>,
+    finish: CandidateFinish,
+}
 
-    fn finish<'a>(
-        self: Box<Self>,
+impl CandidatePreparation {
+    pub fn new(
+        secret_resolver: Arc<config::secret::SecretResolver>,
+        finish: CandidateFinish,
+    ) -> Self {
+        Self {
+            secret_resolver,
+            finish,
+        }
+    }
+
+    pub fn secret_resolver(&self) -> Arc<config::secret::SecretResolver> {
+        Arc::clone(&self.secret_resolver)
+    }
+
+    pub fn finish<'a>(
+        self,
         app: &'a mut App,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>;
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>> {
+        (self.finish)(app)
+    }
 }
 
 pub trait RootRules: Send + Sync {
@@ -1103,7 +1131,7 @@ pub trait RootRules: Send + Sync {
         _plugins: &'a config::PluginsCfg,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<Option<Box<dyn CandidatePreparation>>, String>,
+        Result<Option<CandidatePreparation>, String>,
     > {
         Box::pin(async move {
             if cfg

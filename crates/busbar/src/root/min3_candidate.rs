@@ -297,7 +297,7 @@ impl Factory {
         cfg: &'a busbar_kernel::config::RootCfg,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
+        Result<Option<busbar_kernel::appbuild::CandidatePreparation>, String>,
     > {
         Box::pin(async move {
             // The required desired-versus-boot export evidence and aggregate CHECK
@@ -313,12 +313,15 @@ impl Factory {
                 .bootstrap
                 .prepare_next(&self.process, cfg, dest.guard().clone(), &self.transports)
                 .await?;
-            Ok(Some(Box::new(Candidate {
+            let candidate = Candidate {
                 owner: Arc::clone(self),
                 ready,
                 dest,
-            })
-                as Box<dyn busbar_kernel::appbuild::CandidatePreparation>))
+            };
+            Ok(Some(busbar_kernel::appbuild::CandidatePreparation::new(
+                candidate.ready.resolver(),
+                Box::new(move |app| candidate.finish(app)),
+            )))
         })
     }
 }
@@ -329,17 +332,13 @@ struct Candidate {
     dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
 }
 
-impl busbar_kernel::appbuild::CandidatePreparation for Candidate {
-    fn secret_resolver(&self) -> Arc<busbar_kernel::config::secret::SecretResolver> {
-        self.ready.resolver()
-    }
-
+impl Candidate {
     fn finish<'a>(
-        self: Box<Self>,
+        self,
         app: &'a mut busbar_kernel::state::App,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>> {
         Box::pin(async move {
-            let Self { owner, ready, dest } = *self;
+            let Self { owner, ready, dest } = self;
             let epoch = app
                 .prepared_generation()
                 .ok_or("native candidate has no durable publication reservation")?;
