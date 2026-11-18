@@ -44,8 +44,8 @@ impl Fixture {
             context: InvocationContext::new(generation, caller, 7).unwrap(),
             _admission: admission,
             selected: Selected {
-                rewrites: Vec::new(),
-                gates: Vec::new(),
+                rewrites: Arc::default(),
+                gates: Arc::default(),
                 policy: None,
                 taps: Taps::default(),
                 key: None,

@@ -15,15 +15,16 @@ use busbar_plugin_abi::kinds::hook::hook::{
 
 use crate::audit::amend::NodeAmendments;
 use crate::config::hooks::HookRegistry;
+use crate::config::HookStage;
 use crate::config::{HookCfg, HookKind, PolicyOnError, RootCfg};
 use crate::cost::CostModel;
 use crate::governance::GovState;
 use crate::hooks::RequestedSignals;
 use crate::plane_driver::native_hook_bindings::{
-    Attached, Bindings, Bound, Calls, Inputs, OpenedHook, PoolTable, SeatScope, WalkBinding,
-    WalkPlan, WalkTables,
+    Attached, Bindings, Bound, Calls, Chosen, Frozen, Inputs, OpenedHook, PoolTable, SeatScope,
+    Selections, WalkBinding, WalkPlan, WalkTables,
 };
-use crate::plane_driver::port_hooks::{Call, RouteCounters};
+use crate::plane_driver::port_hooks::{Call, RouteCounters, Taps};
 
 /// Resolve implicit strategy opens before S8, using only the actual seat's attachment roots and
 /// pools. `configured` maps configured hook names to admitted image identities; `words` includes
@@ -310,6 +311,7 @@ impl Inputs {
                 self.section
             ));
         }
+        let selections = tables.freeze(&self.groups).map_err(str::to_owned)?;
         Ok(Bindings {
             billing_pool: format!("{}{}", self.section, crate::governance::PLANE_LANE_SEP),
             scope: SeatScope {
@@ -318,7 +320,7 @@ impl Inputs {
                 pool: self.pool.clone(),
             },
             tables,
-            groups: self.groups.clone(),
+            selections,
             governance,
             cost,
             amendments,
@@ -695,4 +697,180 @@ fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError 
     hook.on_empty
         .clone()
         .unwrap_or(crate::config::PolicyOnError::Reject)
+}
+
+impl Bound {
+    /// This attachment's call as caller `group` runs it: `None` when the group may not run it, its fallbacks
+    /// narrowed to the ones the group may run.
+    fn select(
+        &self,
+        group: Option<&str>,
+        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
+    ) -> Option<Arc<Call>> {
+        let allowed = |groups: &[String]| crate::config::caller_in_hook_groups(group, groups, tree);
+        if !allowed(&self.groups) {
+            return None;
+        }
+        if self.fallback_groups.iter().all(|groups| allowed(groups)) {
+            return Some(self.call.clone());
+        }
+        let c = &self.call;
+        Some(Arc::new(Call {
+            name: c.name.clone(),
+            port: c.port.clone(),
+            timeout: c.timeout,
+            prompt: c.prompt,
+            user: c.user,
+            signals: c.signals,
+            on_error: c.on_error.clone(),
+            on_empty: c.on_empty.clone(),
+            strategy: c.strategy.clone(),
+            fallbacks: c
+                .fallbacks
+                .iter()
+                .zip(&self.fallback_groups)
+                .filter(|(_, groups)| allowed(groups))
+                .map(|(call, _)| call.clone())
+                .collect(),
+        }))
+    }
+
+    /// Every group name this attachment and its fallbacks admit by name.
+    fn group_names<'a>(&'a self, names: &mut BTreeSet<&'a str>) {
+        names.extend(self.groups.iter().map(String::as_str));
+        names.extend(self.fallback_groups.iter().flatten().map(String::as_str));
+    }
+}
+
+impl Attached {
+    fn group_names<'a>(&'a self, names: &mut BTreeSet<&'a str>) {
+        for bound in self.rewrites.iter().chain(&self.gates) {
+            bound.group_names(names);
+        }
+        for (_, bound) in &self.taps {
+            bound.group_names(names);
+        }
+    }
+}
+
+impl WalkTables {
+    /// What caller `group` selects in the scope (`pool`, `container`): the global, section and walk attachments it
+    /// may run, gates in priority order, and the walk's policy and counters.
+    pub(crate) fn select_scope(
+        &self,
+        group: Option<&str>,
+        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
+        pool: &str,
+        container: &str,
+    ) -> Result<Chosen, &'static str> {
+        let selected = if pool.is_empty() && container.is_empty() {
+            None
+        } else {
+            Some(
+                self.walks
+                    .get(pool)
+                    .and_then(|walks| walks.get(container))
+                    .ok_or("native hook scope is outside the configured walk")?,
+            )
+        };
+        let mut rewrites = Vec::new();
+        let mut gates = Vec::new();
+        let mut request = Vec::new();
+        let mut candidate = Vec::new();
+        let mut routing = Vec::new();
+        let mut response = Vec::new();
+        for attached in [&self.global, &self.section]
+            .into_iter()
+            .chain(selected.map(|pool| &pool.attached))
+        {
+            rewrites.extend(
+                attached
+                    .rewrites
+                    .iter()
+                    .filter_map(|b| b.select(group, tree)),
+            );
+            gates.extend(
+                attached
+                    .gates
+                    .iter()
+                    .filter_map(|b| b.select(group, tree).map(|c| (b.priority, c))),
+            );
+            for (stage, b) in &attached.taps {
+                let Some(call) = b.select(group, tree) else {
+                    continue;
+                };
+                match stage {
+                    HookStage::Request => &mut request,
+                    HookStage::Candidate => &mut candidate,
+                    HookStage::Routing => &mut routing,
+                    HookStage::Response => &mut response,
+                }
+                .push(call);
+            }
+        }
+        gates.sort_by_key(|(priority, _)| *priority);
+        Ok(Chosen {
+            rewrites: rewrites.into(),
+            gates: gates.into_iter().map(|(_, c)| c).collect(),
+            taps: Taps {
+                request: request.into(),
+                candidate: candidate.into(),
+                routing: routing.into(),
+                response: response.into(),
+            },
+            policy: selected
+                .and_then(|pool| pool.policy.as_ref())
+                .and_then(|b| b.select(group, tree)),
+            counters: selected.and_then(|pool| pool.counters.clone()),
+        })
+    }
+
+    /// Every caller group's selection in every scope, under the group `tree`: what a request then only looks up.
+    pub(crate) fn freeze(
+        &self,
+        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
+    ) -> Result<Selections, &'static str> {
+        // A group the tree does not hold and no attachment names selects as any other such group does.
+        let mut names: BTreeSet<&str> = tree.keys().map(String::as_str).collect();
+        self.global.group_names(&mut names);
+        self.section.group_names(&mut names);
+        for table in self.walks.values().flat_map(BTreeMap::values) {
+            table.attached.group_names(&mut names);
+            if let Some(policy) = &table.policy {
+                policy.group_names(&mut names);
+            }
+        }
+        let freeze = |pool: &str, container: &str| -> Result<Frozen, &'static str> {
+            let other = (0u32..)
+                .map(|n| format!("\u{1f}other-{n}"))
+                .find(|name| !names.contains(name.as_str()))
+                .unwrap_or_default();
+            Ok(Frozen {
+                none: self.select_scope(None, tree, pool, container)?,
+                named: names
+                    .iter()
+                    .map(|name| {
+                        Ok((
+                            (*name).to_owned(),
+                            self.select_scope(Some(name), tree, pool, container)?,
+                        ))
+                    })
+                    .collect::<Result<_, &'static str>>()?,
+                other: self.select_scope(Some(&other), tree, pool, container)?,
+            })
+        };
+        let mut walks: BTreeMap<String, BTreeMap<String, Frozen>> = BTreeMap::new();
+        for (pool, containers) in &self.walks {
+            for container in containers.keys() {
+                walks
+                    .entry(pool.clone())
+                    .or_default()
+                    .insert(container.clone(), freeze(pool, container)?);
+            }
+        }
+        Ok(Selections {
+            unscoped: freeze("", "")?,
+            walks,
+        })
+    }
 }

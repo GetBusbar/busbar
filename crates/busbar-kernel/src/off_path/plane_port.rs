@@ -35,6 +35,7 @@ impl PortDriver {
             .map(|u| u.class.to_string())
             .collect();
         let mounted = route_index(&routes);
+        let declared = Arc::from(port.usage_classes());
         Ok(Self {
             port,
             services,
@@ -45,6 +46,7 @@ impl PortDriver {
             mounted,
             tickets: Arc::new(NoTickets),
             usage,
+            classes: declared,
             hooks: None,
         })
     }

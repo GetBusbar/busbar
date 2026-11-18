@@ -230,6 +230,8 @@ pub struct PortDriver {
     pub(crate) tickets: Arc<dyn TicketDoor>,
     /// The declared usage classes (D_USAGE_CLASS) in the Statement's order: a unit count's class indexes them.
     pub(crate) usage: Arc<[String]>,
+    /// The same classes as the port declares them, shared with each hooked request's invocation.
+    pub(crate) classes: Arc<[busbar_ports::plane::UsageClass]>,
     pub(crate) hooks: Option<Arc<dyn super::port_hooks::Binder>>,
 }
 
@@ -450,6 +452,7 @@ impl PortDriver {
         let refusals = Arc::clone(&self.refusals);
         let audit = Arc::clone(&self.audit);
         let services = Arc::clone(&self.services);
+        let classes = Arc::clone(&self.classes);
         let owner = self.caller.incarnation().clone();
         tokio::task::spawn_blocking(move || {
             // Capture the count owner itself, including when the HTTP body is empty.
@@ -477,6 +480,7 @@ impl PortDriver {
                     invocation,
                     pending_admission,
                     hook_binder,
+                    classes,
                     now_s: arrived,
                 },
             )
@@ -1104,6 +1108,7 @@ struct Serving {
     invocation: Option<crate::host_services::InvocationContext>,
     pending_admission: Option<Arc<super::port_admission::Pending>>,
     hook_binder: Option<Arc<dyn super::port_hooks::Binder>>,
+    classes: Arc<[busbar_ports::plane::UsageClass]>,
     now_s: u64,
 }
 
@@ -1128,6 +1133,7 @@ fn serve_blocking(
         invocation,
         pending_admission,
         hook_binder,
+        classes,
         now_s,
     } = serving;
     let hook_binder = hook_binder.filter(|binder| binder.active(route.route));
@@ -1156,7 +1162,7 @@ fn serve_blocking(
                 binder,
                 principal: principal.clone(),
                 now_s,
-                classes: port.usage_classes().to_vec(),
+                classes: Arc::clone(&classes),
                 journal,
                 unit,
             });

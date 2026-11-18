@@ -922,7 +922,7 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
         binder: Arc::new(Required),
         principal: None,
         now_s: 1,
-        classes: Vec::new(),
+        classes: Arc::default(),
         journal: None,
         unit: UnitKey::new(1),
     });
@@ -1033,14 +1033,15 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
     let fixture = Fixture::new();
     let call = configured(Arc::new(Gate(sent)), PromptAccess::No, UserAccess::No);
     let mut selected = fixture.selected.clone();
-    selected.gates.push(call.clone());
-    selected.taps.response.push(call);
+    // The fixture selects nothing: this gate and this tap are the only ones.
+    selected.gates = Arc::from([call.clone()]);
+    selected.taps.response = Arc::from([call]);
     let effects = Hooked {
         invocation: Invocation {
             binder: Arc::new(Bound(selected)),
             principal: None,
             now_s: 1,
-            classes: Vec::new(),
+            classes: Arc::default(),
             journal: None,
             unit: UnitKey::new(7),
         },
@@ -1302,7 +1303,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
             ));
             let session = |gates: Vec<Arc<Call>>, policy: Option<Arc<Call>>| {
                 let mut selected = base.clone();
-                selected.gates = gates;
+                selected.gates = gates.into();
                 selected.policy = policy;
                 selected.counters = Some(Arc::clone(&counters));
                 let effects = Hooked {
@@ -1310,7 +1311,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
                         binder: Arc::new(Bound(selected)),
                         principal: None,
                         now_s: 1,
-                        classes: Vec::new(),
+                        classes: Arc::default(),
                         journal: None,
                         unit: UnitKey::new(7),
                     },

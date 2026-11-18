@@ -263,7 +263,9 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
     let handle = tokio::runtime::Handle::current();
     let mut ran = Vec::new();
     let result = (|| {
-        for rewrite in stage.selected.rewrites.clone() {
+        // The stage is rewritten inside the loop, so each rewrite call is held by its own Arc.
+        for at in 0..stage.selected.rewrites.len() {
+            let rewrite = Arc::clone(&stage.selected.rewrites[at]);
             let selection = stage.selection();
             let input = stage.input(&selection, &[]);
             let (called, mut answer) = handle

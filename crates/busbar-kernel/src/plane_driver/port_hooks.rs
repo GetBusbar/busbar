@@ -32,7 +32,8 @@ pub struct Invocation {
     pub binder: Arc<dyn Binder>,
     pub principal: Option<Arc<str>>,
     pub now_s: u64,
-    pub classes: Vec<UsageClass>,
+    /// The instance's declared usage classes, shared with its driver (frozen when it bound).
+    pub classes: Arc<[UsageClass]>,
     pub journal: Option<Arc<dyn HookJournal>>,
     pub unit: busbar_contract::UnitKey,
 }
@@ -237,18 +238,19 @@ impl RouteCounters {
 
 #[derive(Clone, Default)]
 pub struct Taps {
-    pub request: Vec<Arc<Call>>,
-    pub candidate: Vec<Arc<Call>>,
-    pub routing: Vec<Arc<Call>>,
-    pub response: Vec<Arc<Call>>,
+    pub request: Arc<[Arc<Call>]>,
+    pub candidate: Arc<[Arc<Call>]>,
+    pub routing: Arc<[Arc<Call>]>,
+    pub response: Arc<[Arc<Call>]>,
 }
 
 /// One invocation's selection. Every service is already constructed and generation-bound.
 #[derive(Clone)]
 pub struct Selected {
-    pub rewrites: Vec<Arc<Call>>,
+    /// Shared with the seat's frozen selection: a request clones the Arc, never the list.
+    pub rewrites: Arc<[Arc<Call>]>,
     /// Stable priority order; concurrent results are reconciled in this order.
-    pub gates: Vec<Arc<Call>>,
+    pub gates: Arc<[Arc<Call>]>,
     pub policy: Option<Arc<Call>>,
     pub taps: Taps,
     pub key: Option<CallerKey>,

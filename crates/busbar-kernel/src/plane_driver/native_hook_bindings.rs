@@ -67,11 +67,13 @@ pub struct SeatScope {
 }
 
 /// Complete per-seat policy, frozen before the driver or any tick worker is published.
+/// Complete per-seat policy, frozen before the driver or any tick worker is published.
 pub struct Bindings {
     pub(crate) scope: SeatScope,
     pub(crate) billing_pool: String,
     pub(crate) tables: WalkTables,
-    pub(crate) groups: BTreeMap<String, crate::config::groups::GroupCfg>,
+    /// What every caller group selects in every scope, decided when the tables froze.
+    pub(crate) selections: Selections,
     pub(crate) governance: Arc<GovState>,
     pub(crate) cost: Arc<CostModel>,
     pub(crate) amendments: Arc<NodeAmendments>,
@@ -116,9 +118,10 @@ impl Binder for Bindings {
         // External identities can have synthesized keys that are not in GovState's cache.
         let key = input.key;
         let group = key.and_then(|k| k.group.as_deref());
-        let selected =
-            self.tables
-                .select_scope(group, &self.groups, input.pool, input.container)?;
+        let selected = self
+            .selections
+            .scope(input.pool, input.container)?
+            .of(group);
         let mut budget = key.map_or_else(Vec::new, |key| {
             self.governance.budget_state(&self.cost, key, input.now_s)
         });
@@ -136,10 +139,10 @@ impl Binder for Bindings {
             })
         });
         Ok(Selected {
-            rewrites: selected.rewrites,
-            gates: selected.gates,
-            policy: selected.policy,
-            taps: selected.taps,
+            rewrites: Arc::clone(&selected.rewrites),
+            gates: Arc::clone(&selected.gates),
+            policy: selected.policy.clone(),
+            taps: selected.taps.clone(),
             key: key.map(|k| CallerKey {
                 id: k.id.clone(),
                 name: k.name.clone(),
@@ -148,7 +151,7 @@ impl Binder for Bindings {
             rate_headroom,
             cost: self.cost.clone(),
             reads,
-            counters: selected.counters,
+            counters: selected.counters.clone(),
         })
     }
 }
@@ -165,41 +168,6 @@ pub(crate) struct Bound {
     pub(crate) priority: u16,
     pub(crate) groups: Vec<String>,
     pub(crate) fallback_groups: Vec<Vec<String>>,
-}
-
-impl Bound {
-    fn select(
-        &self,
-        group: Option<&str>,
-        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
-    ) -> Option<Arc<Call>> {
-        let allowed = |groups: &[String]| crate::config::caller_in_hook_groups(group, groups, tree);
-        if !allowed(&self.groups) {
-            return None;
-        }
-        if self.fallback_groups.iter().all(|groups| allowed(groups)) {
-            return Some(self.call.clone());
-        }
-        let c = &self.call;
-        Some(Arc::new(Call {
-            name: c.name.clone(),
-            port: c.port.clone(),
-            timeout: c.timeout,
-            prompt: c.prompt,
-            user: c.user,
-            signals: c.signals,
-            on_error: c.on_error.clone(),
-            on_empty: c.on_empty.clone(),
-            strategy: c.strategy.clone(),
-            fallbacks: c
-                .fallbacks
-                .iter()
-                .zip(&self.fallback_groups)
-                .filter(|(_, groups)| allowed(groups))
-                .map(|(call, _)| call.clone())
-                .collect(),
-        }))
-    }
 }
 
 #[derive(Default)]
@@ -226,12 +194,49 @@ pub(crate) struct PoolTable {
     pub(crate) counters: Option<Arc<RouteCounters>>,
 }
 
-struct Chosen {
-    rewrites: Vec<Arc<Call>>,
-    gates: Vec<Arc<Call>>,
-    policy: Option<Arc<Call>>,
-    taps: Taps,
-    counters: Option<Arc<RouteCounters>>,
+/// One caller group's selection in one scope: the calls it runs, in their frozen order.
+pub(crate) struct Chosen {
+    pub(crate) rewrites: Arc<[Arc<Call>]>,
+    pub(crate) gates: Arc<[Arc<Call>]>,
+    pub(crate) policy: Option<Arc<Call>>,
+    pub(crate) taps: Taps,
+    pub(crate) counters: Option<Arc<RouteCounters>>,
+}
+
+/// Every caller group's selection in one scope (`off_path::plane_native_hooks` builds it from the tables and the
+/// group tree): no group, each group the tree or a hook attachment names, and any other group (which an
+/// attachment with groups never admits).
+pub(crate) struct Frozen {
+    pub(crate) none: Chosen,
+    pub(crate) named: BTreeMap<String, Chosen>,
+    pub(crate) other: Chosen,
+}
+
+impl Frozen {
+    fn of(&self, group: Option<&str>) -> &Chosen {
+        match group {
+            None => &self.none,
+            Some(group) => self.named.get(group).unwrap_or(&self.other),
+        }
+    }
+}
+
+/// The frozen selections of a seat: the unscoped one, and one per configured (pool, container) walk.
+pub(crate) struct Selections {
+    pub(crate) unscoped: Frozen,
+    pub(crate) walks: BTreeMap<String, BTreeMap<String, Frozen>>,
+}
+
+impl Selections {
+    fn scope(&self, pool: &str, container: &str) -> Result<&Frozen, &'static str> {
+        if pool.is_empty() && container.is_empty() {
+            return Ok(&self.unscoped);
+        }
+        self.walks
+            .get(pool)
+            .and_then(|walks| walks.get(container))
+            .ok_or("native hook scope is outside the configured walk")
+    }
 }
 
 impl WalkTables {
@@ -241,67 +246,6 @@ impl WalkTables {
 
     pub fn enforcing(&self) -> bool {
         self.enforcing
-    }
-
-    fn select_scope(
-        &self,
-        group: Option<&str>,
-        tree: &BTreeMap<String, crate::config::groups::GroupCfg>,
-        pool: &str,
-        container: &str,
-    ) -> Result<Chosen, &'static str> {
-        let selected = if pool.is_empty() && container.is_empty() {
-            None
-        } else {
-            Some(
-                self.walks
-                    .get(pool)
-                    .and_then(|walks| walks.get(container))
-                    .ok_or("native hook scope is outside the configured walk")?,
-            )
-        };
-        let mut rewrites = Vec::new();
-        let mut gates = Vec::new();
-        let mut taps = Taps::default();
-        for attached in [&self.global, &self.section]
-            .into_iter()
-            .chain(selected.map(|pool| &pool.attached))
-        {
-            rewrites.extend(
-                attached
-                    .rewrites
-                    .iter()
-                    .filter_map(|b| b.select(group, tree)),
-            );
-            gates.extend(
-                attached
-                    .gates
-                    .iter()
-                    .filter_map(|b| b.select(group, tree).map(|c| (b.priority, c))),
-            );
-            for (stage, b) in &attached.taps {
-                let Some(call) = b.select(group, tree) else {
-                    continue;
-                };
-                match stage {
-                    HookStage::Request => &mut taps.request,
-                    HookStage::Candidate => &mut taps.candidate,
-                    HookStage::Routing => &mut taps.routing,
-                    HookStage::Response => &mut taps.response,
-                }
-                .push(call);
-            }
-        }
-        gates.sort_by_key(|(priority, _)| *priority);
-        Ok(Chosen {
-            rewrites,
-            gates: gates.into_iter().map(|(_, c)| c).collect(),
-            taps,
-            policy: selected
-                .and_then(|pool| pool.policy.as_ref())
-                .and_then(|b| b.select(group, tree)),
-            counters: selected.and_then(|pool| pool.counters.clone()),
-        })
     }
 }
 

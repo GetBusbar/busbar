@@ -909,10 +909,12 @@ async fn owned_capture_survives_consumed_config_and_binds_only_late_candidate_se
             amendments.clone(),
         )
         .unwrap();
+    // What a request of group `child` on the seat's pool walk selects: the selection frozen at bind.
     let picked = bound
-        .tables
-        .select_scope(Some("child"), &bound.groups, "seat", "")
-        .unwrap();
+        .selections
+        .scope("seat", "")
+        .unwrap()
+        .of(Some("child"));
     assert_eq!(names(&picked.gates), ["guard"]);
     assert_eq!(picked.gates[0].on_error, PolicyOnError::Reject);
     assert!(Arc::ptr_eq(&picked.gates[0].port, &ports["guard"].port));
