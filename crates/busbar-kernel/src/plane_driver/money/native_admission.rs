@@ -75,9 +75,7 @@ impl Drop for AdmissionRollback {
                 if let Err(error) = self.money.abort_selected_startup(&request, slot) {
                     // Refusal leaves the exact Open and checkpoint owner intact. Surface the
                     // failure to the existing response confirmation rather than losing facts.
-                    slot.publish(Err(format!(
-                        "selected startup terminal transfer refused: {error:?}"
-                    )));
+                    slot.publish(Err(crate::cold::selected_startup_refusal(&error)));
                 }
             } else {
                 let _ = self.money.settle_admitted(

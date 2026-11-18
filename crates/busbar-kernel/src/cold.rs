@@ -160,3 +160,21 @@ pub(crate) fn first_observing_principal(
 pub(crate) fn route_policy_status_label(status: u16) -> String {
     format!("{status}")
 }
+
+// --- plane_driver::money ---
+
+/// `plane_driver::money::selected_view`: a selected checkpoint's refusal, spelled only when the
+/// capture or its budget view is refused.
+#[cold]
+pub(crate) fn selected_view_refusal(
+    message: &'static str,
+) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(format!("{message}"))
+}
+
+/// `plane_driver::money::native_admission`: a refused selected startup transfer, as the text the
+/// response confirmation reports.
+#[cold]
+pub(crate) fn selected_startup_refusal(error: &impl std::fmt::Debug) -> String {
+    format!("selected startup terminal transfer refused: {error:?}")
+}
