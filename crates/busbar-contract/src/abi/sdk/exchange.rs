@@ -875,23 +875,26 @@ impl Exchange {
     }
 
     /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
-    #[must_use]
-    pub fn framed_fields(&self) -> Vec<(&[u8], &[u8])> {
-        match &self.sending {
+    ///
+    /// Read lazily off the head, nothing copied (a raw exchange frames none).
+    pub fn framed_fields(&self) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
+        let lines = match &self.sending {
             Sending::Framed {
                 head, head_piece, ..
-            } => fields::lines(spanned(&head[..], head_piece.fields))
-                .enumerate()
-                .map(|(i, (name, value))| {
-                    if self.sealed_lines.binary_search(&i).is_ok() {
-                        (name, &b"<sealed>"[..])
-                    } else {
-                        (name, value)
-                    }
-                })
-                .collect(),
-            Sending::Raw(_) => Vec::new(),
-        }
+            } => Some(fields::lines(spanned(&head[..], head_piece.fields))),
+            Sending::Raw(_) => None,
+        };
+        lines
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(i, (name, value))| {
+                if self.sealed_lines.binary_search(&i).is_ok() {
+                    (name, &b"<sealed>"[..])
+                } else {
+                    (name, value)
+                }
+            })
     }
 
     /// The whole head this exchange frames, sealed values included (`test_support::chip` alone).
@@ -1211,12 +1214,31 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
             if let Some(old) = &mut state.reply.reason {
                 wipe_bytes(old);
             }
-            state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
-            // Into the reply's own list, wiped and emptied first: its allocation is reused.
-            wipe_fields(&mut state.reply.fields);
-            for (n, v) in fields::lines(spanned(bytes, p.fields)) {
-                state.reply.fields.push((n.to_vec(), v.to_vec()));
+            if reason.is_empty() {
+                state.reply.reason = None;
+            } else {
+                // Into the reply's own reason buffer, wiped first: its allocation is reused.
+                extend_wiping(state.reply.reason.get_or_insert_with(Vec::new), reason);
             }
+            // Into the reply's own list, each kept entry wiped and refilled in place: the list's
+            // and the entries' allocations are reused; entries past the new head's are wiped away.
+            let mut at = 0;
+            for (n, v) in fields::lines(spanned(bytes, p.fields)) {
+                if at == state.reply.fields.len() {
+                    state.reply.fields.push((Vec::new(), Vec::new()));
+                }
+                let (name, value) = &mut state.reply.fields[at];
+                wipe_bytes(name);
+                wipe_bytes(value);
+                extend_wiping(name, n);
+                extend_wiping(value, v);
+                at += 1;
+            }
+            for (name, value) in &mut state.reply.fields[at..] {
+                wipe_bytes(name);
+                wipe_bytes(value);
+            }
+            state.reply.fields.truncate(at);
         }
         REPLY_BODY if fresh => {
             if state

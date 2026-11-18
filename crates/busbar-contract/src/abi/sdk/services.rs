@@ -351,7 +351,7 @@ pub struct AuthCalled<O: OwnerSeal> {
 
 /// `unit.refuse`'s answer, copied out of the kernel's memory before the wrapper returns: the
 /// refusal the transport frames verbatim.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RefusalCopy {
     /// The opaque status in the selected transport claim's numbering.
     pub status: u32,
@@ -2152,7 +2152,8 @@ impl<K: KindMarker> Services<K> {
         conn: u64,
         stream: u64,
         request: &HeadViewArgs<'_>,
-    ) -> Result<RefusalCopy, ServiceError>
+        into: &mut RefusalCopy,
+    ) -> Result<(), ServiceError>
     where
         K: crate::abi::host::access::Permitted<{ op::UNIT_REFUSE }>,
     {
@@ -2188,24 +2189,23 @@ impl<K: KindMarker> Services<K> {
             // `check_unit_refuse`, valid until the next call on the connection; copied below.
             unsafe { std::slice::from_raw_parts(answer.fields, answer.fields_len) }
         };
-        let fields = fields
-            .iter()
-            .map(|f| {
-                let name = String::from_utf8(copied(f.name)?).ok()?;
-                Some((name, copied(f.value)?))
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or(ServiceError::Broken)?;
-        let body = copied(AbiStr {
+        // Into the caller's kept copy (its list reused): each field and the body are the refusal's
+        // own copies (cold), as before.
+        into.fields.clear();
+        for f in fields {
+            let name = copied(f.name)
+                .and_then(|n| String::from_utf8(n).ok())
+                .ok_or(ServiceError::Broken)?;
+            into.fields
+                .push((name, copied(f.value).ok_or(ServiceError::Broken)?));
+        }
+        into.body = copied(AbiStr {
             ptr: answer.body.ptr,
             len: answer.body.len,
         })
         .ok_or(ServiceError::Broken)?;
-        Ok(RefusalCopy {
-            status: answer.status,
-            fields,
-            body,
-        })
+        into.status = answer.status;
+        Ok(())
     }
 
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the

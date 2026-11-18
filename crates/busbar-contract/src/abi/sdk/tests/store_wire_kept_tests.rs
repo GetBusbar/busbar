@@ -592,7 +592,8 @@ mod replay_handles {
 
     fn hold_read(wire: Wire) -> Body<Result<(), ConnFailure>> {
         Box::pin(async move {
-            wire.connect(0, Some("holder")).await?;
+            wire.connect(0, Some(std::sync::Arc::from("holder")))
+                .await?;
             wire.fill().await?;
             Ok(())
         })
@@ -649,7 +650,8 @@ mod replay_handles {
     fn wait_then_connect(wire: Wire) -> Body<Result<(), ConnFailure>> {
         Box::pin(async move {
             assert_eq!(wire.os_user().await?, "tester");
-            wire.connect(0, Some("waiter")).await?;
+            wire.connect(0, Some(std::sync::Arc::from("waiter")))
+                .await?;
             wire.close().await;
             Ok(())
         })

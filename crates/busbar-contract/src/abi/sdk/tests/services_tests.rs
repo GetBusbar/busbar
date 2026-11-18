@@ -1998,6 +1998,7 @@ fn unit_refuse_copies_the_kernels_answer_out() {
         unit_refuse: Some(refuses),
         ..table()
     };
+    let mut copy = RefusalCopy::default();
     assert_eq!(
         transport_services(&t).unit_refuse(
             handle(),
@@ -2006,13 +2007,18 @@ fn unit_refuse_copies_the_kernels_answer_out() {
             LINE_NONE,
             1,
             1,
-            &request()
+            &request(),
+            &mut copy,
         ),
-        Ok(RefusalCopy {
+        Ok(())
+    );
+    assert_eq!(
+        copy,
+        RefusalCopy {
             status: 70_123,
             fields: vec![("x-reason".to_string(), b"no route".to_vec())],
             body: b"refused".to_vec(),
-        })
+        }
     );
     let broken = HostSlots {
         unit_refuse: Some(breaks),
@@ -2026,7 +2032,8 @@ fn unit_refuse_copies_the_kernels_answer_out() {
             LINE_NONE,
             1,
             1,
-            &request()
+            &request(),
+            &mut RefusalCopy::default(),
         ),
         Err(ServiceError::Broken),
         "a READY with no answer written"

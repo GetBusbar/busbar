@@ -4,6 +4,17 @@
 //! The hook SDK: the 1.5.5 JSON a hook is handed is rebuilt byte for byte from the fixed views the
 
 use super::*;
+
+// The lowering reads a reply's bytes in place; these tests state replies as JSON values.
+fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
+    let bytes = reply.map(|v| serde_json::to_vec(&v).unwrap());
+    super::lower_decide_reply(bytes.as_deref().map_err(Clone::clone))
+}
+
+fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
+    let bytes = reply.map(|v| serde_json::to_vec(&v).unwrap());
+    super::lower_transform_reply(bytes.as_deref().map_err(Clone::clone))
+}
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
@@ -2148,7 +2159,7 @@ fn direct_decide_and_transform_envelopes_keep_the_canonical_wire_bytes() {
             let input = frame.input();
             let decoded = Decoded::of(lend(&input));
             let mut out = b"caller prefix:".to_vec();
-            decoded.write_projection(op, None, &mut out).unwrap();
+            decoded.write_projection(op, &mut out).unwrap();
             let expected = canonical_envelope(decoded.projection_json(op), op, None);
             assert_eq!(
                 &out[b"caller prefix:".len()..],
@@ -2162,9 +2173,13 @@ fn direct_decide_and_transform_envelopes_keep_the_canonical_wire_bytes() {
                 "context": {"replacement": true}
             });
             let extra = extra.as_object().unwrap();
+            let pairs: Vec<(&str, &serde_json::Value)> = extra
+                .iter()
+                .map(|(name, value)| (name.as_str(), value))
+                .collect();
             let mut overlaid = Vec::new();
             decoded
-                .write_projection(op, Some(extra), &mut overlaid)
+                .write_projection_with(op, &pairs, &mut overlaid)
                 .unwrap();
             assert_eq!(
                 overlaid,
@@ -2196,7 +2211,7 @@ fn direct_budget_projection_preserves_nullable_fields_and_absent_pool() {
         let decoded = Decoded::of(lend(&input));
         for op in [OP_DECIDE, OP_TRANSFORM] {
             let mut bytes = Vec::new();
-            decoded.write_projection(op, None, &mut bytes).unwrap();
+            decoded.write_projection(op, &mut bytes).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             let bucket = &value["context"]["budget"][0];
             assert_eq!(
@@ -2256,7 +2271,7 @@ fn direct_notify_envelopes_keep_request_candidate_routing_and_response_stage_byt
             let input = frame.input();
             let tap = DecodedTap::of(lend(&input));
             let mut out = Vec::new();
-            tap.write_projection(OP_NOTIFY, None, &mut out).unwrap();
+            tap.write_projection(OP_NOTIFY, &mut out).unwrap();
             assert_eq!(
                 out,
                 canonical_envelope(tap.projection_json(), OP_NOTIFY, None)

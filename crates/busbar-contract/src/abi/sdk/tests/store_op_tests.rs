@@ -22,7 +22,7 @@ fn holding(need: u32, target: Option<&str>) -> Op<'static> {
             state: None,
             checkout: Some(Checkout {
                 need,
-                target: target.map(str::to_owned),
+                target: target.map(std::sync::Arc::from),
                 stream: 42,
             }),
             issued: 1,
@@ -37,18 +37,21 @@ fn holding(need: u32, target: Option<&str>) -> Op<'static> {
 #[test]
 fn a_second_checkout_for_the_same_need_and_target_is_the_same_stream() {
     let mut op = holding(0, Some("db:5432"));
-    assert_eq!(op.checkout(0, Some("db:5432")), Poll::Ready(Ok(42)));
+    assert_eq!(
+        op.checkout(0, Some(&std::sync::Arc::<str>::from("db:5432"))),
+        Poll::Ready(Ok(42))
+    );
 }
 
 #[test]
 fn a_second_checkout_for_another_target_or_need_is_refused() {
     let mut op = holding(0, Some("db:5432"));
     assert!(matches!(
-        op.checkout(0, Some("other:5432")),
+        op.checkout(0, Some(&std::sync::Arc::<str>::from("other:5432"))),
         Poll::Ready(Err(ConnFailure::Refused(_)))
     ));
     assert!(matches!(
-        op.checkout(1, Some("db:5432")),
+        op.checkout(1, Some(&std::sync::Arc::<str>::from("db:5432"))),
         Poll::Ready(Err(ConnFailure::Refused(_)))
     ));
 }

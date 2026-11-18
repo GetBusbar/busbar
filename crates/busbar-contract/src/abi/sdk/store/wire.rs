@@ -43,7 +43,7 @@ pub type Body<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 enum Ask {
     Connect {
         need: u32,
-        target: Option<String>,
+        target: Option<Arc<str>>,
         timeout_ms: u32,
     },
     Reconnect,
@@ -55,7 +55,7 @@ enum Ask {
     Write,
     Read,
     Upgrade {
-        name: Option<String>,
+        name: Option<Arc<str>>,
         verify_off: bool,
     },
 }
@@ -102,7 +102,7 @@ struct State {
     /// The connection: its need, target and stream.
     conn: Option<Checkout>,
     /// What the op connected to (need, target, dial timeout), for a reconnect.
-    last: Option<(u32, Option<String>, u32)>,
+    last: Option<(u32, Option<Arc<str>>, u32)>,
     /// The connection came from the pool (established by an earlier op).
     reused: bool,
     /// A wire call failed on it, or the body discarded it: never kept.
@@ -152,7 +152,7 @@ impl Wire {
     }
 
     /// The op's connection: declared need `need` to `target` (`None` = the need's own target), a
-    pub async fn connect(&self, need: u32, target: Option<&str>) -> Result<(), ConnFailure> {
+    pub async fn connect(&self, need: u32, target: Option<Arc<str>>) -> Result<(), ConnFailure> {
         self.connect_timed(need, target, 0).await
     }
 
@@ -160,12 +160,12 @@ impl Wire {
     pub async fn connect_timed(
         &self,
         need: u32,
-        target: Option<&str>,
+        target: Option<Arc<str>>,
         timeout_ms: u32,
     ) -> Result<(), ConnFailure> {
         self.ask(Ask::Connect {
             need,
-            target: target.map(str::to_owned),
+            target,
             timeout_ms,
         })
         .await
@@ -266,7 +266,7 @@ impl Wire {
     }
 
     /// Secure the connection from its next byte on (TLS from the first byte, or after the
-    pub async fn upgrade_secure(&self, name: Option<&str>) -> Result<(), ConnFailure> {
+    pub async fn upgrade_secure(&self, name: Option<Arc<str>>) -> Result<(), ConnFailure> {
         self.upgrade(name, false).await
     }
 
@@ -274,12 +274,15 @@ impl Wire {
     /// a plugin's `-D warnings` build keeps compiling at a pin bump.
     ///
     /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
-    pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
+    pub async fn upgrade_secure_unverified(
+        &self,
+        name: Option<Arc<str>>,
+    ) -> Result<(), ConnFailure> {
         self.upgrade(name, true).await
     }
 
     /// The upgrade, asked of the connector only over an input the body consumed whole: bytes the
-    async fn upgrade(&self, name: Option<&str>, verify_off: bool) -> Result<(), ConnFailure> {
+    async fn upgrade(&self, name: Option<Arc<str>>, verify_off: bool) -> Result<(), ConnFailure> {
         {
             let mut st = self.state();
             if !st.input.is_empty() {
@@ -287,12 +290,9 @@ impl Wire {
                 return Err(ConnFailure::Refused(UPGRADE_OVER_UNREAD_INPUT.into()));
             }
         }
-        self.ask(Ask::Upgrade {
-            name: name.map(str::to_owned),
-            verify_off,
-        })
-        .await
-        .map(|_| ())
+        self.ask(Ask::Upgrade { name, verify_off })
+            .await
+            .map(|_| ())
     }
 
     /// Borrow unread bytes for parsing and consumption. [`Input`] keeps erasure under its owner:
@@ -1068,7 +1068,7 @@ fn connect(
     cx: &mut Op<'_>,
     running: &Channel,
     need: u32,
-    target: Option<&str>,
+    target: Option<&Arc<str>>,
     timeout_ms: u32,
     fresh: bool,
 ) -> Served {
@@ -1077,9 +1077,9 @@ fn connect(
         let mut st = pool.state();
         let at = (!fresh)
             .then(|| {
-                st.idle
-                    .iter()
-                    .position(|i| i.conn.need == need && i.conn.target.as_deref() == target)
+                st.idle.iter().position(|i| {
+                    i.conn.need == need && i.conn.target.as_deref() == target.map(|t| &**t)
+                })
             })
             .flatten();
         if let Some(at) = at {
@@ -1141,7 +1141,7 @@ fn connect(
             let mut w = running.wire.state();
             w.conn = Some(Checkout {
                 need,
-                target: target.map(str::to_owned),
+                target: target.cloned(),
                 stream,
             });
             w.reused = false;
@@ -1187,7 +1187,7 @@ fn serve(
                     return Served::Answer(Ok(0));
                 }
             }
-            return connect(cx, running, *need, target.as_deref(), *timeout_ms, false);
+            return connect(cx, running, *need, target.as_ref(), *timeout_ms, false);
         }
         Ask::Reconnect => {
             let (had, last) = {
@@ -1216,9 +1216,9 @@ fn serve(
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_some();
             if !held && running.pool.is_some() {
-                return connect(cx, running, need, target.as_deref(), timeout_ms, true);
+                return connect(cx, running, need, target.as_ref(), timeout_ms, true);
             }
-            return match cx.checkout_timed(need, target.as_deref(), timeout_ms) {
+            return match cx.checkout_timed(need, target.as_ref(), timeout_ms) {
                 Poll::Ready(Ok(stream)) => {
                     let mut w = wire.state();
                     w.conn = Some(Checkout {
@@ -1252,7 +1252,7 @@ fn serve(
                 let last = wire.state().last.clone();
                 if let Some((need, target, timeout_ms)) = last {
                     if running.pool.as_ref().is_some_and(|pool| pool.idle() > 0) {
-                        match connect(cx, running, need, target.as_deref(), timeout_ms, false) {
+                        match connect(cx, running, need, target.as_ref(), timeout_ms, false) {
                             Served::Answer(Ok(_)) => {}
                             other => return other,
                         }
@@ -1332,7 +1332,7 @@ fn serve(
                     "the retained native channel was lost".into(),
                 )));
             }
-            match connect(cx, running, need, target.as_deref(), timeout_ms, false) {
+            match connect(cx, running, need, target.as_ref(), timeout_ms, false) {
                 Served::Answer(Ok(_)) => {}
                 other => return other,
             }

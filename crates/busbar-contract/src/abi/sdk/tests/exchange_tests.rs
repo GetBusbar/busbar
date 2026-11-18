@@ -661,13 +661,16 @@ fn the_framed_fields_are_the_head_the_exchange_sends() {
     };
     let ex = Exchange::request(request).expect("the request frames");
     assert_eq!(
-        ex.framed_fields(),
+        ex.framed_fields().collect::<Vec<_>>(),
         vec![
             (&b"content-type"[..], &b"application/json"[..]),
             (&b"authorization"[..], &b"Bearer abc"[..]),
         ]
     );
-    assert!(Exchange::send(b"raw".to_vec()).framed_fields().is_empty());
+    assert!(Exchange::send(b"raw".to_vec())
+        .framed_fields()
+        .next()
+        .is_none());
 }
 
 /// A reply of two body pieces, `first` then `second` bytes long.
@@ -1170,7 +1173,7 @@ fn sealed_fields_go_in_at_their_place_and_never_read_back() {
         ],
     )
     .expect("frames");
-    let seen = ex.framed_fields();
+    let seen = ex.framed_fields().collect::<Vec<_>>();
     assert_eq!(
         seen,
         vec![
@@ -1647,8 +1650,8 @@ fn a_prepared_head_frames_what_request_sealed_frames() {
         .expect("a valid send");
         assert_eq!(sent.head_bytes(), direct.head_bytes(), "sealed at {at}");
         assert_eq!(
-            sent.framed_fields(),
-            direct.framed_fields(),
+            sent.framed_fields().collect::<Vec<_>>(),
+            direct.framed_fields().collect::<Vec<_>>(),
             "sealed at {at}"
         );
     }

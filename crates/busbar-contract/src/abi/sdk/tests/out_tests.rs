@@ -169,7 +169,7 @@ fn a_published_value_is_the_sdks_until_its_retire() {
     let mut o: PlaneOpenOut = zeroed();
     let target = String::from("/x");
     let spec = SnapshotSpec {
-        claims: vec![ClaimSpec::new("GET", &target, "c", 0)],
+        claims: vec![ClaimSpec::new("GET", target.clone(), "c", 0)],
         ..SnapshotSpec::default()
     };
     Out::new(&mut o).publish(|o| &o.snapshot, &gens, 4, &spec);
