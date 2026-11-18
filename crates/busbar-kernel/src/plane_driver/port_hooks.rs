@@ -109,17 +109,18 @@ impl Projection {
         self.absorb(answer);
     }
 
-    fn shape(&self) -> Self {
-        Self {
-            facts: self
-                .facts
-                .iter()
-                .filter(|(key, _)| *key != busbar_plugin_abi::fail::fact::PJ_END_USER)
-                .cloned()
-                .collect(),
-            conversation: None,
-            expects: Vec::new(),
-        }
+    fn shape(&mut self) {
+        self.facts.retain_mut(|(key, value)| {
+            if *key != busbar_plugin_abi::fail::fact::PJ_END_USER {
+                return true;
+            }
+            if let FactVal::Text(text) = value {
+                wipe_text(text);
+            }
+            false
+        });
+        self.conversation = None;
+        self.expects.clear();
     }
 }
 

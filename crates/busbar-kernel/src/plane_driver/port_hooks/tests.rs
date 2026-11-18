@@ -262,12 +262,9 @@ fn rewrites_drop_stale_shape_and_overlay_only_actual_plane_facts() {
     assert!(projected
         .facts
         .contains(&(PJ_MODEL, FactVal::Text("m".into()))));
-    assert!(projected.shape().conversation.is_none());
-    assert!(!projected
-        .shape()
-        .facts
-        .iter()
-        .any(|(key, _)| *key == PJ_END_USER));
+    projected.shape();
+    assert!(projected.conversation.is_none());
+    assert!(!projected.facts.iter().any(|(key, _)| *key == PJ_END_USER));
 }
 
 #[test]

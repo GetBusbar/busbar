@@ -104,7 +104,7 @@ impl Stage {
     fn tap(&self, call: &Arc<super::Call>, facts: Vec<(u32, FactVal)>) {
         let mut held = self.clone();
         if !facts.is_empty() {
-            held.projection = held.projection.shape();
+            held.projection.shape();
         }
         let call = Arc::clone(call);
         crate::hooks::taps::spawn_bounded_tap(async move {
@@ -447,7 +447,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
     }
     result?;
     // Request content is no longer needed by the synchronous runtime after its request taps own it.
-    stage.projection = stage.projection.shape();
+    stage.projection.shape();
     Ok(stage)
 }
 
