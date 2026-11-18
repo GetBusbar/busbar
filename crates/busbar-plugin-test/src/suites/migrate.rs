@@ -61,6 +61,7 @@ pub(super) fn run(
         MigrateExpect::Refused(code) => refused_case(&harness, &case, code),
         MigrateExpect::Settled { config, core_cfg } => {
             let canonical = settled_case(&harness, &case, config, core_cfg);
+            let canonical = lifted(&harness, &canonical, core_cfg);
             fixed_point_case(&harness, &canonical, case.limits);
             newer_case(&harness, &canonical, case.limits);
         }
@@ -205,6 +206,39 @@ fn settled_case(
         "migrate: the settled CORE_CFG fragments differ from the expected (section, name, value) list"
     );
     canonical
+}
+
+/// The canonical settings as core persists them after a conversion: every CORE_CFG(LIFT) slot's literal is
+/// moved to a core-owned secret file and replaced by a `{"file": ..}` reference to it (busbar-migrate `settle`,
+/// 10f464ae50, #441), so the next open binds a reference there, never the literal. Custody then answers the
+/// literal for that slot. Settings with no lift are returned unchanged.
+fn lifted(harness: &Harness, canonical: &[u8], core_cfg: &[(u32, &str, &[u8])]) -> Vec<u8> {
+    use busbar_plugin_abi::records::core_cfg::LIFT;
+    let pointers: Vec<String> = core_cfg
+        .iter()
+        .filter(|(section, _, _)| *section == LIFT)
+        .map(|(_, _, value)| {
+            facade::parse_value(value)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_else(|| panic!("migrate: a LIFT value is not a JSON pointer string"))
+        })
+        .collect();
+    if pointers.is_empty() {
+        return canonical.to_vec();
+    }
+    let mut doc: Value = facade::parse_typed(canonical)
+        .unwrap_or_else(|e| panic!("migrate: the canonical settings are not JSON ({e})"));
+    for pointer in &pointers {
+        let slot = facade::pointer_mut(&mut doc, pointer)
+            .unwrap_or_else(|| panic!("migrate: the lift of {pointer} names no slot"));
+        let Some(literal) = slot.as_str().map(str::to_owned) else {
+            panic!("migrate: the lift of {pointer} names no string");
+        };
+        harness.needs().lifted(pointer, literal.as_bytes());
+        *slot = facade::json!({ "file": format!("secrets/lifted{pointer}") });
+    }
+    facade::to_vec(&doc).unwrap_or_else(|e| panic!("migrate: the lifted settings ({e})"))
 }
 
 /// Case 2: canonical settings are a fixed point, and a current open writes nothing.

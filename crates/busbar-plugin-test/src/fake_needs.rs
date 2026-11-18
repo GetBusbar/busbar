@@ -362,6 +362,15 @@ impl FakeNeeds {
         self
     }
 
+    /// The secret a CORE_CFG(LIFT) moved out of the settings: core writes the literal to its own secret file and
+    /// leaves a reference at `pointer` (busbar-migrate `settle`), so custody answers that literal for it from then
+    /// on. Used by the migrate suite after a converting open, the way [`Self::secret`] scripts one up front.
+    pub(crate) fn lifted(&self, pointer: &str, value: &[u8]) {
+        self.lock()
+            .secrets
+            .push((pointer.to_owned(), SecureVec::from(value)));
+    }
+
     /// Custody's scrub registration (§12.2 step 5, I14): from here on every SECRET this double answers is first
     /// registered, under its handle, in the scrub set `scrub_of` names for the asking chain's slot, and only then
     /// handed to the plugin (register, then publish), as the kernel's custody does once the boot attaches

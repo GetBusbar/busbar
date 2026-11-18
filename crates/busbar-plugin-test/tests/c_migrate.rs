@@ -705,3 +705,66 @@ fn core_cfg_conflicts_secret_round_trip_and_former_names_mismatch() {
 fn the_settled_write_back_through_boot() {
     todo!("owner: W1-K9 (C-MIGRATE)")
 }
+
+mod lift_fixture {
+    use super::*;
+    use busbar_contract::json::{self, JsonValueTrait};
+    use busbar_plugin_abi::plugin::Describe;
+
+    /// The settings it was opened with, and whether `/token` held a 1.x literal there.
+    pub struct Fixture(Vec<u8>, bool);
+
+    impl Open for Fixture {
+        async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let config = config.to_vec();
+            let value = json::parse_value(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            let literal = value
+                .get("token")
+                .is_some_and(|token| token.as_str().is_some());
+            Ok(Self(config, literal))
+        }
+
+        fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#).secret_path("/token");
+        }
+
+        /// The settings unchanged, and CORE_CFG(LIFT) naming `/token` while it still holds a literal.
+        fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+            settled::config(out, &self.0)?;
+            if self.1 {
+                settled::core_cfg(out, core_cfg::LIFT, "", br#""/token""#)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl busbar_plugin_abi::Auth for Fixture {}
+    busbar_plugin_abi::plugin!(Auth, Fixture, name: "fixture-migration-lift");
+}
+
+/// A converting open that leaves a 1.x literal at a declared secret slot and names it CORE_CFG(LIFT) is complete:
+/// core moves the literal to its own secret file and writes a reference there (busbar-migrate `settle`,
+/// 10f464ae50, #441), so the fixed-point and newer opens bind that reference, never the literal (which a
+/// canonical bind refuses, `NotAReference`).
+#[test]
+fn a_lifted_literal_reopens_as_the_reference_core_writes_for_it() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    let bag = br#"{"token":"a-1x-literal-secret"}"#;
+    migrate_case(
+        lift_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: Some(bag),
+            core_cfg: &[(core_cfg::LIFT, "", br#""/token""#)],
+        },
+    );
+}
