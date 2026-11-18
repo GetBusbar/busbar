@@ -378,16 +378,13 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=c17f2e437dccb852b458cf4622cefe50dc4ab0b4#c17f2e437dccb852b458cf4622cefe50dc4ab0b4"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577#2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "http",
+ "busbar-plugin-abi",
+ "percent-encoding",
  "serde",
- "serde_json",
- "tracing",
- "zeroize",
+ "sonic-rs",
 ]
 
 [[package]]
