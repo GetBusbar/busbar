@@ -576,7 +576,7 @@ impl CoreStore {
                 .await
                 .map_err(AccessError::Backend)?;
             read += page.rows.len().max(1);
-            sweeps.cursor = page.next.clone();
+            sweeps.cursor.clone_from(&page.next);
             // Decode the page first: no seal is held across a crossing.
             let foreign: Vec<_> = {
                 let seal = crate::seal::lend();

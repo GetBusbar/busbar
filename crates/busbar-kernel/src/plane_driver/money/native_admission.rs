@@ -455,7 +455,7 @@ impl PlaneMoney {
             if let Some((slot, state)) = ordinary {
                 open.ordinary_terminal = Some(Arc::clone(slot));
                 state.request = Some(admitted.clone());
-                state.fee = open.fee.account.observer.clone();
+                state.fee.clone_from(&open.fee.account.observer);
             }
             Ok(admitted)
         })

@@ -467,8 +467,8 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     };
                     let operator =
                         String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
-                    *s.member.borrow_mut() = name.clone();
-                    *s.pool.borrow_mut() = pool.clone();
+                    s.member.borrow_mut().clone_from(&name);
+                    s.pool.borrow_mut().clone_from(&pool);
                     let candidate = Candidate {
                         pool: pool.into(),
                         qualified_member: name.into(),
@@ -938,7 +938,7 @@ pub fn upstream_targets(
         let upstream = upstreams.get(name)?;
         let mut target = MemberTarget::bare();
         target.registered_upstream = Some(name.into());
-        target.resource = upstream.resource.clone();
+        target.resource.clone_from(&upstream.resource);
         target.definition = Some(TargetDefinition::new(upstream));
         Some(target)
     })

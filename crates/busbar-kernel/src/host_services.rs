@@ -2056,7 +2056,7 @@ impl KernelServices {
             .map_err(trust_refused)?;
         fact.decided_by = Some(attempt.actor.clone());
         fact.decided_at = Some((self.wall_ms)() / 1000);
-        fact.operation = attempt.operation.clone();
+        fact.operation.clone_from(&attempt.operation);
         let clear = if fact.item.is_none() && attempt.ruling == Ruling::Approve {
             let default = self
                 .demotions

@@ -442,9 +442,10 @@ impl GovState {
             }
             Ok((
                 revision,
-                previous.map_or(self.unit_checkpoints_enabled(), |entry| {
-                    !entry.is_memory_selected()
-                }),
+                previous.map_or_else(
+                    || self.unit_checkpoints_enabled(),
+                    |entry| !entry.is_memory_selected(),
+                ),
                 previous.and_then(Pending::persisted),
             ))
         };
