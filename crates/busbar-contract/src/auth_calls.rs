@@ -374,8 +374,8 @@ pub trait AuthCalls: Send + Sync {
     }
 
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
-    fn carriers(&self) -> Vec<String> {
-        Vec::new()
+    fn carriers(&self) -> Arc<[String]> {
+        Arc::default()
     }
 
     /// `verify` ON THE SPOT: one ticket-less crossing on the caller's thread, bounded by the

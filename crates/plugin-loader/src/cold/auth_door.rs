@@ -77,12 +77,6 @@ pub(crate) fn instance_label(label: &str) -> String {
     label.to_owned()
 }
 
-/// Config: lists the instance's carriers for config and admin.
-#[cold]
-pub(crate) fn listed_carriers(carriers: &[String]) -> Vec<String> {
-    carriers.to_vec()
-}
-
 /// Error: a second refresh found one already in flight.
 #[cold]
 pub(crate) fn refresh_in_flight(label: &str) -> String {

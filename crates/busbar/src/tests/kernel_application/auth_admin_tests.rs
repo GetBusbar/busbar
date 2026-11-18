@@ -1409,7 +1409,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
             self.actual.inbound_points()
         }
-        fn carriers(&self) -> Vec<String> {
+        fn carriers(&self) -> Arc<[String]> {
             self.actual.carriers()
         }
         fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
