@@ -40,7 +40,8 @@ fn a_1_5_token_is_refused_with_the_settings_remedy_by_actual_validate() {
             Err(refused) => return refused.to_string(),
         };
         let cfg = match config::resolve(&deploy, &Default::default()) {
-            Ok(cfg) => cfg,
+            // The fixture's plaintext listener carries its explicit acceptance (#359 SEC-L1).
+            Ok(cfg) => crate::root::test_plugins::plaintext_listeners(cfg),
             Err(refused) => return refused.join("; "),
         };
         match busbar_kernel::config_validate::check(

@@ -1819,18 +1819,6 @@ impl DataRoutes {
         .await;
     }
 
-    /// The datagram opening as the owner tests drive it: a named carrier.
-    #[cfg(test)]
-    async fn open_datagram(
-        self: Arc<Self>,
-        (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
-        door: SessionDoor,
-        arrival: Arrival,
-    ) -> Response {
-        let whole = self.open_datagram_on(framer, &carrier, door, arrival).await;
-        stated((whole.status, whole.fields), Body::from(whole.body))
-    }
-
     async fn open_datagram_framed(
         self: Arc<Self>,
         framer: Arc<dyn busbar_core_connector::framer::FramerDoor>,

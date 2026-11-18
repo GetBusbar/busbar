@@ -16,9 +16,6 @@ use super::{compose_planes, compose_served_checked, datagram_binds, door_routes}
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(money_datagram);
-
 pub(super) struct Governed {
     pub(super) router: axum::Router,
     served: super::Served,
@@ -1005,10 +1002,41 @@ fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
     }
 }
 
-fn session_custody_caller() -> super::PipeCaller {
+/// A session caller over two channels, for driving `DataRoutes::session` directly (the product's
+/// own pipe caller went with the framed-session upgrade, 9748d3ebbf). It takes owned reads only, as
+/// a budgeted caller must: a bare read dequeues nothing. Writes carry whether they were text.
+pub(super) struct PipeEnd {
+    pub(super) from:
+        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<busbar_kernel::plane_driver::SessionInput>>,
+    pub(super) to: tokio::sync::mpsc::Sender<(Vec<u8>, bool)>,
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for PipeEnd {
+    fn head(&self, _status: u32, _fields: busbar_kernel::plane_driver::HeadFields) {}
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.to.send((bytes.to_vec(), false)).await.is_ok()
+    }
+
+    async fn write_text(&self, bytes: &[u8]) -> bool {
+        self.to.send((bytes.to_vec(), true)).await.is_ok()
+    }
+}
+
+impl busbar_kernel::plane_driver::SessionCaller for PipeEnd {
+    async fn read(&self) -> Option<Vec<u8>> {
+        None
+    }
+
+    async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
+        self.from.lock().await.recv().await
+    }
+}
+
+fn session_custody_caller() -> PipeEnd {
     let (_, from) = tokio::sync::mpsc::channel(1);
     let (to, _) = tokio::sync::mpsc::channel(1);
-    super::PipeCaller {
+    PipeEnd {
         from: tokio::sync::Mutex::new(from),
         to,
     }
@@ -1074,7 +1102,7 @@ async fn exhausted_terminal_storage_refuses_before_session_attachment() {
     let admitted = Arc::new(std::sync::Mutex::new(Vec::new()));
     let on_admit = Arc::clone(&admitted);
     let attach = super::Attach {
-        answered: super::SWITCHED,
+        answered: super::CREATED,
         admitted: Some(Box::new(move |unit| {
             on_admit.lock().expect("unpoisoned").push(unit);
             Ok(())
@@ -1117,7 +1145,7 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
         let _subscribed =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(errors.clone()));
         let attach = super::Attach {
-            answered: super::SWITCHED,
+            answered: super::CREATED,
             admitted: Some(Box::new(move |unit| {
                 on_admit.lock().expect("unpoisoned").push(unit);
                 if fails {
@@ -1413,7 +1441,11 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
             session_custody_caller(),
             arrival,
             verdict,
-            super::Attach::switched(),
+            super::Attach {
+                answered: super::CREATED,
+                admitted: None,
+                ended: None,
+            },
         )
         .await;
     let Err(Some(refused)) = said.await.expect("session verdict") else {
@@ -2134,7 +2166,7 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
         let (door, arrival, _) = routes.arrived(0, 1, request);
         let (_keep_caller_open, from) = tokio::sync::mpsc::channel(1);
         let (to, _replies) = tokio::sync::mpsc::channel(1);
-        let caller = super::PipeCaller {
+        let caller = PipeEnd {
             from: tokio::sync::Mutex::new(from),
             to,
         };
@@ -2145,7 +2177,7 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
                 .ticket_custody,
         );
         let attach = super::Attach {
-            answered: super::SWITCHED,
+            answered: super::CREATED,
             admitted: Some(Box::new(move |unit| {
                 if unregister_source {
                     let source = {

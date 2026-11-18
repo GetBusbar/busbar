@@ -307,7 +307,8 @@ async fn served_with_overlay(
                 revoked: false,
             }],
         });
-    document["plugins"] = plugins::config_document(&plugins);
+    document["plugins"] = serde_json::to_value(plugins::config_document(&plugins))
+        .expect("the plugins document is JSON");
     let catalog = json!({"typesafe": {
         "protocol":"jev", "base_url":format!("http://127.0.0.1:{provider_port}")
     }});
@@ -556,7 +557,7 @@ async fn rejected_file_hook_mutations_keep_actual_native_callers_and_behavior() 
         .expect("the actual configured HookPort opened")
         .clone();
     let plane_driver = s._fixture.seat.driver.clone();
-    let plane_caller = s._fixture.seat.who.caller();
+    let plane_who = s._fixture.seat.who.clone();
     let overlay = s.overlay.as_ref().unwrap().clone();
     let stored = overlay.read_bytes_async().await.unwrap();
     assert!(stored.is_some(), "the actual Store has a settled overlay");
@@ -566,7 +567,7 @@ async fn rejected_file_hook_mutations_keep_actual_native_callers_and_behavior() 
         observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }));
     let mut replacement = serde_json::to_value(
-        original.hook_registry["cell"].authoring(&busbar_kernel::seal::lend()),
+        original.hook_registry["cell"].authoring(&busbar_kernel::seal::acquire()),
     )
     .unwrap();
     replacement["settings"]["url"] = json!("http://127.0.0.1:1/rejected-target");
@@ -601,12 +602,16 @@ async fn rejected_file_hook_mutations_keep_actual_native_callers_and_behavior() 
         let current_hooks = s._fixture.hooks().await.unwrap();
         let current_hook = current_hooks.get("cell").unwrap();
         assert!(Arc::ptr_eq(&hook.port, &current_hook.port));
-        assert!(hook
-            .who
-            .caller()
-            .same_incarnation(&current_hook.who.caller()));
+        assert!(
+            hook.who.instance == current_hook.who.instance && hook.who.slot == current_hook.who.slot,
+            "the refused edit leaves the hook's opened binding (its runtime instance and slot) in place"
+        );
         assert!(Arc::ptr_eq(&plane_driver, &s._fixture.seat.driver));
-        assert!(plane_caller.same_incarnation(&s._fixture.seat.who.caller()));
+        assert!(
+            plane_who.instance == s._fixture.seat.who.instance
+                && plane_who.slot == s._fixture.seat.who.slot,
+            "the refused edit leaves the plane seat's opened binding (its runtime instance and slot) in place"
+        );
         let (status, body, provider) = s.decide().await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(

@@ -235,19 +235,19 @@ async fn detached_session_caller_preserves_text_and_closes_its_pipe_on_worker_sh
     busbar_kernel::detached::set_worker_detached(tracker.clone());
     let (shutdown, stopped) = tokio::sync::watch::channel(false);
     busbar_kernel::detached::set_worker_shutdown(stopped);
-    let (from, input) = tokio::sync::mpsc::channel(super::SESSION_QUEUE);
-    let (output, mut to) = tokio::sync::mpsc::channel(super::SESSION_QUEUE);
-    let caller = super::ClosingCaller::new(super::PipeCaller {
+    let (from, input) = tokio::sync::mpsc::channel(1);
+    let (output, mut to) = tokio::sync::mpsc::channel(1);
+    let caller = super::ClosingCaller::new(super::money_tests::PipeEnd {
         from: tokio::sync::Mutex::new(input),
         to: output,
     });
     assert!(caller.write_text(b"session text").await);
-    let text = to.recv().await.unwrap();
+    let (bytes, text) = to.recv().await.unwrap();
     assert!(
-        text.text,
+        text,
         "the shutdown wrapper preserves the caller's text framing"
     );
-    assert_eq!(text.bytes, b"session text");
+    assert_eq!(bytes, b"session text");
     let task = busbar_kernel::detached::spawn_detached(async move { caller.read().await });
     let mut drain = Box::pin(tracker.drained());
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
