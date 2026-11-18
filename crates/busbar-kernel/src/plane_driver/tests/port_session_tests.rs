@@ -48,6 +48,8 @@ enum It {
     End,
     Forward,
     Want(u32, u64),
+    /// A text want (e.g. `W_MODEL`).
+    WantText(u32, &'static str),
     Emit(u64, &'static [u8]),
     Finish,
     /// An item a later slice drives.
@@ -129,6 +131,7 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             It::End => PlaneOut::End,
             It::Forward => PlaneOut::Forward { stream: true },
             It::Want(k, v) => PlaneOut::Want(*k, FactRef::U(*v)),
+            It::WantText(k, v) => PlaneOut::Want(*k, FactRef::Text(v)),
             It::Emit(carrier, b) => PlaneOut::Emit {
                 carrier: *carrier,
                 bytes: b,
