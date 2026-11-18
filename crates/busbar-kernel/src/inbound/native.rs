@@ -12,6 +12,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Caller;
 use busbar_contract::storage::{StorageCredit, StorageDenied, StorageSource};
+use busbar_contract::transport::wire::PeerCertificate;
 use busbar_ports::transport::TransportPort;
 use foldhash::HashMap;
 use tokio_util::sync::CancellationToken;
@@ -285,7 +286,8 @@ pub struct AcceptedConnection {
     local: Box<str>,
     alpn: Box<str>,
     sni: Box<str>,
-    peer_certificate: SecureVec,
+    // Charged to the connection's account by whoever captured it; it holds its own credit.
+    peer_certificate: PeerCertificate,
     // Backing fields drop first. The same facts Arc may outlive both socket and connection task.
     _credit: StorageCredit,
 }
@@ -299,72 +301,56 @@ impl AcceptedConnection {
         alpn: &str,
         peer_certificate: &[u8],
     ) -> Result<Self, StorageDenied> {
-        Self::capture_metadata(source, peer, local, alpn, peer_certificate, None)
+        let mut credit = source.try_reserve(
+            text_bytes(peer, local, alpn, "")?
+                .checked_add(peer_certificate.len())
+                .ok_or(StorageDenied)?,
+        )?;
+        let certificate =
+            PeerCertificate::charged(credit.split(peer_certificate.len())?, peer_certificate)?;
+        Self::capture_metadata(credit, peer, local, alpn, certificate, None)
     }
 
     /// Preserve security facts from the actual socket wrapper, including TLS without SNI
-    /// or a client certificate. Request fields never supply these facts.
+    /// or a client certificate. Request fields never supply these facts. The wrapper's
+    /// certificate is taken by move, already charged: it is neither reserved nor copied again.
     pub fn capture_secured(
-        io: &busbar_contract::transport::wire::SecuredIo,
-        peer: &str,
-        local: &str,
-    ) -> Result<Self, StorageDenied> {
-        let alpn = io
-            .tls_handshake
-            .as_ref()
-            .and_then(|info| info.alpn())
-            .map(std::str::from_utf8)
-            .transpose()
-            .map_err(|_| StorageDenied)?;
-        let sni = io
-            .tls_handshake
-            .as_ref()
-            .map(|info| info.server_name().unwrap_or(""));
-        Self::capture_metadata(
-            &io.storage,
-            peer,
-            local,
-            alpn.unwrap_or(""),
-            &io.peer_certificate,
-            sni,
-        )
-    }
-
-    fn capture_metadata(
+        handshake: Option<&busbar_contract::transport::wire::HandshakeInfo>,
+        peer_certificate: PeerCertificate,
         source: &StorageSource,
         peer: &str,
         local: &str,
+    ) -> Result<Self, StorageDenied> {
+        let alpn = handshake
+            .and_then(|info| info.alpn())
+            .map(std::str::from_utf8)
+            .transpose()
+            .map_err(|_| StorageDenied)?
+            .unwrap_or("");
+        let sni = handshake.map(|info| info.server_name().unwrap_or(""));
+        let credit = source.try_reserve(text_bytes(peer, local, alpn, sni.unwrap_or(""))?)?;
+        Self::capture_metadata(credit, peer, local, alpn, peer_certificate, sni)
+    }
+
+    fn capture_metadata(
+        credit: StorageCredit,
+        peer: &str,
+        local: &str,
         alpn: &str,
-        peer_certificate: &[u8],
+        peer_certificate: PeerCertificate,
         tls_sni: Option<&str>,
     ) -> Result<Self, StorageDenied> {
         let sni = tls_sni.unwrap_or("");
-        let bytes = peer
-            .len()
-            .checked_add(local.len())
-            .and_then(|n| n.checked_add(alpn.len()))
-            .and_then(|n| n.checked_add(sni.len()))
-            .and_then(|n| n.checked_add(peer_certificate.len()))
-            .ok_or(StorageDenied)?;
-        let credit = source.try_reserve(bytes)?;
         let peer = accepted_text(peer)?;
         let local = accepted_text(local)?;
         let alpn = accepted_text(alpn)?;
         let sni = accepted_text(sni)?;
-        let mut certificate =
-            SecureVec::with_capacity(peer_certificate.len()).map_err(|_| StorageDenied)?;
-        if certificate.capacity() > peer_certificate.len() {
-            return Err(StorageDenied);
-        }
-        certificate
-            .extend(peer_certificate)
-            .map_err(|_| StorageDenied)?;
         Ok(Self {
             peer,
             local,
             alpn,
             sni,
-            peer_certificate: certificate,
+            peer_certificate,
             _credit: credit,
         })
     }
@@ -383,6 +369,14 @@ impl AcceptedConnection {
     pub fn peer_certificate(&self) -> &[u8] {
         self.peer_certificate.as_slice()
     }
+}
+
+fn text_bytes(peer: &str, local: &str, alpn: &str, sni: &str) -> Result<usize, StorageDenied> {
+    peer.len()
+        .checked_add(local.len())
+        .and_then(|n| n.checked_add(alpn.len()))
+        .and_then(|n| n.checked_add(sni.len()))
+        .ok_or(StorageDenied)
 }
 
 fn accepted_text(text: &str) -> Result<Box<str>, StorageDenied> {
@@ -405,6 +399,11 @@ pub struct PhysicalConnection {
     streams: Streams,
 }
 impl PhysicalConnection {
+    /// The connection's frozen socket and security facts, lent for as long as the borrow.
+    pub fn facts(&self) -> &AcceptedConnection {
+        &self.facts
+    }
+
     pub fn head(
         &self,
         stream: u64,
@@ -666,7 +665,7 @@ impl RequestBinding {
                     .iter()
                     .map(|(name, value)| (name.as_str(), value.as_slice())),
                 peer: &self.facts.peer,
-                tls_peer_cert: self.facts.peer_certificate.as_slice(),
+                tls_peer_cert: self.facts.peer_certificate(),
                 body,
                 now_s: crate::store::now(),
             },
