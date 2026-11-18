@@ -216,6 +216,11 @@ pub(crate) struct Answers {
     /// An `emit(E_CLOSE)` answer already carried its CLOSE.
     closing: bool,
     broke: Option<FaultReason>,
+    /// The answers of one gathered turn (a stall's resets, then a due timer) go into the one array: the
+    /// next answer's start keeps what is there.
+    gathering: bool,
+    /// This answer carried a CLOSE (kept as the CLOSE is taken, so the judgement reads no list).
+    closed: bool,
 }
 
 /// The STREAM_FULL streams one answer named, as far as the answer's judgement needs them: whether there
@@ -266,6 +271,8 @@ impl Answers {
             opened: None,
             closing: false,
             broke: None,
+            gathering: false,
+            closed: false,
         })
     }
 
@@ -284,7 +291,10 @@ impl Answers {
     pub(crate) fn start(&mut self, called: Called, now: Instant) {
         self.called = called;
         self.now = now;
-        self.acts.clear();
+        if !self.gathering {
+            self.acts.clear();
+        }
+        self.closed = false;
         self.full.clear();
         self.opened = None;
         self.closing = false;
@@ -323,6 +333,7 @@ impl Answers {
                 TransportOut::Close { abort } if !self.closing => {
                     self.closing = true;
                     self.acts.push(Act::Close { abort })?;
+                    self.closed = true;
                 }
                 TransportOut::WirePart {
                     stream,
@@ -383,7 +394,10 @@ impl Answers {
             TransportOut::Write(bytes) => self
                 .acts
                 .push(Act::Write(Payload::copy(&self.source, bytes)?))?,
-            TransportOut::Close { abort } => self.acts.push(Act::Close { abort })?,
+            TransportOut::Close { abort } => {
+                self.acts.push(Act::Close { abort })?;
+                self.closed = true;
+            }
             TransportOut::WakeAt(ns) => self.acts.push(Act::Wake(ns))?,
             TransportOut::Upgrade { protocol } => self.acts.push(Act::Upgrade {
                 protocol: Name::copy(&self.source, protocol)?,
@@ -457,8 +471,8 @@ impl Answers {
         Ok(())
     }
 
-    /// The whole answer judged: what it asks of core, in order, or the breach.
-    pub(crate) fn finish(&mut self) -> Result<Actions, FaultReason> {
+    /// The whole answer judged: what it asks of core stays in the session's own array, in order; or the breach.
+    pub(crate) fn finish(&mut self) -> Result<(), FaultReason> {
         if self.capacity_failed {
             self.acts.clear();
             self.full.clear();
@@ -499,10 +513,7 @@ impl Answers {
             }
         }
         self.full.clear();
-        self.acts.take().map_err(|_| {
-            self.capacity_failed = true;
-            GRAMMAR
-        })
+        Ok(())
     }
 
     pub(crate) fn is_held(&self, stream: u64) -> bool {
@@ -616,7 +627,7 @@ impl TransportConn {
         stall_ms: Option<u32>,
         now: Instant,
         storage: busbar_contract::storage::StorageSource,
-    ) -> Result<(Self, Actions), Ended> {
+    ) -> Result<Self, Ended> {
         let mut answers =
             Answers::with_source(stall_ms, now, storage).map_err(|_| Ended::Capacity)?;
         answers.provenance = port.facts() & wire::FB_WIRE_PROVENANCE != 0;
@@ -632,8 +643,8 @@ impl TransportConn {
             lost: false,
             core_closed: false,
         };
-        let acts = session.judged()?;
-        Ok((session, acts))
+        session.judged()?;
+        Ok(session)
     }
 
     #[cfg(test)]
@@ -646,6 +657,12 @@ impl TransportConn {
             lost: false,
             core_closed: false,
         }
+    }
+
+    /// The session's own answer array: what the last answer (or a gathered turn) asks of core, until the
+    /// driver drains it. It is made with the session, cleared per answer, grown in place, freed with it.
+    pub fn actions(&mut self) -> &mut Actions {
+        &mut self.answers.acts
     }
 
     /// Whether the session still takes calls.
@@ -667,7 +684,7 @@ impl TransportConn {
     }
 
     /// Bytes read from the connection; empty = EOF (after which core never sends E_CLOSE).
-    pub fn ingest(&mut self, bytes: &[u8], now: Instant) -> Result<Actions, Ended> {
+    pub fn ingest(&mut self, bytes: &[u8], now: Instant) -> Result<&mut Actions, Ended> {
         if bytes.is_empty() {
             self.peer_closed = true;
         }
@@ -675,7 +692,7 @@ impl TransportConn {
     }
 
     /// The WAKE_AT the framer asked for has passed.
-    pub fn timer(&mut self, now: Instant) -> Result<Actions, Ended> {
+    pub fn timer(&mut self, now: Instant) -> Result<&mut Actions, Ended> {
         self.call(Called::Timer, Call::Timer, now)
     }
 
@@ -688,7 +705,7 @@ impl TransportConn {
         arg: u32,
         bytes: &[u8],
         now: Instant,
-    ) -> Result<Actions, Ended> {
+    ) -> Result<&mut Actions, Ended> {
         if piece == wire::E_CLOSE {
             return Err(Ended::Misuse("E_CLOSE goes through TransportConn::close"));
         }
@@ -723,7 +740,7 @@ impl TransportConn {
         head_sent: bool,
         text: &str,
         now: Instant,
-    ) -> Result<Actions, Ended> {
+    ) -> Result<&mut Actions, Ended> {
         if !(400..=599).contains(&status) {
             return Err(Ended::Misuse("a refusal status outside 400..=599"));
         }
@@ -739,15 +756,30 @@ impl TransportConn {
     /// Every held stream whose stall deadline has passed at `now` is reset with
     /// `emit(stream, E_RESET, RESET_STALLED)`. Returns those streams, ascending (the caller ends each feed as for
     /// a peer reset and counts `transport_stream_stalled_total`), and what the answers asked of core.
-    pub fn stall(&mut self, now: Instant) -> Result<(&[u64], Actions), Ended> {
+    pub fn stall(&mut self, now: Instant) -> Result<(&[u64], &mut Actions), Ended> {
         let count = self.answers.take_stalled(now).len();
-        let mut acts = Actions::new(&self.answers.source).map_err(|_| Ended::Capacity)?;
+        self.answers.acts.clear();
+        self.answers.gathering = true;
+        let mut reset = Ok(());
         for at in 0..count {
             let stream = self.answers.stalled()[at];
-            acts.append(self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now)?)
-                .map_err(|_| Ended::Capacity)?;
+            if let Err(ended) = self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now) {
+                reset = Err(ended);
+                break;
+            }
         }
-        Ok((self.answers.stalled(), acts))
+        self.answers.gathering = false;
+        reset?;
+        let Answers { holds, acts, .. } = &mut self.answers;
+        Ok((holds.stalled(), acts))
+    }
+
+    /// [`Self::timer`], its answer added to what the turn already gathered (a stall's resets).
+    fn timer_gathered(&mut self, now: Instant) -> Result<(), Ended> {
+        self.answers.gathering = true;
+        let answered = self.timer(now).map(|_| ());
+        self.answers.gathering = false;
+        answered
     }
 
     /// The socket failed: nothing more can be written, so no E_CLOSE will be sent.
@@ -760,7 +792,7 @@ impl TransportConn {
     /// sent, because the framer already answered CLOSE, EOF was ingested, the socket failed, or the instance
     /// is quarantined (the caller counts it). Either way the session takes no further call; the caller
     /// writes the answer's bytes, applies its CLOSE, and then drops this value.
-    pub fn close(&mut self, reason: u32, now: Instant) -> Result<Option<Actions>, Ended> {
+    pub fn close(&mut self, reason: u32, now: Instant) -> Result<Option<&mut Actions>, Ended> {
         if self.core_closed || self.framer_closed {
             return Ok(None);
         }
@@ -780,12 +812,17 @@ impl TransportConn {
             arg: reason,
             bytes: &[],
         };
-        let acts = self.call(Called::Close, call, now)?;
+        self.call(Called::Close, call, now)?;
         self.core_closed = true;
-        Ok(Some(acts))
+        Ok(Some(&mut self.answers.acts))
     }
 
-    fn call(&mut self, called: Called, call: Call<'_>, now: Instant) -> Result<Actions, Ended> {
+    fn call(
+        &mut self,
+        called: Called,
+        call: Call<'_>,
+        now: Instant,
+    ) -> Result<&mut Actions, Ended> {
         let settlement = matches!(
             called,
             Called::Emit {
@@ -824,17 +861,18 @@ impl TransportConn {
             self.backend = None;
             return Err(Ended::Port(error));
         }
-        self.judged()
+        self.judged()?;
+        Ok(&mut self.answers.acts)
     }
 
     /// The answer just taken, judged; a breach charges the instance and ends the session.
-    fn judged(&mut self) -> Result<Actions, Ended> {
+    fn judged(&mut self) -> Result<(), Ended> {
         match self.answers.finish() {
-            Ok(acts) => {
-                if acts.iter().any(|act| matches!(act, Act::Close { .. })) {
+            Ok(()) => {
+                if self.answers.closed {
                     self.framer_closed = true;
                 }
-                Ok(acts)
+                Ok(())
             }
             Err(_) if self.answers.capacity_failed => {
                 self.backend = None;
@@ -1080,18 +1118,19 @@ impl Task {
     /// The answer's acts, in order: socket writes now, stream items queued for core.
     async fn apply<S: AsyncWrite + Unpin>(
         &mut self,
-        acts: Actions,
+        acts: &mut Actions,
         io: &mut DeliveryIo<S>,
         write_timeout: Duration,
         clock: &mut Option<(Instant, u64)>,
     ) -> Flow {
         let mut prefix = io.ledger().adopted_prefix();
-        if let Err(reason) = io.prepare(&acts) {
+        if let Err(reason) = io.prepare(acts) {
+            acts.clear();
             return Flow::Rejected(reason);
         }
         let mut wrote = false;
         let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
-        for act in acts {
+        for act in acts.drain() {
             match act {
                 Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
                     prefix += bytes.len() as u64; // checked by whole-answer preparation
@@ -1271,20 +1310,22 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     };
     let (now, _) = wake_clock(clock);
     let deadline = tokio::time::Instant::from_std(now) + limit;
-    let acts = match conn.close(reason, now) {
-        Ok(Some(acts)) => acts,
+    match conn.close(reason, now) {
+        Ok(Some(_)) => {}
         Ok(None) => {
             counters.close_skipped.fetch_add(1, Ordering::Relaxed);
             return Ended2::Core(reason);
         }
         Err(ended) => return Ended2::Ended(ended),
-    };
+    }
     let mut prefix = io.ledger().adopted_prefix();
-    if let Err(reason) = io.prepare(&acts) {
+    let prepared = io.prepare(conn.actions());
+    if let Err(reason) = prepared {
+        conn.actions().clear();
         return Ended2::Ended(conn.reject_output(reason));
     }
     let mut abort = false;
-    for act in acts {
+    for act in conn.actions().drain() {
         match act {
             Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
                 prefix += bytes.len() as u64;
@@ -1341,7 +1382,6 @@ impl<S> From<Ended2> for Outcome<S> {
 /// framer upgrades the connection.
 pub async fn drive<S>(
     conn: TransportConn,
-    first: Actions,
     io: S,
     progress: Arc<dyn CarrierProgressReader>,
     mut wiring: Wiring,
@@ -1378,7 +1418,7 @@ where
 
     let mut clock = None;
     match task
-        .apply(first, &mut io, wiring.write_timeout, &mut clock)
+        .apply(conn.actions(), &mut io, wiring.write_timeout, &mut clock)
         .await
     {
         Flow::Go => {}
@@ -1505,58 +1545,56 @@ where
                 .into();
             }
             Step::Control(DeliveryControl::Release { stream }) => {
-                conn.emit(stream, wire::E_RELEASE, 0, &[], now)
+                conn.emit(stream, wire::E_RELEASE, 0, &[], now).map(|_| ())
             }
             Step::Control(DeliveryControl::Cancel { stream, reason }) => {
                 task.slots.by_stream.remove(&stream);
                 if io.ledger().stop(stream, reason).is_err() {
                     return Outcome::Lost(delivery::error(ResponseStop::Integrity));
                 }
-                conn.emit(stream, wire::E_RESET, 0, &[], now)
+                conn.emit(stream, wire::E_RESET, 0, &[], now).map(|_| ())
             }
             Step::Control(DeliveryControl::Settled { stream }) => {
                 settlement = Some(stream);
                 conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], now)
+                    .map(|_| ())
             }
             Step::Tick => {
-                let mut acts = match Actions::new(&conn.answers.source) {
-                    Ok(acts) => acts,
-                    Err(_) => return Outcome::Ended(Ended::Capacity),
-                };
+                // One turn's answers, gathered in the session's array: the stall's resets, then a due timer's.
+                conn.actions().clear();
+                let mut gathered = false;
                 if conn.next_stall().is_some_and(|due| due <= now) {
                     match conn.stall(now) {
-                        Ok((stalled, more)) => {
+                        Ok((stalled, _)) => {
                             for &stream in stalled {
                                 task.slots.by_stream.remove(&stream);
                                 task.pending.push_back(Inbound::Stalled(stream));
                                 wiring.counters.stalled.fetch_add(1, Ordering::Relaxed);
                             }
-                            if acts.append(more).is_err() {
-                                return Outcome::Ended(Ended::Capacity);
-                            }
+                            gathered = true;
                         }
                         Err(ended) => return Outcome::Ended(ended),
                     }
                 }
                 if task.wake_at.is_some_and(|due| due <= now) {
                     task.wake_at = None;
-                    match conn.timer(now) {
-                        Ok(more) => {
-                            if acts.append(more).is_err() {
-                                return Outcome::Ended(Ended::Capacity);
-                            }
-                        }
-                        Err(ended) => return Outcome::Ended(ended),
+                    let timed = if gathered {
+                        conn.timer_gathered(now)
+                    } else {
+                        conn.timer(now).map(|_| ())
+                    };
+                    if let Err(ended) = timed {
+                        return Outcome::Ended(ended);
                     }
                 }
-                Ok(acts)
+                Ok(())
             }
             Step::Read(Ok(0)) => {
                 eof = true;
-                conn.ingest(&[], now)
+                conn.ingest(&[], now).map(|_| ())
             }
             Step::Read(Ok(n)) => {
-                let answered = conn.ingest(&buf[..n], now);
+                let answered = conn.ingest(&buf[..n], now).map(|_| ());
                 buf.clear();
                 answered
             }
@@ -1575,15 +1613,15 @@ where
                     .remove(&stream)
                     .is_some_and(|slot| slot.head_sent);
                 conn.refuse(stream, FEED_GONE_STATUS, head_sent, FEED_GONE_TEXT, now)
+                    .map(|_| ())
             }
             Step::Feed(Next::Opening(piece)) => open_stream(&mut conn, &mut task.slots, piece, now),
         };
-        let acts = match answered {
-            Ok(acts) => acts,
-            Err(ended) => return Outcome::Ended(ended),
-        };
+        if let Err(ended) = answered {
+            return Outcome::Ended(ended);
+        }
         match task
-            .apply(acts, &mut io, wiring.write_timeout, &mut clock)
+            .apply(conn.actions(), &mut io, wiring.write_timeout, &mut clock)
             .await
         {
             Flow::Go => {}
@@ -1653,11 +1691,13 @@ async fn finish_closed<S: AsyncWrite + Unpin>(
             let Some(control) = control else { return Outcome::Closed; };
             match control {
                 DeliveryControl::Settled { stream } => {
-                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], crate::off_path::framing::session_clock().0) {
-                        Ok(acts) => acts,
-                        Err(ended) => return Outcome::Ended(ended),
-                    };
-                    if let Err(reason) = io.prepare(&acts) { return Outcome::Ended(conn.reject_output(reason)); }
+                    if let Err(ended) = conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], crate::off_path::framing::session_clock().0) {
+                        return Outcome::Ended(ended);
+                    }
+                    let prepared = io.prepare(conn.actions());
+                    // The settlement's answer is checked and let go, as before.
+                    conn.actions().clear();
+                    if let Err(reason) = prepared { return Outcome::Ended(conn.reject_output(reason)); }
                     if let Err(reason) = io.ledger().settled_ack(stream) { return Outcome::Lost(delivery::error(reason)); }
                     let _ = io.ledger().retire_response(stream);
                 }
@@ -1768,8 +1808,8 @@ fn emit_piece(
     stream: u64,
     piece: &Piece,
     now: Instant,
-) -> Result<Actions, Ended> {
-    let acts = conn.emit(stream, piece.piece, piece.arg, &piece.bytes, now)?;
+) -> Result<(), Ended> {
+    conn.emit(stream, piece.piece, piece.arg, &piece.bytes, now)?;
     if matches!(piece.piece, wire::E_END | wire::E_RESET | wire::E_REFUSE) {
         slots.by_stream.remove(&stream);
     } else if let Some(slot) = slots.by_stream.get_mut(&stream) {
@@ -1778,7 +1818,7 @@ fn emit_piece(
         }
         slot.held = conn.is_held(stream);
     }
-    Ok(acts)
+    Ok(())
 }
 
 /// The first piece of a ROLE_CLIENT opening: `emit(0, E_HEAD, ..)`, whose answer names the new stream. The
@@ -1788,21 +1828,23 @@ fn open_stream(
     slots: &mut Slots,
     piece: Option<Piece>,
     now: Instant,
-) -> Result<Actions, Ended> {
+) -> Result<(), Ended> {
     let Some((pieces, opened)) = slots.opening.pop_front() else {
-        return Actions::new(&conn.answers.source).map_err(|_| Ended::Capacity);
+        conn.actions().clear();
+        return Ok(());
     };
     let Some(piece) = piece else {
         // The opener gave up before sending its head: nothing was opened.
-        return Actions::new(&conn.answers.source).map_err(|_| Ended::Capacity);
+        conn.actions().clear();
+        return Ok(());
     };
     if piece.piece != wire::E_HEAD {
         return Err(Ended::Misuse(
             "a stream opening whose first piece is not E_HEAD",
         ));
     }
-    let acts = conn.emit(0, wire::E_HEAD, piece.arg, &piece.bytes, now)?;
-    let id = acts.iter().find_map(|act| match act {
+    conn.emit(0, wire::E_HEAD, piece.arg, &piece.bytes, now)?;
+    let id = conn.actions().iter().find_map(|act| match act {
         Act::Opened(id) => Some(*id),
         _ => None,
     });
@@ -1819,7 +1861,7 @@ fn open_stream(
             let _ = opened.send(id);
         }
     }
-    Ok(acts)
+    Ok(())
 }
 
 #[cfg(test)]
