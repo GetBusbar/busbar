@@ -832,7 +832,7 @@ async fn a_budgeted_pipe_moves_custody_through_owned_reads_only() {
     let request = budget.try_enter(AdmissionClass::Data).unwrap();
     let (from, received) = mpsc::channel(1);
     let (to, _) = mpsc::channel(1);
-    let caller = PipeCaller {
+    let caller = super::money_tests::PipeEnd {
         from: tokio::sync::Mutex::new(received),
         to,
     };

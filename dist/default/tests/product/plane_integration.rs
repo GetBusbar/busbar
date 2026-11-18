@@ -1088,7 +1088,6 @@ async fn plane_router(
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
         app,
         mounts.routes,
-        mounts.sessions,
         mounts.refusals,
         body_limit,
         16,
