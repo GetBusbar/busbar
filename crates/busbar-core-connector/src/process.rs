@@ -558,11 +558,9 @@ fn not_the_node(
     }
 }
 
-/// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
-#[must_use]
-pub fn own_ports(listens: &[&str]) -> Vec<u16> {
-    crate::off_path::lines::own_ports(listens)
-}
+// The node's own ports are read once per config (callers: the root's boot and config commit): off the
+// request path.
+pub use crate::off_path::lines::own_ports;
 
 #[cfg(test)]
 #[path = "tests/process_tests.rs"]

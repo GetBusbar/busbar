@@ -281,9 +281,10 @@ pub(crate) fn own_ports_held(ports: &[u16]) -> std::sync::Arc<[u16]> {
     ports.into()
 }
 
-/// The ports the node listens on, read off its listen addresses once per config
-/// ([`crate::process::own_ports`]).
-pub(crate) fn own_ports(listens: &[&str]) -> Vec<u16> {
+/// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`), once
+/// per config.
+#[must_use]
+pub fn own_ports(listens: &[&str]) -> Vec<u16> {
     listens
         .iter()
         .filter_map(|l| l.rsplit_once(':').and_then(|(_, p)| p.parse().ok()))
@@ -385,5 +386,40 @@ pub(crate) fn listen_through(
                 |c| text(&c),
             )))
         }
+    }
+}
+
+// A held environment is loaded when its program is declared, at a config commit, and a debug line is no
+// request's: both off the request path (callers of `load`: the connector's program declaration and member
+// programs' declaration).
+impl crate::spawn_env::HeldEnv {
+    /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
+    #[must_use]
+    pub fn load(
+        refs: &[(String, busbar_contract::secret_ref::SecretRef)],
+        secrets: Option<crate::spawn_env::SpawnSecretFn>,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Self {
+        if refs.is_empty() {
+            return Self::written_only();
+        }
+        let held = Self(std::sync::Arc::new(crate::spawn_env::SpawnEnv {
+            refs: held_refs(refs),
+            secrets,
+            held: arc_swap::ArcSwap::from_pointee(crate::spawn_env::resolve(refs, secrets, scope)),
+            reloading: std::sync::Mutex::new(()),
+        }));
+        crate::spawn_env::keep(&held.0);
+        held
+    }
+}
+
+impl std::fmt::Debug for crate::spawn_env::HeldEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let refs = described_refs(&self.0.refs);
+        f.debug_struct("HeldEnv")
+            .field("refs", &refs)
+            .field("resolved", &self.0.held.load().0.is_ok())
+            .finish()
     }
 }

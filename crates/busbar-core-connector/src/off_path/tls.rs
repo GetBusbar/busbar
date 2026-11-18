@@ -356,7 +356,7 @@ fn pinned_verifier(
     if trust.pinned_public_keys.is_empty() {
         return Ok(None);
     }
-    PinnedKeyVerifier::try_new(roots.clone(), &trust.pinned_public_keys)
+    pinned_key_verifier(roots.clone(), &trust.pinned_public_keys)
         .map(Some)
         .map_err(BadClientIdentity)
 }
@@ -725,7 +725,7 @@ impl TrustStore {
             None
         } else {
             Some(Arc::new(
-                PinnedKeyVerifier::try_new(roots.clone(), &pins).map_err(TrustRefusal::Build)?,
+                pinned_key_verifier(roots.clone(), &pins).map_err(TrustRefusal::Build)?,
             ))
         };
         crypto_tls::client_config(|builder| {

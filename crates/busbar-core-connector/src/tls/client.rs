@@ -94,14 +94,6 @@ pub(crate) struct PinnedKeyVerifier {
     pub(crate) pins: foldhash::HashSet<[u8; 32]>,
 }
 
-impl PinnedKeyVerifier {
-    /// The verifier over `roots` holding the peer to `pins`, or why it cannot be built (an empty
-    /// root store, as `advanced.tls.roots: none` with no anchor gives): a refusal, never a panic.
-    pub(crate) fn try_new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Result<Self, String> {
-        crate::off_path::tls::pinned_key_verifier(roots, pins)
-    }
-}
-
 impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     fn verify_server_cert(
         &self,
