@@ -995,10 +995,10 @@ async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
     pool.members[1].name = "plane\u{1f}m1".into();
     let t = token();
     let far = r.egress.unit(UnitRoute {
-        native_member_grants: Some(std::collections::BTreeMap::from([(
+        native_member_grants: Some(Arc::new(std::collections::BTreeMap::from([(
             POOL.into(),
-            vec!["plane\u{1f}m1".into()],
-        )])),
+            ["plane\u{1f}m1".into()].into(),
+        )]))),
         ..route()
     });
     let candidates = far.candidates(&t).unwrap();
@@ -1012,10 +1012,10 @@ async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
     assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
     assert_eq!(r.table.opened.lock().unwrap().len(), 1);
     let denied = r.egress.unit(UnitRoute {
-        native_member_grants: Some(std::collections::BTreeMap::from([(
+        native_member_grants: Some(Arc::new(std::collections::BTreeMap::from([(
             "absent".into(),
-            vec!["plane\u{1f}m1".into()],
-        )])),
+            ["plane\u{1f}m1".into()].into(),
+        )]))),
         ..route()
     });
     assert!(denied.candidates(&t).unwrap().members.is_empty());
@@ -3821,8 +3821,9 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
     // Root qualifies member ledger names, while the plane selects its configured entry.
     for pool in r.egress.pools.values_mut() {
         for member in &mut pool.members {
-            member.name =
-                format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name).as_str().into();
+            member.name = format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name)
+                .as_str()
+                .into();
         }
     }
     let services = crate::host_services::KernelServices::new();

@@ -930,7 +930,7 @@ impl PortUpstream for PortEgress {
                 .unwrap_or(&self.pool);
             let mut route = route_of(pool, facts.unit, self.accept, wants);
             if let Some(receipt) = receipt {
-                route.native_member_grants = Some(receipt.member_grants().clone());
+                route.native_member_grants = Some(Arc::clone(receipt.shared_member_grants()));
                 route.authorization = facts
                     .pending
                     .as_ref()

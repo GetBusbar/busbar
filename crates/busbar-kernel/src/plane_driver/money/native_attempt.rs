@@ -308,10 +308,14 @@ fn preparation_follows(limit: u32, attempts: &[AttemptPartition], preparation: u
             .is_none_or(|prior| prior.preparation < preparation && prior.finality != Finality::Live)
 }
 
-fn member_granted(grants: &BTreeMap<String, Vec<String>>, pool: &str, member: &str) -> bool {
+fn member_granted(
+    grants: &crate::plane_driver::request_admission::MemberGrants,
+    pool: &str,
+    member: &str,
+) -> bool {
     grants
         .get(pool)
-        .is_some_and(|members| members.iter().any(|held| held == member))
+        .is_some_and(|members| members.iter().any(|held| *held == member))
 }
 use busbar_plugin_abi::records::RecErr;
 use busbar_ports::codec::fallback_usage::{

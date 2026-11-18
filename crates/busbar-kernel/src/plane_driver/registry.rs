@@ -129,7 +129,7 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     }
     let installed = INSTALLED.get().copied().unwrap_or(&[]);
     let folded: &'static [&'static PlaneDecl] =
-        merged_boot_plane_decls(installed, builtin_plane_decls()).leak();
+        merged_boot_plane_decls(installed, &[], builtin_plane_decls()).leak();
     // A list another reader folded and published first wins; this fold stays leaked unread.
     *PLANES
         .write()
@@ -143,10 +143,12 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
 /// registration set through it.
 #[doc(hidden)]
 pub fn publish_planes(registered: &[&'static PlaneDecl]) {
-    let folded = crate::off_path::plane_registry::published_fold(
+    let folded: &'static [&'static PlaneDecl] = merged_boot_plane_decls(
         INSTALLED.get().copied().unwrap_or(&[]),
         registered,
-    );
+        builtin_plane_decls(),
+    )
+    .leak();
     *PLANES
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(folded);

@@ -73,7 +73,7 @@ pub fn merged_boot_plane_decls(
     installed: &[&'static crate::plane_driver::registry::PlaneDecl],
     builtins: &[&'static crate::plane_driver::registry::PlaneDecl],
 ) -> Vec<&'static crate::plane_driver::registry::PlaneDecl> {
-    crate::off_path::plane_registry::merged_boot_plane_decls(installed, builtins)
+    crate::off_path::plane_registry::merged_boot_plane_decls(installed, &[], builtins)
 }
 
 /// B-RATE-HOLD's way in: one rate hold's whole life against the governor.
