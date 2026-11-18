@@ -384,6 +384,9 @@ pub(crate) fn compose_egress(
         );
     let unit = busbar_kernel_breaker::BreakerUnit::new()
         .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
+    busbar_kernel::plane_driver::declare_providers(
+        sealed.values().map(|route| route.provider.as_str()),
+    );
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,

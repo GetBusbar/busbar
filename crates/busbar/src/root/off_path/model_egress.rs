@@ -295,6 +295,9 @@ pub fn compose(
         Arc::new(move || -> Arc<dyn Breaker> {
             Arc::new(WalkCells::over(app.clone(), Arc::clone(&cells)))
         });
+    busbar_kernel::plane_driver::declare_providers(
+        sealed.values().map(|route| route.provider.as_str()),
+    );
     Ok((
         busbar_kernel::plane_driver::Egress {
             caller,

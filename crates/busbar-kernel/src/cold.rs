@@ -26,18 +26,6 @@ pub(crate) mod auth;
 pub(crate) mod far_end;
 pub(crate) mod governance;
 pub(crate) mod host;
-// --- plane_driver::far_end ---
-
-/// `plane_driver::far_end`: a provider's credential refusal, keyed once, on its first refusal.
-#[cold]
-pub(crate) fn far_end_first_refusal(
-    last: &mut foldhash::HashMap<String, busbar_contract::conn::ConnError>,
-    provider: &str,
-    err: busbar_contract::conn::ConnError,
-) {
-    last.insert(provider.to_owned(), err);
-}
-
 // --- plane_driver (door, registry, serve, dispatch, slots, needs, route_tables, timing, authenticated_route) ---
 
 /// `plane_driver::slots`: a plane's runtime slot key, `<plane_key>:runtime`, composed and leaked

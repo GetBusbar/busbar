@@ -38,6 +38,8 @@ pub mod port_upstream;
 pub mod port_work;
 pub mod provider_catalog;
 pub mod request_admission;
+pub use crate::off_path::plane_driver::declare_providers;
+pub(crate) use far_end::CREDENTIAL_WARNED;
 pub use money::native_attempt::NativeRequestMoney;
 pub(crate) use money::native_attempt::PreparedRateAttempt;
 pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError, NativeCommitError};
