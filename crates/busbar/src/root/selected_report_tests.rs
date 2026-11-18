@@ -22,7 +22,7 @@ pub(super) fn terminal() -> UnitCheckpoint {
         metered: false,
         ended: true,
         terminal: None,
-        audit: Some(vec![1]),
+        audit: Some(vec![1].into()),
         measurement: None,
         unread: None,
         partitions: Some(raw::PartitionedUsageV1 {

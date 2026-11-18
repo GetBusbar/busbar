@@ -516,7 +516,7 @@ impl Fixture {
             metered: true,
             ended: false,
             terminal: None,
-            audit: Some(serde_json::to_vec(&audit).unwrap()),
+            audit: Some(serde_json::to_vec(&audit).unwrap().into()),
             measurement: None,
             unread: None,
             partitions: None,

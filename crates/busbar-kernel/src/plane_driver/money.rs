@@ -14,6 +14,7 @@ use busbar_contract::{Count, UnitKey};
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::config::groups::ExhaustionMode;
 use crate::cost::CostModel;
+use crate::governance::unit_checkpoint::AuditFacts;
 use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
@@ -411,7 +412,8 @@ struct Open {
     observation_pending: Option<observations::PendingObservation>,
     observation_classes: std::collections::BTreeSet<u32>,
     checkpoint_id: [u8; 16],
-    checkpoint_audit: Option<Vec<u8>>,
+    /// The unit's last captured audit facts, shared with every checkpoint taken from them.
+    checkpoint_audit: Option<AuditFacts>,
     identity: Arc<()>,
     grant: Option<Arc<AdmitGrant>>,
     fee: FeeParticipation,
@@ -452,7 +454,7 @@ impl Open {
             observation_pending: None,
             observation_classes: Default::default(),
             checkpoint_id: crate::door::op_id().0,
-            checkpoint_audit,
+            checkpoint_audit: checkpoint_audit.map(AuditFacts::from),
             identity: Arc::new(()),
             grant,
             fee,
@@ -1294,6 +1296,7 @@ impl PlaneMoney {
             audit: self
                 .post
                 .checkpoint_facts(key)
+                .map(AuditFacts::from)
                 .or_else(|| open.checkpoint_audit.clone()),
         })
     }
@@ -1500,13 +1503,13 @@ impl MoneySeam for PlaneMoney {
             && same_counts(&open.last, units)
             && facts
                 .as_ref()
-                .is_none_or(|audit| open.checkpoint_audit.as_ref() == Some(audit));
+                .is_none_or(|audit| open.checkpoint_audit.as_deref() == Some(audit.as_slice()));
         if !unchanged {
             open.last.clear();
             open.last.extend_from_slice(units);
             open.rev = open.rev.wrapping_add(1);
             if let Some(audit) = facts {
-                open.checkpoint_audit = Some(audit);
+                open.checkpoint_audit = Some(AuditFacts::from(audit));
             }
         }
         if !unchanged && self.gov.unit_checkpoints_enabled() && !open.ledgered {

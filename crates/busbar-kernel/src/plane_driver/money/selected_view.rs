@@ -109,6 +109,7 @@ impl PlaneMoney {
         let audit = self
             .post
             .checkpoint_facts(key)
+            .map(AuditFacts::from)
             .or_else(|| open.checkpoint_audit.clone())
             .ok_or_else(|| refused("selected admission lacks original captured audit facts"))?;
         parts.fee = open.fee.selected_fee().0;

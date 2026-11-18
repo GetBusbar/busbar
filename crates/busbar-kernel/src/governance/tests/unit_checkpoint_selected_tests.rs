@@ -7,6 +7,9 @@
 use super::*;
 use crate::governance::GovState;
 
+#[path = "unit_checkpoint_cost_tests.rs"]
+mod cost;
+
 fn source_facts(reported: Option<u64>, floor: Option<u64>, estimated: Option<u64>) -> json::Value {
     let high_water = reported
         .into_iter()

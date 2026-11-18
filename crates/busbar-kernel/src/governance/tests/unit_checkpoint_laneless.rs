@@ -510,7 +510,7 @@ async fn a_flush_pass_holds_the_journal_lane_nine_times() {
         let mut unit = laneless_unit(&cm, &key, now, id);
         unit.metered = true;
         unit.provider = Some("lane-holds".into());
-        unit.audit = Some(b"{}".to_vec());
+        unit.audit = Some(b"{}".to_vec().into());
         assert!(gov.finish_unit_checkpoint(unit));
         drop(grant);
     }

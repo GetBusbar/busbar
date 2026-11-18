@@ -43,7 +43,7 @@ fn checkpoint() -> UnitCheckpoint {
         metered: true,
         ended: false,
         terminal: None,
-        audit: Some(b"{}".to_vec()),
+        audit: Some(b"{}".to_vec().into()),
         measurement: None,
         unread: None,
         partitions: Some(PartitionedUsageV1 {
@@ -115,7 +115,7 @@ async fn selected_initial_builder_refuses_missing_admitted_chain_without_fallbac
     let original = Arc::make_mut(&mut open.money);
     original.lane = "plane\u{1f}".into();
     original.pool = "plane\u{1f}original".into();
-    open.checkpoint_audit = Some(b"{}".to_vec());
+    open.checkpoint_audit = Some(b"{}".to_vec().into());
     let mut parts = checkpoint().partitions.unwrap();
     parts.attempts.clear();
     parts.final_target = None;

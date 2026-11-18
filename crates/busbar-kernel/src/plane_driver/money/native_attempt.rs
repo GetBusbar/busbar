@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::governance::unit_checkpoint::partitions::{
     AttemptPartition, Disposition, Finality, TargetKind, Transport, UsagePartition,
 };
-use crate::governance::unit_checkpoint::UnitCheckpoint;
+use crate::governance::unit_checkpoint::{AuditFacts, UnitCheckpoint};
 use crate::plane_driver::port_egress::SelectedWalkAttempt;
 use crate::plane_driver::port_session::{PreparedExchange, RequestDeclaration};
 use crate::plane_driver::port_upstream::TargetIdentity;
@@ -101,12 +101,12 @@ impl NativeRequestMoney {
         &self,
         snapshot: &mut UnitCheckpoint,
     ) -> Result<(), NativeAttemptError> {
-        snapshot.audit = Some(
+        snapshot.audit = Some(AuditFacts::from(
             self.money
                 .post
                 .checkpoint_facts(self.request.unit())
                 .ok_or_else(|| NativeAttemptError::Custody)?,
-        );
+        ));
         Ok(())
     }
 
