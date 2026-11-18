@@ -150,7 +150,8 @@ struct Association {
 /// existing flight until it is associated and resolved.
 pub struct FeeCapture {
     identity: Arc<()>,
-    bucket: String,
+    /// The bucket, by the budget map's own key: shared, not copied.
+    bucket: busbar_contract::kept::Text,
     incarnation: u64,
     window: u64,
     cut: u64,
@@ -163,7 +164,7 @@ pub struct FeeCapture {
 impl FeeCapture {
     pub(crate) fn frozen(
         producer: &FeeDebtProducer,
-        bucket: &str,
+        bucket: &busbar_contract::kept::Text,
         incarnation: u64,
         window: u64,
         cut: u64,
@@ -171,7 +172,7 @@ impl FeeCapture {
     ) -> Arc<Self> {
         Arc::new(Self {
             identity: producer.identity.clone(),
-            bucket: bucket.to_owned(),
+            bucket: bucket.clone(),
             incarnation,
             window,
             cut,

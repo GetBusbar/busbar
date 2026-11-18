@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
+use busbar_contract::kept::Text;
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use foldhash::{HashMap, HashMapExt};
 use std::sync::atomic::Ordering;
@@ -684,7 +685,8 @@ pub enum LimitBlocked {
 pub struct FeeCharge {
     lane: Option<String>,
     era: RawRateEra,
-    cells: Vec<(String, u64)>,
+    /// Each bucket by the budget map's own key (shared, never copied) and the window it landed on.
+    cells: Vec<(Text, u64)>,
     chain: Option<crate::cost::ChainPlan>,
 }
 
@@ -777,7 +779,9 @@ pub struct GovState {
 
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
 
-    budget: Sharded<BudgetCell>,
+    /// The budget cells, keyed by the bucket's name as shared text: a charge, a flush flight and
+    /// a fee capture name their bucket by sharing this key.
+    budget: Sharded<BudgetCell, Text>,
 
     selected_rates: Arc<selected_resource::SelectedRates>,
 
@@ -794,7 +798,7 @@ pub struct GovState {
     ticket_operations: tickets::TicketOperations,
 
     budget_flushes:
-        std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
+        std::sync::Mutex<std::collections::BTreeMap<(Text, u64), Arc<BudgetFlushFlight>>>,
 
     budget_flush_runner: BudgetFlushRunner,
 
@@ -1442,6 +1446,36 @@ impl MeterCounts {
         }
         Ok(())
     }
+    /// Add unit counts lent by the caller, as [`Self::try_merge`] adds a unit-only count: the
+    /// same refusals in the same order (a negative count, a priced cell, a sum out of range),
+    /// every sum checked before any count changes. Nothing is copied but the name of a class
+    /// this cell counts for the first time.
+    pub(crate) fn try_merge_units<'u>(
+        &mut self,
+        units: impl Iterator<Item = (&'u String, Count)> + Clone,
+    ) -> Result<(), CountError> {
+        if units.clone().any(|(_, n)| n.is_negative()) {
+            return Err(CountError::Negative);
+        }
+        if self.pricing.is_some() {
+            return Err(CountError::Malformed);
+        }
+        for (class, n) in units.clone() {
+            let held = self.usage_units.get(class).copied().unwrap_or_default();
+            held.checked_add(n)?;
+        }
+        let checked = "unit sum checked before the counts changed";
+        for (class, n) in units {
+            match self.usage_units.get_mut(class) {
+                Some(cur) => *cur = cur.checked_add(n).expect(checked),
+                None => {
+                    let first = Count::default().checked_add(n).expect(checked);
+                    self.usage_units.insert(class.clone(), first);
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn merge(&mut self, other: impl std::borrow::Borrow<MeterCounts>) {
         self.try_merge(other.borrow())
             .expect("metering count accumulation exceeds Count range");
@@ -1742,6 +1776,48 @@ impl PendingMetering {
         key: MeterKeyRef<'_>,
         add: MeterCounts,
     ) -> Result<(), CountError> {
+        self.with_probe(key, |map, probe| {
+            accrue_pending_checked(
+                map,
+                PendingKey::Probe(probe),
+                add,
+                MAX_PENDING_METERING_PER_SHARD,
+                &self.coalesce_warn,
+            )
+        })
+    }
+
+    /// [`Self::try_accrue_ref`] for unit counts lent by the caller: a cell that already exists
+    /// adds them in place, and only an identity's first accrual makes counts of its own (they
+    /// become the cell).
+    pub(crate) fn try_accrue_units_ref<'u>(
+        &self,
+        key: MeterKeyRef<'_>,
+        units: impl Iterator<Item = (&'u String, Count)> + Clone,
+    ) -> Result<(), CountError> {
+        self.with_probe(key, |map, probe| {
+            if let Some(cell) = map.get_mut(probe) {
+                return cell.try_merge_units(units);
+            }
+            let mut first = MeterCounts::default();
+            first.try_merge_units(units)?;
+            accrue_pending_checked(
+                map,
+                PendingKey::Probe(probe),
+                first,
+                MAX_PENDING_METERING_PER_SHARD,
+                &self.coalesce_warn,
+            )
+        })
+    }
+
+    /// Run `accrue` on `key`'s shard, under its lock, with this thread's reused probe filled
+    /// from `key` as the lookup identity.
+    fn with_probe<R>(
+        &self,
+        key: MeterKeyRef<'_>,
+        accrue: impl FnOnce(&mut HashMap<MeterIdentity, MeterCounts>, &MeterIdentity) -> R,
+    ) -> R {
         thread_local! {
             static PROBE: std::cell::RefCell<MeterIdentity> = const {
                 std::cell::RefCell::new(MeterIdentity { common: (
@@ -1762,13 +1838,7 @@ impl PendingMetering {
                 .shard_for(key.key_id)
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            accrue_pending_checked(
-                &mut map,
-                PendingKey::Probe(&probe),
-                add,
-                MAX_PENDING_METERING_PER_SHARD,
-                &self.coalesce_warn,
-            )
+            accrue(&mut map, &probe)
         })
     }
 

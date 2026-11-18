@@ -236,7 +236,7 @@ fn accrue_exact_dated(gov: &GovState, key: &VirtualKey, count: Count, now: u64) 
     let window = super::super::budget_window(super::super::WINDOW_TOTAL, now);
     let mut cells = gov.budget.write(&key.id);
     let cell = cells
-        .entry(key.id.clone())
+        .entry(key.id.as_str().into())
         .or_insert_with(|| BudgetCell::fresh(window));
     cell.accrue_raw(
         MODEL,
@@ -401,7 +401,7 @@ async fn ordinary_small_plain_only_unknown_commit_replays_once() {
     {
         let mut cells = gov.budget.write(&key.id);
         let cell = cells
-            .entry(key.id.clone())
+            .entry(key.id.as_str().into())
             .or_insert_with(|| BudgetCell::fresh(0));
         cell.accrue(MODEL, 0, &toks(CONCURRENT_INPUT, 0));
         cell.dirty = true;
@@ -502,7 +502,7 @@ async fn key_deletion_reconciles_small_unknown_commit_before_purging_usage() {
     assert_eq!(batches[0], batches[1]);
     assert_eq!(batches[1], batches[2]);
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
-    assert!(!gov.budget.read(&key.id).contains_key(&key.id));
+    assert!(!gov.budget.read(&key.id).contains_key(key.id.as_str()));
 }
 
 #[tokio::test]
@@ -550,7 +550,7 @@ async fn ordinary_large_negative_debt_uses_the_full_signed_range() {
 
     {
         let mut cells = gov.budget.write(&key.id);
-        let cell = cells.get_mut(&key.id).unwrap();
+        let cell = cells.get_mut(key.id.as_str()).unwrap();
         for model in &mut cell.models {
             model.cur.clear();
         }
@@ -803,7 +803,7 @@ async fn key_deletion_settles_unknown_large_chunks_before_releasing_raw_custody(
         .unwrap()
         .is_none_or(|row| row.deleted_at.is_some()));
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
-    assert!(!gov.budget.read(&key.id).contains_key(&key.id));
+    assert!(!gov.budget.read(&key.id).contains_key(key.id.as_str()));
     let batches = store.batches.lock().unwrap();
     assert_eq!(batches[0], batches[1]);
     assert_eq!(batches[1], batches[2]);
@@ -1001,7 +1001,7 @@ async fn deletion_excludes_new_large_flight_capture_until_the_key_purge_finishes
     }));
     gov.delete_key(&key.id).await.unwrap();
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
-    assert!(!gov.budget.read(&key.id).contains_key(&key.id));
+    assert!(!gov.budget.read(&key.id).contains_key(key.id.as_str()));
     assert!(gov.deleting_budget_buckets.lock().unwrap().is_empty());
 }
 

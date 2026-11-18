@@ -40,7 +40,7 @@ async fn applied_needs_the_associated_original_capture_to_finish() {
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
     assert_eq!(observer.status(), FeeDebtStatus::Pending);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     associate(&gov, &observer, &capture);
     assert_eq!(
         observer.status(),
@@ -63,7 +63,7 @@ async fn neutral_capture_is_cancelled_before_send_never_applied() {
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
     observer.mark(0, "k", 5, 0, 2);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 2, true);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 2, true);
     associate(&gov, &observer, &capture);
     capture.finish(true, false);
     assert_eq!(
@@ -80,7 +80,7 @@ async fn a_later_mutation_cannot_join_an_older_capture() {
     let gov = governance().await;
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
-    let first = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let first = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     associate(&gov, &observer, &first);
     observer.mark(0, "k", 5, 0, 2);
     first.finish(true, false);
@@ -89,7 +89,7 @@ async fn a_later_mutation_cannot_join_an_older_capture() {
         FeeDebtStatus::Pending,
         "refund after the cut"
     );
-    let second = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 2, false);
+    let second = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 2, false);
     associate(&gov, &observer, &second);
     second.finish(true, false);
     assert!(matches!(observer.status(), FeeDebtStatus::Complete(_)));
@@ -102,9 +102,9 @@ async fn recreated_cells_and_foreign_governance_cannot_satisfy_a_target() {
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
     for capture in [
-        FeeCapture::frozen(&gov.fee_debt, "k", 6, 0, 1, false),
-        FeeCapture::frozen(&gov.fee_debt, "k", 5, 1, 1, false),
-        FeeCapture::frozen(&other.fee_debt, "k", 5, 0, 1, false),
+        FeeCapture::frozen(&gov.fee_debt, &"k".into(), 6, 0, 1, false),
+        FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 1, 1, false),
+        FeeCapture::frozen(&other.fee_debt, &"k".into(), 5, 0, 1, false),
     ] {
         associate(&gov, &observer, &capture);
         capture.finish(true, false);
@@ -117,7 +117,7 @@ async fn a_deferred_residual_waits_for_the_next_original_capture_once() {
     let gov = governance().await;
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
-    let first = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let first = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     associate(&gov, &observer, &first);
     first.finish(true, true);
     assert_eq!(
@@ -125,7 +125,7 @@ async fn a_deferred_residual_waits_for_the_next_original_capture_once() {
         FeeDebtStatus::Pending,
         "deferred is not Applied"
     );
-    let next = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 3, false);
+    let next = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 3, false);
     associate(&gov, &observer, &next);
     assert_eq!(observer.status(), FeeDebtStatus::Pending);
     next.finish(true, false);
@@ -137,7 +137,7 @@ async fn unassociated_or_unproven_captures_are_unresolved() {
     let gov = governance().await;
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     observer.offer(&capture);
     // The flight finished before its association completed: no receipt can be published.
     capture.finish(true, false);
@@ -145,7 +145,7 @@ async fn unassociated_or_unproven_captures_are_unresolved() {
 
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     associate(&gov, &observer, &capture);
     capture.finish(false, false);
     assert_eq!(
@@ -161,7 +161,7 @@ async fn every_target_leg_must_resolve() {
     let observer = observed(&gov, &["key", "group"]).await;
     observer.mark(0, "key", 5, 0, 1);
     observer.mark(1, "group", 9, 0, 1);
-    let key = FeeCapture::frozen(&gov.fee_debt, "key", 5, 0, 1, false);
+    let key = FeeCapture::frozen(&gov.fee_debt, &"key".into(), 5, 0, 1, false);
     associate(&gov, &observer, &key);
     key.finish(true, false);
     assert_eq!(
@@ -169,7 +169,7 @@ async fn every_target_leg_must_resolve() {
         FeeDebtStatus::Pending,
         "group leg outstanding"
     );
-    let group = FeeCapture::frozen(&gov.fee_debt, "group", 9, 0, 1, true);
+    let group = FeeCapture::frozen(&gov.fee_debt, &"group".into(), 9, 0, 1, true);
     associate(&gov, &observer, &group);
     group.finish(true, false);
     assert_eq!(
@@ -261,7 +261,7 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
     let parent = captured.prerequisite.clone().unwrap();
     let observer = observed(&gov, &["recovery-bucket"]).await;
     observer.mark(0, "recovery-bucket", 5, 0, 1);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "recovery-bucket", 5, 0, 1, false);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"recovery-bucket".into(), 5, 0, 1, false);
     associate(&gov, &observer, &capture);
     // As the flusher does (3d43a0341f): the durable flight keeps the absorbing revision first, then
     // the exact owner is pinned at that kept revision before the flight retires.
@@ -341,7 +341,7 @@ async fn an_unpinnable_transfer_is_unresolved() {
     let gov = governance().await;
     let observer = observed(&gov, &["k"]).await;
     observer.mark(0, "k", 5, 0, 1);
-    let capture = FeeCapture::frozen(&gov.fee_debt, "k", 5, 0, 1, false);
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
     associate(&gov, &observer, &capture);
     assert!(!gov.fee_hold([7; 16], 1, [0; 32]));
     capture.finish(false, false);
@@ -407,7 +407,7 @@ async fn observed_fee_unit_refunds_use_the_charged_legs() {
     while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
         let at_charge = FeeCapture::frozen(
             &gov.fee_debt,
-            &bucket,
+            &busbar_contract::kept::Text::from(bucket.clone()),
             incarnation,
             window.unwrap(),
             1,

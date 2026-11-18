@@ -913,7 +913,7 @@ impl GovState {
             exact(correction::canonical_ledger(&mut plain))?;
             exact(correction::canonical_ledger(&mut dated))?;
             let mut cells = self.budget.write(bucket);
-            let live = cells.get(bucket);
+            let live = cells.get(bucket.as_str());
             if live.is_some_and(|cell| {
                 cell.correction.is_some()
                     || cell.window_start != *window
@@ -922,7 +922,7 @@ impl GovState {
                 continue;
             }
             let (before, _, _) = capture_target(bucket, live, &plain, &dated, *window)?;
-            cells.insert(bucket.clone(), before);
+            crate::governance::sharded::put(&mut cells, bucket, before);
         }
         Ok(())
     }
@@ -1356,7 +1356,7 @@ impl GovState {
                 .expect("target shard held");
             let branch = guards[index]
                 .1
-                .get(bucket)
+                .get(bucket.as_str())
                 .and_then(|cell| cell.correction.as_ref());
             if !branch.is_some_and(|branch| {
                 branch.op_id == pending.request.op_id && branch.window == *window
@@ -1369,7 +1369,10 @@ impl GovState {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
-            let cell = guards[index].1.get(bucket).expect("checked target cell");
+            let cell = guards[index]
+                .1
+                .get(bucket.as_str())
+                .expect("checked target cell");
             let branch = cell.correction.as_ref().expect("checked reservation");
             let mut chosen = if decision == Decision::Applied {
                 branch.accepted.clone()
@@ -1387,7 +1390,7 @@ impl GovState {
             let index = order
                 .binary_search(&self.budget.shard_index(&bucket))
                 .expect("target shard held");
-            guards[index].1.insert(bucket, chosen);
+            crate::governance::sharded::put(&mut guards[index].1, &bucket, chosen);
         }
         drop(guards);
         *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) = Some(decision);
@@ -1632,7 +1635,7 @@ impl GovState {
                     let index = order
                         .binary_search(&self.budget.shard_index(bucket))
                         .expect("target shard held");
-                    let live = guards[index].1.get(bucket);
+                    let live = guards[index].1.get(bucket.as_str());
                     if live.is_some_and(|cell| cell.correction.is_some()) {
                         return Err(unresolved("another correction owns an affected bucket"));
                     }
@@ -1772,7 +1775,7 @@ impl GovState {
                         window,
                         accepted,
                     }));
-                    guards[index].1.insert(bucket, before);
+                    crate::governance::sharded::put(&mut guards[index].1, &bucket, before);
                 }
                 let sent_at = ledger_off_path::ledger_correction_sent_clock();
                 let pending = PendingCorrection {

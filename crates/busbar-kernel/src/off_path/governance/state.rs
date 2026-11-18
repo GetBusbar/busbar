@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::count::Count;
+use busbar_contract::kept::Text;
 use busbar_contract::records::{ModelTokensDelta, ScopeRef};
 use busbar_kernel_ledger::cost::RawRateEra;
 
@@ -172,7 +173,7 @@ pub(crate) fn state_card_kid(prefix: &str, kid: &str) -> String {
 /// `state`: an operator's group delete reclaims the clean cells only that group owned.
 pub(crate) fn state_reclaim_group_cells<G>(shards: impl Iterator<Item = G>, group: &str) -> usize
 where
-    G: DerefMut<Target = foldhash::HashMap<String, BudgetCell>>,
+    G: DerefMut<Target = foldhash::HashMap<Text, BudgetCell>>,
 {
     let mut dropped = 0usize;
     for mut shard in shards {
@@ -217,7 +218,7 @@ pub(crate) fn state_hydration_buckets(
 /// `state`: the periodic budget shard sweep (once per `rate_sweep_interval` admissions on the
 /// shard): drops aged clean cells, then prunes dead model rows from the cells it keeps.
 pub(crate) fn state_sweep_budget_shard(
-    map: &mut foldhash::HashMap<String, BudgetCell>,
+    map: &mut foldhash::HashMap<Text, BudgetCell>,
     cost: &crate::cost::CostModel,
     now: u64,
 ) {
@@ -282,11 +283,11 @@ pub(crate) fn state_flush_instant() -> std::time::Instant {
 /// cell left dirty is handed to `reflag` while its lock is held.
 pub(crate) fn state_flush_walk<G, T>(
     shards: impl Iterator<Item = (usize, G)>,
-    mut visit: impl FnMut(&str, &mut BudgetCell, &mut Vec<T>) -> bool,
+    mut visit: impl FnMut(&Text, &mut BudgetCell, &mut Vec<T>) -> bool,
     mut reflag: impl FnMut(usize),
 ) -> Vec<T>
 where
-    G: DerefMut<Target = foldhash::HashMap<String, BudgetCell>>,
+    G: DerefMut<Target = foldhash::HashMap<Text, BudgetCell>>,
 {
     let mut flights = Vec::new();
     for (index, mut map) in shards {
