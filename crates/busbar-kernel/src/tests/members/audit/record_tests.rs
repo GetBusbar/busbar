@@ -18,7 +18,7 @@ fn origin() -> Origin {
 
 fn inputs(unit: u64) -> AuditInputs {
     AuditInputs {
-        subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
+        subject: Subject::principal(&format!("pseudonym-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
             incarnation: 0,

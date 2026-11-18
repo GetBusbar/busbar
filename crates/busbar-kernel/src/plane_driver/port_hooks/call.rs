@@ -368,8 +368,9 @@ pub(super) fn record(call: &Call, answer: Option<&HookAnswer>) -> HookApplied {
         }
         _ => HookHead::Pass,
     };
+    // The row shares the call's own configured key: a refcount, never a copy.
     HookApplied {
-        hook: call.name.to_string(),
+        hook: busbar_contract::kept::Text::from(Arc::clone(&call.name)),
         head,
         failed: answer.is_none(),
     }

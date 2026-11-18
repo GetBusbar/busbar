@@ -231,9 +231,8 @@ impl AdminNode {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
         let card = crate::root::kernel::ROOT_CARD.pin();
         let arrived_ms = arrived_at.saturating_mul(1_000);
-        let subject = principal.map_or(Subject::Arrival, |p| {
-            Subject::PrincipalId(p.as_str().to_string())
-        });
+        let subject =
+            principal.map_or(Subject::Arrival, |p| Subject::PrincipalId(p.text().clone()));
         let inputs = AuditInputs {
             subject,
             what: What {

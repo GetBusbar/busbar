@@ -51,6 +51,11 @@ fn error(message: impl ToString) -> RecordStoreError {
     RecordStoreError::from(message.to_string())
 }
 
+/// Whether `subject` is the principal named `principal`: compared in place, no name copied.
+fn is_principal(subject: &Subject, principal: &str) -> bool {
+    matches!(subject, Subject::PrincipalId(name) if name.as_str() == principal)
+}
+
 fn selected_billing(
     snapshot: &UnitCheckpoint,
 ) -> RecordStoreResult<Option<busbar_kernel_audit::record::billing::PartitionedBillingV1>> {
@@ -136,7 +141,7 @@ pub(super) async fn confirm(
     };
     if let Some(audit) = found {
         selected_matches(snapshot, &facts, &audit)?;
-        if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
+        if !is_principal(&audit.subject, &snapshot.principal)
             || audit.what.op_class.as_str() != facts.op_class
         {
             return Err(error("terminal unit's sealed audit identity differs"));
@@ -174,7 +179,7 @@ pub(super) async fn recover(
         .await?
     {
         selected_matches(snapshot, &facts, &audit)?;
-        if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
+        if !is_principal(&audit.subject, &snapshot.principal)
             || audit.what.op_class.as_str() != facts.op_class
         {
             return Err(error(
@@ -193,7 +198,7 @@ pub(super) async fn recover(
     }
     if let Some((_node_seq, pending)) = evidence.pending_audit(snapshot.unit, facts.incarnation) {
         selected_matches(snapshot, &facts, &pending)?;
-        if pending.subject != Subject::PrincipalId(snapshot.principal.clone())
+        if !is_principal(&pending.subject, &snapshot.principal)
             || pending.what.op_class.as_str() != facts.op_class
         {
             return Err(error("pending recovered audit identity differs"));
@@ -256,7 +261,7 @@ pub(super) async fn recover(
         .into_iter()
         .map(|(hook, head, failed)| {
             Ok(HookApplied {
-                hook,
+                hook: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(hook)),
                 head: HookHead::from_tag(&head)
                     .ok_or_else(|| error("unknown checkpoint hook head"))?,
                 failed,
@@ -282,7 +287,7 @@ pub(super) async fn recover(
         reason: ReasonCode::Drain,
     });
     let inputs = AuditInputs {
-        subject: Subject::PrincipalId(snapshot.principal.clone()),
+        subject: Subject::principal(&snapshot.principal),
         what: What {
             unit_key: UnitKey::new(snapshot.unit),
             incarnation: facts.incarnation,

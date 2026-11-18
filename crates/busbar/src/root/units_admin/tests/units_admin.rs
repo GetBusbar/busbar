@@ -2381,7 +2381,7 @@ fn a_sealed_chain() -> SealedChain {
     for unit in 1..=3u64 {
         records.push(chain.seal(
             AuditInputs {
-                subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
+                subject: Subject::principal(&format!("pseudonym-{unit}")),
                 what: What {
                     unit_key: UnitKey::new(unit),
                     incarnation: 0,

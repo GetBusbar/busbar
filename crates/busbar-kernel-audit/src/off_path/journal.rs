@@ -305,7 +305,11 @@ fn decode(
     };
     for _ in 0..r.num().ok_or_else(|| bad("hooks"))? {
         controls.hooks_applied.push(HookApplied {
-            hook: r.text().ok_or_else(|| bad("hook"))?,
+            hook: crate::off_path::read_text(
+                r.bytes()
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .ok_or_else(|| bad("hook"))?,
+            ),
             head: r
                 .text()
                 .as_deref()
@@ -374,8 +378,8 @@ fn read_unit_facts(r: &mut Reader<'_>, billing: bool) -> Option<UnitFacts> {
     for slot in unit.attempts.iter_mut().take(used) {
         *slot = Some(Attempt {
             outcome: AttemptOutcome::from_tag(&r.text()?)?,
-            target: r.text()?,
-            reason: r.text()?,
+            target: crate::off_path::read_text(std::str::from_utf8(r.bytes()?).ok()?),
+            reason: crate::off_path::read_text(std::str::from_utf8(r.bytes()?).ok()?),
             us: r.num()?,
         });
     }
