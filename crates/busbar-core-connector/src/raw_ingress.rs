@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::{Answered, Owed, PortAssociations};
+use crate::framer::At;
 
 /// The admission result for one newly received network datagram.
 #[derive(Debug)]
@@ -43,8 +44,22 @@ impl PortAssociations {
         let Some(id) = self.lock().find(from, bytes) else {
             return RawIngress::Unrouted;
         };
+        // The admission is one operation at the caller's instant `now`: its one reading, taken
+        // once the datagram has an association.
+        self.admit_raw(id, from, bytes, At::of(now), send)
+    }
 
-        match self.incremental_admission(id, Owed::Datagram(from, bytes.into()), now, send, true) {
+    /// Admit the datagram to association `id`, every crossing stating `at`, the operation's one
+    /// reading.
+    fn admit_raw(
+        &self,
+        id: u64,
+        from: SocketAddr,
+        bytes: &[u8],
+        at: At,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> RawIngress {
+        match self.incremental_admission(id, Owed::Datagram(from, bytes.into()), at, send, true) {
             Ok(answered) => RawIngress::Answered(answered),
             Err(_) => {
                 self.raw_busy_dropped.fetch_add(1, Ordering::Relaxed);
@@ -71,9 +86,12 @@ impl PortAssociations {
         let Some(id) = self.lock().find(from, bytes) else {
             return RawIngress::Unrouted;
         };
+        // The whole admission (the helped batches, then the datagram) is one operation at the
+        // caller's instant `now`: its one reading.
+        let at = At::of(now);
         // Bound work on the shared UDP port even when a framer keeps recalling.
         for _ in 0..4 {
-            match self.poll_line_inner(id, None, None, false, now, send) {
+            match self.poll_line_inner(id, None, None, false, at, send) {
                 Poll::Ready(Ok(LineStep::Batch { yielded, .. })) => {
                     publish(vec![(id, Ok(yielded))]);
                 }
@@ -83,7 +101,11 @@ impl PortAssociations {
                 Poll::Ready(Ok(LineStep::Complete | LineStep::Credit)) | Poll::Pending => break,
             }
         }
-        self.raw_datagram(from, bytes, now, send)
+        // The association is looked up again, as before: publication may have retired it.
+        let Some(id) = self.lock().find(from, bytes) else {
+            return RawIngress::Unrouted;
+        };
+        self.admit_raw(id, from, bytes, at, send)
     }
 
     /// Newly received raw datagrams discarded because their association was not receive-ready,

@@ -1038,8 +1038,10 @@ impl Opened {
         };
         *lock(&leg.pairing) = Some(Arc::clone(&pairing.pairing));
         framing.memory(pairing.pairing.memory_account());
-        let now = instant_of(now_ns());
-        let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
+        // The rendezvous is one operation: its one reading, for the framer and the publication.
+        let at = busbar_core_connector::framer::At::now();
+        let now = at.instant();
+        let yielded = framing.rendezvous(description, at).map_err(|r| r.error)?;
         let session = pairing.pairing.publish(Leg::Caller, yielded, now);
         let index = session
             .pieces

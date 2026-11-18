@@ -241,7 +241,7 @@ fn establish_keying(
                 host.datagram(
                     far_addr,
                     &binding_answer(&packet, b"far-password-0123456789"),
-                    now,
+                    crate::framer::At::of(now),
                 )
                 .unwrap();
             }
@@ -249,7 +249,8 @@ fn establish_keying(
         let _ = far.bind_path(host_addr, now);
         while let Some((to, packet)) = far.poll_wire() {
             assert_eq!(to, host_addr);
-            host.datagram(far_addr, &packet, now).unwrap();
+            host.datagram(far_addr, &packet, crate::framer::At::of(now))
+                .unwrap();
             if packet.starts_with(&[0, 1]) {
                 far.ingest(
                     host_addr,
@@ -263,7 +264,7 @@ fn establish_keying(
         }
         now += Duration::from_millis(10);
         far.handle_timeout(now);
-        host.timeout(now).unwrap();
+        host.timeout(crate::framer::At::of(now)).unwrap();
     }
     panic!("the real handshake must present its verified keying material");
 }
@@ -309,7 +310,9 @@ impl Rig {
         });
         let (mut framing, _) =
             DatagramFraming::accept(door.clone(), host_cert.clone(), port.local_addr()).unwrap();
-        framing.rendezvous(b"terms", Instant::now()).unwrap();
+        framing
+            .rendezvous(b"terms", crate::framer::At::of(Instant::now()))
+            .unwrap();
 
         let username = b"host:far";
         let mut check = vec![0, 1, 0, 36, 0x21, 0x12, 0xa4, 0x42];
@@ -322,7 +325,11 @@ impl Rig {
         check.extend_from_slice(&[0, 8, 0, 20]);
         check.extend_from_slice(&signature);
         framing
-            .datagram(far.local_addr(), &check, Instant::now())
+            .datagram(
+                far.local_addr(),
+                &check,
+                crate::framer::At::of(Instant::now()),
+            )
             .unwrap();
         if let Some(cert) = far_cert {
             establish_keying(

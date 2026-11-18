@@ -17,7 +17,7 @@ use busbar_contract::abi::transport::{
 
 use super::DatagramFraming;
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
-use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
+use crate::framer::{At, Call, Crossed, DoorFacts, FramerDoor};
 use crate::{DialJudge, Judged};
 
 const HOST_UFRAG: &str = "hostfrag";
@@ -624,7 +624,7 @@ fn rig(knobs: Knobs) -> Rig {
     }
     let mut y = r
         .host
-        .rendezvous(description.as_bytes(), r.now)
+        .rendezvous(description.as_bytes(), At::of(r.now))
         .expect("the rendezvous settles terms");
     r.got.extend(
         std::mem::take(&mut y.pieces)
@@ -638,7 +638,7 @@ impl Rig {
     fn deliver(&mut self, from: SocketAddr, d: &[u8]) {
         let mut y = self
             .host
-            .datagram(from, d, self.now)
+            .datagram(from, d, At::of(self.now))
             .expect("the host takes it");
         self.got.extend(
             std::mem::take(&mut y.pieces)
@@ -652,7 +652,10 @@ impl Rig {
         for _ in 0..rounds {
             self.now += Duration::from_millis(10);
             self.far.a.handle_timeout(self.now);
-            let mut y = self.host.timeout(self.now).expect("the host's clock");
+            let mut y = self
+                .host
+                .timeout(At::of(self.now))
+                .expect("the host's clock");
             self.got.extend(
                 std::mem::take(&mut y.pieces)
                     .into_iter()
@@ -747,7 +750,7 @@ fn the_keying_material_item_is_presented_once_verified_and_equal_to_the_far_ends
     r.far.a.seal(b"ping").unwrap();
     r.pump(5);
     assert!(r.got.contains(&(1, b"ping".to_vec())), "{:?}", r.got);
-    r.host.emit(1, b"pong", true, false, r.now).unwrap();
+    r.host.emit(1, b"pong", true, false, At::of(r.now)).unwrap();
     r.pump(5);
     assert!(r
         .far
@@ -834,7 +837,10 @@ fn a_framer_answer_that_breaks_the_lane_is_a_fault_before_any_byte_is_used() {
     let (mut host, _) =
         DatagramFraming::accept(door, cert, p("198.51.100.1:3478")).expect("begins");
     let e = host
-        .rendezvous(b"farfrag far-password-0123456789 00", Instant::now())
+        .rendezvous(
+            b"farfrag far-password-0123456789 00",
+            At::of(Instant::now()),
+        )
         .expect_err("a zero-length route is refused");
     assert_eq!(e.outcome, Outcome::Fault, "{e}");
     assert!(host.poll_send().is_none());
@@ -851,7 +857,7 @@ fn nothing_on_the_port_is_the_associations_before_the_rendezvous() {
         .datagram(
             p("203.0.113.9:50000"),
             &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 4),
-            Instant::now(),
+            At::of(Instant::now()),
         )
         .unwrap();
     assert!(y.pieces.is_empty());
@@ -905,7 +911,9 @@ fn dialling_every_candidate_meets_the_judge_and_a_refused_one_is_never_sent_a_by
         keyed[0].keying.as_ref().unwrap().1,
         r.far_keying().material()
     );
-    r.host.emit(1, b"hello", true, false, r.now).unwrap();
+    r.host
+        .emit(1, b"hello", true, false, At::of(r.now))
+        .unwrap();
     r.pump(5);
     assert!(r
         .far
@@ -1023,7 +1031,7 @@ fn settled(door: Arc<Scripted>) -> DatagramFraming {
     let fp = hex(&SessionCert::mint().unwrap().fingerprint());
     f.rendezvous(
         format!("{FAR_UFRAG} {FAR_PWD} {fp}").as_bytes(),
-        Instant::now(),
+        At::of(Instant::now()),
     )
     .unwrap();
     f

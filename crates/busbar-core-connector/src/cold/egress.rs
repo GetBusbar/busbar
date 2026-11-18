@@ -11,7 +11,6 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_kernel::diagnostics as diag;
 use foldhash::{HashMap, HashMapExt as _};
 
@@ -54,15 +53,6 @@ pub(crate) fn proxy_refused_connect(addr: &str, line: &[u8]) -> String {
         "proxy refused CONNECT {addr}: {}",
         String::from_utf8_lossy(line)
     )
-}
-
-/// A crossing refused for want of the host clock a request head deadline needs.
-#[cold]
-pub(crate) fn no_host_clock() -> crate::framer::Crossed {
-    crate::framer::Crossed {
-        outcome: Outcome::Failed,
-        error: Some(b"request head deadline requires the host clock".to_vec()),
-    }
 }
 
 /// The audit action of a refused dial.
