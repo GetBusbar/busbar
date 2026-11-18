@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::config::{PolicyOnError, PromptAccess, UserAccess};
+use crate::config::{HookCfg, PolicyOnError, PromptAccess, RootCfg, UserAccess};
 use busbar_plugin_abi::kinds::hook::hook::{FB_WANTS_PROMPT, POINT_REWRITE, POINT_ROUTE};
 use busbar_ports::hook::{HookCall, HookView};
 use busbar_ports::CallCx;
