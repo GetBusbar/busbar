@@ -90,7 +90,10 @@ impl NativeNests {
         Self::seal(snapshot.guests.lines().to_vec(), &ports)
     }
 
-    fn seal(mut lines: Vec<Line>, ports: &[(&str, &PortRoutes)]) -> Result<Self, String> {
+    pub(in crate::root) fn seal(
+        mut lines: Vec<Line>,
+        ports: &[(&str, &PortRoutes)],
+    ) -> Result<Self, String> {
         let mut destinations = BTreeMap::new();
         for (seat, (instance, routes)) in ports.iter().enumerate() {
             for route in &routes.data {
