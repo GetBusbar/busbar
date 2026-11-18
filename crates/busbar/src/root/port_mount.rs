@@ -473,7 +473,7 @@ pub(crate) fn blocked_client(
         LimitBlocked::CustodyFull { .. } => ReasonCode::SessionBudget,
     };
     (
-        super::native_refusals::client(reason, status.as_u16(), &message),
+        super::native_refusals::client(reason, status.as_u16(), message),
         retry_after,
     )
 }

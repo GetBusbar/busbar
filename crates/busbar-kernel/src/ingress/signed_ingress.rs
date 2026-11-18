@@ -76,21 +76,28 @@ pub fn check<'a>(
         return None;
     }
     let key = key_bytes(secret)?;
-    let mut msg = Vec::with_capacity(id.len() + ts.len() + body.len() + 2);
-    msg.extend_from_slice(id.as_bytes());
-    msg.push(b'.');
-    msg.extend_from_slice(ts.as_bytes());
-    msg.push(b'.');
-    msg.extend_from_slice(body);
+    // A key the backend refuses verifies nothing, as before.
+    let mac_key = crypto::HmacSha256Key::new(&key).ok()?;
+    // The signed message is `<id>.<timestamp>.<body>`. It is MACed in its parts, where they lie:
+    // the body is never copied to be joined to its prefix. The MAC is made once, on the first
+    // candidate that decodes, and every candidate is compared with the whole of it in constant
+    // time (a tag of another length never matches).
+    let mut expected: Option<[u8; 32]> = None;
     let mut matched = false;
     for candidate in sigs.split(' ') {
         let Some(b64) = candidate.strip_prefix("v1,") else {
             continue;
         };
         if let Ok(tag) = STANDARD.decode(b64) {
+            let mac = expected.get_or_insert_with(|| {
+                mac_key.sign_parts(&[id.as_bytes(), b".", ts.as_bytes(), b".", body])
+            });
             // Every candidate is checked: the answer does not depend on which one matched.
-            matched |= crypto::hmac_sha256_verify(&key, &msg, &tag).is_ok();
+            matched |= crypto::ct_eq(mac.as_slice(), &tag);
         }
+    }
+    if let Some(mac) = expected.as_mut() {
+        zeroize::Zeroize::zeroize(mac);
     }
     matched.then_some(Verified { id, timestamp })
 }
