@@ -6,6 +6,8 @@
 //! - `HistoryView::card_at` (which entry prices an instant), at an instant the NEWEST entry prices
 //!   (the present: the request-path case), one an entry half-way through prices, and one the
 //!   OPENING entry prices (a walk from the newest entry visits every entry before it finds it).
+//! - `FeeEras::charge` then `refund` of an era already recorded, at 1, 3 and 16 eras, and the first
+//!   charge of an era on an empty split (the budget bucket's per-request fee count).
 //! - `HistoryView::card_for_raw_era` (the card counts accrued under one entry are priced with, any
 //!   later amendment applied), for the opening entry's era.
 //!
@@ -20,6 +22,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History, RateCard, RawRateEra};
+use busbar_kernel_ledger::usage::FeeEras;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -99,6 +102,27 @@ fn main() {
         samples: env_or("B_LEDGER_SAMPLES", 2_000),
         batch: env_or("B_LEDGER_BATCH", 256),
     };
+    // FeeEras::charge and refund (P3), at 1, 3 and 16 eras: each call hits an era already recorded,
+    // cycling through them (the case a billable request meets), and one charge of an era not yet
+    // recorded on a fresh split (the first request of an era).
+    for n in [1u64, 3, 16] {
+        let mut eras = FeeEras::<u64>::default();
+        for era in 1..=n {
+            eras.charge(era);
+        }
+        let mut at = 0u64;
+        measure(&plan, &format!("fee_eras charge+refund eras={n}"), || {
+            at = at % n + 1;
+            eras.charge(black_box(at));
+            eras.refund(black_box(at));
+        });
+        black_box(eras.dated());
+    }
+    measure(&plan, "fee_eras first charge of an era", || {
+        let mut eras = FeeEras::<u64>::default();
+        eras.charge(black_box(7));
+        black_box(eras);
+    });
     for n in [1u64, 16, 512] {
         let history = history(n);
         let view = history.current();
