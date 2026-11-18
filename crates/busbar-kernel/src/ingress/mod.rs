@@ -387,8 +387,6 @@ pub mod arrival;
 
 pub mod byte_duplex;
 
-pub mod session;
-
 pub mod protocol;
 
 pub mod native;

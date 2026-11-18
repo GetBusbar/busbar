@@ -33,7 +33,6 @@ fn a_door_route_is_recorded_at_the_bar_it_declares() {
         &Default::default(),
         None,
         vec![door(RouteAuth::Key)],
-        Vec::new(),
     )
     .1;
     let row = table
@@ -52,7 +51,6 @@ fn adding_an_instance_owned_route_preserves_existing_bars_and_exact_method_scope
         &Default::default(),
         None,
         vec![door(RouteAuth::Key)],
-        Vec::new(),
     );
     let prepared = crate::router::PreparedListener {
         router,

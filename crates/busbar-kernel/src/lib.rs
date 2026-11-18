@@ -608,8 +608,7 @@ pub use preflight::plugins_preflight;
 pub use router::{
     build_data_router_on, build_router, build_split_routers_serving,
     build_split_routers_serving_doors, build_split_routers_serving_listener,
-    build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,
-    REQUEST_ACTIVITY_TICKS,
+    build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -627,7 +626,6 @@ pub fn base_data_core_lines(
         &crate::plugin_routes::PluginRouteTable::default(),
         &app.plane_slots,
         app.oauth_as.as_ref(),
-        Vec::new(),
         Vec::new(),
     )
     .1

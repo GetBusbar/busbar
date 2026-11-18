@@ -7,8 +7,8 @@
 //! listener preparation, never per request; the handlers it mounts stay in `crate::router`.
 
 use crate::router::{
-    method_not_allowed_handler, mount_plane_route, mount_plane_session, private_not_found,
-    unchanged_dispatch_layer, PreparedListener,
+    method_not_allowed_handler, mount_plane_route, private_not_found, unchanged_dispatch_layer,
+    PreparedListener,
 };
 use crate::{config, endpoints, ingress, state};
 
@@ -20,7 +20,6 @@ pub(crate) fn base_data_router_scoped(
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     root_surface: bool,
 ) -> crate::core_routes::CoreRouter {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
@@ -82,10 +81,6 @@ pub(crate) fn base_data_router_scoped(
         doors.iter().map(|spec| spec.path.clone()).collect();
     for spec in doors {
         router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
-    }
-
-    for spec in sessions {
-        router = mount_plane_session(router, std::sync::Arc::clone(&unslotted), spec);
     }
 
     for path in door_paths {
@@ -180,12 +175,11 @@ impl PreparedListener {
         app: &state::App,
         plugins: &crate::plugin_routes::PluginRouteTable,
         doors: Vec<crate::plane_routes::PlaneRouteSpec>,
-        sessions: Vec<crate::plane_routes::PlaneSessionSpec>,
         refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
         refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
         root_surface: bool,
     ) -> Result<Self, String> {
-        crate::plane_routes::pair_door_refusals(&doors, &sessions, &refusals)?;
+        crate::plane_routes::pair_door_refusals(&doors, &refusals)?;
         let (router, core_routes) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let empty_slots = std::collections::BTreeMap::new();
             base_data_router_scoped(
@@ -201,7 +195,6 @@ impl PreparedListener {
                     None
                 },
                 doors,
-                sessions,
                 root_surface,
             )
             .into_parts()

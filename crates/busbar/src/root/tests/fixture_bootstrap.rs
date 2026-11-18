@@ -187,7 +187,6 @@ impl PlaneFixture {
         let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
             app,
             mounts.routes,
-            mounts.sessions,
             mounts.refusals,
             body_limit,
             0,

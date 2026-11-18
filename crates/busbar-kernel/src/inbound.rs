@@ -544,10 +544,7 @@ pub struct RequestAdmission {
 
 pub(crate) struct AdmittedRequest {
     pending: Arc<PendingUnit>,
-    owner: u64,
     line: u32,
-    binding: RequestBinding,
-    upgrade_used: std::sync::atomic::AtomicBool,
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
     pub(crate) credential: Option<Secret<String>>,
@@ -564,71 +561,10 @@ pub(crate) struct AdmittedRequest {
     alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl AdmittedRequest {
-    /// The sealed route's upgrade claim, read off the table the request holds, never copied.
-    fn upgrade(&self) -> Option<&str> {
-        self.table
-            .listener
-            .guests
-            .lines()
-            .get(self.line as usize)
-            .and_then(|line| line.upgrade.as_deref())
-    }
-}
-
 struct ReplayAdmission {
     pending: crate::auth::PendingClaim,
     won: tokio::sync::OnceCell<bool>,
     execution: std::sync::OnceLock<Arc<crate::auth::native_admin::ExecutionAdmission>>,
-}
-
-/// Host-only upgrade authority derived from one admitted request's sealed route.
-#[derive(Clone)]
-pub struct UpgradePermit {
-    request: Arc<AdmittedRequest>,
-}
-
-impl std::fmt::Debug for UpgradePermit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpgradePermit").finish_non_exhaustive()
-    }
-}
-
-impl UpgradePermit {
-    /// Consume once, only for the original admitted inflow and source framing.
-    pub fn consume(
-        &self,
-        admission: &RequestAdmission,
-        owner: u64,
-        framing: u64,
-        stream: u64,
-    ) -> Option<&str> {
-        let request = &self.request;
-        if !Arc::ptr_eq(request, &admission.inner)
-            || request.owner != owner
-            || request.binding.framing != Some(framing)
-            || request.binding.stream != stream
-            || !request.alive.load(std::sync::atomic::Ordering::Acquire)
-            || request
-                .replay
-                .as_ref()
-                .is_some_and(|replay| replay.won.get() != Some(&true))
-            || request.deadline.is_some_and(|at| deadline_passed(Some(at)))
-        {
-            return None;
-        }
-        let claim = request.upgrade()?;
-        request
-            .upgrade_used
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .ok()?;
-        Some(claim)
-    }
 }
 
 impl RequestAdmission {
@@ -761,14 +697,6 @@ impl RequestAdmission {
             .door_ticket_for_token(&self.inner.original.target, &self.inner.original.method)
     }
 
-    /// Derive authority only when the exact sealed route declares an upgrade.
-    #[must_use]
-    pub fn upgrade_permit(&self) -> Option<UpgradePermit> {
-        self.inner.upgrade()?;
-        Some(UpgradePermit {
-            request: Arc::clone(&self.inner),
-        })
-    }
     #[must_use]
     pub fn body_limit(&self) -> u64 {
         self.inner.table.listener.body_limit
@@ -2107,10 +2035,7 @@ impl Inbound {
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
                 pending: Arc::clone(unit.pending.as_ref().ok_or(UNIT_FOREIGN)?),
-                owner,
                 line: unit.line,
-                binding: unit.binding,
-                upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
                 // Moved, never copied: the claimed request is the credential's one transport
