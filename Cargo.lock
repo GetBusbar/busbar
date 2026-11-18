@@ -663,9 +663,9 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-ports",
  "busbar-plugin-abi",
  "foldhash",
- "futures",
 ]
 
 [[package]]

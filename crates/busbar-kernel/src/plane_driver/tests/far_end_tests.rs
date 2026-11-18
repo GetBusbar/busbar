@@ -20,9 +20,9 @@ use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel_egress::{
     ports::{
-        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
-        Unavailable, UpstreamStatus,
+        Admit, BoxFut, Breaker, Capacity, Classified, DestinationId, Dispatched, Disposition,
+        DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
+        UpstreamStatus,
     },
     Failover, Member, OnExhausted, Pool,
 };
@@ -499,23 +499,9 @@ impl Capacity for Free {
     }
 }
 
-struct Wall;
-impl Clock for Wall {
-    fn now_secs(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-    fn now_millis(&self) -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    }
-    fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
-        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
-    }
+/// The runtime's timer, as the host clock sleeps on it.
+pub(super) fn tokio_sleep(at: std::time::Instant) -> busbar_ports::clock::Sleep {
+    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at)))
 }
 
 struct Quiet;
@@ -710,7 +696,7 @@ fn rig(
         conns: table.clone(),
         breaker: crate::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
-        clock: Arc::new(Wall),
+        clock: busbar_ports::clock::HostClock::system(tokio_sleep),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
         pools: [(POOL.to_string(), pool)].into_iter().collect(),
@@ -4390,7 +4376,7 @@ async fn native_credential_hashes_exact_body_bytes() {
     ] {
         let mut request = request();
         request.body = body.to_vec();
-        let now = super::dialing(&*far.egress.clock);
+        let now = super::dialing(&far.egress.clock);
         far.native_credential(&binding, &request, "https://a.test/chat", None, &[], now)
             .await
             .unwrap();

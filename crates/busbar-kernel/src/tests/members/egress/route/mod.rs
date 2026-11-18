@@ -20,10 +20,9 @@ use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{InstanceId, NeedId};
 
 use busbar_kernel_egress::pool::{Member, Pool};
-use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::ports::DestinationId;
 use busbar_kernel_egress::select::{RequestCtx, WeightedFloor};
-use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkNow, WalkPorts};
+use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkPorts};
 use busbar_kernel_egress::wire::Shed;
 
 use crate::plane_driver::{
@@ -103,7 +102,7 @@ impl Node {
             .start_paused(true)
             .build()
             .expect("the harness runtime builds");
-        Self {
+        let node = Self {
             breaker: Arc::new(TestBreaker::new()),
             capacity: Arc::new(TestCapacity::new()),
             journal: Arc::new(TestJournal::new()),
@@ -119,7 +118,9 @@ impl Node {
             wants_stream: false,
             sent_at: Mutex::new(Vec::new()),
             rt,
-        }
+        };
+        node.conns.follow(&node.clock);
+        node
     }
 
     pub fn pool(&mut self, name: &str, members: Vec<Member>) -> &mut Self {
@@ -151,11 +152,7 @@ impl Node {
 
     pub fn walker(&self, pool: &str) -> Walker<'_> {
         let pools = self.timed_pools();
-        let now = WalkNow {
-            secs: self.clock.now_secs(),
-            millis: self.clock.now_millis(),
-        };
-        let walk = Walk::start(&ports(self, &pools), pool, now);
+        let walk = Walk::start(&ports(self, &pools), pool, self.clock.now());
         Walker {
             node: self,
             pools,
@@ -171,7 +168,7 @@ impl Node {
             conns: self.conns.clone(),
             breaker: crate::plane_driver::fixed_breaker(self.breaker.clone()),
             capacity: self.capacity.clone(),
-            clock: self.clock.clone(),
+            clock: self.clock.host.clone(),
             journal: self.journal.clone(),
             telemetry: self.telemetry.clone(),
             pools: self.timed_pools(),
@@ -375,7 +372,7 @@ fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> 
     WalkPorts {
         breaker: node.breaker.as_ref(),
         capacity: node.capacity.as_ref(),
-        clock: node.clock.as_ref(),
+        clock: &node.clock.host,
         telemetry: node.telemetry.as_ref(),
         pools,
     }
@@ -420,14 +417,16 @@ impl Walker<'_> {
             shape,
         } = self;
         let ports = ports(node, pools);
-        match walk.next_shaped(&ports, node.affinity, shape.as_deref(), token) {
+        let at = node.clock.now();
+        match walk.next_shaped(&ports, node.affinity, shape.as_deref(), token, at) {
             Step::Wait(wait) => {
-                let parked = match walk.park(&ports, &wait, token) {
+                let parked = match walk.park(&ports, &wait, token, at) {
                     Ok(parked) => parked,
                     Err(shed) => return Step::Shed(shed),
                 };
                 let waited = node.rt.block_on(parked.wait(&ports));
-                match walk.waited(&ports, waited, token) {
+                let woke = waited.at();
+                match walk.waited(&ports, waited, token, woke) {
                     Ok(taken) => Step::Take(taken),
                     Err(shed) => Step::Shed(shed),
                 }
@@ -445,12 +444,13 @@ impl Walker<'_> {
             shape,
         } = self;
         let ports = ports(node, pools);
-        let Step::Wait(wait) = walk.next_shaped(&ports, node.affinity, shape.as_deref(), token)
+        let at = node.clock.now();
+        let Step::Wait(wait) = walk.next_shaped(&ports, node.affinity, shape.as_deref(), token, at)
         else {
             panic!("expected the queue terminal's wait");
         };
         let parked = walk
-            .park(&ports, &wait, token)
+            .park(&ports, &wait, token, at)
             .unwrap_or_else(|shed| panic!("expected a wait, got the shed {shed:?}"));
         node.rt.block_on(async {
             let mut waiting = Box::pin(parked.wait(&ports));

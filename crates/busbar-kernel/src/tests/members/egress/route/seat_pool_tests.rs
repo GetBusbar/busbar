@@ -144,7 +144,7 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
         conns: conns.clone(),
         breaker: crate::plane_driver::fixed_breaker(breaker.clone()),
         capacity: Arc::new(TestCapacity::new()),
-        clock: Arc::new(TestClock::at(rt.handle().clone(), 1_000)),
+        clock: TestClock::at(rt.handle().clone(), 1_000).host,
         journal: Arc::new(TestJournal::new()),
         telemetry: Arc::new(TestTelemetry::new()),
         pools: pool.pools.clone(),

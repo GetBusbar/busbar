@@ -1149,7 +1149,7 @@ pub(crate) struct DoorApply {
 
     pub(crate) scope_kinds: Vec<&'static str>,
 
-    pub(crate) clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    pub(crate) clock: busbar_ports::clock::HostClock,
 
     pub(crate) units: Arc<busbar_kernel::host_units::UnitRecords>,
 }

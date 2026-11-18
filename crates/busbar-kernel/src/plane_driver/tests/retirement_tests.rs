@@ -346,33 +346,6 @@ impl Breaker for WatchingBreaker {
     }
 }
 
-struct WatchingClock(Arc<Probe>);
-impl WatchingClock {
-    fn check(&self, effect: &'static str) {
-        if !self.0.state.load(Ordering::Acquire).is_null() {
-            self.0.check(effect);
-        }
-    }
-}
-impl Clock for WatchingClock {
-    fn now_secs(&self) -> u64 {
-        self.check("seconds");
-        Wall.now_secs()
-    }
-    fn now_millis(&self) -> u128 {
-        self.check("millis");
-        Wall.now_millis()
-    }
-    fn now_micros(&self) -> u128 {
-        self.check("micros");
-        Wall.now_micros()
-    }
-    fn sleep(&self, millis: u64) -> BoxFut<'_, ()> {
-        self.check("sleep");
-        Wall.sleep(millis)
-    }
-}
-
 struct WatchingTelemetry(Arc<Probe>);
 impl Telemetry for WatchingTelemetry {
     fn upstream_attempt(&self, _: &str, _: DestinationId) {
@@ -401,7 +374,6 @@ fn all_watching(script: Script) -> (Rig, Arc<Probe>) {
         inner: rig.book.clone(),
         probe: probe.clone(),
     }));
-    rig.egress.clock = Arc::new(WatchingClock(probe.clone()));
     rig.egress.telemetry = Arc::new(WatchingTelemetry(probe.clone()));
     (rig, probe)
 }
@@ -440,10 +412,6 @@ async fn selection_classification_clock_and_telemetry_callbacks_leave_state_unlo
         assert!(seen.iter().all(|(_, available)| *available), "{seen:?}");
         assert!(
             seen.iter().any(|(effect, _)| *effect == "admit"),
-            "{seen:?}"
-        );
-        assert!(
-            seen.iter().any(|(effect, _)| *effect == "millis"),
             "{seen:?}"
         );
         drop(seen);

@@ -6,9 +6,10 @@ use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use busbar_kernel_egress::ports::{Capacity, Clock, DestinationId, Telemetry};
+use busbar_kernel_egress::ports::{Capacity, DestinationId, Telemetry};
+use busbar_ports::clock::{Deadline, HostClock};
 
-use super::{MemberPermits, NodeClock, WalkTelemetry};
+use super::{tokio_sleep, MemberPermits, WalkTelemetry};
 
 const A: DestinationId = DestinationId::new(0);
 const B: DestinationId = DestinationId::new(1);
@@ -16,19 +17,24 @@ const FREE: DestinationId = DestinationId::new(2);
 
 #[tokio::test]
 async fn the_clock_reads_the_wall_a_monotonic_origin_and_sleeps_on_the_timer() {
-    let clock = NodeClock::new();
+    let clock = HostClock::system(tokio_sleep);
     let wall = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("after the epoch")
         .as_secs();
-    assert!(clock.now_secs().abs_diff(wall) <= 1, "whole wall seconds");
-    let before = clock.now_millis();
+    let before = clock.now();
+    assert!(
+        (before.wall_ns / 1_000_000_000).abs_diff(wall) <= 1,
+        "whole wall seconds"
+    );
     let started = std::time::Instant::now();
-    clock.sleep(20).await;
+    clock
+        .sleep_until(Deadline::after(before, Duration::from_millis(20)))
+        .await;
     assert!(started.elapsed() >= Duration::from_millis(20), "slept");
     assert!(
-        clock.now_millis() >= before + 20,
-        "monotonic, in milliseconds"
+        clock.now().mono_ns >= before.mono_ns + 20_000_000,
+        "monotonic, past the deadline it slept until"
     );
 }
 
@@ -301,7 +307,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         Arc::new(Shut),
         &routes,
         Arc::new(Unwritten),
-        Arc::new(crate::root::egress_ports::NodeClock::new()),
+        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         600,
     )
     .expect("the pools seal");

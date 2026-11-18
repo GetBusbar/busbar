@@ -62,12 +62,13 @@ use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
     ports::{
-        disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
+        disposition, net, Breaker, Capacity, Classified, DestinationId, Dispatched, Disposition,
+        Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkNow, WalkPorts,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
 };
+use busbar_ports::clock::{Deadline, HostClock, Reading as HostReading};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -237,7 +238,7 @@ pub struct Egress {
 
     pub capacity: Arc<dyn Capacity>,
 
-    pub clock: Arc<dyn Clock>,
+    pub clock: HostClock,
 
     pub journal: Arc<dyn Journal>,
 
@@ -296,13 +297,14 @@ pub struct UnitRoute {
     pub accept: busbar_plugin_abi::host_side::caller::Accept,
 }
 
-/// The unit's one reading of the egress clock, both scales at once, at the walk's start (L6-2): the walk reads
-/// no clock of its own.
-fn walk_now(clock: &dyn Clock) -> WalkNow {
-    WalkNow {
-        secs: clock.now_secs(),
-        millis: clock.now_millis(),
-    }
+/// A reading's whole wall seconds: the scale the walk and the breaker state their deadlines in.
+fn secs_of(at: HostReading) -> u64 {
+    at.wall_ns / 1_000_000_000
+}
+
+/// A reading's monotonic milliseconds: the scale an attempt's cap is measured in.
+fn millis_of(at: HostReading) -> u128 {
+    u128::from(at.mono_ns / 1_000_000)
 }
 
 /// One reading of the egress clock's epoch seconds and monotonic microseconds, taken once where a step of the op
@@ -313,10 +315,11 @@ struct Clocked {
     micros: u128,
 }
 
-fn clocked(clock: &dyn Clock) -> Clocked {
+fn clocked(clock: &HostClock) -> Clocked {
+    let at = clock.now();
     Clocked {
-        secs: clock.now_secs(),
-        micros: clock.now_micros(),
+        secs: secs_of(at),
+        micros: u128::from(at.mono_ns / 1_000),
     }
 }
 
@@ -329,11 +332,12 @@ struct Dialing {
     at: std::time::Instant,
 }
 
-fn dialing(clock: &dyn Clock) -> Dialing {
+fn dialing(clock: &HostClock) -> Dialing {
+    let at = clock.now();
     Dialing {
-        secs: clock.now_secs(),
-        millis: clock.now_millis(),
-        at: busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns()),
+        secs: secs_of(at),
+        millis: millis_of(at),
+        at: clock.instant(Deadline::at(at.mono_ns)),
     }
 }
 
@@ -394,7 +398,7 @@ impl Egress {
         WalkPorts {
             breaker,
             capacity: self.capacity.as_ref(),
-            clock: self.clock.as_ref(),
+            clock: &self.clock,
             telemetry: self.telemetry.as_ref(),
             pools: &self.pools,
         }
@@ -419,11 +423,7 @@ impl Egress {
     #[must_use]
     pub fn unit(&self, route: UnitRoute) -> EgressFarEnd<'_> {
         let breaker = (self.breaker)();
-        let walk = Walk::start(
-            &self.ports(breaker.as_ref()),
-            &route.pool,
-            walk_now(&*self.clock),
-        );
+        let walk = Walk::start(&self.ports(breaker.as_ref()), &route.pool, self.clock.now());
         EgressFarEnd {
             egress: self,
             breaker,
@@ -502,7 +502,7 @@ impl Egress {
     fn probe_member(&self, pool: String, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
         let destination = member.destination;
         let breaker = (self.breaker)();
-        let walk = Walk::pinned(timeout.as_secs().max(1), walk_now(&*self.clock));
+        let walk = Walk::pinned(timeout.as_secs().max(1), self.clock.now());
         EgressFarEnd {
             egress: self,
             breaker,
@@ -684,7 +684,7 @@ impl Retirement<'_, '_> {
                 &self.live.pool,
                 self.live.member.destination,
                 epoch,
-                e.clock.now_secs(),
+                secs_of(e.clock.now()),
             );
         }
         if self.live.spent && !self.live.ended && !self.live.delivered && !self.live.taken {
@@ -717,7 +717,7 @@ struct Reading {
     reason: Option<String>,
     call: CallId,
     breaker: Arc<dyn Breaker>,
-    clock: Arc<dyn Clock>,
+    clock: HostClock,
 }
 
 impl Reading {
@@ -740,8 +740,12 @@ impl Reading {
 impl Drop for Reading {
     fn drop(&mut self) {
         if let Some(epoch) = self.probe.take() {
-            self.breaker
-                .release_probe(&self.pool, self.destination, epoch, self.clock.now_secs());
+            self.breaker.release_probe(
+                &self.pool,
+                self.destination,
+                epoch,
+                secs_of(self.clock.now()),
+            );
         }
     }
 }
@@ -1254,7 +1258,7 @@ impl EgressFarEnd<'_> {
         if held.after_success && matches!(classified.outcome, Outcome::Success) {
             return;
         }
-        let now = self.egress.clock.now_secs();
+        let now = secs_of(self.egress.clock.now());
         let own;
         let token = match plane {
             Some((token, _)) => token,
@@ -1393,7 +1397,8 @@ impl EgressFarEnd<'_> {
 
         self.settle();
         let ports = self.egress.ports(self.breaker());
-        let now = self.egress.clock.now_secs();
+        let at = self.egress.clock.now();
+        let now = secs_of(at);
         let probe = {
             let mut w = self.lock();
             if let Some(reason) = w.refused.take() {
@@ -1415,21 +1420,23 @@ impl EgressFarEnd<'_> {
                 (1, token.call()),
             );
         }
-        let wait = match walking
-            .walk
-            .next_shaped(&ports, self.route.affinity, Some(self), token)
-        {
-            Step::Take(taken) => return self.admit_taken(taken, token.call()),
-            Step::Shed(shed) => return shed_pick(&shed),
-            Step::Wait(wait) => wait,
-        };
-        let parked = match walking.walk.park(&ports, &wait, token) {
+        let wait =
+            match walking
+                .walk
+                .next_shaped(&ports, self.route.affinity, Some(self), token, at)
+            {
+                Step::Take(taken) => return self.admit_taken(taken, token.call()),
+                Step::Shed(shed) => return shed_pick(&shed),
+                Step::Wait(wait) => wait,
+            };
+        let parked = match walking.walk.park(&ports, &wait, token, at) {
             Ok(parked) => parked,
             Err(shed) => return exhausted(&shed),
         };
         walking.publish();
         let waited = parked.wait(&ports).await;
-        match walking.walk.waited(&ports, waited, token) {
+        let woke = waited.at();
+        match walking.walk.waited(&ports, waited, token, woke) {
             Ok(taken) => self.admit_taken(taken, token.call()),
             Err(shed) => exhausted(&shed),
         }
@@ -1795,7 +1802,7 @@ impl EgressFarEnd<'_> {
         }
 
         // The dial step's one reading: its cap, its credential's time and the auth calls' deadlines.
-        let now = dialing(&*e.clock);
+        let now = dialing(&e.clock);
         let (located, carried) =
             match e
                 .conns
@@ -2014,7 +2021,7 @@ impl EgressFarEnd<'_> {
             protected || auth.iter().any(|f| f.require_secure) || native_requires_secure;
         drop(auth);
         // The send step resumes here, after the auth calls: one fresh reading for its cap and its anchors.
-        let at = clocked(&*e.clock);
+        let at = clocked(&e.clock);
         let cap_ms = self.attempt_cap(at.micros / 1000);
         let (pool, stated, degraded) = {
             let w = self.lock();
@@ -2159,7 +2166,7 @@ impl EgressFarEnd<'_> {
 
     async fn next_piece(&self, token: &Pass<Route>) -> Option<FarPiece> {
         let e = self.egress;
-        let now = e.clock.now_millis();
+        let now = millis_of(e.clock.now());
         let (conn, answered, wait_ms, target) = {
             let w = self.lock();
             let live = w.live.as_ref()?;
@@ -2200,7 +2207,7 @@ impl EgressFarEnd<'_> {
             return None;
         }
         // The step resumes here, after its read: one reading for what it records.
-        let at = clocked(&*e.clock);
+        let at = clocked(&e.clock);
         let piece = match read {
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::Timeout, at));
@@ -2628,7 +2635,7 @@ impl EgressFarEnd<'_> {
         let mut left = e.error_body_max;
         let mut scratch = Scratch::lend(&self.scratch);
         while left > 0 {
-            let now = e.clock.now_millis();
+            let now = millis_of(e.clock.now());
             let (conn, wait_ms) = {
                 let w = self.lock();
                 let Some(live) = w.live.as_ref().filter(|l| {
@@ -2682,7 +2689,7 @@ impl EgressFarEnd<'_> {
             if let Some(classified) = live.failing.take() {
                 let pool = Self::metric_pool(&live.pool, &live.member).to_string();
                 let destination = live.member.destination;
-                self.record(live, token, classified, e.clock.now_secs());
+                self.record(live, token, classified, secs_of(e.clock.now()));
                 e.telemetry.upstream_failure_stated(
                     &pool,
                     destination,
@@ -2725,7 +2732,7 @@ impl FarEnd for EgressFarEnd<'_> {
         let left = self.breaker().cooldown_remaining(
             &pool.name,
             at.destination,
-            self.egress.clock.now_secs(),
+            secs_of(self.egress.clock.now()),
             token,
         );
         Some(u32::try_from(left.max(1)).unwrap_or(u32::MAX))
@@ -2895,10 +2902,15 @@ impl FarEnd for EgressFarEnd<'_> {
         let (pool, destination, walk) = taken;
         let mut walking = Walking { owner: self, walk };
         let ports = self.egress.ports(self.breaker());
-        let Some(taken) = walking
-            .walk
-            .continue_member(&ports, &pool, destination, self, token)
-        else {
+        let at = self.egress.clock.now(); // time: threaded by step 7
+        let Some(taken) = walking.walk.continue_member(
+            &ports,
+            &pool,
+            destination,
+            self,
+            token,
+            at,
+        ) else {
             return false;
         };
         request.attempt_no = taken.attempt;

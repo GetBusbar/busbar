@@ -276,7 +276,7 @@ pub(crate) fn compose_egress(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
-    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    clock: busbar_ports::clock::HostClock,
     stream_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};

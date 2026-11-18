@@ -20,7 +20,7 @@ use busbar_kernel::plane_driver::{
 use busbar_kernel::teller::UnitCtx;
 use busbar_kernel::test_hooks::tokens::{grant, pass};
 use busbar_kernel_egress::ports::{
-    Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
+    Admit, BoxFut, Breaker, Capacity, Classified, DestinationId, Dispatched, Disposition,
     DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
     UpstreamStatus,
 };
@@ -226,25 +226,6 @@ impl Capacity for Free {
     }
 }
 
-struct Wall;
-impl Clock for Wall {
-    fn now_secs(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-    fn now_millis(&self) -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    }
-    fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
-        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
-    }
-}
-
 struct Quiet;
 impl Journal for Quiet {
     fn dispatched(&self, _: &Dispatched) -> Result<(), DurabilityUnavailable> {
@@ -359,7 +340,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         conns: Arc::new(BadGateway::default()),
         breaker: busbar_kernel::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
-        clock: Arc::new(Wall),
+        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(

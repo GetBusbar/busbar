@@ -398,8 +398,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         lanes: [(LANE.to_string(), 0)].into_iter().collect(),
         app: crate::root::model_egress::LiveApp::fixed(Arc::clone(&app)),
     };
-    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
-        Arc::new(crate::root::egress_ports::NodeClock::new());
+    let clock = busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
     let reach = DoorReach {
         providers: &providers,
         secrets,

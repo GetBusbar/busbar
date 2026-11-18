@@ -15,71 +15,90 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
+use busbar_ports::clock::{HostClock, Manual, Reading};
 
 use busbar_kernel_egress::ports::{
-    disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+    disposition, Admit, BoxFut, Breaker, Capacity, Classified, DestinationId, Dispatched,
     Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
     Unavailable, UpstreamStatus,
 };
 
-/// A clock on the harness's paused runtime, which a test can also move by hand.
-#[derive(Debug)]
+/// A clock on the harness's paused runtime, which a test can also move by hand: the host clock's manual mode,
+/// moved on with the runtime's (paused) time by a ticker task, so the walk's absolute waits end when the
+/// runtime's time reaches them.
 pub struct TestClock {
-    /// The runtime whose (paused) time this clock reads.
+    /// The host clock the egress is handed.
+    pub host: HostClock,
+    moved: Moved,
+}
+
+/// The manual clock and the runtime time it was last moved to.
+#[derive(Clone)]
+struct Moved {
+    manual: Manual,
     handle: tokio::runtime::Handle,
-    /// The runtime's time when the clock was made.
-    epoch: tokio::time::Instant,
-    /// The reading at the epoch, plus every hand-made move since, in milliseconds.
-    offset_millis: AtomicU64,
-    /// Every `ms` a caller has asked this clock to sleep for, in call order.
-    pub durations: Mutex<Vec<u64>>,
+    last: Arc<Mutex<tokio::time::Instant>>,
+}
+
+impl Moved {
+    /// Move the manual clock on to the runtime's (paused) time.
+    fn sync(&self) {
+        let now = {
+            let _in = self.handle.enter();
+            tokio::time::Instant::now()
+        };
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if now > *last {
+            self.manual.advance(now.duration_since(*last));
+            *last = now;
+        }
+    }
 }
 
 impl TestClock {
     pub fn at(handle: tokio::runtime::Handle, secs: u64) -> Self {
-        let epoch = {
+        let ns = secs * 1_000_000_000;
+        let (host, manual) = HostClock::manual(Reading {
+            wall_ns: ns,
+            mono_ns: ns,
+        });
+        let start = {
             let _in = handle.enter();
             tokio::time::Instant::now()
         };
-        Self {
-            handle,
-            epoch,
-            offset_millis: AtomicU64::new(secs * 1000),
-            durations: Mutex::new(Vec::new()),
-        }
+        let moved = Moved {
+            manual,
+            handle: handle.clone(),
+            last: Arc::new(Mutex::new(start)),
+        };
+        let ticker = moved.clone();
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                ticker.sync();
+            }
+        });
+        Self { host, moved }
     }
 
     pub fn advance_secs(&self, by: u64) {
-        self.offset_millis.fetch_add(by * 1000, Ordering::Relaxed);
+        self.moved.manual.advance(Duration::from_secs(by));
     }
 
-    fn millis(&self) -> u64 {
-        let ran = {
-            let _in = self.handle.enter();
-            tokio::time::Instant::now().duration_since(self.epoch)
-        };
-        self.offset_millis
-            .load(Ordering::Relaxed)
-            .saturating_add(u64::try_from(ran.as_millis()).unwrap_or(u64::MAX))
-    }
-}
-
-impl Clock for TestClock {
-    fn now_secs(&self) -> u64 {
-        self.millis() / 1000
+    pub fn now_secs(&self) -> u64 {
+        self.moved.sync();
+        self.host.now().wall_ns / 1_000_000_000
     }
 
-    fn now_millis(&self) -> u128 {
-        u128::from(self.millis())
+    pub fn now_millis(&self) -> u128 {
+        self.moved.sync();
+        u128::from(self.host.now().mono_ns / 1_000_000)
     }
 
-    fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
-        self.durations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(ms);
-        let _in = self.handle.enter();
-        Box::pin(tokio::time::sleep(Duration::from_millis(ms)))
+    /// One reading of the test's time.
+    pub fn now(&self) -> Reading {
+        self.moved.sync();
+        self.host.now()
     }
 }
 
@@ -726,11 +745,19 @@ pub struct TestConns {
     live: Mutex<HashMap<u64, Answer>>,
     next: AtomicU64,
     pub closed: AtomicU64,
+    /// The test clock, moved on to the runtime's time at every read, so the far end's reading after a read is the
+    /// read's own time.
+    clock: Mutex<Option<Moved>>,
 }
 
 impl TestConns {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Keep `clock` on the runtime's time at every read.
+    pub fn follow(&self, clock: &TestClock) {
+        *self.clock.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock.moved.clone());
     }
 
     pub fn script(&self, lane: &str, script: Script) {
@@ -871,6 +898,14 @@ impl PollConns for TestConns {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>> {
+        if let Some(clock) = self
+            .clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            clock.sync();
+        }
         let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
         let Some(answer) = live.get_mut(&conn.0) else {
             return Poll::Ready(Err(ConnError::Closed));

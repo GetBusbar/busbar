@@ -955,7 +955,10 @@ impl UpSend for ProbeSender {
 impl ProbeFar for EgressProbes {
     fn suppressing(&self, member: usize) -> bool {
         self.members.get(member).is_some_and(|selected| {
-            (self.egress.breaker)().suppressing(selected.destination, self.egress.clock.now_secs())
+            (self.egress.breaker)().suppressing(
+                selected.destination,
+                self.egress.clock.now().wall_ns / 1_000_000_000,
+            )
         })
     }
 
@@ -1007,7 +1010,7 @@ impl ProbeFar for EgressProbes {
         (self.egress.breaker)().probed(
             selected.destination,
             outcome,
-            self.egress.clock.now_secs(),
+            self.egress.clock.now().wall_ns / 1_000_000_000,
             &token,
         );
     }

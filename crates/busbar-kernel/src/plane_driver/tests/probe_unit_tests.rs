@@ -501,7 +501,7 @@ async fn test_probe_auth_failure_is_hard_down_not_transient() {
 
     probes.probe(0, TIMEOUT).await;
 
-    let now = Wall.now_secs();
+    let now = busbar_ports::clock::system_now().wall_ns / 1_000_000_000;
     assert!(
         matches!(
             cells.0.cell("", TRIPPED).state(),

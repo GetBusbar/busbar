@@ -95,7 +95,6 @@ fn an_empty_ranking_is_the_plain_floor() {
 #[test]
 fn ordered_walk_empty_order_is_swrr() {
     use super::walk_tests::RealBreaker;
-    use busbar_kernel_egress::ports::Clock;
     use busbar_kernel_egress::select::{pick_among, PickInput};
 
     let (node, members) = three_lanes();
@@ -143,7 +142,6 @@ fn ordered_walk_empty_order_is_swrr() {
 
 #[test]
 fn request_ctx_new_huge_deadline_does_not_panic() {
-    use busbar_kernel_egress::ports::Clock;
     use busbar_kernel_egress::select::RequestCtx;
 
     let node = Node::with_lanes(&[]);

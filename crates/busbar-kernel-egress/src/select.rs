@@ -3,6 +3,7 @@
 
 //! The pick: who is asked first, and who is allowed.
 
+use busbar_ports::clock::Deadline;
 use std::sync::Mutex;
 
 use foldhash::{HashMap, HashSet};
@@ -65,6 +66,14 @@ impl RequestCtx {
     #[must_use]
     pub fn expired(&self, now_secs: u64) -> bool {
         now_secs >= self.deadline_secs
+    }
+
+    /// The walk's deadline on the host's monotonic clock, from the same reading `new` was given.
+    #[must_use]
+    pub fn deadline(&self) -> Deadline {
+        Deadline::at(
+            u64::try_from(self.deadline_millis.saturating_mul(1_000_000)).unwrap_or(u64::MAX),
+        )
     }
 
     /// How many milliseconds are left of the walk's deadline.

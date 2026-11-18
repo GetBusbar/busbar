@@ -109,9 +109,9 @@ impl PlaneProbes {
 
 impl ProbeTarget for PlaneProbes {
     fn suppressing(&self, member: usize) -> bool {
-        self.members
-            .get(member)
-            .is_some_and(|d| (self.egress.breaker)().suppressing(*d, self.egress.clock.now_secs()))
+        self.members.get(member).is_some_and(|d| {
+            (self.egress.breaker)().suppressing(*d, self.egress.clock.now().wall_ns / 1_000_000_000)
+        })
     }
 
     async fn probe(&self, member: usize, timeout: Duration) {

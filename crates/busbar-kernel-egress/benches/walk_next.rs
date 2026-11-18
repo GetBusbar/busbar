@@ -10,10 +10,11 @@ use std::time::Instant;
 
 use busbar_contract::caps::{KernelSeal, Pass, Route};
 use busbar_kernel_egress::ports::{
-    Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Outcome, Permit,
-    PermitHandle, Telemetry, Unavailable, UpstreamStatus,
+    Admit, BoxFut, Breaker, Capacity, Classified, DestinationId, Outcome, Permit, PermitHandle,
+    Telemetry, Unavailable, UpstreamStatus,
 };
-use busbar_kernel_egress::{Member, Pool, Step, Walk, WalkNow, WalkPorts};
+use busbar_kernel_egress::{Member, Pool, Step, Walk, WalkPorts};
+use busbar_ports::clock::HostClock;
 
 const ROUNDS: u32 = 1_000_000;
 const SAMPLES: usize = 21;
@@ -88,21 +89,9 @@ impl Telemetry for Quiet {
     fn queued(&self, _: &str, _: i64) {}
 }
 
-/// The node's clock as the walk read it before the host clock: the wall's whole seconds and a
-/// monotonic millisecond count, each a fresh read.
-struct Wall(Instant);
-impl Clock for Wall {
-    fn now_secs(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-    }
-    fn now_millis(&self) -> u128 {
-        self.0.elapsed().as_millis()
-    }
-    fn sleep(&self, _: u64) -> BoxFut<'_, ()> {
-        Box::pin(async {})
-    }
+/// The host clock with a sleep that never waits: the walk under test never parks.
+fn no_sleep(_: Instant) -> busbar_ports::clock::Sleep {
+    Box::pin(async {})
 }
 
 fn main() {
@@ -111,7 +100,7 @@ fn main() {
         .collect();
     let mut pools = foldhash::HashMap::default();
     pools.insert("p".to_string(), Pool::new("p", members));
-    let clock = Wall(Instant::now());
+    let clock = HostClock::system(no_sleep);
     let ports = WalkPorts {
         breaker: &Open,
         capacity: &Free,
@@ -124,12 +113,9 @@ fn main() {
     for _ in 0..SAMPLES {
         let started = Instant::now();
         for _ in 0..ROUNDS / SAMPLES as u32 {
-            let now = WalkNow {
-                secs: clock.now_secs(),
-                millis: clock.now_millis(),
-            };
-            let mut walk = Walk::start(&ports, "p", now);
-            let step = walk.next(&ports, None, &token);
+            let at = clock.now();
+            let mut walk = Walk::start(&ports, "p", at);
+            let step = walk.next(&ports, None, &token, at);
             assert!(matches!(step, Step::Take(_)));
             black_box(step);
         }

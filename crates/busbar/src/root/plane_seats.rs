@@ -837,7 +837,7 @@ fn egress_of(
                 })
                 .collect(),
         }),
-        clock: Arc::new(super::egress_ports::NodeClock::new()),
+        clock: busbar_ports::clock::HostClock::system(super::egress_ports::tokio_sleep),
         journal: Arc::new(SeatJournal),
         telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(names)),
         pools: pool.pools.clone(),
