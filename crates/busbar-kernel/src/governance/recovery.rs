@@ -1125,10 +1125,9 @@ impl super::GovState {
         )
     }
 
-    /// State that an operation's first send from this process is `_by` in the past. The age is not
-    /// kept (no rule reads it): the send only has to be one this process made.
+    /// State that an operation was sent from this process (its age is not kept: no rule reads it).
     #[cfg(test)]
-    pub(super) fn backdate_recovery_send(&self, operation_id: [u8; 16], _by: std::time::Duration) {
+    pub(super) fn backdate_recovery_send(&self, operation_id: [u8; 16]) {
         let mut entries = self
             .recovery_book
             .entries

@@ -382,7 +382,7 @@ async fn a_day_old_correction_sent_here_resends_its_operation_and_applies_once()
         .find(|event| event.kind == RecoveryKind::Correction)
         .expect("the sent correction is selected in the recovery book")
         .operation_id;
-    gov.backdate_recovery_send(operation, std::time::Duration::from_secs(24 * 60 * 60 + 1));
+    gov.backdate_recovery_send(operation);
     gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
     assert_eq!(
         input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),

@@ -66,9 +66,6 @@ async fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
     Box::pin(ordinary_unknown_result_retries_once(true)).await;
 }
 
-/// STORE-TRANSACTIONS §8 item 19: a first send a day and a second in the past.
-const DAY_AND_A_SECOND: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60 + 1);
-
 /// Exact debt (item 19): a chunk whose reply was lost is resent with its operation however long
 /// ago it was first sent (the chunk keeps no clock to compare), and the store replays Applied: no
 /// retention give-up.
@@ -118,7 +115,7 @@ async fn a_day_old_raw_intent_sent_here_resends_instead_of_landing_unknown() {
     gov.flush_budgets().await;
     let intent = gov.recovery().list(None, 10).await.unwrap().pop().unwrap();
     assert_eq!(intent.state, RecoveryState::Intent);
-    gov.backdate_recovery_send(intent.operation_id, DAY_AND_A_SECOND);
+    gov.backdate_recovery_send(intent.operation_id);
     gov.flush_budgets().await;
     let states: Vec<RecoveryState> = journal
         .0
