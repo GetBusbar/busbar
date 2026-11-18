@@ -40,7 +40,7 @@ pub fn observe_credential(credential: &crate::abi::sdk::cred::Cred, observe: imp
 /// Observe protected JSON buffers during an action. Available only to chip tests; production
 /// builds have neither a callback nor a way to read protected response material.
 pub fn with_json_observer<T>(observe: fn(&'static str, &[u8]), action: impl FnOnce() -> T) -> T {
-    crate::abi::sdk::cred::protected_json::observing(observe, action)
+    crate::plugin_settings::guarded_reader::observing(observe, action)
 }
 
 /// Drive the real resolved-value writer against a test-owned host buffer, including short output.
