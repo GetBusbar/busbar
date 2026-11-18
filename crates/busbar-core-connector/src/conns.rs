@@ -454,7 +454,8 @@ pub(crate) struct DeclaredNeed {
 struct Place {
     door: std::sync::Weak<dyn FramerDoor>,
     epoch: u64,
-    located: framer::Located,
+    /// Shared with every open that dials it: an open takes a reference, never a copy.
+    located: Arc<framer::Located>,
 }
 
 impl DeclaredNeed {
@@ -467,23 +468,23 @@ impl DeclaredNeed {
         door: &Arc<dyn FramerDoor>,
         target: &str,
         locate: impl FnOnce() -> Result<framer::Located, E>,
-    ) -> Result<framer::Located, E> {
+    ) -> Result<Arc<framer::Located>, E> {
         if self.declared_target.as_deref() != Some(target) {
-            return locate();
+            return locate().map(Arc::new);
         }
         let epoch = door.settings_epoch();
         let kept = self.declared_place.lock().expect("place").clone();
         if let Some(place) = kept
             .filter(|p| p.epoch == epoch && std::sync::Weak::ptr_eq(&p.door, &Arc::downgrade(door)))
         {
-            return Ok(place.located.clone());
+            return Ok(Arc::clone(&place.located));
         }
-        let located = locate()?;
+        let located = Arc::new(locate()?);
         if door.settings_epoch() == epoch {
             *self.declared_place.lock().expect("place") = Some(Arc::new(Place {
                 door: Arc::downgrade(door),
                 epoch,
-                located: located.clone(),
+                located: Arc::clone(&located),
             }));
         }
         Ok(located)
@@ -1530,7 +1531,7 @@ impl Connector {
         &self,
         door: &Arc<dyn FramerDoor>,
         dial: Dial,
-        carried: Option<framer::Located>,
+        carried: Option<Arc<LocatedTarget>>,
     ) -> Result<Planned, Failure> {
         match self.ride_on(door) {
             Some((Some(framer), via)) => Planned::locate_carried(framer, via, dial, carried),
@@ -3963,7 +3964,7 @@ impl Connector {
         timing: (std::time::Instant, Duration),
         declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
         (require_secure, prepare): (bool, bool),
-        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+        head: (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
@@ -3997,7 +3998,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         (poolable, require_secure, prepare): (bool, bool, bool),
-        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        (located, owned): (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
@@ -4008,16 +4009,11 @@ impl Connector {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         // The answer the attempt's head was completed with, when it was located for this very
         // caller, need and target; any other is never trusted and the entry is asked afresh.
+        // It is shared with the head that carried it (a reference count): the plan reads the
+        // authority, name, offer and head lines where they are and copies none of them.
         let carried = located
             .filter(|located| located.answers(caller, need, target))
-            .map(|located| framer::Located {
-                authority: crate::off_path::conns::owned(located.authority()),
-                name: crate::off_path::conns::owned_name(located.name()),
-                secure: located.secure(),
-                offer: crate::off_path::conns::copied(located.offer()),
-                defaults: crate::off_path::conns::copied(located.defaults()),
-                states_length: located.states_length(),
-            });
+            .map(Arc::clone);
         let dial = Dial {
             plaintext_accepted: self.plaintext_accepted(caller, desc),
             target: crate::off_path::conns::owned(target),
@@ -4066,16 +4062,19 @@ impl Connector {
             .is_some()
             .then(|| crate::off_path::conns::owned(desc.member));
 
-        let anchors = match own {
-            Some(sealed) => sealed,
+        // The lowered authority keys the anchor books here and the pool below: it is made once,
+        // lent to the books' key and taken back.
+        let (anchors, authority) = match own {
+            Some(sealed) => (sealed, authority),
             None => {
                 let at = (caller, need, authority);
                 let anchored = self.anchored.lock().expect("anchors");
                 let own = anchored.get(&at);
-                match self.registered.lock().expect("anchors").get(&at) {
+                let anchors = match self.registered.lock().expect("anchors").get(&at) {
                     Some(registered) => registered.held(own)?,
                     None => own.cloned(),
-                }
+                };
+                (anchors, at.2)
             }
         };
 
@@ -4141,7 +4140,7 @@ impl Connector {
                     owner: caller,
                     need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
-                    authority: crate::off_path::conns::lowered(planned.authority()),
+                    authority,
                     secure: planned.secure(),
                     name: crate::off_path::conns::owned_name(planned.name()),
                     class: (judged_class, egress_class),
@@ -4275,7 +4274,7 @@ impl Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         how: (bool, Option<u64>, bool),
-        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+        head: (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
     ) -> Result<ConnId, ConnError> {
         let mut why = None;
         let opened = self.open_timed_reasoned(caller, need, desc, how, head, &mut why);
@@ -4296,7 +4295,7 @@ impl Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         (require_secure, dial_timeout_ms, prepare): (bool, Option<u64>, bool),
-        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        (located, owned): (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         why: &mut Option<NeedRefusal>,
     ) -> Result<ConnId, ConnError> {
         let started = framer::now();
@@ -4553,7 +4552,7 @@ impl Conns for Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         self.open_timed(
             caller,
@@ -4571,7 +4570,7 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
         head: OwnedHead,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         self.open_timed(
             caller,
@@ -4744,7 +4743,9 @@ impl Conns for Connector {
                     fingerprint,
                 }
             }),
-            claim: e.claim,
+            // The contract's facts own their text: the claim's one copy is made here, for the
+            // caller that asked (the connection itself keeps the door's fixed word).
+            claim: e.claim.map(str::to_owned),
             peer_key_pin: e.peer_key_pin,
             client_identity: e.client_identity,
         })

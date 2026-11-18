@@ -1436,8 +1436,9 @@ pub struct Established {
     pub offered_name: Option<String>,
     /// The protocol the handshake agreed.
     pub agreed_protocol: Option<Vec<u8>>,
-    /// The claim the connection resolved to.
-    pub claim: Option<String>,
+    /// The claim the connection resolved to: the door's own word for it (`DoorFacts::claims`),
+    /// fixed in the program, so a connection names its claim without copying it.
+    pub claim: Option<&'static str>,
     /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` = no
     /// certificate (the transport pin).
     pub peer_key_pin: Option<String>,
@@ -1480,7 +1481,7 @@ impl Established {
             peer_subject: NO_TEXT,
             peer_issuer: NO_TEXT,
             peer_fingerprint: NO_TEXT,
-            claim: text(self.claim.as_deref().map(str::as_bytes)),
+            claim: text(self.claim.map(str::as_bytes)),
             local_certificate: NO_TEXT,
         }
     }
@@ -1954,7 +1955,7 @@ impl Framing {
             .map(|policy| Arc::new(GuestLines::published(policy)))
             .or(guests);
         let mut bufs = Buffers::for_side(side);
-        bufs.set_status(door.facts(), established.claim.as_deref())?;
+        bufs.set_status(door.facts(), established.claim)?;
         let mut f = Self {
             door,
             context,
@@ -2411,7 +2412,7 @@ impl Framing {
             None => door.framing_context(0, 0)?,
         };
         let mut bufs = Buffers::for_side(side);
-        bufs.set_status(door.facts(), established.claim.as_deref())?;
+        bufs.set_status(door.facts(), established.claim)?;
         let mut framing = Self {
             door,
             context,

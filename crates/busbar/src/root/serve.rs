@@ -979,7 +979,7 @@ impl busbar_contract::conn::Conns for BoundConns {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
         secure: bool,
-        located: Option<&busbar_contract::conn::LocatedTarget>,
+        located: Option<&Arc<busbar_contract::conn::LocatedTarget>>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         self.inner.open_located(caller, need, desc, secure, located)
     }
@@ -990,7 +990,7 @@ impl busbar_contract::conn::Conns for BoundConns {
         desc: &busbar_contract::conn::OpenDesc<'_>,
         head: busbar_contract::conn::OwnedHead,
         secure: bool,
-        located: Option<&busbar_contract::conn::LocatedTarget>,
+        located: Option<&Arc<busbar_contract::conn::LocatedTarget>>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         self.inner
             .open_owned(caller, need, desc, head, secure, located)
