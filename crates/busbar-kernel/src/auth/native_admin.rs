@@ -3,22 +3,44 @@
 
 //! Native verification is preparation. Only final admin completion obtains execution custody.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_ports::{CallCx, PortError};
 
+use super::native_chain::NativeChain;
 use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
 
-pub trait NativeAdmin: Send + Sync {
-    fn prepare<'a>(
+/// The configured native admin positions: one verification chain per name, and the names left unset.
+pub struct NativeAdmin {
+    chains: BTreeMap<String, Arc<NativeChain>>,
+    unset: BTreeSet<String>,
+}
+
+impl NativeAdmin {
+    pub fn new(chains: BTreeMap<String, Arc<NativeChain>>, unset: BTreeSet<String>) -> Self {
+        Self { chains, unset }
+    }
+
+    pub fn prepare<'a>(
         &'a self,
         name: &'a str,
         cx: CallCx,
         request: Arc<ChargedRequestSnapshot>,
-    ) -> BoxFut<'a, Result<PreparedAnswer, PortError>>;
+    ) -> BoxFut<'a, Result<PreparedAnswer, PortError>> {
+        Box::pin(async move {
+            if self.unset.contains(name) {
+                return Ok(PreparedAnswer::NotMine);
+            }
+            let chain = self.chains.get(name).ok_or(PortError::Call(
+                busbar_plugin_abi::fail::CallError::NotDeclared,
+            ))?;
+            chain.prepare(cx, request).await
+        })
+    }
 }
 
 pub enum PreparedAnswer {
