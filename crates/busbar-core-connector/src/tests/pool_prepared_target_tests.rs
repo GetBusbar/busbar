@@ -42,7 +42,7 @@ fn pooled(door: Arc<dyn FramerDoor>) -> Connector {
         },
     ])
     .unwrap();
-    Connector::serving(
+    let c = Connector::serving(
         view,
         crate::tests::loopback_literals(),
         None,
@@ -51,7 +51,10 @@ fn pooled(door: Arc<dyn FramerDoor>) -> Connector {
     .pooling(crate::pool::PoolPosture {
         max_idle_per_host: 8,
         idle_timeout: Duration::from_secs(60),
-    })
+    });
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
+    c
 }
 
 fn desc(target: &str) -> OpenDesc<'_> {

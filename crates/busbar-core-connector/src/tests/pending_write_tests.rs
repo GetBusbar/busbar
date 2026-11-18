@@ -137,6 +137,8 @@ fn connector(
             wakes.lock().unwrap().push(ticket);
         }),
     );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_over(OWNER, NeedId(0), "frames").unwrap();
     (c, door)
 }
@@ -348,6 +350,8 @@ async fn connected_carrier(
             wakes.lock().unwrap().push(ticket);
         }),
     );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
     let id = c
         .open(

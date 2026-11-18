@@ -704,6 +704,8 @@ fn bypass_list_and_a_raw_stream_dial_direct() {
             } else {
                 proxying(config.clone())
             };
+            // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+            crate::tests::accept_plaintext(&c, &[OWNER]);
             c.declare_over(OWNER, need, scheme).expect("declares");
             let id = c
                 .open(

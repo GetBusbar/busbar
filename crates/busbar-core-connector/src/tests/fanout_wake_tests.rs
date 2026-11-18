@@ -132,6 +132,8 @@ fn a_carrier_wake_runs_public_waker_callbacks_outside_the_fan_lock() {
             None,
             Arc::new(|_, _| {}),
         ));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NEED, CARRIER_CLAIM).unwrap();
         let conn = c
             .open(
@@ -215,6 +217,8 @@ fn a_piece_wakes_its_public_reader_after_the_line_is_unlocked() {
             )
             .pooling(SHARED_LINE_POOL),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NEED, FRAMER_CLAIM).unwrap();
         let desc = OpenDesc {
             target: &far,

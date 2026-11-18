@@ -253,6 +253,9 @@ fn actual_http_target_and_request_path_reach_the_same_real_peer() {
         None,
         Arc::new(|_, _| {}),
     );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A,
+    // 67fc01cf5d): its plaintext loopback peer is admitted by that acceptance, not by loopback.
+    DeclaredConns::accept_plaintext(&connector, OWNER);
     DeclaredConns::declare(
         &connector,
         OWNER,

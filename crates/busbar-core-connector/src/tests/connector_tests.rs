@@ -101,6 +101,15 @@ mod final_insert_retirement_tests;
 #[path = "declared_timeout_tests.rs"]
 mod declared_timeout_tests;
 
+/// Register `owners`' core-held `insecure_transport.accept: plaintext` on a test connector (SEC-2,
+/// #297 model A, 67fc01cf5d): a fixture that dials a plaintext loopback far end is admitted by its
+/// owner's acceptance, never by loopback alone.
+pub(crate) fn accept_plaintext(c: &Connector, owners: &[InstanceId]) {
+    for owner in owners {
+        busbar_contract::conn::DeclaredConns::accept_plaintext(c, *owner);
+    }
+}
+
 /// A fixture judge admitting only the tests' exact private far ends over the normal literal guard.
 pub(crate) fn loopback_literals() -> std::sync::Arc<dyn crate::DialJudge> {
     struct FixtureLiterals {
@@ -453,6 +462,8 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
         ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        c.accept_plaintext(OWNER);
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         let desc = OpenDesc {
@@ -508,6 +519,8 @@ fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
         ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        c.accept_plaintext(OWNER);
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         let desc = OpenDesc {
@@ -757,6 +770,8 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
                     waking.lock().unwrap().push((owner, ticket));
                 }),
             );
+            // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+            c.accept_plaintext(OWNER);
             c.declare_over(OWNER, NeedId(0), "frames").unwrap();
             let id = c
                 .open(
@@ -2406,6 +2421,8 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
         ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        c.accept_plaintext(OWNER);
         c.declare_over(OWNER, NeedId(0), "messages")
             .expect("a served scheme declares");
         let desc = OpenDesc {
@@ -4590,12 +4607,17 @@ fn pooled_messages(idle: std::time::Duration) -> Connector {
         },
     ])
     .unwrap();
-    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {})).pooling(
+    let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {})).pooling(
         crate::pool::PoolPosture {
             max_idle_per_host: 8,
             idle_timeout: idle,
         },
-    )
+    );
+    // Both test owners carry `insecure_transport.accept: plaintext` (SEC-2, #297 model A): the pool
+    // tests open the same plaintext loopback far end as OWNER and OTHER.
+    c.accept_plaintext(OWNER);
+    c.accept_plaintext(OTHER);
+    c
 }
 
 /// What one pooled exchange read: its bytes, whether it completed (its line goes back to the pool
@@ -5224,6 +5246,8 @@ fn failed_through_the_table(
         ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        c.accept_plaintext(OWNER);
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         let desc = OpenDesc {
