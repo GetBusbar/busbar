@@ -51,7 +51,7 @@ pub(crate) fn stated_schemas(
     }
 }
 
-pub(crate) fn merged_boot_plane_decls(
+pub fn merged_boot_plane_decls(
     installed: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static PlaneDecl> {

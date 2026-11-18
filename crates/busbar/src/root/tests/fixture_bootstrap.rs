@@ -106,7 +106,9 @@ pub(crate) struct ServingFixture {
 
 pub(crate) struct PlaneFixture {
     pub(crate) seat: PortSeat,
-    pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
+    /// Held behind a lock: the fixture is retained in `Served` (shared across threads) while its
+    /// dormant workers, `Send` but not `Sync`, wait to be taken by [`PlaneFixture::served`].
+    pub(crate) workers: std::sync::Mutex<crate::root::boot::workers::PreparedWorkers>,
     _owners: Arc<Owners>,
     _prefix: Arc<BootSecrets>,
     hooks: std::collections::BTreeMap<String, HookFixture>,
@@ -143,7 +145,9 @@ impl PlaneFixture {
         crate::root::boot::workers::PreparedWorkers,
     ) {
         let workers = std::mem::replace(
-            &mut self.workers,
+            self.workers
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
             crate::root::boot::workers::PreparedWorkers::new(),
         );
         let owner = Arc::new(self);
@@ -371,7 +375,7 @@ impl ServingFixture {
         workers.push(async move { ticking.tick_task(shared.push.clone()).await });
         Ok(PlaneFixture {
             seat,
-            workers,
+            workers: std::sync::Mutex::new(workers),
             _owners: Arc::clone(&self.owners),
             _prefix: prefix,
             hooks: opened_hooks,
@@ -597,8 +601,9 @@ impl busbar_contract::persistence::PersistenceBackend for Backend {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.inner.commit(candidate)
+        self.inner.commit(candidate, key)
     }
     fn clock(
         &self,

@@ -111,7 +111,7 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
 }
 
 pub use crate::off_path::plane_registry::build_dispatch;
-pub(crate) use crate::off_path::plane_registry::merged_boot_plane_decls;
+pub use crate::off_path::plane_registry::merged_boot_plane_decls;
 
 pub const CORE_OWNED_CONCRETE_SECTIONS: &[&str] = &[
     "providers",
