@@ -40,20 +40,6 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     crate::off_path::tls::operator_ca_anchors(pem)
 }
 
-/// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
-/// not checked; built through the crypto backend, which may refuse it.
-pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tls::TlsError> {
-    let verifier = unverified_verifier();
-    crypto_tls::client_config(|builder| {
-        crate::off_path::tls::select_client_output(
-            builder
-                .dangerous()
-                .with_custom_certificate_verifier(verifier)
-                .with_no_client_auth(),
-        )
-    })
-}
-
 pub(crate) fn unverified_verifier() -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
     Arc::new(AcceptsAnyCertificate(crypto_tls::signature_algorithms()))
 }

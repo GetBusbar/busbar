@@ -105,7 +105,7 @@ impl Default for NeedLimits {
 /// What one egress class allows a dial: how long to connect, how long one read or write may take,
 /// and whether the instance's own trust anchor may be added to the class's roots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DialPolicy {
+pub(crate) struct DialPolicy {
     /// The longest a connect may take (capped by `limits.connect_timeout_ms`).
     pub connect_timeout: Duration,
     /// The longest one read or write may take (capped by the chain's deadline).

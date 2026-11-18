@@ -229,15 +229,6 @@ impl FramedStream {
         closing(&y)
     }
 
-    /// Close normally when no final claim code was stated; the producer owns its normal ending.
-    pub fn close_response(self) -> Result<Closing, Refused> {
-        closing_response(
-            &self
-                .framing
-                .finish(busbar_contract::abi::transport::CLOSE_NORMAL),
-        )
-    }
-
     /// Refuse the stream, retaining the producer's code and numbering separately from fields.
     pub fn refuse_response(
         &mut self,
@@ -248,19 +239,6 @@ impl FramedStream {
         let yielded = self
             .framing
             .refuse(Some(STREAM), bytes, status, head_sent)?;
-        closing_response(&yielded)
-    }
-
-    /// Finish the stream with a claim-native final code and retain its closing metadata.
-    pub fn finish_response(
-        &mut self,
-        status: u32,
-        message: &[u8],
-        details: &[u8],
-    ) -> Result<Closing, Refused> {
-        let yielded = self
-            .framing
-            .finish_final(status, message, details, &self.rows, self.claim)?;
         closing_response(&yielded)
     }
 }

@@ -441,14 +441,6 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// The auth points a linked row's door offers, read off its Statement's `extensions`
-#[must_use]
-pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
-    busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.offered)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
-}
-
 /// The auth points a row that states no record offers (a row off the door axis states none).
 #[must_use]
 pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {

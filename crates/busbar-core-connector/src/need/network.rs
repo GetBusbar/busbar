@@ -8,7 +8,6 @@ use super::net::ConnectorIo;
 use super::observations::Observations;
 use super::tlsconf::Configs;
 use crate::guard::{FrozenGuard, Resolve, Resolved};
-use crate::hostio::HostIo;
 use crate::proxy::ProxyChoice;
 use crate::tls::store::TrustStore;
 use busbar_kernel::config::tls::ProxyResolution;
@@ -49,7 +48,6 @@ pub(super) struct State {
     pub proxy: Option<Arc<ProxyChoice>>,
     pub resolution: ProxyResolution,
     pub observations: Arc<Observations>,
-    pub host_io: Arc<HostIo>,
     maintenance: tokio::task::JoinHandle<()>,
 }
 
@@ -63,7 +61,6 @@ impl State {
             }
         });
         Arc::new(Self {
-            host_io: Arc::new(HostIo::new_on(inputs.runtime.clone())),
             runtime: inputs.runtime,
             configs: Configs::new(inputs.trust),
             guard: inputs.guard,
@@ -111,11 +108,6 @@ impl BootstrapConnector {
     pub fn judge(&self) -> Judge<SharedResolver> {
         self.0.judge()
     }
-    /// Native host I/O on this stage's explicit runtime.
-    #[must_use]
-    pub fn host_io(&self) -> Arc<HostIo> {
-        Arc::clone(&self.0.host_io)
-    }
 }
 
 /// Effective-config networking. It never mutates or borrows the bootstrap owner's state.
@@ -136,10 +128,5 @@ impl ServingConnector {
     #[must_use]
     pub fn judge(&self) -> Judge<SharedResolver> {
         self.0.judge()
-    }
-    /// Native host I/O on this stage's explicit runtime.
-    #[must_use]
-    pub fn host_io(&self) -> Arc<HostIo> {
-        Arc::clone(&self.0.host_io)
     }
 }

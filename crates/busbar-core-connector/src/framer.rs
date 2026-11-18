@@ -1065,21 +1065,6 @@ impl ParkedOps {
     }
 }
 
-/// A detached connection's bytes and host ownership, consumed by its adopting framing.
-#[derive(Debug)]
-pub struct Detached {
-    bytes: Vec<u8>,
-    context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-}
-
-impl Drop for Detached {
-    fn drop(&mut self) {
-        if let Some(context) = self.context.take() {
-            context.end();
-        }
-    }
-}
-
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
 pub(crate) const MAX_PARKED: usize = 256;
 
@@ -2316,45 +2301,6 @@ impl Framing {
         )
     }
 
-    /// Adopt once while requesting a typed opening receipt and an explicit wire commit.
-    pub fn adopt_detached_staged(
-        door: Arc<dyn FramerDoor>,
-        side: u32,
-        detached: Detached,
-        established: &Established,
-    ) -> Result<(Self, Yielded), Refused> {
-        Self::adopt_detached_mode(door, side, detached, established, true)
-    }
-
-    fn adopt_detached_mode(
-        door: Arc<dyn FramerDoor>,
-        side: u32,
-        mut detached: Detached,
-        established: &Established,
-        prewire: bool,
-    ) -> Result<(Self, Yielded), Refused> {
-        let context =
-            match detached.context.as_ref() {
-                Some(source) => Some(door.adopting_context(Arc::clone(source))?.ok_or_else(
-                    || Refused {
-                        outcome: Outcome::Refused,
-                        error: "adoption lost its host framing context".into(),
-                    },
-                )?),
-                None => None,
-            };
-
-        drop(detached.context.take());
-        Self::adopt_context(
-            door,
-            side,
-            std::borrow::Cow::Owned(std::mem::take(&mut detached.bytes)),
-            established,
-            context,
-            prewire,
-        )
-    }
-
     fn adopt_context(
         door: Arc<dyn FramerDoor>,
         side: u32,
@@ -2650,57 +2596,6 @@ impl Framing {
         let mut y = Yielded::default();
         self.more(Again::Timer, &mut y)?;
         Ok(y)
-    }
-
-    /// `detach`: the bytes the framer took and did not answer, and the framing is over.
-    pub fn detach(mut self) -> Result<Detached, Refused> {
-        self.try_detach()
-    }
-
-    /// Attempt a handover without dropping an unchanged framing when its first crossing refuses.
-    pub fn try_detach(&mut self) -> Result<Detached, Refused> {
-        self.quiet()?;
-        let mut crossed = false;
-        let mut left = Vec::new();
-        let mut recalls = Recalls::default();
-        loop {
-            let mut i: FramingIn = blank_in();
-            i.framing = self.token;
-            i.sink = self.bufs.sink();
-            let mut o: FramerOut = blank_out();
-            if let Err(mut error) = ready(self.door.cross_scoped(
-                self.context.as_ref(),
-                None,
-                false,
-                Call::Detach(&mut i, &mut o),
-            )) {
-                if crossed {
-                    error.outcome = Outcome::Fault;
-                }
-                return Err(error);
-            }
-            crossed = true;
-            let n = usize::try_from(o.yielded.frame_len).unwrap_or(usize::MAX);
-            left.extend_from_slice(self.bufs.frame.get(..n).ok_or_else(|| Refused {
-                outcome: Outcome::Fault,
-                error: "the framer's answer is out of bounds: frame".into(),
-            })?);
-            if o.yielded.flags & YIELD_MORE == 0 {
-                self.token = 0;
-                if let Some(context) = &self.context {
-                    context.detach().map_err(|error| Refused {
-                        outcome: Outcome::Refused,
-                        error: error.into(),
-                    })?;
-                }
-                let context = self.context.take();
-                return Ok(Detached {
-                    bytes: left,
-                    context,
-                });
-            }
-            recalls.owed(&o, &self.bufs)?;
-        }
     }
 
     /// `finish`: close the framing with `reason` (`CLOSE_*`); what it still owes the far side.
