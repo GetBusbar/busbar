@@ -5,8 +5,20 @@ use std::path::Path;
 
 use super::{
     backend_only_reached, crypto_graph, no_getrandom, reached, recorded_exceptions, repo_root,
-    scan_source, seam_only_reached, SEAM_ONLY,
+    scan_source, SEAM_ONLY,
 };
+
+/// The seam-only crates in a `cargo tree --prefix depth` listing, through crypto_graph's own `reached`
+/// call with no recorded exception.
+fn seam_only_reached(tree: &str) -> Vec<String> {
+    reached(
+        tree,
+        &SEAM_ONLY,
+        "outside busbar-crypto*",
+        &std::collections::BTreeMap::new(),
+    )
+    .0
+}
 
 #[test]
 fn shipped_graph_cannot_hide_crypto_outside_the_root_workspace() {

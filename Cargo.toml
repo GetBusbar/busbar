@@ -255,3 +255,11 @@ lto = "fat"          # whole-program inlining across crates: faster hot path + s
 codegen-units = 1    # let LTO optimize across the whole crate graph (best codegen, smaller output)
 strip = true         # strip symbols from the shipped binary (much smaller; set RUST_BACKTRACE aside)
 # `panic` stays `unwind`: a request panic must unwind its task, not abort the gateway.
+
+# Test builds run third-party code as the shipped build compiles it: optimised. Unoptimised, a SIMD
+# search (memchr under sseer and SseFrames) keeps each 32-byte vector it loads in a stack slot, so
+# a secret it searched stays in dead stack after every owner wiped its heap copy, which the Q24
+# canary scans (UNSAFE-MIN §4.4) find and the release build never leaves. Workspace crates keep
+# opt-level 0 (debug assertions, fast rebuilds).
+[profile.dev.package."*"]
+opt-level = 3
