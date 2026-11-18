@@ -31,9 +31,11 @@ extern "C" fn grow(_: Ctx<'_>, _: &mut RawOut, _: usize) -> bool {
     attempted();
     false
 }
+/// The one host read a CHECK may make (IF round 28/29 §5 `deployment`, §11.2 `BootPlan`): a plugin binds to the
+/// install in `check`, and core re-runs the 2a/2b checks once the id is published. A pure read of process state,
+/// not a service: it is not an attempt.
 extern "C" fn deployment(_: Ctx<'_>) -> DeploymentId {
-    attempted();
-    DeploymentId([0; 16])
+    busbar_plugin_abi::host_side::host_vt::vt::deployment()
 }
 extern "C" fn migrate(_: Ctx<'_>, _: u64) -> Status {
     attempted();
@@ -74,6 +76,26 @@ mod tests {
         assert!(
             !run(|_| ()).1,
             "a fresh pure parser does not inherit another check's attempt"
+        );
+    }
+
+    #[test]
+    fn a_deployment_read_is_not_an_attempt_but_every_other_service_still_is() {
+        let (_, attempted) = run(|host| {
+            host.scoped(|ctx| {
+                host.fns().deployment.expect("deployment entry")(ctx);
+            })
+        });
+        assert!(!attempted, "check binds to the install with deployment_id");
+        let (_, attempted) = run(|host| {
+            host.scoped(|ctx| {
+                host.fns().deployment.expect("deployment entry")(ctx);
+                host.fns().log_level.expect("denial entry")(ctx);
+            })
+        });
+        assert!(
+            attempted,
+            "a deployment read does not lift the denial of another host service"
         );
     }
 }
