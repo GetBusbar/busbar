@@ -523,7 +523,7 @@ impl Pairing {
             let mut session = Vec::new();
             let mut owners = Vec::new();
             let mut piece_custody = piece_custody.into_iter();
-            for piece in pieces {
+            for mut piece in pieces {
                 let owner = piece_custody.next().unwrap_or_else(|| custody.clone());
 
                 let line = state
@@ -562,7 +562,8 @@ impl Pairing {
                 let heads = state.bridge.caller.len()
                     + state.bridge.upstream.len()
                     + state.bridge.channels.len();
-                let (mut channel, across) = state.bridge.sort(leg, vec![piece]);
+                // The one piece is sorted where it lies: no list is made for it.
+                let placed = state.bridge.place(leg, &mut piece);
                 let new_heads = state.bridge.caller.len()
                     + state.bridge.upstream.len()
                     + state.bridge.channels.len();
@@ -573,8 +574,8 @@ impl Pairing {
                     retired.push(owner);
                     continue;
                 }
-                for across in across {
-                    state.publications.queue.push(Job {
+                match placed {
+                    Placed::Across(across) => state.publications.queue.push(Job {
                         to: other(leg),
                         across,
                         now,
@@ -583,11 +584,12 @@ impl Pairing {
                         unpaired: None,
                         _admission: None,
                         _custody: owner.clone(),
-                    });
-                }
-                for piece in channel.drain(..) {
-                    session.push(piece);
-                    owners.push(owner.clone());
+                    }),
+                    Placed::Session => {
+                        session.push(piece);
+                        owners.push(owner.clone());
+                    }
+                    Placed::Taken => {}
                 }
                 retired.push(owner);
             }
