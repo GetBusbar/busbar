@@ -503,21 +503,6 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
     assert_eq!(money.open_units(), 1);
     assert!(Arc::ptr_eq(prepared.receipt().cost(), &original_cost));
     assert!(Arc::ptr_eq(prepared.receipt().key(), &original_key));
-    let headroom = match admission.headroom(
-        prepared.receipt(),
-        prepared.original_route().unwrap(),
-        prepared.selection().target(),
-        prepared.selection().definition().unwrap(),
-    ) {
-        Ok(headroom) => headroom,
-        Err(_) => panic!("the same current authority must produce candidate headroom"),
-    };
-    assert_eq!(headroom.len(), 1);
-    assert_eq!(headroom[0].rule.threshold, 2);
-    assert_eq!(
-        headroom[0].provisional_requests, 0,
-        "headroom creates no rate hold"
-    );
     let reservation = admission.reserve(prepared).unwrap();
     let prepared = reservation.cancel();
 

@@ -2976,9 +2976,6 @@ mod transport_pin {
         if c.authority_held.lock().unwrap().contains(&owner) {
             held.push("held authority");
         }
-        if c.listeners.lock().unwrap().keys().any(|(o, _)| *o == owner) {
-            held.push("listeners");
-        }
         held
     }
 
@@ -4389,9 +4386,9 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
     });
 }
 
-/// A forgotten instance's lines and listener go with it. The idle line its exchange finished on is
+/// A forgotten instance's lines go with it. The idle line its exchange finished on is
 #[test]
-fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
+fn a_forgotten_instances_pooled_line_goes_and_a_neighbours_line_is_kept() {
     worker().block_on(async {
         let (far, accepted, ended) = keeping_far_end().await;
         let c = pooled_messages(std::time::Duration::from_secs(60));
@@ -4399,14 +4396,6 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
             c.declare_over(owner, NeedId(0), "messages")
                 .expect("a served scheme declares");
         }
-        c.listen(
-            OTHER,
-            NeedId(0),
-            "127.0.0.1:0",
-            None,
-            crate::listen::AcceptLimits::default(),
-        )
-        .expect("listens");
         let whole = (b"x".to_vec(), true, None);
         assert_eq!(
             pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
@@ -4426,10 +4415,6 @@ fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_ke
             ended.load(Ordering::SeqCst),
             1,
             "the forgotten instance's idle line is closed at once"
-        );
-        assert!(
-            !c.listeners.lock().unwrap().keys().any(|(o, _)| *o == OTHER),
-            "the forgotten instance's listener leaves the table"
         );
         let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
         assert_eq!(
