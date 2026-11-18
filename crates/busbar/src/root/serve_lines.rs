@@ -38,52 +38,19 @@ pub(crate) struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
     out: mpsc::Sender<Vec<u8>>,
-    /// The output lines the writer hands back once written.
-    spare: Arc<LinePool>,
     failure: Arc<IoFailure>,
 }
 
-/// Output line buffers the writer hands back once a line is written, so a steady stream of answers
-/// reuses a few buffers instead of allocating one per line. Bounded in count and in each buffer's
-/// capacity, so one huge answer is not kept for the session's life.
-#[derive(Default)]
-struct LinePool(std::sync::Mutex<Vec<Vec<u8>>>);
-
-const POOLED_LINES: usize = 16;
-const POOLED_LINE_BYTES: usize = 64 * 1024;
 /// Complete output lines awaiting the writer; individual body sizing is separate.
 const LINE_OUTPUT_QUEUE_CAPACITY: usize = 16;
 
-impl LinePool {
-    fn take(&self) -> Vec<u8> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default()
-    }
-
-    fn give(&self, mut line: Vec<u8>) {
-        if line.capacity() > POOLED_LINE_BYTES {
-            return;
-        }
-        line.clear();
-        let mut spare = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if spare.len() < POOLED_LINES {
-            spare.push(line);
-        }
-    }
-
-    /// `bytes` as one newline-terminated output line, in a handed-back buffer.
-    fn line(&self, bytes: &[u8]) -> Vec<u8> {
-        let mut line = self.take();
-        line.extend_from_slice(bytes);
-        terminate(&mut line);
-        line
-    }
+/// `bytes` as one newline-terminated output line: allocated here at its final size, moved to the
+/// writer, and freed by the writer once it is written.
+fn output_line(bytes: &[u8]) -> Vec<u8> {
+    let mut line = Vec::with_capacity(bytes.len() + 1);
+    line.extend_from_slice(bytes);
+    terminate(&mut line);
+    line
 }
 
 #[derive(Default)]
@@ -120,13 +87,13 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(self.spare.line(bytes)).await.is_ok()
+        self.out.send(output_line(bytes)).await.is_ok()
     }
 }
 
 impl<R> LineCaller<R> {
     fn emit(&self, bytes: &[u8]) -> bool {
-        match self.out.try_send(self.spare.line(bytes)) {
+        match self.out.try_send(output_line(bytes)) {
             Ok(()) => true,
             Err(error) => {
                 let kind = match error {
@@ -149,11 +116,6 @@ fn terminate(line: &mut Vec<u8>) {
     }
 }
 
-#[cfg(test)]
-fn terminated(bytes: &[u8]) -> Vec<u8> {
-    LinePool::default().line(bytes)
-}
-
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
     /// The line loop admits and owns each read explicitly; a bare read cannot bypass admission.
     async fn read(&self) -> Option<Vec<u8>> {
@@ -164,8 +126,9 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
 impl<R: AsyncRead + Unpin + Send> LineCaller<R> {
     async fn read_input(&self, request: RequestLease) -> Option<OwnedInput> {
         let mut reader = self.lines.lock().await;
-        // A handed-back line buffer when one is spare; a blank line reuses it for the next read.
-        let mut buf = request.adopt_input(self.spare.take()).ok()?;
+        // The line's own buffer: it grows as the line is read and moves to the plane with the line.
+        // A blank line reuses it for the next read.
+        let mut buf = request.adopt_input(Vec::new()).ok()?;
         loop {
             buf.clear();
             match read_line(&mut *reader, &mut buf, self.max_line).await {
@@ -326,10 +289,9 @@ where
     let (out, mut lines_out) = mpsc::channel::<Vec<u8>>(LINE_OUTPUT_QUEUE_CAPACITY);
     let failure = Arc::new(IoFailure::default());
     let write_failure = Arc::clone(&failure);
-    let spare = Arc::new(LinePool::default());
-    let handed_back = Arc::clone(&spare);
     let mut written = tokio::spawn(async move {
         let mut writer = writer;
+        // Each line is freed here, once it has been written.
         while let Some(line) = lines_out.recv().await {
             if let Err(error) = async {
                 writer.write_all(&line).await?;
@@ -340,7 +302,6 @@ where
                 write_failure.record("output", error);
                 return;
             }
-            handed_back.give(line);
         }
         if let Err(error) = writer.flush().await {
             write_failure.record("output", error);
@@ -350,7 +311,6 @@ where
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
         out,
-        spare,
         failure: Arc::clone(&failure),
     });
     let (answer, close) = open(Arc::clone(&caller));
