@@ -347,6 +347,10 @@ impl PreparedNativeIdentity {
     pub fn provider(&self) -> &str {
         &self.instance.opened.who.name
     }
+    /// The provider's name as a verdict holds it: the instance's own shared name, not a copy.
+    pub(crate) fn provider_text(&self) -> busbar_contract::kept::Text {
+        busbar_contract::kept::Text::from(Arc::clone(&self.instance.opened.who.name))
+    }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
         &self.identity
     }

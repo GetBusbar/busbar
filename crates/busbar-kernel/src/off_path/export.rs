@@ -962,13 +962,10 @@ pub(crate) fn start_one(s: &PluginSink) {
 // --- export::plugin: the route table, once per configuration generation ---
 
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    route_projection(cfg, None).0
+    route_projection(cfg, None)
 }
 
-pub(crate) fn route_projection(
-    cfg: &ExportCfg,
-    exports: Option<&Exports>,
-) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
+pub(crate) fn route_projection(cfg: &ExportCfg, exports: Option<&Exports>) -> Vec<RouteDecl> {
     project_routes(
         cfg,
         exports
@@ -979,16 +976,12 @@ pub(crate) fn route_projection(
 
 #[cfg(test)]
 pub(crate) fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl> {
-    project_routes(cfg, boot_sinks).0
+    project_routes(cfg, boot_sinks)
 }
 
-pub(crate) fn project_routes(
-    cfg: &ExportCfg,
-    boot_sinks: &[PluginSink],
-) -> (Vec<RouteDecl>, std::collections::HashSet<String>) {
+pub(crate) fn project_routes(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl> {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
     let mut out = Vec::new();
-    let mut withheld = std::collections::HashSet::new();
     for p in scrape.into_iter().chain(rest) {
         let owner = if p.scrape {
             p.def.module.trim().to_string()
@@ -1033,14 +1026,6 @@ pub(crate) fn project_routes(
             None => continue,
         };
 
-        let wholly_withheld = opened.is_some()
-            && !p.scrape
-            && routes
-                .iter()
-                .all(|route| public_routes.contains(&route.path))
-            && routes
-                .iter()
-                .any(|route| !persistent_routes.contains(&route.path));
         for route in routes {
             if persistent_routes.contains(&route.path) {
                 continue;
@@ -1065,9 +1050,6 @@ pub(crate) fn project_routes(
                 dispatch: dispatch.clone(),
             });
         }
-        if wholly_withheld {
-            withheld.insert(p.name.clone());
-        }
     }
     if let Some(s) = boot_sinks.iter().find(|s| s.scrape) {
         let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
@@ -1090,5 +1072,5 @@ pub(crate) fn project_routes(
                 }),
         );
     }
-    (out, withheld)
+    out
 }

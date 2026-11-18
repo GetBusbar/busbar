@@ -979,7 +979,7 @@ impl busbar_contract::conn::Conns for BoundConns {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
         secure: bool,
-        located: Option<&busbar_contract::conn::LocatedTarget>,
+        located: Option<&Arc<busbar_contract::conn::LocatedTarget>>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         self.inner.open_located(caller, need, desc, secure, located)
     }
@@ -990,7 +990,7 @@ impl busbar_contract::conn::Conns for BoundConns {
         desc: &busbar_contract::conn::OpenDesc<'_>,
         head: busbar_contract::conn::OwnedHead,
         secure: bool,
-        located: Option<&busbar_contract::conn::LocatedTarget>,
+        located: Option<&Arc<busbar_contract::conn::LocatedTarget>>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         self.inner
             .open_owned(caller, need, desc, head, secure, located)
@@ -1544,7 +1544,7 @@ pub(crate) struct DoorRequest {
 
     pub(crate) scheme: u8,
 
-    pub(crate) consumed_fields: Vec<(String, String)>,
+    pub(crate) consumed_fields: Vec<(HeaderName, String)>,
 }
 
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
@@ -1557,8 +1557,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
             0
         }
 }
-
-const SESSION_QUEUE: usize = 64;
 
 pub(crate) fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
     claim.flags & (CLAIM_RAW_AFFIX | CLAIM_ENTRY) == 0
@@ -1573,7 +1571,7 @@ impl DoorRequest {
             None => self
                 .consumed_fields
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| n.as_str() == name)
                 .map(|(_, scheme)| scheme.as_str()),
         }
     }
@@ -1619,16 +1617,16 @@ impl DataRoutes {
             .uri
             .path_and_query()
             .map_or_else(|| req.uri.path(), |t| t.as_str());
-        let head: Vec<(Vec<u8>, Vec<u8>)> = req
+        // The plane is lent the request's own head for this call: no field is copied.
+        let head = req
             .headers
             .iter()
             .filter(|(n, _)| keep_arrival_field(n.as_str().as_bytes()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+            .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()));
         let rendered = self.served.planes[plane].driver.catalog_unitless(
             req.method.as_str().as_bytes(),
             target.as_bytes(),
-            &head,
+            head,
             &names,
         );
         match rendered {
@@ -1637,44 +1635,6 @@ impl DataRoutes {
                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
                 Body::empty(),
             ),
-        }
-    }
-
-    pub(crate) async fn open_session(
-        self: Arc<Self>,
-        plane: usize,
-        claim: u32,
-        req: DoorRequest,
-    ) -> busbar_kernel::plane_routes::SessionAnswer {
-        use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
-        let (door, arrival, _) = self.arrived(plane, claim, req);
-        let (from_caller, from_rx) = mpsc::channel(SESSION_QUEUE);
-        let (to_tx, to_caller) = mpsc::channel(SESSION_QUEUE);
-        let caller = PipeCaller {
-            from: tokio::sync::Mutex::new(from_rx),
-            to: to_tx,
-        };
-        let (verdict, said) = oneshot::channel();
-        busbar_kernel::detached::spawn_detached(self.session(
-            door,
-            ClosingCaller::new(caller),
-            arrival,
-            verdict,
-            Attach::switched(),
-        ));
-        match said.await {
-            Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
-                from_caller,
-                to_caller,
-            }),
-            Ok(Err(Some(rendered))) => SessionAnswer::Refused(stated(
-                (rendered.status, rendered.fields),
-                Body::from(rendered.body),
-            )),
-            Ok(Err(None)) | Err(_) => SessionAnswer::Refused(stated(
-                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                Body::empty(),
-            )),
         }
     }
 
@@ -2641,7 +2601,8 @@ impl<'d> DoorFar<'d, '_> {
                     member_grants: self.steps.member_grants(),
                     allowed_member: self.steps.child_member(),
                     unit: self.unit,
-                    pool,
+                    // The unit routes under the pools' own shared name for its pool.
+                    pool: egress.pool_name(&pool),
                     connection_required: self.steps.connection_required(),
                     authorization: Some(Arc::clone(&self.authorization)),
                     caller_credential: self.credential.clone(),
@@ -2803,8 +2764,6 @@ impl FarEnd for DoorFar<'_, '_> {
     }
 }
 
-const SWITCHED: u32 = 101;
-
 const CREATED: u32 = 201;
 
 const OPEN_HEAD_WAIT: std::time::Duration = busbar_core_connector::compose::DEFAULT_OPEN_TIMEOUT;
@@ -2928,16 +2887,6 @@ impl Drop for CarrierEnd {
     }
 }
 
-impl Attach {
-    fn switched() -> Self {
-        Attach {
-            answered: SWITCHED,
-            admitted: None,
-            ended: None,
-        }
-    }
-}
-
 pub(crate) struct SessionDoor {
     pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) admission: Option<busbar_kernel::inbound::RequestAdmission>,
@@ -3016,42 +2965,6 @@ impl<C: SessionCaller> SessionCaller for ClosingCaller<C> {
             () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => None,
             piece = self.inner.read() => piece,
         }
-    }
-}
-
-pub(crate) struct PipeCaller {
-    pub(crate) from: tokio::sync::Mutex<mpsc::Receiver<busbar_kernel::plane_driver::SessionInput>>,
-    pub(crate) to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
-}
-
-impl CallerEnd for PipeCaller {
-    fn head(&self, _status: u32, _fields: HeadFields) {}
-
-    async fn write(&self, bytes: &[u8]) -> bool {
-        let out = busbar_kernel::plane_routes::SessionOut {
-            bytes: bytes.to_vec(),
-            text: false,
-        };
-        self.to.send(out).await.is_ok()
-    }
-
-    async fn write_text(&self, bytes: &[u8]) -> bool {
-        let out = busbar_kernel::plane_routes::SessionOut {
-            bytes: bytes.to_vec(),
-            text: true,
-        };
-        self.to.send(out).await.is_ok()
-    }
-}
-
-impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
-    /// Budgeted callers require owned reads; bare reads must not dequeue or strip custody.
-    async fn read(&self) -> Option<Vec<u8>> {
-        None
-    }
-
-    async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
-        self.from.lock().await.recv().await
     }
 }
 
@@ -3646,9 +3559,11 @@ pub(crate) fn stated((status, fields): Head, body: Body) -> Response {
     *response.status_mut() = status;
     let headers = response.headers_mut();
     for (name, value) in fields {
+        // The value's own allocation becomes the header value (checked as `from_bytes` checks
+        // it): the head's values are handed to the response, not copied into it.
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(&name),
-            HeaderValue::from_bytes(&value),
+            HeaderValue::from_maybe_shared(Bytes::from(value)),
         ) {
             headers.append(name, value);
         }

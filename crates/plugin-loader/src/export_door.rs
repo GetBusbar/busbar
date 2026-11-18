@@ -136,10 +136,8 @@ fn check_bytes(
     phase: u32,
     instances: &[(String, SecureVec)],
 ) -> Result<Vec<u8>, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "config: an export check lends the configured instances once"
-    )]
+    // The check call takes its instances as one array: made here, lent across the call, released
+    // as the check returns.
     let list: Vec<CheckInstance> = instances
         .iter()
         .map(|(name, settings)| CheckInstance {
@@ -505,9 +503,14 @@ impl ExportInstance {
     }
 }
 
+/// One scrape's lent arrays: every label of every sample in one run, every sample of every family
+/// in one run, and the families. A sample points at its own stretch of `labels`, a family at its
+/// own stretch of `samples`. The scrape owns it: made as the scrape starts, lent across the call,
+/// released as the scrape ends.
+#[derive(Default)]
 struct Lowered {
-    _labels: Vec<Vec<ScrapeLabel>>,
-    _samples: Vec<Vec<ScrapeSample>>,
+    labels: Vec<ScrapeLabel>,
+    samples: Vec<ScrapeSample>,
     families: Vec<ScrapeFamily>,
 }
 
@@ -516,7 +519,8 @@ fn scrape_with(
     families: &[Family],
     flags: u32,
 ) -> Result<Vec<u8>, String> {
-    let lowered = lower(families);
+    let mut lowered = Lowered::default();
+    lower(&mut lowered, families);
     let mut buf = vec![0u8; SCRAPE_BUF];
     let mut f = Frame::new(
         ScrapeIn {
@@ -553,53 +557,65 @@ fn scrape_with(
     Ok(buf)
 }
 
-fn lower(families: &[Family]) -> Lowered {
-    let labels: Vec<Vec<ScrapeLabel>> = families
-        .iter()
-        .flat_map(|f| f.samples.iter())
-        .map(|s| {
-            s.labels
-                .iter()
-                .map(|(k, v)| ScrapeLabel {
+/// Lay `families` out in `into` as the arrays a scrape lends. Each array is sized once, before its
+/// first entry, and is complete before anything points into it: `labels` is whole before a sample
+/// takes its stretch, `samples` is whole before a family takes its stretch, so no address handed
+/// out moves afterwards.
+fn lower(into: &mut Lowered, families: &[Family]) {
+    let Lowered {
+        labels,
+        samples,
+        families: lowered,
+    } = into;
+    labels.clear();
+    samples.clear();
+    lowered.clear();
+    let (mut label_count, mut sample_count) = (0usize, 0usize);
+    for f in families {
+        sample_count += f.samples.len();
+        for s in &f.samples {
+            label_count += s.labels.len();
+        }
+    }
+    labels.reserve_exact(label_count);
+    samples.reserve_exact(sample_count);
+    lowered.reserve_exact(families.len());
+    for f in families {
+        for s in &f.samples {
+            for (k, v) in &s.labels {
+                labels.push(ScrapeLabel {
                     key: lend(k),
                     value: lend(v),
-                })
-                .collect()
-        })
-        .collect();
-    let mut at = labels.iter();
-    let samples: Vec<Vec<ScrapeSample>> = families
-        .iter()
-        .map(|f| {
-            f.samples
-                .iter()
-                .zip(at.by_ref())
-                .map(|(s, l)| ScrapeSample {
-                    name: lend(&s.name),
-                    labels: lend_list(l),
-                    labels_len: l.len(),
-                    value: lend(&s.value),
-                })
-                .collect()
-        })
-        .collect();
-    let lowered = families
-        .iter()
-        .zip(&samples)
-        .map(|(f, s)| ScrapeFamily {
+                });
+            }
+        }
+    }
+    let mut at = 0usize;
+    for f in families {
+        for s in &f.samples {
+            let own = &labels[at..at + s.labels.len()];
+            at += s.labels.len();
+            samples.push(ScrapeSample {
+                name: lend(&s.name),
+                labels: lend_list(own),
+                labels_len: own.len(),
+                value: lend(&s.value),
+            });
+        }
+    }
+    let mut at = 0usize;
+    for f in families {
+        let own = &samples[at..at + f.samples.len()];
+        at += f.samples.len();
+        lowered.push(ScrapeFamily {
             name: lend(&f.name),
             help: lend_opt(f.help.as_deref()),
             unit: lend_opt(f.unit.as_deref()),
             kind: f.kind,
             _reserved: [0; 7],
-            samples: lend_list(s),
-            samples_len: s.len(),
-        })
-        .collect();
-    Lowered {
-        _labels: labels,
-        _samples: samples,
-        families: lowered,
+            samples: lend_list(own),
+            samples_len: own.len(),
+        });
     }
 }
 

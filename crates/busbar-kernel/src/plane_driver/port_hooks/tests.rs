@@ -57,35 +57,59 @@ impl Fixture {
             },
         }
     }
-    fn selection(&self) -> Selection<'_> {
-        Selection {
-            route: 1,
-            pool: "pool",
-            container: "",
-            dialect: "test",
-            principal: None,
-            key: self.context.principal().map(AsRef::as_ref),
-            request_id: 7,
-            now_s: 11,
-        }
-    }
     async fn invoke(
         &self,
         call: &Arc<Call>,
         projection: &Projection,
     ) -> Result<call::Reply, call::Failed> {
-        let selection = self.selection();
-        let input = call::Input {
+        let lent = Lent::of(self, b"admitted-identity", Vec::new(), Vec::new());
+        let input = lent.input(projection, self);
+        call::one(call, abi::POINT_ROUTE, &input).await
+    }
+}
+/// What a hook input shares, owned by the test: the fixture's selection as it stands, pool
+/// `pool`, dialect `test`, no principal, request 7.
+struct Lent {
+    selected: Arc<Selected>,
+    scope: Arc<crate::plane_driver::RoutedScope>,
+    dialect: Arc<str>,
+    identity: Arc<SecureVec>,
+    candidates: Arc<Vec<CandidateView>>,
+    quantities: Arc<Vec<(Box<str>, f64)>>,
+}
+impl Lent {
+    fn of(
+        fixture: &Fixture,
+        identity: &[u8],
+        candidates: Vec<CandidateView>,
+        quantities: Vec<(Box<str>, f64)>,
+    ) -> Self {
+        Self {
+            selected: Arc::new(fixture.selected.clone()),
+            scope: Arc::new(crate::plane_driver::RoutedScope {
+                pool: "pool".into(),
+                container: String::new(),
+            }),
+            dialect: Arc::from("test"),
+            identity: Arc::new(identity.to_vec().into()),
+            candidates: Arc::new(candidates),
+            quantities: Arc::new(quantities),
+        }
+    }
+    fn input<'a>(&'a self, projection: &'a Projection, fixture: &'a Fixture) -> call::Input<'a> {
+        call::Input {
             projection,
             selected: &self.selected,
-            selection: &selection,
-            identity: b"admitted-identity",
-            candidates: &[],
-            quantities: &[],
-            stage: &[],
-            context: &self.context,
-        };
-        call::one(call, abi::POINT_ROUTE, &input).await
+            scope: &self.scope,
+            dialect: &self.dialect,
+            principal: None,
+            request_id: 7,
+            identity: Some(&self.identity),
+            candidates: &self.candidates,
+            quantities: &self.quantities,
+            stage: None,
+            context: &fixture.context,
+        }
     }
 }
 #[derive(Default, Debug)]
@@ -171,7 +195,7 @@ fn projection() -> Projection {
             busbar_plugin_abi::fail::fact::PJ_END_USER,
             FactVal::Text("private-user".into()),
         )],
-        conversation: Some(b"generic-conversation".to_vec().into()),
+        conversation: Some(Arc::new(b"generic-conversation".to_vec().into())),
         expects: Vec::new(),
     }
 }
@@ -221,17 +245,8 @@ async fn an_unconfirmed_content_read_cannot_escape_through_weighted_fallback() {
     let mut call = configured(spy.clone(), PromptAccess::Ro, UserAccess::No);
     Arc::get_mut(&mut call).unwrap().timeout = Duration::from_millis(20);
     let projection = projection();
-    let selection = fixture.selection();
-    let input = call::Input {
-        projection: &projection,
-        selected: &fixture.selected,
-        selection: &selection,
-        identity: &[],
-        candidates: &[],
-        quantities: &[],
-        stage: &[],
-        context: &fixture.context,
-    };
+    let lent = Lent::of(&fixture, &[], Vec::new(), Vec::new());
+    let input = lent.input(&projection, &fixture);
     let mut ran = Vec::new();
     let answer = call::chain(&call, abi::POINT_ROUTE, &input, &mut ran).await;
     assert!(matches!(answer, Err(call::Failed::Unconfirmed)));
@@ -253,7 +268,10 @@ fn rewrites_drop_stale_shape_and_overlay_only_actual_plane_facts() {
     let mut answer = Answer::default();
     answer.facts = vec![(PJ_TOTAL_CHARS, FactVal::U(3))];
     projected.rewritten(b"new".to_vec().into(), &answer);
-    assert_eq!(projected.conversation.as_deref(), Some(&b"new"[..]));
+    assert_eq!(
+        projected.conversation.as_deref().map(|bytes| &**bytes),
+        Some(&b"new"[..])
+    );
     assert!(projected.facts.contains(&(PJ_TOTAL_CHARS, FactVal::U(3))));
     assert!(!projected
         .facts
@@ -262,12 +280,9 @@ fn rewrites_drop_stale_shape_and_overlay_only_actual_plane_facts() {
     assert!(projected
         .facts
         .contains(&(PJ_MODEL, FactVal::Text("m".into()))));
-    assert!(projected.shape().conversation.is_none());
-    assert!(!projected
-        .shape()
-        .facts
-        .iter()
-        .any(|(key, _)| *key == PJ_END_USER));
+    projected.shape();
+    assert!(projected.conversation.is_none());
+    assert!(!projected.facts.iter().any(|(key, _)| *key == PJ_END_USER));
 }
 
 #[test]
@@ -348,18 +363,9 @@ async fn native_cost_terms_price_exact_lanes_and_keep_unpriced_expectations() {
         })
         .collect::<Vec<_>>();
     let projection = Projection::default();
-    let selection = fixture.selection();
     let quantities = vec![("units".into(), 3.0)];
-    let input = call::Input {
-        projection: &projection,
-        selected: &fixture.selected,
-        selection: &selection,
-        identity: &[],
-        candidates: &candidates,
-        quantities: &quantities,
-        stage: &[],
-        context: &fixture.context,
-    };
+    let lent = Lent::of(&fixture, &[], candidates, quantities);
+    let input = lent.input(&projection, &fixture);
     assert!(call::one(&call, abi::POINT_ROUTE, &input).await.is_ok());
     let seen = spy.seen.lock().unwrap();
     assert_eq!(
@@ -446,17 +452,8 @@ async fn fallbacks_reapply_their_own_grants_and_report_their_configured_names() 
     let mut primary = configured(Arc::new(Unavailable), PromptAccess::No, UserAccess::No);
     Arc::get_mut(&mut primary).unwrap().fallbacks.push(fallback);
     let projection = projection();
-    let selection = fixture.selection();
-    let input = call::Input {
-        projection: &projection,
-        selected: &fixture.selected,
-        selection: &selection,
-        identity: b"verified-identity",
-        candidates: &[],
-        quantities: &[],
-        stage: &[],
-        context: &fixture.context,
-    };
+    let lent = Lent::of(&fixture, b"verified-identity", Vec::new(), Vec::new());
+    let input = lent.input(&projection, &fixture);
     let mut ran = Vec::new();
     let result = call::chain(&primary, abi::POINT_ROUTE, &input, &mut ran).await;
     let Ok((called, answer)) = result else {
@@ -548,17 +545,8 @@ async fn recs_shown(signals: &[busbar_contract::signal::Signal]) -> Vec<abi::Can
         lane: "plane/lane-a".into(),
     }];
     let projection = Projection::default();
-    let selection = fixture.selection();
-    let input = call::Input {
-        projection: &projection,
-        selected: &fixture.selected,
-        selection: &selection,
-        identity: &[],
-        candidates: &candidates,
-        quantities: &[],
-        stage: &[],
-        context: &fixture.context,
-    };
+    let lent = Lent::of(&fixture, &[], candidates.into(), Vec::new());
+    let input = lent.input(&projection, &fixture);
     assert!(call::one(&call, abi::POINT_ROUTE, &input).await.is_ok());
     let recs = spy.0.lock().unwrap().clone();
     recs

@@ -31,7 +31,7 @@ pub(crate) fn inputs(unit: u64) -> AuditInputs {
         Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
     AuditInputs {
-        subject: Subject::PrincipalId(format!("key-{unit}")),
+        subject: Subject::principal(&format!("key-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
             incarnation: 0,

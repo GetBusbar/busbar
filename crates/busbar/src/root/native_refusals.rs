@@ -6,7 +6,13 @@
 use busbar_contract::caps::ReasonCode;
 use busbar_kernel::refusal::ClientRefusal;
 
-pub(crate) fn client(reason: ReasonCode, status: u16, text: &str) -> ClientRefusal {
+/// The client refusal for `reason`. `text` is kept as it is given: a fixed word is lent for the
+/// life of the process and a rendered message is moved in, so neither is copied here.
+pub(crate) fn client(
+    reason: ReasonCode,
+    status: u16,
+    text: impl Into<std::borrow::Cow<'static, str>>,
+) -> ClientRefusal {
     use busbar_plugin_abi::fail::failed::{F_INTERNAL, F_TIMEOUT, F_UNAVAILABLE};
     use busbar_plugin_abi::fail::refused::{
         R_AUTH_REQUIRED, R_BAD_CREDENTIAL, R_BUDGET, R_INVALID, R_NOT_TRUSTED, R_NO_ROUTE,
@@ -67,7 +73,7 @@ pub(crate) fn client(reason: ReasonCode, status: u16, text: &str) -> ClientRefus
     ClientRefusal {
         code,
         status,
-        text: text.to_owned().into(),
+        text: text.into(),
     }
 }
 

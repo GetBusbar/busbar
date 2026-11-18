@@ -154,6 +154,40 @@ fn the_record_header_is_fixed() {
     assert_eq!(JournalRecord::decode(&bytes).expect("decodes"), record);
 }
 
+/// `encodes_as` answers exactly what `encode() == bytes` answers: yes for the record's own bytes,
+/// and no for every single changed byte, every truncation and an extension, header and body alike.
+#[test]
+fn a_record_is_compared_with_bytes_exactly_as_its_encoding_is() {
+    for body in [Vec::new(), b"a body".to_vec(), vec![0xA5; 513]] {
+        let record = seal(
+            7,
+            1,
+            [9u8; 32],
+            Entry::new(RecordClass::Transaction, body)
+                .at(1_700_000_000, 42)
+                .under(3, 5),
+        );
+        let bytes = record.encode();
+        assert!(record.encodes_as(&bytes));
+        for at in 0..bytes.len() {
+            let mut changed = bytes.clone();
+            changed[at] ^= 0x01;
+            assert!(!record.encodes_as(&changed), "changed byte {at}");
+            assert_eq!(
+                record.encodes_as(&changed),
+                record.encode() == changed,
+                "changed byte {at}"
+            );
+        }
+        for len in 0..bytes.len() {
+            assert!(!record.encodes_as(&bytes[..len]), "truncated to {len}");
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(!record.encodes_as(&longer));
+    }
+}
+
 #[test]
 fn one_chain_carries_every_unit() {
     let mut run = Vec::new();

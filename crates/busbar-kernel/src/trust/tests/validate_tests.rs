@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::trust::validate::{
-    next_generation, reason, validate_visibility, Grant, Lapsed, Refusal, Snapshot, Standing,
+    next_generation, reason, standing_now, validate_visibility, Grant, Lapsed, Refusal, Snapshot,
+    Standing,
 };
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use std::collections::BTreeMap;
@@ -300,4 +301,49 @@ async fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() 
         !resolved.scope_allowed("thing", "two"),
         "the narrowing was not seen: the response is reading the copy taken at open"
     );
+}
+
+/// `standing_now` is the re-resolution an opened standing runs on every ask, with nothing opened:
+/// while the key is live, at a later reading, once it is disabled, once it is deleted and with no
+/// governance to ask, the two answer alike.
+#[tokio::test]
+async fn standing_now_answers_as_an_opened_standing_does() {
+    let gov = a_registry().await;
+    let key = a_live_key(&gov).await;
+    let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::MAX);
+    let both = |now: u64| {
+        let opened = standing
+            .still_permitted(Some(&*gov), 0, now)
+            .map(|live| live.map(|k| k.id.clone()));
+        let asked = standing_now(&key, Some(&*gov), now).map(|k| Some(k.id.clone()));
+        assert_eq!(asked, opened, "at {now}");
+        asked
+    };
+    let lapsed = Err(Lapsed::Identity(Refusal::IdentityNotLive {
+        principal: key.id.clone(),
+    }));
+
+    assert_eq!(both(1_700_000_000), Ok(Some(key.id.clone())));
+    let _ = both(4_000_000_000);
+    assert_eq!(
+        standing_now(&key, None, 1_700_000_000).map(|k| k.id.clone()),
+        Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: key.id.clone()
+        }))
+    );
+    assert_eq!(
+        standing
+            .still_permitted(None, 0, 1_700_000_000)
+            .map(|live| live.map(|k| k.id.clone())),
+        lapsed
+    );
+
+    gov.update_key_outcome_async(&key.id, Some(false), None)
+        .await
+        .expect("the admin PATCH an operator makes")
+        .expect("the key exists");
+    assert_eq!(both(1_700_000_000), lapsed);
+
+    gov.delete_key(&key.id).await.expect("the admin DELETE");
+    assert_eq!(both(1_700_000_000), lapsed);
 }

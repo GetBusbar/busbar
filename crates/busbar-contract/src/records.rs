@@ -802,8 +802,19 @@ pub type RecordStoreResult<T> = Result<T, RecordStoreError>;
 /// A durable-store failure, carried as a human-readable message. Deliberately backend-agnostic: a
 /// plugin converts its own driver error (rusqlite, a Postgres driver, …) into this at the seam, so
 /// this contract crate stays free of any storage dependency. The message must never carry a secret.
+///
+/// The message is a fixed word of the program (`RecordStoreError::fixed`, or a string literal's
+/// `.into()`: borrowed, nothing allocated) or a text rendered when the failure happened (owned).
 #[derive(Debug)]
-pub struct RecordStoreError(pub String);
+pub struct RecordStoreError(pub std::borrow::Cow<'static, str>);
+
+impl RecordStoreError {
+    /// A failure whose message is a fixed word of the program: nothing is allocated.
+    #[must_use]
+    pub const fn fixed(message: &'static str) -> Self {
+        RecordStoreError(std::borrow::Cow::Borrowed(message))
+    }
+}
 
 impl std::fmt::Display for RecordStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -814,12 +825,12 @@ impl std::error::Error for RecordStoreError {}
 
 impl From<String> for RecordStoreError {
     fn from(s: String) -> Self {
-        RecordStoreError(s)
+        RecordStoreError(std::borrow::Cow::Owned(s))
     }
 }
 impl From<&str> for RecordStoreError {
     fn from(s: &str) -> Self {
-        RecordStoreError(s.to_string())
+        RecordStoreError(std::borrow::Cow::Owned(s.to_string()))
     }
 }
 

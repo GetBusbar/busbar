@@ -160,7 +160,7 @@ fn the_on_disk_tag_vocabulary_is_the_literal_text_and_not_a_rendering_of_a_type(
     }
 
     for (subject, frozen) in [
-        (Subject::PrincipalId("pseudonym-1".into()), "principal"),
+        (Subject::principal("pseudonym-1"), "principal"),
         (Subject::Arrival, "arrival"),
         (Subject::Node(7), "node"),
         (Subject::Aggregate, "aggregate"),

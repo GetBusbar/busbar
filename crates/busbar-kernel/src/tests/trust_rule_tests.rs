@@ -42,7 +42,7 @@ async fn kernel_with(trust: Vec<(String, TrustEntry)>) -> KernelServices {
         .with_test_custody()
         .await;
     k.admit(
-        "inst",
+        &"inst".into(),
         InstanceFacts {
             trust,
             ..InstanceFacts::default()

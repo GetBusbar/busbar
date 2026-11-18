@@ -622,7 +622,7 @@ impl RouteAwait for Hooked<'_> {
                 self.post,
                 &busbar_kernel::plane_driver::HooksRan {
                     unit: ctx.key,
-                    hooks: hooks.clone(),
+                    hooks,
                 },
             );
         }
@@ -638,7 +638,7 @@ fn ran(
     failed: bool,
 ) -> busbar_kernel_audit::HookApplied {
     busbar_kernel_audit::HookApplied {
-        hook: hook.to_string(),
+        hook: hook.into(),
         head,
         failed,
     }

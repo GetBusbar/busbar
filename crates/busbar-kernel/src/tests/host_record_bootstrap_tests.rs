@@ -16,7 +16,7 @@ trait TestAdmission {
 }
 impl TestAdmission for KernelServices {
     fn admit_sync(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
-        futures::FutureExt::now_or_never(self.admit(instance, facts))
+        futures::FutureExt::now_or_never(self.admit(&instance.into(), facts))
             .expect("in-memory admission is ready")
     }
 }

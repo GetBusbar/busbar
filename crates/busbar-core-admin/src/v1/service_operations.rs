@@ -1435,13 +1435,13 @@ async fn fetch_usage_day(
                 .map_err(|e| {
                     (
                         "usage.observations",
-                        busbar_kernel::governance::RecordStoreError(e.to_string()),
+                        busbar_kernel::governance::RecordStoreError::from(e.to_string()),
                     )
                 })?;
             store.dated_records_for_day(bucket).await.map_err(|e| {
                 (
                     "usage.observations",
-                    busbar_kernel::governance::RecordStoreError(e.to_string()),
+                    busbar_kernel::governance::RecordStoreError::from(e.to_string()),
                 )
             })?
         } else {

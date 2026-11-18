@@ -11,11 +11,7 @@
 use busbar_contract::protocol::SseFrames;
 use busbar_contract::secure::SecureVec;
 
-#[allow(dead_code)]
-#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
-mod canary_scan;
-
-use canary_scan::WipeProof;
+use busbar_contract::canary_scan::WipeProof;
 
 /// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]

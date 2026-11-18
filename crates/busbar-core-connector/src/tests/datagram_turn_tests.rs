@@ -212,7 +212,7 @@ fn a_checked_batch_pauses_before_a_same_op_empty_input_recall() {
     let door = Branching::new(Origin::Caller);
     let mut framing = framing(&door);
     let mut turn = framing
-        .emit_turn(CALLER_LINE, START, true, true, Instant::now())
+        .emit_turn(CALLER_LINE, START, true, true, At::of(Instant::now()))
         .unwrap();
     let first = turn.next_batch().unwrap().unwrap();
     assert!(!first.pieces.is_empty());
@@ -253,14 +253,20 @@ fn cancelling_a_partly_published_turn_finishes_its_accepted_input_once() {
     let mut framing = framing(&door);
     {
         let mut turn = framing
-            .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+            .emit_turn(CALLER_LINE, START, true, false, At::of(Instant::now()))
             .unwrap();
         let first = turn.next_batch().unwrap().unwrap();
         assert!(!first.pieces.is_empty());
     }
     assert_eq!(door.finished.load(Ordering::SeqCst), 1);
     assert!(framing
-        .emit(CALLER_LINE, CALLER_FRAME, true, false, Instant::now())
+        .emit(
+            CALLER_LINE,
+            CALLER_FRAME,
+            true,
+            false,
+            At::of(Instant::now())
+        )
         .is_err());
     drop(framing);
     assert_eq!(door.finished.load(Ordering::SeqCst), 1);
@@ -279,7 +285,7 @@ fn a_failed_or_unwinding_recall_finishes_the_accepted_operation_once() {
         door.output.lock().unwrap().recall_failure = Some(failure);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut turn = framing
-                .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+                .emit_turn(CALLER_LINE, START, true, false, At::of(Instant::now()))
                 .unwrap();
             assert!(turn.next_batch().unwrap().is_some());
             let error = turn.next_batch();
@@ -300,14 +306,20 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
     let mut a = framing(&caller);
     let mut b = framing(&upstream);
     let mut a_turn = a
-        .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+        .emit_turn(CALLER_LINE, START, true, false, At::of(Instant::now()))
         .unwrap();
     let mut a_output = a_turn.next_batch().unwrap().unwrap();
     let mut a_batch = std::mem::take(&mut a_output.pieces).into_iter();
     drop(a_output);
     let first_a = a_batch.next().unwrap();
     let mut b_turn = b
-        .emit_turn(UPSTREAM_LINE, &first_a.bytes, true, false, Instant::now())
+        .emit_turn(
+            UPSTREAM_LINE,
+            &first_a.bytes,
+            true,
+            false,
+            At::of(Instant::now()),
+        )
         .unwrap();
     let b_batch = b_turn.next_batch().unwrap().unwrap();
 
@@ -366,7 +378,9 @@ fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_bud
                 } else {
                     (&mut b, UPSTREAM_LINE, UPSTREAM_LINE)
                 };
-                let mut answer = framing.emit(stream, &bytes, true, false, now).unwrap();
+                let mut answer = framing
+                    .emit(stream, &bytes, true, false, At::of(now))
+                    .unwrap();
                 for piece in std::mem::take(&mut answer.pieces) {
                     if piece.stream == line {
                         awaiting.push_back((!at_caller, piece.bytes));
@@ -419,15 +433,17 @@ fn the_same_branching_framers_have_finite_feedback_with_the_callers_own_channel_
     let mut a = framing(&caller);
     let mut b = framing(&upstream);
     let now = Instant::now();
-    let mut a_output = a.emit(CALLER_LINE, START, true, false, now).unwrap();
+    let mut a_output = a
+        .emit(CALLER_LINE, START, true, false, At::of(now))
+        .unwrap();
     let mut channel = Vec::new();
     for frame in std::mem::take(&mut a_output.pieces) {
         let mut b_output = b
-            .emit(UPSTREAM_LINE, &frame.bytes, true, false, now)
+            .emit(UPSTREAM_LINE, &frame.bytes, true, false, At::of(now))
             .unwrap();
         for feedback in std::mem::take(&mut b_output.pieces) {
             let mut originating_at_a = a
-                .emit(CALLER_LINE, &feedback.bytes, true, false, now)
+                .emit(CALLER_LINE, &feedback.bytes, true, false, At::of(now))
                 .unwrap();
             channel.extend(std::mem::take(&mut originating_at_a.pieces));
         }
@@ -453,7 +469,10 @@ fn a_paused_turn_exposes_secure_wire_without_replaying_the_application_bytes() {
     r.pump(200);
     assert!(r.host.presented());
     let before = r.door.st.lock().unwrap().emitted.len();
-    let mut turn = r.host.emit_turn(1, MESSAGE, true, false, r.now).unwrap();
+    let mut turn = r
+        .host
+        .emit_turn(1, MESSAGE, true, false, At::of(r.now))
+        .unwrap();
     assert!(turn.next_batch().unwrap().is_some());
     let mut delivered = Vec::new();
     while let Some((to, datagram)) = turn.poll_send() {

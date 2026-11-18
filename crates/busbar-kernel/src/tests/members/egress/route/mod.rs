@@ -41,7 +41,7 @@ pub(crate) struct Node {
     pub clock: Arc<TestClock>,
     pub telemetry: Arc<TestTelemetry>,
     pub conns: Arc<TestConns>,
-    pub pools: HashMap<String, Pool>,
+    pub pools: HashMap<busbar_contract::kept::Text, Pool>,
 
     pub lanes: Vec<&'static str>,
     pub floor: WeightedFloor,
@@ -124,8 +124,7 @@ impl Node {
     }
 
     pub fn pool(&mut self, name: &str, members: Vec<Member>) -> &mut Self {
-        self.pools
-            .insert(name.to_string(), Pool::new(name, members));
+        self.pools.insert(name.into(), Pool::new(name, members));
         self
     }
 
@@ -134,10 +133,13 @@ impl Node {
         self
     }
 
-    fn timed_pools(&self) -> HashMap<String, Pool> {
+    fn timed_pools(&self) -> HashMap<busbar_contract::kept::Text, Pool> {
         let mut pools = self.pools.clone();
         for pool in pools.values_mut() {
-            pool.failover.timeout_secs = self.timeout_secs;
+            pool.set_failover(busbar_kernel_egress::Failover {
+                timeout_secs: self.timeout_secs,
+                ..pool.failover().clone()
+            });
         }
         pools
     }
@@ -152,7 +154,7 @@ impl Node {
 
     pub fn walker(&self, pool: &str) -> Walker<'_> {
         let pools = self.timed_pools();
-        let walk = Walk::start(&ports(self, &pools), pool, self.clock.now());
+        let walk = Walk::start(&ports(self, &pools), &pool.into(), self.clock.now());
         Walker {
             node: self,
             pools,
@@ -188,7 +190,7 @@ impl Node {
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),
                             auth: None,
-                            provider: (*lane).to_string(),
+                            provider: (*lane).into(),
                             keep: ResponseKeep::default(),
                         },
                     )
@@ -202,7 +204,7 @@ impl Node {
 
     pub fn unit_route(&self, pool: &str) -> UnitRoute {
         UnitRoute {
-            pool: pool.to_string(),
+            pool: pool.into(),
             affinity: self.affinity,
             wants_stream: self.wants_stream,
             ..UnitRoute::default()
@@ -267,7 +269,7 @@ impl Node {
             }
             let mut served = Served {
                 destination,
-                pool,
+                pool: pool.as_str().to_owned(),
                 status: None,
                 pieces: 0,
             };
@@ -368,7 +370,10 @@ impl Node {
     }
 }
 
-fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> {
+fn ports<'p>(
+    node: &'p Node,
+    pools: &'p HashMap<busbar_contract::kept::Text, Pool>,
+) -> WalkPorts<'p> {
     WalkPorts {
         breaker: node.breaker.as_ref(),
         capacity: node.capacity.as_ref(),
@@ -382,8 +387,8 @@ fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
     OutboundRequest {
         text: false,
         need: 0,
-        member: member.to_string(),
-        pool: pool.to_string(),
+        member: member.into(),
+        pool: pool.into(),
         attempt_no,
         verb: b"POST".to_vec(),
         target: b"/v1/test".to_vec(),
@@ -394,7 +399,7 @@ fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
 
 pub(crate) struct Walker<'n> {
     node: &'n Node,
-    pools: HashMap<String, Pool>,
+    pools: HashMap<busbar_contract::kept::Text, Pool>,
     token: Pass<Route>,
     pub walk: Walk,
 

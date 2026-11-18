@@ -233,7 +233,13 @@ fn answer(
     for out in outs {
         answers.take(&out);
     }
-    answers.finish()
+    answers.finish()?;
+    // The session keeps its array; the test takes a copy of this answer's acts out of it to compare.
+    let mut taken = Actions::new(&answers.source).expect("test answer owner");
+    for act in answers.acts.drain() {
+        taken.push(act).expect("test action capacity");
+    }
+    Ok(taken)
 }
 
 // Compare test observations explicitly; production payload owners deliberately have no equality API.
@@ -533,7 +539,10 @@ fn stream_full_holds_the_emits_own_stream() {
         vec![TransportOut::Write(b"x"), TransportOut::StreamFull(3)],
     )
     .expect("STREAM_FULL for the emit's own stream");
-    assert_eq!(acts, vec![Act::Write(b"x".as_slice().into()), Act::Full(3)]);
+    assert_eq!(
+        *acts,
+        vec![Act::Write(b"x".as_slice().into()), Act::Full(3)]
+    );
     assert!(answers.is_held(3));
     assert!(!answers.is_held(5));
 }
@@ -594,7 +603,7 @@ fn stream_writable_releases_a_held_stream_and_is_ignored_for_one_not_held() {
         ],
     )
     .expect("writable");
-    assert_eq!(acts, vec![Act::Writable(3)]);
+    assert_eq!(*acts, vec![Act::Writable(3)]);
     assert!(!answers.is_held(3));
     assert_eq!(answers.next_stall(), None);
 }
@@ -608,7 +617,7 @@ fn a_client_opening_answers_stream_opened_and_may_hold_the_stream_it_opened() {
         vec![TransportOut::StreamOpened(7), TransportOut::StreamFull(7)],
     )
     .expect("opened and full");
-    assert_eq!(acts, vec![Act::Opened(7), Act::Full(7)]);
+    assert_eq!(*acts, vec![Act::Opened(7), Act::Full(7)]);
     assert!(answers.is_held(7));
 
     let mut answers = Answers::new(None, Instant::now());
@@ -851,7 +860,7 @@ fn e_close_is_sent_exactly_once_by_core() {
     let now = Instant::now();
     let acts = s.conn.close(CR_DRAIN, now).expect("sent").expect("live");
     assert_eq!(
-        acts,
+        *acts,
         vec![
             Act::Write(b"bye".as_slice().into()),
             Act::Close { abort: false }
@@ -931,7 +940,14 @@ fn a_terminal_session_never_calls_the_framer_again() {
 fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
     let mut s = scripted(Box::new(|_| vec![Out::Write(b"goodbye")]), None, false);
     let now = Instant::now();
-    let output = s.conn.close(CR_DRAIN, now).expect("close").expect("output");
+    // The close's output is the session's own array now: it cannot outlive the session's custody.
+    let pending = s
+        .conn
+        .close(CR_DRAIN, now)
+        .expect("close")
+        .expect("output")
+        .len();
+    assert_eq!(pending, 1);
     assert!(!s.conn.is_live());
     assert_eq!(
         s.dropped.load(Ordering::Relaxed),
@@ -945,7 +961,11 @@ fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
         0,
         "repeat close cannot cancel pending output"
     );
-    assert_eq!(output, [Act::Write(b"goodbye".as_slice().into())]);
+    assert_eq!(
+        *s.conn.actions(),
+        [Act::Write(b"goodbye".as_slice().into())],
+        "the pending output is still there"
+    );
     drop(s.conn);
     assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
 }
@@ -1081,13 +1101,13 @@ async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
     io: S,
     wiring: Wiring,
 ) -> Outcome<crate::raw_progress::RawCarrier<S>> {
-    let mut answer = Actions::new(&conn.answers.source).expect("test answer owner");
+    let mut conn = conn;
     for act in first {
-        answer.push(act).expect("test action capacity");
+        conn.actions().push(act).expect("test action capacity");
     }
     let io = crate::raw_progress::test_carrier(io);
     let progress = io.progress();
-    super::drive(conn, answer, io, progress, wiring).await
+    super::drive(conn, io, progress, wiring).await
 }
 
 #[test]
@@ -1132,7 +1152,8 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
         requirement: CompletionRequirement::Flush,
     });
     answers.take(&TransportOut::ResponseQuiescent(3));
-    let acts = answers.finish().expect("attributed native answer");
+    answers.finish().expect("attributed native answer");
+    let acts = &answers.acts;
     assert!(
         matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")
     );

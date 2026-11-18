@@ -3,8 +3,7 @@
 
 use super::*;
 use crate::governance::selected_resource::{
-    CommittedRate, EffectiveToken, EffectiveTokenView, RateFinalSnapshot, RateRejected,
-    RateReservation, TokenCoverage,
+    CommittedRate, EffectiveToken, EffectiveTokenView, RateRejected, RateReservation, TokenCoverage,
 };
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
 
@@ -106,7 +105,7 @@ impl NativeRequestMoney {
                     .map_err(Box::new)
             })
             .map_err(|error| match error {
-                SelectedCommitError::Custody(_) => CommitFailure::Before,
+                SelectedCommitError::Custody => CommitFailure::Before,
                 SelectedCommitError::Commit(error) => CommitFailure::Rate(error),
             })?;
         // Everything after irrevocable rate commitment is an infallible ownership transfer.
@@ -246,7 +245,8 @@ impl NativeAttempt {
             end,
         )
         .map_err(|_| NativeAttemptError::Usage)?;
-        let physical_classes = prepared.physical_classes().to_vec();
+        // The shared list itself: no class name is copied to observe.
+        let physical_classes = Arc::clone(prepared.physical_classes());
         let rate_view = effective_tokens(&physical_classes, &staged.partition);
         *parts
             .attempts
@@ -254,15 +254,10 @@ impl NativeAttempt {
             .ok_or(NativeAttemptError::Binding)? = staged.partition.clone();
         snapshot.metered = ValidatedSelectedCheckpoint::try_from(&snapshot)
             .and_then(|checked| checked.project())
-            .map_err(NativeAttemptError::Custody)?
+            .map_err(|_| NativeAttemptError::Custody)?
             .partitions
             .iter()
-            .any(|partition| {
-                partition
-                    .billed_counts()
-                    .iter()
-                    .any(|(_, count)| !count.is_zero())
-            });
+            .any(|partition| partition.has_bill());
         let published = native.publish_incurred(&self.service.money.gov, snapshot);
         // The checkpoint book lock is released before entering rate cells. The money shard
         // retains the current attempt's source/authority while both owners observe the batch.
@@ -274,11 +269,11 @@ impl NativeAttempt {
         Ok(staged.rounded)
     }
 
-    pub(crate) fn seal(mut self) -> Result<RateFinalSnapshot, NativeAttemptError> {
+    pub(crate) fn seal(mut self) -> Result<(), NativeAttemptError> {
         self.finish()
     }
 
-    fn finish(&mut self) -> Result<RateFinalSnapshot, NativeAttemptError> {
+    fn finish(&mut self) -> Result<(), NativeAttemptError> {
         let rate = self.rate.take().ok_or(NativeAttemptError::Unavailable)?;
         let preparation = rate.prepared().selection().preparation();
         let outcome = (|| {
@@ -334,14 +329,14 @@ impl Drop for NativeAttempt {
 }
 
 pub(super) fn effective_tokens<'a>(
-    classes: &'a [Box<str>],
+    classes: &'a [busbar_contract::kept::Text],
     attempt: &AttemptPartition,
 ) -> EffectiveTokenView<'a> {
     EffectiveTokenView(
         classes
             .iter()
             .map(|class| {
-                let facts = attempt.usage.classes.get(class.as_ref());
+                let facts = attempt.usage.classes.get(class);
                 EffectiveToken {
                     class,
                     quantity: facts

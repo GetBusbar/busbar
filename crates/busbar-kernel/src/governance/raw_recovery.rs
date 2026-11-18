@@ -69,7 +69,7 @@ struct Links {
 
 fn invalid(error: impl std::fmt::Display) -> RecordStoreError {
     rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("invalid raw recovery custody: {error}"),
     )
 }
@@ -156,11 +156,15 @@ impl GovState {
         Ok(vec![custody.delta])
     }
 
+    /// One usage child, first sent at `first_sent_at_ms`: the wall reading of the custody
+    /// transition that makes it. A transition that makes several children at once (no await
+    /// between them) reads the clock once and dates them all by it; this builder reads nothing.
     pub(crate) fn usage_recovery_child(
         bucket: &str,
         window: u64,
         plain: ExactUsageDelta,
         dated: ExactUsageDelta,
+        first_sent_at_ms: u64,
     ) -> RecordStoreResult<Option<RecoveryChild>> {
         if plain.is_zero() && dated.is_zero() {
             return Ok(None);
@@ -184,7 +188,7 @@ impl GovState {
             operation_id: crate::door::op_id().0,
             kind: RecoveryKind::Usage,
             body_fingerprint: usage_fingerprint(&custody)?,
-            first_sent_at_ms: Some(crate::store::now_ms()),
+            first_sent_at_ms: Some(first_sent_at_ms),
             payload: encode(&custody)?,
         }))
     }
@@ -512,17 +516,20 @@ impl GovState {
                     let next = if self.recovery_sent_here(event.operation_id) {
                         self.apply_raw_intent(&event).await
                     } else {
-                        Self::quarantined_raw_payload(&event).and_then(|payload| {
-                            self.new_recovery_event(
-                                event.operation_id,
-                                event.kind,
-                                event.body_fingerprint,
-                                RecoveryState::LandedUnknown,
-                                event.first_sent_at_ms,
-                                payload,
-                            )
-                            .map_err(invalid)
-                        })
+                        // This operation's own quarantine: its remainder is first sent now.
+                        Self::quarantined_raw_payload(&event, crate::store::now_ms()).and_then(
+                            |payload| {
+                                self.new_recovery_event(
+                                    event.operation_id,
+                                    event.kind,
+                                    event.body_fingerprint,
+                                    RecoveryState::LandedUnknown,
+                                    event.first_sent_at_ms,
+                                    payload,
+                                )
+                                .map_err(invalid)
+                            },
+                        )
                     };
                     next.map(|next| k1.push((at, next)))
                 }
@@ -657,7 +664,12 @@ impl GovState {
         .map_err(invalid)
     }
 
-    fn quarantined_raw_payload(event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
+    /// `event`'s quarantined custody; the unsent remainder it hands off is first sent at
+    /// `sent_at_ms`, the reading of the transition that quarantines it.
+    fn quarantined_raw_payload(
+        event: &RecoveryEvent,
+        sent_at_ms: u64,
+    ) -> RecordStoreResult<Vec<u8>> {
         if event.kind == RecoveryKind::Metering {
             let mut custody: MeteringCustody = decode(&event.payload)?;
             custody.age_unknown = true;
@@ -672,7 +684,9 @@ impl GovState {
         let mut unsent = SegmentedUsage::of(&unsent_plain, &unsent_dated)?;
         let mut absorbed = SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
 
-        let netted = absorbed.take_negatives(Some(&unsent.positive()));
+        // `take_negatives` reads a capacity segment as zero unless it is positive, so the unsent
+        // usage itself is the capacity: no positive-only copy of it is made.
+        let netted = absorbed.take_negatives(Some(&unsent));
         unsent.merge(&netted);
         let (unsent_plain, unsent_dated) = unsent.deltas();
         custody.handoffs.extend(Self::usage_recovery_child(
@@ -680,6 +694,7 @@ impl GovState {
             custody.window,
             unsent_plain,
             unsent_dated,
+            sent_at_ms,
         )?);
         custody.plain = ExactUsageDelta::from_signed(&custody.chunk_plain);
         custody.dated = ExactUsageDelta::from_signed(&custody.chunk_dated);
@@ -695,11 +710,14 @@ impl GovState {
                 custody.dated.subtract(&custody.chunk_dated);
                 custody.plain.merge(&custody.absorbed_plain);
                 custody.dated.merge(&custody.absorbed_dated);
+                // Read here, after the ledger commit this payload records: the remainder is
+                // first sent now, not when the pass that drove the commit began.
                 let child = Self::usage_recovery_child(
                     &custody.bucket,
                     custody.window,
                     custody.plain.clone(),
                     custody.dated.clone(),
+                    crate::store::now_ms(),
                 )?;
                 custody.handoffs.extend(child);
                 custody.plain = ExactUsageDelta::default();
@@ -713,9 +731,13 @@ impl GovState {
         }
     }
 
+    /// `event`'s custody under `verdict`; the child it hands off (the usage remainder, or the
+    /// metering resend of a verdict that did not land) is first sent at `sent_at_ms`, the reading
+    /// of the transition that records the verdict.
     fn raw_verdict_payload(
         event: &RecoveryEvent,
         verdict: RawVerdict,
+        sent_at_ms: u64,
     ) -> Result<Vec<u8>, RecoveryError> {
         let map = |error: RecordStoreError| {
             crate::governance::rendered_error(RecoveryError::Unavailable, error)
@@ -734,6 +756,7 @@ impl GovState {
                     custody.window,
                     custody.plain.clone(),
                     custody.dated.clone(),
+                    sent_at_ms,
                 )
                 .map_err(map)?;
                 custody.handoffs.extend(child);
@@ -759,7 +782,7 @@ impl GovState {
                         operation_id: crate::door::op_id().0,
                         kind: RecoveryKind::Metering,
                         body_fingerprint: event.body_fingerprint,
-                        first_sent_at_ms: Some(crate::store::now_ms()),
+                        first_sent_at_ms: Some(sent_at_ms),
                         payload: encode(&child_custody).map_err(map)?,
                     });
                 }
@@ -845,7 +868,8 @@ impl GovState {
         } else {
             RecoveryState::VerdictNotLanded
         };
-        let payload = Self::raw_verdict_payload(&event, verdict)?;
+        // Read here, after the awaits above: the verdict's child is first sent now.
+        let payload = Self::raw_verdict_payload(&event, verdict, crate::store::now_ms())?;
         let candidate = self.new_recovery_event(
             event.operation_id,
             event.kind,
@@ -879,6 +903,7 @@ impl GovState {
         mut plain: ExactUsageDelta,
         mut dated: ExactUsageDelta,
         settled: &ForeignSettledSnapshot,
+        sent_at_ms: u64,
     ) -> RecordStoreResult<DurableUsageFlight> {
         let epoch = self.recovery_selection_epoch();
         let (correction_plain, correction_dated) =
@@ -966,7 +991,7 @@ impl GovState {
         let (deferred_plain, deferred_dated) = deferred.deltas();
         let (plain, dated) = remaining.deltas();
         Ok(DurableUsageFlight {
-            child: Self::usage_recovery_child(bucket, window, plain, dated)?,
+            child: Self::usage_recovery_child(bucket, window, plain, dated, sent_at_ms)?,
             prerequisite,
             deferred_plain,
             deferred_dated,
@@ -1330,8 +1355,11 @@ impl GovState {
                 |child, index| context.identify(event.operation_id, child, index),
             )
         };
+        // One staging, no await in it: the quarantine's remainder and the verdict's child are
+        // both first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         let (quarantined, unknown) = if event.state == RecoveryState::Intent {
-            let payload = Self::quarantined_raw_payload(event).map_err(|error| {
+            let payload = Self::quarantined_raw_payload(event, sent_at_ms).map_err(|error| {
                 crate::governance::rendered_error(RecoveryError::Invalid, error)
             })?;
             let unknown = event.checkpoint(RecoveryState::LandedUnknown, normalize(payload)?)?;
@@ -1351,7 +1379,7 @@ impl GovState {
             actor,
             reason,
         };
-        let payload = Self::raw_verdict_payload(&unknown, verdict)?;
+        let payload = Self::raw_verdict_payload(&unknown, verdict, sent_at_ms)?;
         let state = if landed {
             RecoveryState::VerdictLanded
         } else {

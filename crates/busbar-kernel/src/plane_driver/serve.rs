@@ -182,7 +182,7 @@ fn lent_head(
     consumed: Option<&ConsumedCredentials>,
 ) -> HeadFields {
     let stripped;
-    let headers = if ConsumedCredentials::fields_of(consumed, headers).is_empty() {
+    let headers = if !ConsumedCredentials::present_in(consumed, headers) {
         headers
     } else {
         let mut copy = headers.clone();

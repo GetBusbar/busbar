@@ -45,7 +45,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
     let mut principal = crate::auth::Principal::from_id("sam");
     principal.roles = vec!["eng".to_string()];
     let verdict = crate::auth::ChainVerdict::Identified {
-        module: "mode-replay-idp".to_string(),
+        module: "mode-replay-idp".into(),
         principal,
         resolved: None,
         signed_authority: None,
@@ -77,7 +77,7 @@ async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclai
     let now = busbar_kernel::store::now();
     for _ in 0..2 {
         let claim = crate::auth::PendingClaim::for_identity(
-            "mode-replay-idp",
+            &"mode-replay-idp".into(),
             &identity,
             Some(gov.clone()),
             now,
@@ -186,7 +186,7 @@ async fn exchange_verifier_outcome_projection_preserves_failed_and_faulted_503()
             Verified::Failed
         };
         let judged = crate::auth::data_verdict_of("door", verified.into(), faulted).map(|judged| {
-            crate::auth::chain_position_verdict("door", judged.verdict)
+            crate::auth::chain_position_verdict(&"door".into(), judged.verdict)
                 .unwrap_or(crate::auth::ChainVerdict::Denied)
         });
         let response =

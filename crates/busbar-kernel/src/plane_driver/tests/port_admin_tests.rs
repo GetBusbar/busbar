@@ -18,7 +18,7 @@ fn admin(route: u32, methods: u32, pattern: &str) -> Mounted {
         effective: AUTH_OPERATOR,
         pattern: pattern.into(),
         cred_header: None,
-        resource_kinds: Vec::new(),
+        resource_kinds: Default::default(),
         catalog: false,
     }
 }

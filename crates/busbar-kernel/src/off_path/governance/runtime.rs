@@ -265,28 +265,6 @@ use crate::governance::exact_debt::{BudgetFlushFlight, ExactModelDelta, ExactUsa
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_contract::records::UsageDelta;
 
-/// `exact_debt`: a stored raw debt row's unit counts rescaled to micro-units, decoded once when
-/// its custody is restored.
-pub(crate) fn exact_debt_stored_units(
-    units: std::collections::BTreeMap<String, i128>,
-    scale: u32,
-) -> Result<std::collections::BTreeMap<String, i128>, CountError> {
-    units
-        .into_iter()
-        .map(|(unit, n)| Count::from_stored(n, scale).map(|n| (unit, n.micros())))
-        .collect()
-}
-
-/// `exact_debt`: stored decimal unit counts parsed, decoded once when custody is restored.
-pub(crate) fn exact_debt_parse_units<E: serde::de::Error>(
-    units: std::collections::BTreeMap<String, String>,
-) -> Result<std::collections::BTreeMap<String, i128>, E> {
-    units
-        .into_iter()
-        .map(|(unit, count)| count.parse().map(|count| (unit, count)).map_err(E::custom))
-        .collect()
-}
-
 /// `exact_debt`: whether every model row of a flush debt is zero (flusher and window roll).
 pub(crate) fn exact_debt_models_zero(models: &[ExactModelDelta]) -> bool {
     models
@@ -297,6 +275,22 @@ pub(crate) fn exact_debt_models_zero(models: &[ExactModelDelta]) -> bool {
 /// `exact_debt`: the row of a flush debt that names this model (flusher and window roll).
 pub(crate) fn exact_debt_model_index(models: &[ExactModelDelta], model: &str) -> Option<usize> {
     models.iter().position(|row| row.model == model)
+}
+
+/// `exact_debt`: the row of a flush debt named `era SEP model`, found by comparing the three
+/// parts where they lie: the dated name is not built to look a row up.
+pub(crate) fn exact_debt_era_model_index(
+    models: &[ExactModelDelta],
+    era: &str,
+    separator: char,
+    model: &str,
+) -> Option<usize> {
+    models.iter().position(|row| {
+        row.model
+            .strip_prefix(era)
+            .and_then(|rest| rest.strip_prefix(separator))
+            == Some(model)
+    })
 }
 
 /// `exact_debt`: an acknowledged or parked signed delta as exact flush debt.
@@ -326,25 +320,27 @@ pub(crate) fn exact_debt_from_signed(delta: &UsageDelta) -> Result<ExactUsageDel
 }
 
 /// `exact_debt`: exact flush debt as the signed wire delta a flush chunk sends, when it fits.
-pub(crate) fn exact_debt_signed(debt: &ExactUsageDelta) -> Option<UsageDelta> {
+/// The debt is handed over: each model and unit name moves into the chunk's own rows.
+pub(crate) fn exact_debt_signed(debt: ExactUsageDelta) -> Option<UsageDelta> {
     Some(UsageDelta {
         requests: i64::try_from(debt.requests).ok()?,
         billable_requests: i64::try_from(debt.billable_requests).ok()?,
         models: debt
             .models
-            .iter()
+            .into_iter()
             .map(|model| {
+                let scale = model.scale;
                 Some(busbar_contract::records::ModelTokensDelta {
-                    model: model.model.clone(),
+                    model: model.model,
                     scale: COUNT_SCALE,
                     usage_units: model
                         .usage_units
-                        .iter()
-                        .filter(|(_, count)| **count != 0)
+                        .into_iter()
+                        .filter(|(_, count)| *count != 0)
                         .map(|(unit, count)| {
-                            Count::from_stored(*count, model.scale)
+                            Count::from_stored(count, scale)
                                 .ok()
-                                .map(|count| (unit.clone(), count.micros()))
+                                .map(|count| (unit, count.micros()))
                         })
                         .collect::<Option<_>>()?,
                 })
@@ -358,26 +354,15 @@ pub(crate) fn exact_debt_era_model(era: &str, separator: char, model: &str) -> S
     format!("{era}{separator}{model}")
 }
 
-/// `exact_debt`: the positive segments of a custody's raw usage (custody capture).
-pub(crate) fn exact_debt_positive<K: Clone + Ord>(
-    segments: &std::collections::BTreeMap<K, i128>,
-) -> std::collections::BTreeMap<K, i128> {
-    segments
-        .iter()
-        .filter(|(_, count)| **count > 0)
-        .map(|(segment, count)| (segment.clone(), *count))
-        .collect()
+/// `exact_debt`: keep only the positive segments of a custody's raw usage, in place (custody
+/// capture): the map the caller owns is narrowed; nothing is copied.
+pub(crate) fn exact_debt_keep_positive<K: Ord>(segments: &mut std::collections::BTreeMap<K, i128>) {
+    segments.retain(|_, count| *count > 0);
 }
 
 /// `exact_debt`: whether every segment of a custody's raw usage is zero (custody capture).
 pub(crate) fn exact_debt_all_zero<K>(segments: &std::collections::BTreeMap<K, i128>) -> bool {
     segments.values().all(|count| *count == 0)
-}
-
-/// `exact_debt`: a bucket name a flush flight or a deletion hold owns, once per flight or
-/// deletion.
-pub(crate) fn exact_debt_bucket(bucket: &str) -> String {
-    bucket.to_owned()
 }
 
 /// `exact_debt`: the windows a cell has debt in, ascending: its current window and every parked
@@ -393,22 +378,9 @@ pub(crate) fn exact_debt_flush_windows(
     windows
 }
 
-/// `exact_debt`: one flush flight per window that captures one, in window order (the flusher).
-pub(crate) fn exact_debt_capture_windows<T>(
-    windows: std::collections::BTreeSet<u64>,
-    capture: impl FnMut(u64) -> Option<T>,
-) -> Vec<T> {
-    windows.into_iter().filter_map(capture).collect()
-}
-
 /// `exact_debt`: drop a window's parked debt once its flight captured it (the flusher).
 pub(crate) fn exact_debt_unpark<T>(parked: &mut Vec<(u64, T)>, window: u64) {
     parked.retain(|(at, _)| *at != window);
-}
-
-/// `exact_debt`: the flight-table address of a finished flight (the flusher).
-pub(crate) fn exact_debt_flight_address(bucket: &str, window: u64) -> (String, u64) {
-    (bucket.to_owned(), window)
 }
 
 /// `exact_debt`: every in-flight flush flight (the flusher's resume pass).
@@ -421,7 +393,10 @@ pub(crate) fn exact_debt_flights<'a>(
 /// `exact_debt`: a deleted bucket's in-flight flush flights, settled once at key or group
 /// deletion.
 pub(crate) fn exact_debt_bucket_flights(
-    flights: &std::collections::BTreeMap<(String, u64), std::sync::Arc<BudgetFlushFlight>>,
+    flights: &std::collections::BTreeMap<
+        (busbar_contract::kept::Text, u64),
+        std::sync::Arc<BudgetFlushFlight>,
+    >,
     bucket: &str,
 ) -> Vec<std::sync::Arc<BudgetFlushFlight>> {
     flights
@@ -456,7 +431,7 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 /// `unit_checkpoint`: a running-unit checkpoint's shape checked (boot replay, the flusher, the
 /// checkpoint Store).
 pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-    let error = |message: &str| RecordStoreError(message.to_owned());
+    let error = |message: &'static str| RecordStoreError::fixed(message);
     if let Some(partitions) = &snapshot.partitions {
         partitions.validate(snapshot)?;
     }
@@ -489,7 +464,7 @@ pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStore
         for event in events {
             event
                 .follows(None)
-                .map_err(|e| RecordStoreError(e.to_string()))?;
+                .map_err(|e| RecordStoreError::from(e.to_string()))?;
             if !operations.insert(event.operation_id) {
                 return Err(error("duplicate unit terminal operation"));
             }
@@ -569,14 +544,6 @@ pub(crate) fn unit_checkpoint_counts_shards(indices: impl Iterator<Item = usize>
     shards
 }
 
-/// `unit_checkpoint_counts`: one guard per shard, taken in shard order (recovered-unit reload).
-pub(crate) fn unit_checkpoint_counts_guards<T>(
-    shards: &[usize],
-    lock: impl FnMut(usize) -> T,
-) -> Vec<T> {
-    shards.iter().copied().map(lock).collect()
-}
-
 /// `unit_checkpoint_counts`: every captured target, or the first refusal (recovered-unit reload).
 pub(crate) fn unit_checkpoint_counts_try_collect<T>(
     items: impl Iterator<Item = RecordStoreResult<T>>,
@@ -587,15 +554,13 @@ pub(crate) fn unit_checkpoint_counts_try_collect<T>(
 /// `unit_checkpoint_counts`: whether an ordinary flush flight still holds this bucket
 /// (recovered-unit reload).
 pub(crate) fn unit_checkpoint_counts_in_flight(
-    flights: &std::collections::BTreeMap<(String, u64), std::sync::Arc<BudgetFlushFlight>>,
+    flights: &std::collections::BTreeMap<
+        (busbar_contract::kept::Text, u64),
+        std::sync::Arc<BudgetFlushFlight>,
+    >,
     bucket: &str,
 ) -> bool {
     flights.keys().any(|(held, _)| held == bucket)
-}
-
-/// `unit_checkpoint_counts`: the bucket a reloaded durable cell is published under.
-pub(crate) fn unit_checkpoint_counts_bucket(bucket: &str) -> String {
-    bucket.to_owned()
 }
 
 /// `unit_checkpoint_store`: a recovered unit's original audit line, found by one historical
@@ -606,7 +571,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     incarnation: u64,
 ) -> RecordStoreResult<Option<(u64, busbar_kernel_audit::AuditRecord)>> {
     use busbar_kernel_wal::{JournalRecord, RecordClass};
-    let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
+    let error = |e: &dyn std::fmt::Debug| RecordStoreError::from(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
     let history = journal.history().map_err(|e| error(&e))?;
     // One walk from the replay base (SEALING-FIX §3.9): a cut during it restarts it, with its
@@ -678,11 +643,6 @@ pub(crate) fn unit_checkpoint_store_replayed(
 }
 
 use crate::governance::{CredentialIndex, CredentialSecret, VirtualKey};
-
-/// `identity_runtime`: the revocation set, seeded once at boot from the identity snapshot.
-pub(crate) fn identity_runtime_denied<C: FromIterator<String>>(denied: Vec<String>) -> C {
-    denied.into_iter().collect()
-}
 
 /// `identity_runtime`: drop the cached credentials an identity mutation retired (control plane).
 pub(crate) fn identity_runtime_retain_credentials(
@@ -841,11 +801,6 @@ pub(crate) fn self_serve_key_id(prefix: &str, tag: &[u8]) -> String {
     format!("{prefix}{}", hex::encode(tag))
 }
 
-/// `self_serve`: a self-serve binding's generation text, once per binding write.
-pub(crate) fn self_serve_generation(epoch: u64) -> String {
-    epoch.to_string()
-}
-
 /// `self_serve`: a self-serve binding's display name, once per binding write.
 pub(crate) fn self_serve_binding_name(user_sub: &str) -> String {
     format!("self-serve key ({user_sub})")
@@ -911,11 +866,11 @@ pub(crate) async fn native_runtime_observation_totals(
         return Ok(none());
     }
     let store =
-        ObservationStore::open(core.clone()).map_err(|e| RecordStoreError(e.to_string()))?;
+        ObservationStore::open(core.clone()).map_err(|e| RecordStoreError::from(e.to_string()))?;
     if !store
         .has_accounting()
         .await
-        .map_err(|e| RecordStoreError(e.to_string()))?
+        .map_err(|e| RecordStoreError::from(e.to_string()))?
     {
         return Ok(none());
     }
@@ -927,7 +882,7 @@ pub(crate) async fn native_runtime_observation_totals(
     let totals = store
         .budgets(&ids)
         .await
-        .map_err(|e| RecordStoreError(e.to_string()))?;
+        .map_err(|e| RecordStoreError::from(e.to_string()))?;
     for ((bucket, window), total) in buckets.iter().zip(&totals) {
         state.cache_observation_total(bucket, *window, total.clone());
     }

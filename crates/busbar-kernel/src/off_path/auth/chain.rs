@@ -281,7 +281,9 @@ impl AuthMiddleware {
                         refused,
                     )?;
                     chain.push(ChainEntry {
-                        provider: entry.name.clone(),
+                        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(
+                            entry.name.as_str(),
+                        )),
                         name: calls.name().to_string(),
                         calls,
                     });
@@ -399,7 +401,7 @@ impl AuthMiddleware {
     ) -> impl Iterator<Item = &'a std::sync::Arc<dyn AuthCalls>> + 'a {
         self.chain
             .iter()
-            .filter(move |e| provider.is_none_or(|m| m == e.provider))
+            .filter(move |e| provider.is_none_or(|m| e.provider == m))
             .map(|e| &e.calls)
     }
 }
@@ -514,7 +516,7 @@ pub(crate) fn admin_keys_arm(app: &crate::state::App, headers: &HeaderMap, now: 
     };
     match gov.verify_token(token, now, None) {
         Some(key) if key.admin.is_some() => KeysAdmin::Identified(ChainVerdict::Identified {
-            module: crate::config::KEYS_MODULE.to_string(),
+            module: busbar_contract::kept::Text::fixed(crate::config::KEYS_MODULE),
             principal: admin_key_principal(&key),
             resolved: Some(key),
             signed_authority: None,

@@ -19,7 +19,7 @@ use crate::diagnostics::PLANE_JUDGE_UNAVAILABLE;
 use crate::host_services::{Admitted, DestJudge};
 
 /// The longest destination text a plane may ask about; longer answers `DEST_NO_HOST` without a lookup.
-pub const MAX_DESTINATION: usize = 2_048;
+const MAX_DESTINATION: usize = 2_048;
 
 /// The judge of a plane's JUDGE intents.
 #[derive(Clone)]

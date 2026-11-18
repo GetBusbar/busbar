@@ -36,8 +36,9 @@ pub(crate) const PROBE_PRIORITY: u32 = 0x6eff_ffff;
 /// One side's ICE credentials.
 #[derive(Clone)]
 pub struct IceCredentials {
-    /// The username fragment (`a=ice-ufrag`).
-    pub ufrag: String,
+    /// The username fragment (`a=ice-ufrag`): shared text, made once when the terms are read, so
+    /// the association that is found by it shares it and copies nothing.
+    pub ufrag: busbar_contract::kept::Text,
     /// The password (`a=ice-pwd`), an HMAC key.
     pub pwd: String,
 }
@@ -45,7 +46,7 @@ pub struct IceCredentials {
 impl std::fmt::Debug for IceCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IceCredentials")
-            .field("ufrag", &self.ufrag)
+            .field("ufrag", &self.ufrag.as_str())
             .finish_non_exhaustive()
     }
 }

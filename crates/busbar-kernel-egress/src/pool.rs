@@ -5,6 +5,7 @@
 
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
@@ -17,8 +18,9 @@ pub const DEFAULT_FAILOVER_CAP: usize = 3;
 pub struct Member {
     /// Which destination of the verified set this is.
     pub destination: DestinationId,
-    /// The operator's name for it — the name a blocklist and a diagnostic say.
-    pub name: String,
+    /// The operator's name for it — the name a blocklist and a diagnostic say. Shared text, made
+    /// once when the pool is built: an attempt that names its member copies nothing.
+    pub name: busbar_contract::kept::Text,
     /// Its share of the weighted order. Zero means drain: the operator is bleeding this member off
     /// before decommissioning it, so no path may select it — not the weighted walk, not a ranked
     /// preference, and not the sticky fast path.
@@ -92,31 +94,72 @@ pub enum OnExhausted {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pool {
     /// The pool's name. This is the breaker cell key every attempt in this walk records against,
-    /// and the empty name is the default cell a direct route uses.
-    pub name: String,
-    /// The members, in the operator's configured order.
+    /// and the empty name is the default cell a direct route uses. Shared text, made once when
+    /// the pool is built: an attempt that records its pool copies nothing.
+    pub name: busbar_contract::kept::Text,
+    /// The members, in the operator's configured order, blocklisted ones included.
     pub members: Vec<Member>,
-    /// What bounds the walk.
-    pub failover: Failover,
+    /// What bounds the walk. Private: its blocklist decides `admissible`, so it is set through
+    /// [`Pool::set_failover`] alone.
+    pub(crate) failover: Failover,
     /// What to do when the walk finds nowhere to send.
     pub on_exhausted: OnExhausted,
     /// The weighted floor's rotation memory over this pool's members.
     pub floor: WeightedFloor,
+    /// `members` less the blocklist, in the same order. `None` when the blocklist names no member of
+    /// this pool: then `members` is the admissible list and nothing is held twice.
+    pub(crate) admissible: Option<Vec<Member>>,
+    /// The pool's waiters now.
+    pub queued: QueueDepth,
+}
+
+/// How many requests are parked in this pool's wait terminal now. It belongs to the pool, as
+/// its rotation memory does: a change looks no pool name up.
+#[derive(Debug, Default)]
+pub struct QueueDepth(AtomicI64);
+
+/// A copy of a pool is a copy of its configuration; the depth starts at zero.
+impl Clone for QueueDepth {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// The depth is not part of what a pool is: two pools configured alike are equal.
+impl PartialEq for QueueDepth {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for QueueDepth {}
+
+impl QueueDepth {
+    /// One waiter more (`1`) or fewer (`-1`): the depth after the change, never below zero.
+    pub(crate) fn change(&self, delta: i64) -> i64 {
+        let step = |depth: i64| depth.saturating_add(delta).max(0);
+        match self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                Some(step(depth))
+            }) {
+            Ok(before) | Err(before) => step(before),
+        }
+    }
 }
 
 impl Pool {
-    /// This pool's membership with its own blocklist applied.
+    /// This pool's membership with its own blocklist applied, in the configured order.
     #[must_use]
-    pub fn admissible_members(&self) -> std::borrow::Cow<'_, [Member]> {
-        if self.failover.exclusions.is_empty() {
-            return std::borrow::Cow::Borrowed(&self.members);
-        }
-        std::borrow::Cow::Owned(
-            self.members
-                .iter()
-                .filter(|m| !self.failover.exclusions.contains(&m.name))
-                .cloned()
-                .collect(),
-        )
+    #[inline]
+    pub fn admissible_members(&self) -> &[Member] {
+        self.admissible.as_deref().unwrap_or(&self.members)
+    }
+
+    /// What bounds the walk.
+    #[must_use]
+    #[inline]
+    pub fn failover(&self) -> &Failover {
+        &self.failover
     }
 }

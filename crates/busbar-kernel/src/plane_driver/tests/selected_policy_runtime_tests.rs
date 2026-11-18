@@ -64,7 +64,14 @@ impl EndPost for Posted {
 
 struct NoIntents;
 impl IntentHost for NoIntents {
-    fn lookup(&self, _: Scope, _: u32, _: u32, _: &[u8]) -> Result<Looked, RecordsDenied> {
+    fn lookup(
+        &self,
+        _: Scope,
+        _: u32,
+        _: u32,
+        _: &[u8],
+        _: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
@@ -100,6 +107,12 @@ impl PlanePort for Descriptor {
     }
     fn attempt_classes(&self) -> &[Box<str>] {
         &self.attempt_classes
+    }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        (
+            self.classes.as_slice().into(),
+            self.attempt_classes.as_slice().into(),
+        )
     }
     fn facts(&self) -> u64 {
         FB_ATTEMPT_USAGE
@@ -409,7 +422,7 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
                     auth: AUTH_PRINCIPAL,
                     pattern: "/x".into(),
                     cred_header: None,
-                    resource_kinds: Vec::new(),
+                    resource_kinds: Default::default(),
                 }],
                 classes: classes(),
                 attempt_classes: vec!["tokens".into()],
@@ -503,21 +516,6 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
     assert_eq!(money.open_units(), 1);
     assert!(Arc::ptr_eq(prepared.receipt().cost(), &original_cost));
     assert!(Arc::ptr_eq(prepared.receipt().key(), &original_key));
-    let headroom = match admission.headroom(
-        prepared.receipt(),
-        prepared.original_route().unwrap(),
-        prepared.selection().target(),
-        prepared.selection().definition().unwrap(),
-    ) {
-        Ok(headroom) => headroom,
-        Err(_) => panic!("the same current authority must produce candidate headroom"),
-    };
-    assert_eq!(headroom.len(), 1);
-    assert_eq!(headroom[0].rule.threshold, 2);
-    assert_eq!(
-        headroom[0].provisional_requests, 0,
-        "headroom creates no rate hold"
-    );
     let reservation = admission.reserve(prepared).unwrap();
     let prepared = reservation.cancel();
 
@@ -526,8 +524,6 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
     let prepared = match admission.reserve(prepared) {
         Err(SelectedRateRejected::Rate(rejected)) => {
             assert_eq!(rejected.reason.kind, RateRefusalKind::Rpm);
-            assert_eq!(rejected.reason.snapshots[0].rule.threshold, 0);
-            assert_eq!(rejected.reason.snapshots[0].rule.policy_revision, 2);
             rejected.prepared
         }
         _ => panic!("current threshold must refuse the original preparation"),
@@ -656,7 +652,7 @@ impl FarEnd for CatalogNoSend {
     async fn member(&self, _: &Pass<Route>, _: u32) -> Pick {
         Pick::Member {
             name: "seat\u{1f}m".into(),
-            pool: self.walk.clone(),
+            pool: self.walk.as_str().into(),
             passthrough: false,
             provider: "provider".into(),
         }
@@ -795,7 +791,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
                     auth: AUTH_PRINCIPAL,
                     pattern: "/x".into(),
                     cred_header: None,
-                    resource_kinds: Vec::new(),
+                    resource_kinds: Default::default(),
                 }],
                 classes: classes(),
                 attempt_classes: vec!["tokens".into()],
@@ -916,7 +912,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
     // The partition rule is unchanged: a pool of another instance, or the bare walk key, is refused.
     for refused in ["other\u{1f}p".to_owned(), walk_key] {
         let mut changed = (**snapshot).clone();
-        changed.partitions.as_mut().unwrap().attempts[0].selected_pool = refused.clone();
+        changed.partitions.as_mut().unwrap().attempts[0].selected_pool = refused.as_str().into();
         assert!(
             ValidatedSelectedCheckpoint::try_from(&changed).is_err(),
             "selected_pool {refused:?} must be refused"

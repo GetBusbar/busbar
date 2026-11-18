@@ -41,6 +41,13 @@ pub fn dest_judge(d: &Destinations) -> Result<Arc<GuardJudge>, String> {
     )))
 }
 
+/// What a judged destination is dialled by: its address literal as it stands, or its name in
+/// ASCII (IDNA) form, owned because the resolver's answer keeps it.
+enum Dialled {
+    Literal(IpAddr),
+    Name(String),
+}
+
 /// THE DESTINATION JUDGE (`busbar_kernel::host_services::DestJudge`) over the one [`Guard`]: a
 pub struct GuardJudge {
     guard: Guard,
@@ -66,7 +73,7 @@ impl GuardJudge {
         target: Destination<'_>,
         strict: bool,
         reach: bool,
-    ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+    ) -> Result<(Dialled, u16, bool), u64> {
         let class = target.egress_class;
         if !matches!(
             class,
@@ -95,9 +102,13 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, target.secure, host)?;
         }
-        let host =
-            crate::off_path::process::host_text(url_host_to_ascii(host).map_err(|_| DEST_NO_HOST)?);
-        Ok((host, port, target.secure, literal))
+        let ascii = url_host_to_ascii(host).map_err(|_| DEST_NO_HOST)?;
+        // Only a name is asked of the resolver, whose answer keeps it: a literal copies nothing.
+        let dialled = match literal {
+            Some(ip) => Dialled::Literal(ip),
+            None => Dialled::Name(ascii.into_owned()),
+        };
+        Ok((dialled, port, target.secure))
     }
 
     /// Compatibility input for HTTP destinations and content-host classification. Bare input
@@ -108,7 +119,7 @@ impl GuardJudge {
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+    ) -> Result<(Dialled, u16, bool), u64> {
         let (host, port, secure) = split(dest)?;
         with_scratch(|authority| {
             use std::fmt::Write as _;
@@ -307,19 +318,20 @@ impl GuardJudge {
 
     fn judged_named(
         &self,
-        named: Result<(String, u16, bool, Option<IpAddr>), u64>,
+        named: Result<(Dialled, u16, bool), u64>,
         class: u32,
         refuse_private: bool,
         reach: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        let (host, port, https, literal) = match named {
+        let (dialled, port, https) = match named {
             Err(v) => return Some(Err(v.into())),
             Ok(n) => n,
         };
-        if let Some(ip) = literal {
-            return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
-        }
+        let host = match dialled {
+            Dialled::Literal(ip) => return Some(Ok((SocketAddr::new(ip, port), vec![ip]))),
+            Dialled::Name(host) => host,
+        };
         let guard = self.guard.clone();
 
         let name = host.clone();

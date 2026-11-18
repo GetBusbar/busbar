@@ -102,7 +102,7 @@ async fn exercise(backend: Arc<dyn PersistenceBackend>) -> Transcript {
     let mut histories = Vec::new();
     for (index, name) in planes.into_iter().enumerate() {
         let declared = facts();
-        host.admit(name, declared.clone()).await.unwrap();
+        host.admit(&name.into(), declared.clone()).await.unwrap();
         let caller = callers.bind(Arc::from(name), KindCode::Plane);
         let replacement = callers.bind(Arc::from(name), KindCode::Plane);
         assert!(caller.same_incarnation(&caller.clone()));

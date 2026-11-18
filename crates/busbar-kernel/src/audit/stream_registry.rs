@@ -178,7 +178,7 @@ impl StreamHandle {
         body: &[u8],
     ) -> RecordStoreResult<StreamRecord> {
         let Decode::Native(decode) = &self.decode;
-        let r = decode("", body).map_err(|_| RecordStoreError(DECODE_FAILED.to_string()))?;
+        let r = decode("", body).map_err(|_| RecordStoreError::fixed(DECODE_FAILED))?;
         Ok(StreamRecord {
             scope: scope.to_string(),
             framing: self.framing,

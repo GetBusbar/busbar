@@ -32,6 +32,7 @@ use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
 use busbar_contract::abi::transport::{FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::NeedId;
+use busbar_contract::kept::Text;
 use busbar_kernel_egress::ports::{DestinationId, Outcome};
 use busbar_plugin_abi::host_side::caller::Accept;
 use busbar_plugin_abi::plane::{
@@ -158,9 +159,9 @@ struct Shared<'a, F: FarEnd> {
     /// Picks made so far (the walk's attempt number).
     picks: Cell<u32>,
     preparations: Cell<u32>,
-    /// The member (as the walk names it) and pool in hand.
-    member: RefCell<String>,
-    pool: RefCell<String>,
+    /// The member (as the walk names it) and pool in hand: the pick's own shared names.
+    member: RefCell<Text>,
+    pool: RefCell<Text>,
     /// The Retry-After the walk stated when it found no member left.
     exhausted_wait: Cell<Option<u32>>,
 }
@@ -296,8 +297,8 @@ impl<'a, F: FarEnd> EgressWalk<'a, F> {
                 targets,
                 picks: Cell::new(0),
                 preparations: Cell::new(0),
-                member: RefCell::new(String::new()),
-                pool: RefCell::new(String::new()),
+                member: RefCell::new(Text::EMPTY),
+                pool: RefCell::new(Text::EMPTY),
                 exhausted_wait: Cell::new(None),
             },
         }
@@ -465,27 +466,27 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     let Some(target) = (s.targets)(&pool, &name) else {
                         continue;
                     };
-                    let operator =
-                        String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
-                    s.member.borrow_mut().clone_from(&name);
-                    s.pool.borrow_mut().clone_from(&pool);
+                    // The plane's candidate states its pool and member as its own text.
                     let candidate = Candidate {
-                        pool: pool.into(),
-                        qualified_member: name.into(),
+                        pool: pool.as_str().into(),
+                        upstream: String::from_utf8_lossy(operator_name(name.as_bytes())).into(),
+                        qualified_member: name.as_str().into(),
                         identity: target.identity,
                         resource: target.resource,
-                        upstream: operator.into(),
                         provider: target.provider,
                         base_path: target.base_path,
                         flags: target.flags,
                         params: target.params,
                     };
+                    // The names in hand are the pick's own: moved in, nothing copied.
+                    *s.member.borrow_mut() = name;
+                    *s.pool.borrow_mut() = pool;
                     let preparation = s.preparations.get().checked_add(1)?;
                     s.preparations.set(preparation);
                     *s.selected.borrow_mut() = Some((
                         candidate.clone(),
                         preparation,
-                        provider.into(),
+                        provider.as_str().into(),
                         target.definition,
                     ));
                     return Some(candidate);
@@ -528,8 +529,8 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
 /// in, its header list, method, path and body become the request's own with no copy. `None` = an
 /// exchange this carrier does not send (another carrier, no method or path).
 fn request_of(
-    member: &str,
-    pool: &str,
+    member: &Text,
+    pool: &Text,
     attempt: u32,
     exchange: UpExchange,
 ) -> Option<OutboundRequest> {
@@ -548,17 +549,17 @@ fn request_of(
     if outbound == OUTBOUND_NONE {
         fields.push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
     }
-    if let Some(scope) = &scope {
+    if let Some(scope) = scope {
         fields.push((
             busbar_contract::abi::auth::SCOPE_REQUEST_FIELD
                 .as_bytes()
                 .to_vec(),
-            scope.as_bytes().to_vec(),
+            scope.into_boxed_bytes().into_vec(),
         ));
     }
     Some(OutboundRequest {
-        member: member.to_owned(),
-        pool: pool.to_owned(),
+        member: member.clone(),
+        pool: pool.clone(),
         attempt_no: attempt,
         verb: method?.into_boxed_bytes().into_vec(),
         target: path?.into_boxed_bytes().into_vec(),
@@ -804,7 +805,7 @@ fn affinity_of(key: &str) -> u64 {
 
 /// The route one session walks under, from what the plane wanted (§8.6).
 fn route_of(
-    pool: &str,
+    pool: Text,
     unit: busbar_contract::UnitKey,
     accept: Accept,
     wants: &Wants,
@@ -812,7 +813,7 @@ fn route_of(
     UnitRoute {
         allowed_member: wants.upstream.as_deref().map(str::to_owned),
         unit,
-        pool: pool.to_owned(),
+        pool,
         affinity: wants.affinity.as_deref().map(affinity_of),
         wants_stream: wants.stream,
         accept,
@@ -866,7 +867,7 @@ impl ProbeTarget {
 pub struct SeatPool {
     /// The pool the instance's sessions walk.
     pub pool: String,
-    pub pools: foldhash::HashMap<String, busbar_kernel_egress::Pool>,
+    pub pools: foldhash::HashMap<Text, busbar_kernel_egress::Pool>,
     pub routes: foldhash::HashMap<DestinationId, super::far_end::MemberRoute>,
     pub members: Vec<SeatMember>,
 }
@@ -930,9 +931,10 @@ impl PortUpstream for PortEgress {
             let pool = receipt
                 .and_then(RequestPoolReceipt::walk_key)
                 .unwrap_or(&self.pool);
-            let mut route = route_of(pool, facts.unit, self.accept, wants);
+            // The unit routes under the pools' own shared name for its pool.
+            let mut route = route_of(self.egress.pool_name(pool), facts.unit, self.accept, wants);
             if let Some(receipt) = receipt {
-                route.native_member_grants = Some(receipt.member_grants().clone());
+                route.native_member_grants = Some(Arc::clone(receipt.shared_member_grants()));
                 route.authorization = facts
                     .pending
                     .as_ref()

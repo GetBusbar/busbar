@@ -155,7 +155,10 @@ async fn the_first_checkpoint_prices_its_answer_lane_on_the_admitted_card() {
             .driver
             .unit(&steps, &far, &caller, cases::arrival(target, b"x"), 0);
         let outcome = cases::drive(&units).await;
-        assert_eq!(money.serving(common::ctx(7).key).as_deref(), Some(lane));
+        assert_eq!(
+            money.serving(common::ctx(7).key, str::to_owned).as_deref(),
+            Some(lane)
+        );
         if expensive {
             assert!(
                 matches!(

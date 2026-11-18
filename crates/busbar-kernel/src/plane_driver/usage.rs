@@ -138,11 +138,69 @@ pub enum Ending {
     Failed,
 }
 
+/// The kept values a bill posts, read in place from the session's own list: every kept value
+/// (an `end`), or only the sources that bill on a cancel (rule 2). It copies nothing and holds
+/// no list of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Billed<'a> {
+    kept: &'a [Reported],
+    billing_sources_only: bool,
+}
+
+impl<'a> Billed<'a> {
+    /// The billed values, in first-answered order.
+    #[must_use]
+    pub fn iter(&self) -> BilledIter<'a> {
+        BilledIter {
+            kept: self.kept.iter(),
+            billing_sources_only: self.billing_sources_only,
+        }
+    }
+}
+
+/// [`Billed`]'s values, one by one.
+#[derive(Debug, Clone)]
+pub struct BilledIter<'a> {
+    kept: std::slice::Iter<'a, Reported>,
+    billing_sources_only: bool,
+}
+
+impl<'a> Iterator for BilledIter<'a> {
+    type Item = &'a Reported;
+
+    fn next(&mut self) -> Option<&'a Reported> {
+        for reported in self.kept.by_ref() {
+            if !self.billing_sources_only || source_bills(reported.source) {
+                return Some(reported);
+            }
+        }
+        None
+    }
+}
+
+impl<'a> IntoIterator for Billed<'a> {
+    type Item = &'a Reported;
+    type IntoIter = BilledIter<'a>;
+
+    fn into_iter(self) -> BilledIter<'a> {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &Billed<'a> {
+    type Item = &'a Reported;
+    type IntoIter = BilledIter<'a>;
+
+    fn into_iter(self) -> BilledIter<'a> {
+        self.iter()
+    }
+}
+
 /// What a session's end posts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bill<'a> {
     /// These kept values, once.
-    Usage(Vec<&'a Reported>),
+    Usage(Billed<'a>),
     /// `Usage::estimate`: the session ended by `end` and answered no USAGE.
     Estimate,
     /// Nothing at all (no estimate either).
@@ -156,7 +214,10 @@ pub fn bill(ending: Ending, usage: &SessionUsage) -> Bill<'_> {
     match ending {
         Ending::Failed => Bill::Nothing,
         Ending::End if usage.is_empty() => Bill::Estimate,
-        Ending::End => Bill::Usage(usage.last.iter().collect()),
+        Ending::End => Bill::Usage(Billed {
+            kept: &usage.last,
+            billing_sources_only: false,
+        }),
         Ending::Cancel {
             far_end_answered,
             streamed,
@@ -165,15 +226,14 @@ pub fn bill(ending: Ending, usage: &SessionUsage) -> Bill<'_> {
             if !far_end_answered || !cancel_bills_reported_units(streamed) {
                 return Bill::Nothing;
             }
-            let kept: Vec<&Reported> = usage
-                .last
-                .iter()
-                .filter(|r| source_bills(r.source))
-                .collect();
-            if kept.is_empty() {
+            let billed = Billed {
+                kept: &usage.last,
+                billing_sources_only: true,
+            };
+            if billed.iter().next().is_none() {
                 Bill::Nothing
             } else {
-                Bill::Usage(kept)
+                Bill::Usage(billed)
             }
         }
     }
@@ -246,7 +306,7 @@ impl DeclaredClasses {
     /// a plane's figure), `estimated` for SRC_ESTIMATED and SRC_FLOOR (the node's floor, not a figure the
     /// far end reported).
     #[must_use]
-    pub fn map(&self, billed: &[&Reported]) -> Mapped {
+    pub fn map<'r>(&self, billed: impl IntoIterator<Item = &'r Reported>) -> Mapped {
         let mut mapped = Mapped::default();
         for r in billed {
             let Some(declared) = self.get(&r.class) else {

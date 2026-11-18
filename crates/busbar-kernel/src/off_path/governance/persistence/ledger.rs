@@ -92,7 +92,7 @@ impl From<Error> for RecordStoreError {
     }
 }
 fn invalid(message: impl Into<String>) -> Error {
-    Error::Store(RecordStoreError(message.into()))
+    Error::Store(RecordStoreError::from(message.into()))
 }
 fn corrupt() -> Error {
     invalid("corrupt or unsupported canonical ledger record")

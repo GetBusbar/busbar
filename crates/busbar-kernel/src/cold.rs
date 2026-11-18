@@ -122,36 +122,6 @@ pub(crate) fn lossy_owned(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// `plane_driver`: a rendered refusal's body as the frame its encode answers with.
-#[cold]
-pub(crate) fn refusal_frame(body: &[u8]) -> std::sync::Arc<[u8]> {
-    std::sync::Arc::from(body)
-}
-
-// --- plane_driver::port_observations ---
-
-/// `plane_driver::port_observations`: a principal's first in-flight unit, keyed once by its
-/// instance and subject names; its later units and every lookup borrow them.
-#[cold]
-pub(crate) fn first_observing_principal(
-    book: &mut crate::plane_driver::port_observations::ByPrincipal,
-    instance: &str,
-    subject: &str,
-) {
-    let instance: std::sync::Arc<str> = std::sync::Arc::from(instance);
-    let subject: std::sync::Arc<str> = std::sync::Arc::from(subject);
-    book.entry(std::sync::Arc::clone(&instance))
-        .or_default()
-        .insert(
-            std::sync::Arc::clone(&subject),
-            crate::plane_driver::port_observations::PrincipalUnits {
-                instance,
-                subject,
-                units: Vec::new(),
-            },
-        );
-}
-
 // --- plane_driver::port_hooks ---
 
 /// `plane_driver::port_hooks`: a route-policy rejection counter's `status` label, spelled once per
@@ -162,15 +132,6 @@ pub(crate) fn route_policy_status_label(status: u16) -> String {
 }
 
 // --- plane_driver::money ---
-
-/// `plane_driver::money::selected_view`: a selected checkpoint's refusal, spelled only when the
-/// capture or its budget view is refused.
-#[cold]
-pub(crate) fn selected_view_refusal(
-    message: &'static str,
-) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(message.to_owned())
-}
 
 /// `plane_driver::money::native_admission`: a refused selected startup transfer, as the text the
 /// response confirmation reports.

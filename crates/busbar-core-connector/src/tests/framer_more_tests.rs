@@ -483,3 +483,60 @@ fn an_opening_larger_than_the_wire_loan_recalls_without_its_opening_metadata() {
         "a re-call carries nothing the first call already lent (transport ABI: recalls lend no new input)"
     );
 }
+
+/// Records the time each `ingest` crossing states. An ingest that lends bytes asks for one
+/// re-call, so one ingest operation crosses twice.
+struct Stated {
+    inner: TestDoor,
+    seen: std::sync::Mutex<Vec<(u64, u64)>>,
+}
+
+impl FramerDoor for Stated {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Begin(_, out) => out.framing = STREAM,
+            Call::Ingest(input, out) => {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((input.sink.now_monotonic_ns, input.sink.now_unix_ns));
+                if input.len != 0 {
+                    out.yielded.flags = YIELD_MORE;
+                }
+            }
+            _ => {}
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+}
+
+/// One framing operation takes one clock reading: its first crossing and its `YIELD_MORE` re-call
+/// state the same monotonic and wall time, and a later operation states a later one.
+#[test]
+fn every_crossing_of_one_operation_states_one_reading_and_a_later_operation_a_later_one() {
+    let door = Arc::new(Stated {
+        inner: TestDoor::identity("t"),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let (mut framing, _) =
+        Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
+    framing.ingest(b"first", false).expect("the first ingest");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    framing.ingest(b"second", false).expect("the second ingest");
+    let seen = door.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 4, "each ingest crosses twice: {seen:?}");
+    assert_eq!(seen[0], seen[1], "one operation, one reading");
+    assert_eq!(seen[2], seen[3], "one operation, one reading");
+    assert!(
+        seen[2].0 > seen[0].0,
+        "a later operation states a later monotonic time"
+    );
+    assert!(seen[0].0 != 0 && seen[0].1 != 0, "both clocks are stated");
+}

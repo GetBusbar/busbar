@@ -151,7 +151,8 @@ impl crate::plane_driver::port_intents::IntentHost for NoStore {
         _: u32,
         _: u32,
         _: &[u8],
-    ) -> Result<crate::plane_driver::port_intents::Looked, RecordsDenied> {
+        _: &mut crate::plane_driver::port_intents::Looked,
+    ) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn store(
@@ -219,7 +220,7 @@ impl ChannelHost for Channels {
             generation: 3,
             slot: 11,
             greet: true,
-            ready_tail: b"tail".to_vec(),
+            ready_tail: bytes::Bytes::from_static(b"tail"),
             held: Box::new(Wire(Arc::clone(&self.wire))),
         })
     }
@@ -385,6 +386,9 @@ impl PlanePort for FakePort {
     }
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
+    }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
     }
     fn facts(&self) -> u64 {
         0

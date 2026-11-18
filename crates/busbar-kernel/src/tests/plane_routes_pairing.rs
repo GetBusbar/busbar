@@ -14,14 +14,6 @@ fn route(path: &str, method: RouteMethod, auth: RouteAuth) -> PlaneRouteSpec {
     }
 }
 
-fn session(path: &str, auth: RouteAuth) -> PlaneSessionSpec {
-    PlaneSessionSpec {
-        path: path.to_string(),
-        auth,
-        handler: Arc::new(|_| Box::pin(async { SessionAnswer::Refused(PlaneResponse::default()) })),
-    }
-}
-
 fn refusal(path: &str, method: RouteMethod) -> PlaneRefusalSpec {
     PlaneRefusalSpec {
         route: DoorRouteId {
@@ -40,46 +32,34 @@ fn paired_door_routes_and_refusals_pass() {
         route("/v1/op", RouteMethod::Post, RouteAuth::Key),
         route("/.well-known/doc", RouteMethod::Get, RouteAuth::None),
     ];
-    let sessions = [session("/live", RouteAuth::Key)];
-    let refusals = [
-        refusal("/v1/op", RouteMethod::Post),
-        refusal("/live", RouteMethod::Get),
-    ];
-    assert_eq!(pair_door_refusals(&routes, &sessions, &refusals), Ok(()));
-    assert_eq!(pair_door_refusals(&[], &[], &[]), Ok(()));
+    let refusals = [refusal("/v1/op", RouteMethod::Post)];
+    assert_eq!(pair_door_refusals(&routes, &refusals), Ok(()));
+    assert_eq!(pair_door_refusals(&[], &[]), Ok(()));
 }
 
 #[test]
 fn an_unpaired_door_route_or_refusal_refuses_the_boot() {
     let routes = [route("/v1/op", RouteMethod::Post, RouteAuth::Key)];
-    let bare = pair_door_refusals(&routes, &[], &[]).expect_err("a route with no refusal");
+    let bare = pair_door_refusals(&routes, &[]).expect_err("a route with no refusal");
     assert!(
         bare.contains("no refusal spec") && bare.contains("/v1/op"),
         "{bare}"
     );
-    let session_bare = pair_door_refusals(&[], &[session("/live", RouteAuth::Key)], &[])
-        .expect_err("a session route with no refusal");
-    assert!(session_bare.contains("/live"), "{session_bare}");
     for orphan in [
         refusal("/v1/other", RouteMethod::Post),
         refusal("/v1/op", RouteMethod::Get),
     ] {
-        let refused = pair_door_refusals(
-            &routes,
-            &[],
-            &[refusal("/v1/op", RouteMethod::Post), orphan],
-        )
-        .expect_err("a refusal with no route");
+        let refused = pair_door_refusals(&routes, &[refusal("/v1/op", RouteMethod::Post), orphan])
+            .expect_err("a refusal with no route");
         assert!(refused.contains("no door route"), "{refused}");
     }
     let open = [route("/.well-known/doc", RouteMethod::Get, RouteAuth::None)];
     assert!(
-        pair_door_refusals(&open, &[], &[refusal("/.well-known/doc", RouteMethod::Get)]).is_err(),
+        pair_door_refusals(&open, &[refusal("/.well-known/doc", RouteMethod::Get)]).is_err(),
         "an open route takes no refusal"
     );
     let twice = pair_door_refusals(
         &routes,
-        &[],
         &[
             refusal("/v1/op", RouteMethod::Post),
             refusal("/v1/op", RouteMethod::Post),

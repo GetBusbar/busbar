@@ -19,8 +19,9 @@ pub(super) struct FrozenUsage {
     route: Option<u32>,
     origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     facts: u64,
-    pub(super) classes: Vec<UsageClass>,
-    attempt_classes: Vec<Box<str>>,
+    /// The plane's declared classes: its own lists, shared, never copied per session.
+    pub(super) classes: Arc<[UsageClass]>,
+    attempt_classes: Arc<[Box<str>]>,
 }
 
 impl FrozenUsage {
@@ -30,14 +31,14 @@ impl FrozenUsage {
         origin: Option<crate::plane_driver::route_identity::OriginalPlaneRoute>,
     ) -> Result<Arc<Self>, SessionError> {
         let (facts, classes, attempt_classes) = calls.usage_metadata();
-        Declaration::new(facts, classes, attempt_classes)
+        Declaration::new(facts, &classes, &attempt_classes)
             .map_err(|_| SessionError::Violation(Violation::BadRecords))?;
         Ok(Arc::new(Self {
             route,
             origin,
             facts,
-            classes: classes.to_vec(),
-            attempt_classes: attempt_classes.to_vec(),
+            classes,
+            attempt_classes,
         }))
     }
 
@@ -174,7 +175,6 @@ pub(crate) struct PreparedExchange {
     dialect: Box<str>,
     model: Box<str>,
     exchange: PreparedOperands,
-    estimates: Option<Estimates>,
     declaration: Arc<FrozenUsage>,
 }
 
@@ -301,11 +301,6 @@ impl PreparedExchange {
         self.exchange = PreparedOperands::Resource { forward, data };
         Ok(self)
     }
-    pub(crate) fn estimates(&self) -> Option<&[(Box<str>, EstimateValue)]> {
-        self.estimates
-            .as_ref()
-            .map(|estimates| estimates.entries.as_slice())
-    }
     pub(crate) fn declaration(&self) -> Declaration<'_> {
         self.declaration.declaration()
     }
@@ -429,7 +424,6 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             dialect,
             model,
             exchange: PreparedOperands::Plain(exchange),
-            estimates: answer.preparation.estimates,
             declaration: Arc::clone(&self.declaration),
         };
         buffered.release();

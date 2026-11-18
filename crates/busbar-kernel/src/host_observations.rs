@@ -146,7 +146,7 @@ impl KernelServices {
         if caller.kind() != KindCode::Plane
             || policy.instance != caller.namespace().as_ref()
             || !money.observations_supported()
-            || money.serving(unit).is_none()
+            || money.serving(unit, |_| ()).is_none()
             || self
                 .units
                 .get(unit.get())

@@ -79,7 +79,6 @@ use crate::compose::{
 use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
-use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{Fill, Joined, Leader, PoolKey, PoolPosture, Pools, Same, Take};
 use crate::registry::Transports;
 
@@ -455,7 +454,8 @@ pub(crate) struct DeclaredNeed {
 struct Place {
     door: std::sync::Weak<dyn FramerDoor>,
     epoch: u64,
-    located: framer::Located,
+    /// Shared with every open that dials it: an open takes a reference, never a copy.
+    located: Arc<framer::Located>,
 }
 
 impl DeclaredNeed {
@@ -468,23 +468,23 @@ impl DeclaredNeed {
         door: &Arc<dyn FramerDoor>,
         target: &str,
         locate: impl FnOnce() -> Result<framer::Located, E>,
-    ) -> Result<framer::Located, E> {
+    ) -> Result<Arc<framer::Located>, E> {
         if self.declared_target.as_deref() != Some(target) {
-            return locate();
+            return locate().map(Arc::new);
         }
         let epoch = door.settings_epoch();
         let kept = self.declared_place.lock().expect("place").clone();
         if let Some(place) = kept
             .filter(|p| p.epoch == epoch && std::sync::Weak::ptr_eq(&p.door, &Arc::downgrade(door)))
         {
-            return Ok(place.located.clone());
+            return Ok(Arc::clone(&place.located));
         }
-        let located = locate()?;
+        let located = Arc::new(locate()?);
         if door.settings_epoch() == epoch {
             *self.declared_place.lock().expect("place") = Some(Arc::new(Place {
                 door: Arc::downgrade(door),
                 epoch,
-                located: located.clone(),
+                located: Arc::clone(&located),
             }));
         }
         Ok(located)
@@ -595,19 +595,6 @@ pub(crate) type Auths = HashMap<
     HashMap<NeedId, HashMap<String, HashMap<String, busbar_contract::conn::ConnAuth>>>,
 >;
 
-/// The listeners, one per inbound need, by the need's owner and need.
-pub(crate) type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
-
-/// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
-/// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
-/// connection past the cap) with nothing held, and puts it back. An accept that finds it out
-/// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
-#[derive(Default)]
-pub(crate) struct Accepting {
-    /// The listener while no accept has it out, and the accepts that found it out (each once).
-    slot: Mutex<(Option<Listening>, Wakers)>,
-}
-
 /// Wakers held once each, in the order they first registered (woken first registered, first
 /// woken): a repeat registration is found by its [`waker_key`] in `held`, never by a scan of those
 /// held.
@@ -618,13 +605,6 @@ struct Wakers {
 }
 
 impl Wakers {
-    /// Hold `waker` unless one that wakes the same task is held already.
-    fn hold(&mut self, waker: &Waker) {
-        if self.held.insert(waker_key(waker)) {
-            self.order.push(waker.clone());
-        }
-    }
-
     #[cfg(test)]
     fn len(&self) -> usize {
         self.order.len()
@@ -649,42 +629,6 @@ fn waker_key(waker: &Waker) -> (usize, usize) {
         waker.data().addr(),
         std::ptr::from_ref(waker.vtable()).addr(),
     )
-}
-
-impl Accepting {
-    /// Take the listener out; `None` (with `waker` woken once it is back) while it is out.
-    fn take(&self, waker: &Waker) -> Option<Listening> {
-        let mut slot = self.slot.lock().expect("listener");
-        let taken = slot.0.take();
-        if taken.is_none() {
-            slot.1.hold(waker);
-        }
-        taken
-    }
-
-    /// Put `listening` back (`None`: it is gone), waking every accept that found it out.
-    fn put(&self, listening: Option<Listening>) {
-        let waiting = {
-            let mut slot = self.slot.lock().expect("listener");
-            slot.0 = listening;
-            std::mem::take(&mut slot.1)
-        };
-        waiting.wake_all();
-    }
-}
-
-/// A listener an accept has out: put back however the accept ends, an unwind included.
-struct AcceptingOut<'a> {
-    home: &'a Accepting,
-    listening: Option<Listening>,
-}
-
-impl Drop for AcceptingOut<'_> {
-    fn drop(&mut self) {
-        if let Some(l) = self.listening.take() {
-            self.home.put(Some(l));
-        }
-    }
 }
 
 /// The address set a pended dial's pinned address must be in, held inline for the usual few.
@@ -1294,7 +1238,6 @@ pub struct Connector {
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
-    pub(crate) listeners: Listeners,
     /// The per-worker pools of dialled connections.
     pub(crate) pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
@@ -1351,7 +1294,6 @@ impl Default for Connector {
             tls_policy: None,
             wake: Arc::new(|_, _| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
-            listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
             member_anchored: Mutex::default(),
@@ -1589,7 +1531,7 @@ impl Connector {
         &self,
         door: &Arc<dyn FramerDoor>,
         dial: Dial,
-        carried: Option<framer::Located>,
+        carried: Option<Arc<LocatedTarget>>,
     ) -> Result<Planned, Failure> {
         match self.ride_on(door) {
             Some((Some(framer), via)) => Planned::locate_carried(framer, via, dial, carried),
@@ -2176,6 +2118,12 @@ impl Connector {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
+        // Loaded before the need is declared: an environment the host cannot keep fresh leaves
+        // the need undeclared, as a refused declaration does (the load says why).
+        let Ok(env) = spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope) else {
+            self.set_need(owner, need, None);
+            return Err(ConnError::Fault);
+        };
         self.slab.declare(owner, need);
         self.set_need(
             owner,
@@ -2187,140 +2135,13 @@ impl Connector {
                 declared_target: None,
                 tls: None,
                 tls_policy: None,
-                program: Some((
-                    program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
-                )),
+                program: Some((program.clone(), env)),
                 members: None,
                 member_spec: None,
                 declared_place: Mutex::new(None),
             }),
         );
         Ok(())
-    }
-
-    /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
-    pub fn listen(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        bind: &str,
-        tls: Option<Arc<rustls::ServerConfig>>,
-        limits: AcceptLimits,
-    ) -> Result<SocketAddr, ConnError> {
-        self.slab.check_need(owner, need)?;
-
-        let (door, registered) = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|d| {
-                (
-                    Arc::clone(&d.door),
-                    crate::off_path::conns::declared_alpn(&d.alpn),
-                )
-            })
-            .ok_or(ConnError::Refused)?;
-
-        let alpn = match framer::accept_offer(door.as_ref()) {
-            Ok(offer) if !offer.is_empty() => offer,
-            Ok(_) => registered,
-            Err(refused) => {
-                tracing::warn!(
-                    owner = owner.0,
-                    need = need.0,
-                    error = %refused,
-                    "inbound listener: the entry's locate refused the accepting-side protocol \
-                     offer; the listener binds with the transport's registered protocol list"
-                );
-                registered
-            }
-        };
-
-        let held = Arc::new(Accepting::default());
-        {
-            let mut listeners = self.listeners.lock().expect("listeners");
-            if listeners.contains_key(&(owner, need)) {
-                return Err(ConnError::Refused);
-            }
-            listeners.insert((owner, need), Arc::clone(&held));
-        }
-        let bound = self
-            .ride_on(&door)
-            .ok_or(ConnError::Refused)
-            .and_then(|(framer, via)| {
-                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|error| {
-                    tracing::warn!(
-                        owner = owner.0,
-                        need = need.0,
-                        kind = ?error.kind(),
-                        "inbound listener bind failed"
-                    );
-                    ConnError::Fault
-                })
-            });
-        match bound {
-            Ok(l) => {
-                let addr = l.local_addr();
-                held.put(Some(l));
-                Ok(addr)
-            }
-            Err(e) => {
-                let gone = {
-                    let mut listeners = self.listeners.lock().expect("listeners");
-                    let ours = listeners
-                        .get(&(owner, need))
-                        .is_some_and(|a| Arc::ptr_eq(a, &held));
-                    ours.then(|| listeners.remove(&(owner, need))).flatten()
-                };
-                drop(gone);
-                held.put(None);
-                Err(e)
-            }
-        }
-    }
-
-    /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
-    pub fn accept(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        ticket: Ticket,
-    ) -> Result<(ConnId, SocketAddr), ConnError> {
-        self.slab.check_need(owner, need)?;
-        let l = self
-            .listeners
-            .lock()
-            .expect("listeners")
-            .get(&(owner, need))
-            .cloned()
-            .ok_or(ConnError::Refused)?;
-        let waker = self.waker(owner, ticket);
-        let Some(listening) = l.take(&waker) else {
-            return Err(ConnError::Pending);
-        };
-        let mut out = AcceptingOut {
-            home: &l,
-            listening: Some(listening),
-        };
-        let got = out
-            .listening
-            .as_mut()
-            .expect("the listener is out")
-            .poll_accept(&mut Context::from_waker(&waker));
-        drop(out);
-        match got {
-            Poll::Pending => Err(ConnError::Pending),
-            Poll::Ready(Err(f)) => Err(map(&f)),
-            Poll::Ready(Ok(a)) => {
-                let line = Line::new(a.conn);
-                let id =
-                    self.slab
-                        .insert(owner, need, Held::over(Some((line, EVERY)), None, None))?;
-                Ok((id, a.peer))
-            }
-        }
     }
 
     /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is
@@ -4143,7 +3964,7 @@ impl Connector {
         timing: (std::time::Instant, Duration),
         declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
         (require_secure, prepare): (bool, bool),
-        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+        head: (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
@@ -4177,7 +3998,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         (poolable, require_secure, prepare): (bool, bool, bool),
-        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        (located, owned): (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         record: &DeclaredNeed,
         why: &mut Option<NeedRefusal>,
     ) -> Result<Held, ConnError> {
@@ -4188,16 +4009,11 @@ impl Connector {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         // The answer the attempt's head was completed with, when it was located for this very
         // caller, need and target; any other is never trusted and the entry is asked afresh.
+        // It is shared with the head that carried it (a reference count): the plan reads the
+        // authority, name, offer and head lines where they are and copies none of them.
         let carried = located
             .filter(|located| located.answers(caller, need, target))
-            .map(|located| framer::Located {
-                authority: crate::off_path::conns::owned(located.authority()),
-                name: crate::off_path::conns::owned_name(located.name()),
-                secure: located.secure(),
-                offer: crate::off_path::conns::copied(located.offer()),
-                defaults: crate::off_path::conns::copied(located.defaults()),
-                states_length: located.states_length(),
-            });
+            .map(Arc::clone);
         let dial = Dial {
             plaintext_accepted: self.plaintext_accepted(caller, desc),
             target: crate::off_path::conns::owned(target),
@@ -4246,16 +4062,19 @@ impl Connector {
             .is_some()
             .then(|| crate::off_path::conns::owned(desc.member));
 
-        let anchors = match own {
-            Some(sealed) => sealed,
+        // The lowered authority keys the anchor books here and the pool below: it is made once,
+        // lent to the books' key and taken back.
+        let (anchors, authority) = match own {
+            Some(sealed) => (sealed, authority),
             None => {
                 let at = (caller, need, authority);
                 let anchored = self.anchored.lock().expect("anchors");
                 let own = anchored.get(&at);
-                match self.registered.lock().expect("anchors").get(&at) {
+                let anchors = match self.registered.lock().expect("anchors").get(&at) {
                     Some(registered) => registered.held(own)?,
                     None => own.cloned(),
-                }
+                };
+                (anchors, at.2)
             }
         };
 
@@ -4321,7 +4140,7 @@ impl Connector {
                     owner: caller,
                     need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
-                    authority: crate::off_path::conns::lowered(planned.authority()),
+                    authority,
                     secure: planned.secure(),
                     name: crate::off_path::conns::owned_name(planned.name()),
                     class: (judged_class, egress_class),
@@ -4455,7 +4274,7 @@ impl Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         how: (bool, Option<u64>, bool),
-        head: (Option<&LocatedTarget>, Option<OwnedHead>),
+        head: (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
     ) -> Result<ConnId, ConnError> {
         let mut why = None;
         let opened = self.open_timed_reasoned(caller, need, desc, how, head, &mut why);
@@ -4476,7 +4295,7 @@ impl Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         (require_secure, dial_timeout_ms, prepare): (bool, Option<u64>, bool),
-        (located, owned): (Option<&LocatedTarget>, Option<OwnedHead>),
+        (located, owned): (Option<&Arc<LocatedTarget>>, Option<OwnedHead>),
         why: &mut Option<NeedRefusal>,
     ) -> Result<ConnId, ConnError> {
         let started = framer::now();
@@ -4733,7 +4552,7 @@ impl Conns for Connector {
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         self.open_timed(
             caller,
@@ -4751,7 +4570,7 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
         head: OwnedHead,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         self.open_timed(
             caller,
@@ -4924,7 +4743,9 @@ impl Conns for Connector {
                     fingerprint,
                 }
             }),
-            claim: e.claim,
+            // The contract's facts own their text: the claim's one copy is made here, for the
+            // caller that asked (the connection itself keeps the door's fixed word).
+            claim: e.claim.map(str::to_owned),
             peer_key_pin: e.peer_key_pin,
             client_identity: e.client_identity,
         })

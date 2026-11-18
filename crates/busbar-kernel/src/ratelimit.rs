@@ -69,13 +69,13 @@ pub fn classify_mutation(rel: &str) -> MutationClass {
         return MutationClass::PluginInspect;
     }
 
-    if crate::config::named_map::NamedMapSection::sections()
-        .iter()
-        .any(|s| {
-            rel.strip_prefix(s.path_root().as_ref())
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-        })
-    {
+    // `/<section key>` exactly, or with a path under it: matched against the key where it lies, so
+    // classifying a mutation builds no section list and no path.
+    if crate::config::named_map::NamedMapSection::each().any(|s| {
+        rel.strip_prefix('/')
+            .and_then(|rest| rest.strip_prefix(s.key()))
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }) {
         return MutationClass::Config;
     }
     let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {

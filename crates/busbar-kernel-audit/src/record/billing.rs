@@ -423,6 +423,7 @@ impl PartitionedBillingV1 {
             u64::from(b.final_target.unwrap_or(0)),
         );
         f.num("billing_partitions_count", b.partitions.len() as u64);
+        let mut classes = 0u64;
         for p in &b.partitions {
             let (scope, preparation, dispatch) = match p.scope {
                 PartitionScope::Session => ("session", 0, None),
@@ -468,11 +469,9 @@ impl PartitionedBillingV1 {
             );
             f.text("billing_partitions[].finality", p.finality.as_str());
             f.num("billing_partitions[].classes_count", p.classes.len() as u64);
+            classes += p.classes.len() as u64;
         }
-        f.num(
-            "billing_classes_count",
-            b.partitions.iter().map(|p| p.classes.len() as u64).sum(),
-        );
+        f.num("billing_classes_count", classes);
         for (index, p) in b.partitions.iter().enumerate() {
             for (class, c) in &p.classes {
                 f.num("billing_classes[].partition", index as u64);

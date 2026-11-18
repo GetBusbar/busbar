@@ -37,7 +37,7 @@ fn door_of(key: VirtualKey) -> AdminDoor {
         &Operator::new("operator-provider"),
         "operator:local",
         ChainVerdict::Identified {
-            module: crate::config::KEYS_MODULE.to_string(),
+            module: crate::config::KEYS_MODULE.into(),
             principal,
             resolved: Some(std::sync::Arc::new(key)),
             signed_authority: None,

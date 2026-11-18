@@ -161,12 +161,6 @@ fn one_crypto_self_test_failed_row_and_metric_within_a_tick() {
     todo!("owner: W1-L2 (C-CRYPTO-SELFTEST)")
 }
 
-#[test]
-#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): the kernel admission path that reads error_codes_refused and the crypto self-test row is not on dev (OUTSTANDING row 5)"]
-fn self_test_reaches_each_port_as_failed_unavailable() {
-    todo!("owner: W1-K8D (C-CRYPTO-SELFTEST)")
-}
-
 /// (f), the auth adapter's side (W1-L5): a host crypto call the module does not offer (`Error::Unsupported`, the
 /// facade's one UNAVAILABLE) reaches the plugin as `CryptoErr::Unavailable`, which `?` turns into REFUSED
 /// R_UNSUPPORTED (§4.1 `From`); the auth adapter returns that from `verify` as `PortError::Refused { code:

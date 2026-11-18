@@ -2270,12 +2270,9 @@ async fn build_app_native(
     }
     let admin_modules = Arc::new(admin_modules);
 
-    let (route_decls, withheld_public_exports) =
+    let route_decls =
         crate::export::route_projection(&cfg_export, prior.map(|app| app.exports.as_ref()));
-    let plugin_routes = std::sync::Arc::new(
-        crate::plugin_routes::build_route_table(route_decls)?
-            .with_withheld_public_exports(withheld_public_exports),
-    );
+    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(route_decls)?);
 
     let boot_route_paths = prior.map_or_else(
         || std::sync::Arc::new(plugin_routes.paths()),

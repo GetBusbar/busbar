@@ -719,7 +719,7 @@ fn io_crossed<T>(r: Result<T, IoRefusal>, ok: impl FnOnce(T)) -> Crossed {
         }
         Err(IoRefusal::Refused(t)) => Crossed {
             outcome: Outcome::Refused,
-            error: Some(t.into_bytes()),
+            error: Some(t.as_bytes().to_vec()),
         },
         Err(IoRefusal::Failed(t)) => Crossed {
             outcome: Outcome::Failed,
@@ -790,7 +790,7 @@ impl TestDoor {
                 let held = self.held_keys.lock().unwrap().contains(&i.supervision_key);
                 let r = if held {
                     Err(IoRefusal::Refused(
-                        "held down by the carrier's supervisor".to_owned(),
+                        "held down by the carrier's supervisor".into(),
                     ))
                 } else if d.kind == DEST_PROGRAM {
                     let program = text_of(d.program);

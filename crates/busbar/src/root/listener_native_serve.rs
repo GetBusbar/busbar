@@ -155,7 +155,6 @@ async fn supervise(
     let OpenedConnection {
         mut ingress,
         conn,
-        first,
         io,
         progress,
         delivery,
@@ -188,7 +187,6 @@ async fn supervise(
     let mut close = Some(close);
     let driver = session::drive(
         conn,
-        first,
         io,
         progress,
         Wiring {

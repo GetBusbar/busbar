@@ -20,6 +20,21 @@ impl<E: Copy + Eq + Into<RawRateEra> + From<u64>> FeeEras<E> {
         let total = eras.iter().fold(0u64, |acc, (_, n)| acc.saturating_add(*n));
         Self(eras, total)
     }
+
+    /// [`FeeEras::of`] over counts that may each be refused: the split, or the first refusal met
+    /// in the order given. The split is built once, straight from the counts.
+    pub fn try_of<X>(dated: impl IntoIterator<Item = Result<(E, u64), X>>) -> Result<Self, X> {
+        let mut eras = Vec::new();
+        let mut total = 0u64;
+        for row in dated {
+            let (era, n) = row?;
+            if era.into() != RawRateEra::legacy(0) && n != 0 {
+                eras.push((era, n));
+                total = total.saturating_add(n);
+            }
+        }
+        Ok(Self(eras, total))
+    }
 }
 
 /// A dated cell's segments folded back to ONE count map per lane, in first-seen order, with `add`

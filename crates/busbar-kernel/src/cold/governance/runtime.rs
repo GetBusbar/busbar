@@ -34,25 +34,12 @@ pub(crate) fn at_rest_kid_resource(kid: &str) -> String {
     format!("kid:{kid}")
 }
 
-/// `recovery`: the monotonic clock an operation's first recovery send is stamped with, read once
-/// per operation (revision 0).
-#[cold]
-pub(crate) fn recovery_first_send_clock() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
-/// `unit_checkpoint`: a running-unit checkpoint refusal, rendered once on the error path.
-#[cold]
-pub(crate) fn unit_checkpoint_refusal(message: &str) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(message.to_owned())
-}
-
 /// `unit_checkpoint_store`: a failed checkpoint operation, rendered once on the error path.
 #[cold]
 pub(crate) fn unit_checkpoint_store_error(
     e: &dyn std::fmt::Debug,
 ) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(format!("unit checkpoint: {e:?}"))
+    busbar_contract::records::RecordStoreError::from(format!("unit checkpoint: {e:?}"))
 }
 
 /// `identity_runtime`: a credential mint refused because the CSPRNG failed.
@@ -60,7 +47,7 @@ pub(crate) fn unit_checkpoint_store_error(
 pub(crate) fn identity_runtime_csprng_refusal(
     e: &dyn std::fmt::Display,
 ) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(format!("CSPRNG unavailable: {e}"))
+    busbar_contract::records::RecordStoreError::from(format!("CSPRNG unavailable: {e}"))
 }
 
 /// `mint_policy`: an explicit mint lifetime over the policy ceiling, refused.
@@ -147,5 +134,5 @@ pub(crate) fn self_serve_held_resource(
 pub(crate) fn native_runtime_store_error(
     error: &dyn std::fmt::Display,
 ) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(error.to_string())
+    busbar_contract::records::RecordStoreError::from(error.to_string())
 }

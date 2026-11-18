@@ -1221,11 +1221,11 @@ diagnostics! {
         "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).",
         "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed).";
 
-    /// A plugin's D_ERRORS declaration is malformed: the plugin is admitted, its error codes are dropped (PLUGIN-ERROR-CODES §2.4). WARN once at admission, beside one `plugin.error_codes_refused` audit row.
-    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", false,
-        "A plugin's error-number declaration was refused; it runs without error codes",
-        "The plugin declared its error numbers (D_ERRORS) in a form core does not accept: more than one declaration, an empty, odd or over-long body, a number 0 or above 9999, numbers out of ascending order (or repeated), or a plugin name that cannot form a code. The plugin was admitted and serves; its failures and log lines carry their text with no `BUSBAR-<plugin>-NNNN` code. `have` names the fault (counts, numbers and byte positions only) and `want` the accepted form. The image's admission record carries the same fault.",
-        "Report the plugin to its author: its declared numbers must be 1..=256 numbers, each 1..=9999, strictly ascending, under a name matching ^[a-z][a-z0-9-]{0,63}$ that does not end in '-'. Nothing to change in the configuration.";
+    /// RETIRED: nothing emits it; the host no longer reports a refused D_ERRORS declaration (the plugin is still admitted without error codes). The number is kept so a log line from a pre-release build still resolves.
+    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", true,
+        "A plugin's error-number declaration was refused; it runs without error codes — RETIRED",
+        "RETIRED. Nothing emits this code: a refused error-number declaration is no longer reported.",
+        "Nothing emits this code.";
 
     /// A plugin reported an error number it did not declare in D_ERRORS (PLUGIN-ERROR-CODES §2.5). WARN once per instance slot; the text is kept without a code; no audit row.
     PLUGIN_ERROR_NUMBER_UNDECLARED = 6019, Plugins, Actionable, "plugin-error-number-undeclared", "1.6.0", false,
@@ -2032,11 +2032,11 @@ diagnostics! {
         "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
         "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
 
-    /// This process is in restore quarantine (DES-331 §B5, §B10.5).
-    STORE_RESTORED = 9026, Boot, Actionable, "store-restored", "1.6.0", false,
-        "This node is in restore quarantine: the Store was restored and is not yet declared",
-        "This node will not serve the data plane or mutate state, because the Store it opened was restored from a backup or another node began a restore. It entered quarantine because it was started with --restore-quarantine (reason flag), because the Store's restore row says a restore is pending (pending_row), or because a node-lease refresh saw a restore epoch other than the one this process started with (epoch_changed). The line names the reason, the restore epoch and, once a tail is supplied, the covered nodes, the per-node gaps and what was not re-applied. /readyz answers 503 with the reason store_restored; /livez stays up; admin reads are served.",
-        "Finish the restore: verify the exported audit tail with POST /api/v1/admin/store-restore/verify, then declare it with POST /api/v1/admin/store-restore (docs/operations.md, Backup set and order). Start the node launched with --restore-quarantine first and the other nodes only after it reports this line. A node that entered quarantine at a lease refresh restarts after the declaration.";
+    /// RETIRED: nothing emits it; the restore quarantine (the `--restore-quarantine` flag) was removed. The number is kept so a log line from a pre-release build still resolves.
+    STORE_RESTORED = 9026, Boot, Actionable, "store-restored", "1.6.0", true,
+        "This node is in restore quarantine: the Store was restored and is not yet declared — RETIRED",
+        "RETIRED. Nothing emits this code: the restore quarantine and its --restore-quarantine flag were removed.",
+        "Nothing emits this code.";
 
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,

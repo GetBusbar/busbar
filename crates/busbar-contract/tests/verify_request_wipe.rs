@@ -14,11 +14,7 @@ use std::task::{Context, Poll, Waker};
 use busbar_contract::abi::auth::AuthPoint;
 use busbar_contract::auth_calls::VerifyRequest;
 
-#[allow(dead_code)]
-#[path = "../../busbar-plugin-test/src/canary_scan.rs"]
-mod canary_scan;
-
-use canary_scan::WipeProof;
+use busbar_contract::canary_scan::WipeProof;
 
 /// The shipped allocator, so the scan reads what production would leave behind.
 #[global_allocator]

@@ -3965,7 +3965,7 @@ fn per_hop_on(
             header: None,
             lease,
         },
-        busbar_kernel::refresh::fingerprint([value.as_slice()]),
+        busbar_kernel::refresh::fingerprint([value.as_slice()]).expect("the process is keyed"),
         handle,
         minted,
         report,
@@ -4633,7 +4633,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
                 per_request: None,
             },
         )),
-        provider: "fs".to_string(),
+        provider: busbar_contract::kept::Text::fixed("fs"),
         keep: ResponseKeep::default(),
         rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
         anchors: busbar_contract::transport::trust::Anchors {

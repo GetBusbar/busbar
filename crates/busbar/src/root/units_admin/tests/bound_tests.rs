@@ -334,7 +334,7 @@ async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_bou
     let kernel = Arc::new(bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "cp".into(),
@@ -584,7 +584,7 @@ async fn trust_approve_honours_idempotency_key() {
     let kernel = Arc::new(bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "cp".into(),
@@ -734,7 +734,7 @@ async fn pinned_kernel() -> Arc<busbar_kernel::host_services::KernelServices> {
     let kernel = Arc::new(bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "cp".into(),
@@ -916,7 +916,7 @@ async fn backend_kernel(
     );
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "cp".into(),

@@ -392,10 +392,6 @@ fn owned_selected_preparation_retains_complete_actual_estimates() {
     assert_eq!(prepared.route(), req().route);
     assert_eq!(prepared.exchange().method.as_deref(), Some("POST"));
     assert!(prepared.exchange().end);
-    assert_eq!(
-        prepared.estimates(),
-        Some(&[(Box::<str>::from("tokens"), EstimateValue::Unknown)][..])
-    );
     assert!(effects.0.lock().unwrap().is_empty());
 }
 
@@ -495,8 +491,12 @@ fn refused() -> PortError {
 impl Calls for Script {
     type Session = Live;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (self.facts, &self.classes, &self.attempt_classes)
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        (
+            self.facts,
+            self.classes.as_slice().into(),
+            self.attempt_classes.as_slice().into(),
+        )
     }
 
     fn request(

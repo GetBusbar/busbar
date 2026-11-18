@@ -137,12 +137,14 @@ fn framing(door: &Arc<Deadlined>) -> DatagramFraming {
 /// Run one `timeout_step` and every same-op continuation it owes to completion; the number of
 fn step_to_completion(framing: &mut DatagramFraming, now: Instant) -> usize {
     let mut batches = 0;
-    let mut step = framing.timeout_step(now).expect("the clock step");
+    let mut step = framing
+        .timeout_step(super::At::of(now))
+        .expect("the clock step");
     while let LineStep::Batch { .. } = step {
         batches += 1;
         assert!(batches < 8, "the clock step never completed");
         step = framing
-            .line_step(None, false, now)
+            .line_step(None, false, super::At::of(now))
             .expect("the continuation");
     }
     assert!(matches!(step, LineStep::Complete), "the step needed credit");
@@ -163,13 +165,17 @@ fn the_legacy_timeout_fires_an_elapsed_framer_deadline_once_and_states_no_replac
     let now = Instant::now();
     assert!(instant_of(stated) <= now);
 
-    framing.timeout(now).expect("the host's clock");
+    framing
+        .timeout(super::At::of(now))
+        .expect("the host's clock");
     assert_eq!(door.timers(), 1, "the elapsed deadline fires the Timer");
     assert_eq!(framing.deadline(), None, "the deadline was consumed");
 
-    framing.timeout(now).expect("the host's clock");
     framing
-        .timeout(now + Duration::from_secs(3600))
+        .timeout(super::At::of(now))
+        .expect("the host's clock");
+    framing
+        .timeout(super::At::of(now + Duration::from_secs(3600)))
         .expect("the host's clock");
     assert_eq!(door.timers(), 1, "the deadline fired more than once");
     assert_eq!(framing.deadline(), None, "a replacement deadline appeared");
@@ -219,7 +225,9 @@ fn a_future_framer_deadline_waits_for_its_instant_in_both_clock_paths() {
             if incremental {
                 step_to_completion(framing, now);
             } else {
-                framing.timeout(now).expect("the host's clock");
+                framing
+                    .timeout(super::At::of(now))
+                    .expect("the host's clock");
             }
         };
         clock(&mut framing, early);

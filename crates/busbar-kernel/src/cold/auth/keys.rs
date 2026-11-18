@@ -52,18 +52,6 @@ pub(crate) fn challenge_fields(challenge: String) -> crate::plane_driver::HeadFi
     ]
 }
 
-/// The provider name a self-serve key is minted under, owned once per exchange.
-#[cold]
-pub(crate) fn self_key_provider(provider: &str) -> String {
-    provider.to_owned()
-}
-
-/// The mint refusal when governance is disabled.
-#[cold]
-pub(crate) fn governance_disabled() -> String {
-    "governance is disabled: cannot mint keys".to_owned()
-}
-
 /// The personal budget group a self-serve key charges through (`user:<sub>`).
 #[cold]
 pub(crate) fn self_group(principal_id: &str) -> String {
@@ -74,35 +62,19 @@ pub(crate) fn self_group(principal_id: &str) -> String {
     )
 }
 
-/// What one self-serve mint owns: the subject, the provider and the key's allowed scopes.
+/// What one self-serve mint owns: the minted key's allowed scopes, kept by the key record. The
+/// subject and the provider are lent, not copied.
 #[cold]
-pub(crate) fn self_mint_parts(
-    principal_id: &str,
-    provider: &str,
+pub(crate) fn self_mint_scopes(
     allowed_scopes: Option<&[busbar_contract::records::ScopeRef]>,
-) -> (
-    String,
-    String,
-    Option<Vec<busbar_contract::records::ScopeRef>>,
-) {
-    (
-        principal_id.to_owned(),
-        provider.to_owned(),
-        allowed_scopes.map(<[busbar_contract::records::ScopeRef]>::to_vec),
-    )
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    allowed_scopes.map(<[busbar_contract::records::ScopeRef]>::to_vec)
 }
 
 /// A self-serve mint's store failure, as its `MintFailed` detail.
 #[cold]
 pub(crate) fn mint_store_failed(error: &dyn std::fmt::Display) -> String {
     error.to_string()
-}
-
-/// What a self-serve group provision owns across its config transaction: the leaf, its parent
-/// and the acting principal.
-#[cold]
-pub(crate) fn provision_parts(leaf: &str, parent: &str, actor: &str) -> (String, String, String) {
-    (leaf.to_owned(), parent.to_owned(), actor.to_owned())
 }
 
 /// The audit row of a token exchange refused because its verified principal is held (`auth:<module>`

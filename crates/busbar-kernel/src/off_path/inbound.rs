@@ -10,6 +10,7 @@
 use std::sync::{Arc, PoisonError};
 
 use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
+use busbar_contract::kept::Text;
 use foldhash::HashMap;
 
 use crate::guest::LineAuth;
@@ -49,7 +50,7 @@ impl Inbound {
         listener: Listener,
     ) -> Result<(), &'static str> {
         let lines_by_id = checked_line_ids(&listener.ids, listener.guests.lines().len())?;
-        let providers: Vec<Arc<[String]>> = listener
+        let providers: Vec<Arc<[Text]>> = listener
             .guests
             .lines()
             .iter()
@@ -126,12 +127,14 @@ pub(crate) fn checked_line_ids(
 }
 
 /// A line's auth chain in walk order (the keys module last), ordered once at install.
-fn ordered(names: &[String]) -> Arc<[String]> {
+/// A line's provider names in walk order, each made shared text once, when the table is built: a
+/// request that names one afterwards shares it.
+fn ordered(names: &[String]) -> Arc<[Text]> {
     let keys = crate::config::KEYS_MODULE;
     names
         .iter()
         .filter(|n| *n != keys)
         .chain(names.iter().filter(|n| *n == keys).take(1))
-        .cloned()
+        .map(|n| Text::from(Arc::<str>::from(n.as_str())))
         .collect()
 }

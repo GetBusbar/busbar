@@ -33,12 +33,6 @@ pub(crate) fn prefixed(prefix: &str, value: &dyn Display) -> String {
     format!("{prefix}{value}")
 }
 
-/// A refusal's borrowed text, owned for the answer that carries it.
-#[cold]
-pub(crate) fn refusal_text(text: &str) -> String {
-    text.to_owned()
-}
-
 /// The text of a carrier crossing that did not answer READY ([`crate::carrier::text`]).
 #[cold]
 pub(crate) fn crossing_text(error: &[u8]) -> String {

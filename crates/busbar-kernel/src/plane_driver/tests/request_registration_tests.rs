@@ -693,7 +693,7 @@ fn selected_rig_kind(
         pattern: "/requests".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec!["pool".into()],
+        resource_kinds: vec![Box::<str>::from("pool")].into(),
     };
     let mut wire = busbar_plugin_abi::records::Reply::new();
     busbar_plugin_abi::resource_admission::write_selection(
@@ -731,7 +731,10 @@ fn a_selection_narrows_the_keyed_walk_to_the_selected_tuples() {
         .unwrap();
     assert_eq!(
         receipt.member_grants(),
-        &BTreeMap::from([("seat".to_owned(), vec![format!("seat{PLANE_LANE_SEP}a")])]),
+        &crate::plane_driver::request_admission::MemberGrants::from([(
+            "seat".into(),
+            lanes(&["a"])
+        )]),
         "the walk must not reach the unselected member b"
     );
     // The same selection never admits a key that does not hold it.
@@ -860,10 +863,10 @@ fn section_routes(scope_kind: &str) -> RequestRoutes {
     .unwrap()
 }
 
-fn lanes(members: &[&str]) -> Vec<String> {
+fn lanes(members: &[&str]) -> std::sync::Arc<[busbar_contract::kept::Text]> {
     members
         .iter()
-        .map(|member| format!("seat{PLANE_LANE_SEP}{member}"))
+        .map(|member| format!("seat{PLANE_LANE_SEP}{member}").as_str().into())
         .collect()
 }
 

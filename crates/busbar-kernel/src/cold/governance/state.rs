@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, RwLock};
 
 use busbar_contract::count::{Count, COUNT_SCALE};
+use busbar_contract::kept::Text;
 use busbar_contract::records::ScopeRef;
 
 use crate::governance::{BudgetCell, LimitBlocked, MeterKey, UsageDelta};
@@ -81,15 +82,20 @@ pub(crate) fn state_per_request_one() -> BTreeMap<String, Count> {
     one
 }
 
-/// `state`: a bucket's cell, keyed once, the first time the bucket is charged.
+/// `state`: a bucket's cell, keyed once, the first time the bucket is charged: the one allocation
+/// of the bucket's name, which the map keeps as its key for the cell's life. It answers the key
+/// with the cell, so the charge that made it names it by sharing the key.
 #[cold]
 pub(crate) fn state_fresh_cell<'m>(
-    map: &'m mut foldhash::HashMap<String, BudgetCell>,
+    map: &'m mut foldhash::HashMap<Text, BudgetCell>,
     bucket: &str,
     window: u64,
-) -> &'m mut BudgetCell {
-    map.entry(bucket.to_owned())
-        .or_insert_with(|| BudgetCell::fresh(window))
+) -> (Text, &'m mut BudgetCell) {
+    let name = Text::from(Arc::<str>::from(bucket));
+    let cell = map
+        .entry(name.clone())
+        .or_insert_with(|| BudgetCell::fresh(window));
+    (name, cell)
 }
 
 /// `state`: a bucket learns an owning group once, the first time it is charged through it.
@@ -196,35 +202,11 @@ pub(crate) fn tickets_encoded_record(
     busbar_contract::Secret::new(bytes)
 }
 
-/// `tickets`: the consumer body a ticket's spend hands back, copied once per redemption.
+/// `tickets`: the consumer body a ticket's spend hands back to its caller, who owns it: copied
+/// once per redemption, off the record the spend kept.
 #[cold]
-pub(crate) fn tickets_record_body(body: &[u8]) -> busbar_contract::Secret<Vec<u8>> {
-    busbar_contract::Secret::new(body.to_vec())
-}
-
-/// `tickets`: the three addresses a ticket is observed through, owned by its one store read.
-#[cold]
-pub(crate) fn tickets_read_addresses(
-    addresses: &[busbar_contract::persistence::Address; 3],
-) -> Vec<busbar_contract::persistence::Address> {
-    addresses.to_vec()
-}
-
-/// `tickets`: the retained cleanup operation's map key for one expired ticket.
-#[cold]
-pub(crate) fn tickets_cleanup_id(id: &str) -> String {
-    format!("expiry:{id}")
-}
-
-/// `tickets`: a cleanup operation, retained once, the first time its expired ticket is purged.
-#[cold]
-pub(crate) fn tickets_keep_first<T>(
-    pending: &mut BTreeMap<String, Arc<T>>,
-    id: &str,
-    operation: Arc<T>,
-) -> Arc<T> {
-    pending.insert(id.to_owned(), operation.clone());
-    operation
+pub(crate) fn tickets_record_body(body: &[u8]) -> Vec<u8> {
+    body.to_vec()
 }
 
 /// `tickets`: the audit resource of a ticket refused because its signing key rotated.

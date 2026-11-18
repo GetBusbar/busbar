@@ -46,15 +46,3 @@ fn deadline_task_waiters_wake_in_registration_order_once_each() {
     wake.wake_by_ref();
     assert_eq!(*woken.lock().unwrap(), (0..WAITERS).collect::<Vec<_>>());
 }
-
-#[test]
-fn listener_accepts_wake_in_registration_order_once_each() {
-    let woken = Arc::new(Mutex::new(Vec::new()));
-    let wakers = wakers(&woken);
-    let accepting = Accepting::default();
-    for waker in wakers.iter().chain(wakers.iter()) {
-        assert!(accepting.take(waker).is_none());
-    }
-    accepting.put(None);
-    assert_eq!(*woken.lock().unwrap(), (0..WAITERS).collect::<Vec<_>>());
-}

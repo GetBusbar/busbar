@@ -18,16 +18,30 @@ mod test_support;
 /// principal's id on a sealed record as kept for the life of the chain. An arrival that never
 /// resolved to anybody is recorded as an arrival, because "nobody authenticated" is itself a fact
 /// worth keeping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Subject {
-    /// A resolved principal, by its principal identifier (the governance key id).
-    PrincipalId(String),
+    /// A resolved principal, by its principal identifier (the governance key id). Shared text:
+    /// a sealed line shares the name its unit's principal already holds, and copies none.
+    PrincipalId(busbar_contract::kept::Text),
     /// Something that arrived and was never attributed to a principal.
     Arrival,
     /// The node acting for itself.
     Node(u64),
     /// A rolled-up figure rather than one actor.
     Aggregate,
+}
+
+// Written by hand so a subject prints exactly as it did when the principal was a `String`
+// (`PrincipalId("name")`), whichever way its shared text is held.
+impl std::fmt::Debug for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::PrincipalId(p) => f.debug_tuple("PrincipalId").field(&p.as_str()).finish(),
+            Subject::Arrival => f.write_str("Arrival"),
+            Subject::Node(id) => f.debug_tuple("Node").field(id).finish(),
+            Subject::Aggregate => f.write_str("Aggregate"),
+        }
+    }
 }
 
 /// An identifier a caller supplies for the kind of operation performed.
@@ -156,15 +170,27 @@ impl HookHead {
 /// Which hook, by the key the deployment configured it under (never the instance that serves it),
 /// its decision head, and whether it failed — and nothing priced: what a hook changed is in the
 /// counts it changed, and those are the usage lines.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HookApplied {
-    /// Which hook: its configured key.
-    pub hook: String,
+    /// Which hook: its configured key. Shared text: the row shares the key the hook's own call
+    /// holds, and copies none.
+    pub hook: busbar_contract::kept::Text,
     /// What its answer did to the unit.
     pub head: HookHead,
     /// It could not answer (an error, a deadline): its head is then what its `on_error` made of
     /// it. A failure is recorded, never dropped.
     pub failed: bool,
+}
+
+// Written by hand so the row prints exactly as it did when the key was a `String`.
+impl std::fmt::Debug for HookApplied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookApplied")
+            .field("hook", &self.hook.as_str())
+            .field("head", &self.head)
+            .field("failed", &self.failed)
+            .finish()
+    }
 }
 
 /// THE CONTROLS that were in force.
@@ -231,16 +257,30 @@ impl AttemptOutcome {
 }
 
 /// One attempt slot of a `v7` record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Attempt {
     /// How it ended.
     pub outcome: AttemptOutcome,
-    /// The lane it was made at.
-    pub target: String,
-    /// The reason it did not answer, empty when it did.
-    pub reason: String,
+    /// The lane it was made at. Shared text: a seal names the lane's own fixed name, and copies
+    /// none.
+    pub target: busbar_contract::kept::Text,
+    /// The reason it did not answer, empty when it did. Shared text: a seal names the reason
+    /// code's own fixed text.
+    pub reason: busbar_contract::kept::Text,
     /// Its duration in microseconds, 0 when not measured.
     pub us: u64,
+}
+
+// Written by hand so the slot prints exactly as it did when its texts were `String`s.
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt")
+            .field("outcome", &self.outcome)
+            .field("target", &self.target.as_str())
+            .field("reason", &self.reason.as_str())
+            .field("us", &self.us)
+            .finish()
+    }
 }
 
 /// How many attempts a `v7` record holds inline; `attempts_total` counts beyond them.

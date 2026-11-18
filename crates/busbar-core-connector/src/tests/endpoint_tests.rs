@@ -124,13 +124,7 @@ fn a_socket_path_or_opaque_forbidden_host_target_is_refused_as_naming_no_host() 
         "ldap://evil%40good.example",
     ] {
         let err = check(target).expect_err(target);
-        assert_eq!(
-            err,
-            EndpointRefusal::NoHost {
-                target: target.to_owned()
-            },
-            "{target}"
-        );
+        assert_eq!(err, EndpointRefusal::NoHost { target }, "{target}");
         assert_eq!(
             err.to_string(),
             format!("refused: `{target}` names no host, so there is nothing to have checked"),

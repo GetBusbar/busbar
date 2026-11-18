@@ -778,7 +778,7 @@ mod visible_fixture {
 
     /// The canonical settings this plane converts an older `{"old_url": ..}` to: one registration whose `url`
     /// core takes over.
-    pub const CONVERTED: &[u8] =
+    pub(super) const CONVERTED: &[u8] =
         br#"{"upstreams":{"a":{"model":"m","url":"https://upstream.example"}}}"#;
 
     /// A plane that declares `/upstreams/*` registrations and, like a real plane's strict schema, refuses a

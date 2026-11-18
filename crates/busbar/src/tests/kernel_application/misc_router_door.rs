@@ -171,7 +171,12 @@ async fn a_http_plane_receives_no_scheme_derived_from_a_raw_credential() {
             Box::pin(async move {
                 assert!(!ctx.headers.contains_key("x-api-key"));
                 assert!(!ctx.headers.contains_key("authorization"));
-                axum::response::IntoResponse::into_response(axum::Json(ctx.consumed_fields))
+                let fields: Vec<(String, String)> = ctx
+                    .consumed_fields
+                    .into_iter()
+                    .map(|(name, scheme)| (name.as_str().to_owned(), scheme))
+                    .collect();
+                axum::response::IntoResponse::into_response(axum::Json(fields))
             })
         }),
     };

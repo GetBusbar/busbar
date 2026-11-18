@@ -1313,7 +1313,7 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     let kernel = Arc::new(crate::root::units_admin::bound::bound_tests::bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "peer".to_string(),
@@ -1477,7 +1477,7 @@ async fn a_rejected_approval_is_audited() {
     let kernel = Arc::new(crate::root::units_admin::bound::bound_tests::bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "peer".to_string(),
@@ -1934,7 +1934,7 @@ async fn a_sighted_trust_kernel() -> Arc<busbar_kernel::host_services::KernelSer
     let kernel = Arc::new(crate::root::units_admin::bound::bound_tests::bound_kernel().await);
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![(
                     "peer".to_string(),

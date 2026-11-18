@@ -3,8 +3,12 @@
 
 //! C-STRATEGY-WORD (IF §12.25, §14), kernel arms: how a pool's strategy word resolves at config load.
 
-use super::{resolve_strategy, StrategyBinding};
-use crate::path_claims::ConfigRefused;
+use super::{resolve_strategy, StrategyBinding, StrategyRefused};
+
+/// The refusal's words, as CONFIG refuses with them.
+fn refused_words(refused: Result<StrategyBinding<'_>, StrategyRefused<'_>>) -> String {
+    refused.expect_err("the word does not resolve").to_string()
+}
 
 /// The admitted hook images and the words each declares (`Registry::hook_words`).
 fn words() -> Vec<(&'static str, Vec<&'static str>)> {
@@ -29,8 +33,7 @@ fn an_unconfigured_word_opens_one_implicit_instance() {
         assert_eq!(
             got,
             StrategyBinding {
-                word: word.into(),
-                instance: word.into(),
+                instance: word,
                 implicit: true,
             }
         );
@@ -45,8 +48,7 @@ fn a_configured_instance_of_that_name_is_used() {
     assert_eq!(
         got,
         StrategyBinding {
-            word: "cheapest".into(),
-            instance: "cheapest".into(),
+            instance: "cheapest",
             implicit: false,
         }
     );
@@ -59,9 +61,11 @@ fn a_configured_instance_that_does_not_declare_the_word_is_refused() {
     let configured = [("cheapest", "hook-webrequest")];
     assert_eq!(
         resolve_strategy("cheapest", &configured, &words()),
-        Err(ConfigRefused(
-            "hook instance `cheapest` does not declare the strategy word `cheapest`".into()
-        ))
+        Err(StrategyRefused::NotDeclared("cheapest"))
+    );
+    assert_eq!(
+        refused_words(resolve_strategy("cheapest", &configured, &words())),
+        "hook instance `cheapest` does not declare the strategy word `cheapest`"
     );
 }
 
@@ -69,9 +73,11 @@ fn a_configured_instance_that_does_not_declare_the_word_is_refused() {
 fn an_unknown_word_is_refused() {
     assert_eq!(
         resolve_strategy("nearest", &[], &words()),
-        Err(ConfigRefused(
-            "ranking strategy `nearest` has no admitted hook plugin".into()
-        ))
+        Err(StrategyRefused::NoPlugin("nearest"))
+    );
+    assert_eq!(
+        refused_words(resolve_strategy("nearest", &[], &words())),
+        "ranking strategy `nearest` has no admitted hook plugin"
     );
 }
 
@@ -79,10 +85,11 @@ fn an_unknown_word_is_refused() {
 fn a_word_declared_by_two_images_is_refused() {
     assert_eq!(
         resolve_strategy("twice", &[], &words()),
-        Err(ConfigRefused(
-            "ranking strategy `twice` is declared by several hook plugins; configure `hooks.twice` with a `module:`"
-                .into()
-        ))
+        Err(StrategyRefused::Several("twice"))
+    );
+    assert_eq!(
+        refused_words(resolve_strategy("twice", &[], &words())),
+        "ranking strategy `twice` is declared by several hook plugins; configure `hooks.twice` with a `module:`"
     );
     // Configuring it by name settles the ambiguity.
     let configured = [("twice", "hook-dup-b")];

@@ -3,9 +3,11 @@
 
 //! THE WALK: the one stepper that answers, attempt by attempt, which member is next or what the
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use busbar_contract::caps::{Pass, Route};
+use busbar_contract::kept::Text;
 use busbar_ports::clock::{Deadline, HostClock, Reading};
 use foldhash::HashMap;
 
@@ -25,37 +27,40 @@ pub struct WalkPorts<'p> {
     pub clock: &'p HostClock,
     /// The counters.
     pub telemetry: &'p dyn Telemetry,
-    /// The pools, by name.
-    pub pools: &'p HashMap<String, Pool>,
+    /// The pools, by name. The key is shared text, made once when the pools are built: a walk
+    /// that names a pool (its phase, its visited set) shares the key and copies no name.
+    pub pools: &'p HashMap<Text, Pool>,
 }
 
 /// THE SHAPE A UNIT'S HOOKS PUT ON ITS PICKS (the design's route pump, "Hooks": the routing-stage policy
 pub trait Shape {
     /// `members` of a pick, as the unit's hooks leave them: the walk's own pool (`primary`) or a
-    fn shape(
+    /// The members are lent: a unit whose hooks leave them as they are answers the same list
+    /// (`Cow::Borrowed`) and copies nothing; a narrowed or re-tiered list is its own.
+    fn shape<'m>(
         &self,
         pool: &str,
-        members: Vec<Member>,
+        members: &'m [Member],
         primary: bool,
-    ) -> Option<(Vec<Member>, Vec<DestinationId>)>;
+    ) -> Option<(Cow<'m, [Member]>, Vec<DestinationId>)>;
 }
 
 /// The walk's whole budget over `pool`, seconds: the pool's request timeout, `0` for a pool that is
 #[must_use]
-pub fn budget_secs(pools: &HashMap<String, Pool>, pool: &str) -> u64 {
-    pools.get(pool).map_or(0, |p| p.failover.timeout_secs)
+pub fn budget_secs(pools: &HashMap<Text, Pool>, pool: &str) -> u64 {
+    pools.get(pool).map_or(0, |p| p.failover().timeout_secs)
 }
 
 /// Where the walk is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     /// The ordered walk over the unit's pool.
-    Primary(String),
+    Primary(Text),
     /// The pool's members are spent: its terminal runs next. `true` = the walk's own pool,
     /// `false` = a pool it spilled into; the terminal shapes the members as that pool's picks did.
-    Terminal(String, bool),
+    Terminal(Text, bool),
     /// A spill into this pool (degraded).
-    Spill(String),
+    Spill(Text),
     /// Every path is spent: every step from here answers this shed.
     Shed(Shed),
 }
@@ -65,8 +70,8 @@ enum Phase {
 /// outcome.
 #[derive(Debug)]
 pub struct Taken {
-    /// The pool it was taken from.
-    pub pool: String,
+    /// The pool it was taken from: the pool's own shared name.
+    pub pool: busbar_contract::kept::Text,
     /// The member.
     pub member: Member,
     /// Its concurrency slot.
@@ -85,7 +90,7 @@ pub struct Taken {
 /// The pool's bounded wait, answered by [`Walk::next`] for the caller to run outside its lock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wait {
-    pool: String,
+    pool: Text,
     max_ms: u64,
     /// The pool's members as the unit's hooks kept them: the shed this wait may end on reads its
     /// wait off these and no others.
@@ -106,7 +111,7 @@ pub enum Step {
 /// A parked wait: the members passed over AT CAPACITY on the last pick, the bound, and when it
 pub struct Parked<'p> {
     /// The pool's name, as the walk keys it.
-    name: String,
+    name: Text,
     pool: &'p Pool,
     /// The members the hooks kept ([`Wait`]'s), handed on to the shed.
     members: Vec<Member>,
@@ -119,7 +124,7 @@ pub struct Parked<'p> {
 
 /// What a wait came back with: the member that freed a slot, its permit and the probe its breaker
 pub struct Waited<'p> {
-    name: String,
+    name: Text,
     pool: &'p Pool,
     members: Vec<Member>,
     won: Option<(Member, Permit, Option<u64>)>,
@@ -148,12 +153,13 @@ pub struct Walk {
 }
 
 impl Walk {
-    /// A walk over `pool` starting now: its budget is the pool's request timeout.
+    /// A walk over `pool` starting now: its budget is the pool's request timeout. The name is the
+    /// unit's own shared one: the walk holds it and copies nothing.
     #[must_use]
-    pub fn start(ports: &WalkPorts<'_>, pool: &str, at: Reading) -> Self {
+    pub fn start(ports: &WalkPorts<'_>, pool: &Text, at: Reading) -> Self {
         Self {
             ctx: RequestCtx::new(budget_secs(ports.pools, pool), secs(at), millis(at)),
-            phase: Phase::Primary(pool.to_string()),
+            phase: Phase::Primary(pool.clone()),
             hops: 0,
             taken: 0,
         }
@@ -180,8 +186,8 @@ impl Walk {
     #[must_use]
     pub fn walking(&self) -> Option<(&str, bool)> {
         match &self.phase {
-            Phase::Primary(name) => Some((name, true)),
-            Phase::Spill(name) | Phase::Terminal(name, _) => Some((name, false)),
+            Phase::Primary(name) => Some((name.as_str(), true)),
+            Phase::Spill(name) | Phase::Terminal(name, _) => Some((name.as_str(), false)),
             Phase::Shed(_) => None,
         }
     }
@@ -194,7 +200,7 @@ impl Walk {
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
     pub fn refused_for_size(&mut self, ports: &WalkPorts<'_>, pool: &str, failed: &Member) {
         if let Some(pool) = ports.pools.get(pool) {
-            exclude_smaller_windows(&pool.admissible_members(), failed, &mut self.ctx);
+            exclude_smaller_windows(pool.admissible_members(), failed, &mut self.ctx);
         }
     }
 
@@ -232,7 +238,7 @@ impl Walk {
                     if pool.admissible_members().is_empty() {
                         return Step::Shed(Shed::empty_pool());
                     }
-                    if self.hops <= pool.failover.max_hops {
+                    if self.hops <= pool.failover().max_hops {
                         match self.pick(
                             ports,
                             pool,
@@ -293,13 +299,18 @@ impl Walk {
                             });
                         }
                         OnExhausted::FallbackPool(target) => {
-                            if self.ctx.is_pool_visited(target) || !ports.pools.contains_key(target)
-                            {
+                            // The spill is named by the pools' own key for it: shared, not copied.
+                            let spill = ports
+                                .pools
+                                .get_key_value(target.as_str())
+                                .map(|(key, _)| key)
+                                .filter(|_| !self.ctx.is_pool_visited(target));
+                            let Some(spill) = spill else {
                                 let secs = retry_after_secs(ports.breaker, &[], target, now, token);
                                 return Step::Shed(Shed::overloaded(secs));
-                            }
-                            self.ctx.mark_pool_visited(target);
-                            self.phase = Phase::Spill(target.clone());
+                            };
+                            self.ctx.mark_pool_visited(spill);
+                            self.phase = Phase::Spill(spill.clone());
                         }
                         OnExhausted::LeastBad => {
                             let members = match kept(self) {
@@ -318,10 +329,11 @@ impl Walk {
                         }
                         OnExhausted::Queue { max_ms } => {
                             return match kept(self) {
+                                // The wait keeps its members across the park: its own list.
                                 Ok(members) => Step::Wait(Wait {
                                     pool: name,
                                     max_ms: *max_ms,
-                                    members,
+                                    members: members.into_owned(),
                                 }),
                                 Err(shed) => Step::Shed(shed),
                             };
@@ -352,9 +364,12 @@ impl Walk {
             return None;
         }
         let pool = ports.pools.get(pool_name)?;
-        let primary = matches!(&self.phase, Phase::Primary(name) if name == pool_name);
+        let primary = matches!(&self.phase, Phase::Primary(name) if *name == pool_name);
         let (members, _) = self.shaped(pool, Some(shape), primary).ok()?;
-        let member = members.into_iter().find(|m| m.destination == destination)?;
+        let member = members
+            .iter()
+            .find(|m| m.destination == destination)?
+            .clone();
         let mut ctx = self.ctx.continuing(destination);
         let mut picked = pick_among(
             &PickInput {
@@ -371,7 +386,7 @@ impl Walk {
             &mut ctx,
         )?;
         let probe = picked.take_probe_epoch();
-        Some(self.take(pool_name, member.clone(), picked.permit, probe, !primary))
+        Some(self.take(&pool.name, member.clone(), picked.permit, probe, !primary))
     }
 
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
@@ -423,15 +438,17 @@ impl Walk {
     }
 
     /// `pool`'s admissible members as the unit's hooks `shape` them for a pick of the walk's own
-    fn shaped(
+    /// The pool's own list is lent: a pick with no shape, or one whose hooks leave the members as
+    /// they are, copies no member.
+    fn shaped<'p>(
         &mut self,
-        pool: &Pool,
+        pool: &'p Pool,
         shape: Option<&dyn Shape>,
         primary: bool,
-    ) -> Result<(Vec<Member>, Vec<DestinationId>), Shed> {
-        let admissible = pool.admissible_members().into_owned();
+    ) -> Result<(Cow<'p, [Member]>, Vec<DestinationId>), Shed> {
+        let admissible = pool.admissible_members();
         let Some(shape) = shape else {
-            return Ok((admissible, Vec::new()));
+            return Ok((Cow::Borrowed(admissible), Vec::new()));
         };
         shape.shape(&pool.name, admissible, primary).ok_or_else(|| {
             let shed = Shed::restrict_no_lane();
@@ -443,7 +460,7 @@ impl Walk {
     /// Take `member` of `pool` for the next attempt: excluded from every pick of the unit after it.
     fn take(
         &mut self,
-        pool: &str,
+        pool: &busbar_contract::kept::Text,
         member: Member,
         permit: Permit,
         probe: Option<u64>,
@@ -452,7 +469,7 @@ impl Walk {
         self.ctx.exclude(member.destination);
         self.taken = self.taken.saturating_add(1);
         Taken {
-            pool: pool.to_string(),
+            pool: pool.clone(),
             member,
             permit,
             probe,
@@ -518,7 +535,7 @@ impl<'p> Parked<'p> {
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
-        let _parked = QueuedGuard::park(ports.telemetry, &pool.name);
+        let _parked = QueuedGuard::park(ports.telemetry, pool);
         let mut at = self.at;
         let won = loop {
             if self.waiting.is_empty() {
@@ -590,20 +607,21 @@ struct PickAt<'s> {
 /// One parked waiter's place in the depth gauge, given back on drop. The increment and the
 struct QueuedGuard<'a> {
     telemetry: &'a dyn Telemetry,
-    pool: &'a str,
+    pool: &'a Pool,
 }
 
 impl<'a> QueuedGuard<'a> {
     /// Count one waiter in.
-    fn park(telemetry: &'a dyn Telemetry, pool: &'a str) -> Self {
-        telemetry.queued(pool, 1);
+    fn park(telemetry: &'a dyn Telemetry, pool: &'a Pool) -> Self {
+        telemetry.queued(&pool.name, 1, pool.queued.change(1));
         Self { telemetry, pool }
     }
 }
 
 impl Drop for QueuedGuard<'_> {
     fn drop(&mut self) {
-        self.telemetry.queued(self.pool, -1);
+        self.telemetry
+            .queued(&self.pool.name, -1, self.pool.queued.change(-1));
     }
 }
 

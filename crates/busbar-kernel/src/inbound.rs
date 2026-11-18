@@ -16,6 +16,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::redacted::Secret;
 
 use crate::guest::{GuestList, Line, LineAuth, Matched};
@@ -526,7 +527,7 @@ enum Fixed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Admitted {
     /// The provider name.
-    pub provider: String,
+    pub provider: Text,
     /// The identity, its credential taken out.
     pub identity: VerifiedIdentity,
     /// The governance key the `keys` arm resolved (the one verdict that carries one, as 1.5.5's
@@ -544,10 +545,7 @@ pub struct RequestAdmission {
 
 pub(crate) struct AdmittedRequest {
     pending: Arc<PendingUnit>,
-    owner: u64,
     line: u32,
-    binding: RequestBinding,
-    upgrade_used: std::sync::atomic::AtomicBool,
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
     pub(crate) credential: Option<Secret<String>>,
@@ -564,71 +562,10 @@ pub(crate) struct AdmittedRequest {
     alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl AdmittedRequest {
-    /// The sealed route's upgrade claim, read off the table the request holds, never copied.
-    fn upgrade(&self) -> Option<&str> {
-        self.table
-            .listener
-            .guests
-            .lines()
-            .get(self.line as usize)
-            .and_then(|line| line.upgrade.as_deref())
-    }
-}
-
 struct ReplayAdmission {
     pending: crate::auth::PendingClaim,
     won: tokio::sync::OnceCell<bool>,
     execution: std::sync::OnceLock<Arc<crate::auth::native_admin::ExecutionAdmission>>,
-}
-
-/// Host-only upgrade authority derived from one admitted request's sealed route.
-#[derive(Clone)]
-pub struct UpgradePermit {
-    request: Arc<AdmittedRequest>,
-}
-
-impl std::fmt::Debug for UpgradePermit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpgradePermit").finish_non_exhaustive()
-    }
-}
-
-impl UpgradePermit {
-    /// Consume once, only for the original admitted inflow and source framing.
-    pub fn consume(
-        &self,
-        admission: &RequestAdmission,
-        owner: u64,
-        framing: u64,
-        stream: u64,
-    ) -> Option<&str> {
-        let request = &self.request;
-        if !Arc::ptr_eq(request, &admission.inner)
-            || request.owner != owner
-            || request.binding.framing != Some(framing)
-            || request.binding.stream != stream
-            || !request.alive.load(std::sync::atomic::Ordering::Acquire)
-            || request
-                .replay
-                .as_ref()
-                .is_some_and(|replay| replay.won.get() != Some(&true))
-            || request.deadline.is_some_and(|at| deadline_passed(Some(at)))
-        {
-            return None;
-        }
-        let claim = request.upgrade()?;
-        request
-            .upgrade_used
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .ok()?;
-        Some(claim)
-    }
 }
 
 impl RequestAdmission {
@@ -761,14 +698,6 @@ impl RequestAdmission {
             .door_ticket_for_token(&self.inner.original.target, &self.inner.original.method)
     }
 
-    /// Derive authority only when the exact sealed route declares an upgrade.
-    #[must_use]
-    pub fn upgrade_permit(&self) -> Option<UpgradePermit> {
-        self.inner.upgrade()?;
-        Some(UpgradePermit {
-            request: Arc::clone(&self.inner),
-        })
-    }
     #[must_use]
     pub fn body_limit(&self) -> u64 {
         self.inner.table.listener.body_limit
@@ -816,7 +745,7 @@ impl RequestAdmission {
 }
 
 fn admitted_identity(
-    provider: String,
+    provider: Text,
     mut identity: VerifiedIdentity,
     resolved: Option<Arc<crate::governance::VirtualKey>>,
     signed_authority: Option<crate::auth::SignedRequestAuthority>,
@@ -1003,7 +932,7 @@ struct UnitState {
     answers: Vec<Option<Judged>>,
 
     /// The line's auth chain, in walk order: shared with the table, never copied per unit.
-    providers: Arc<[String]>,
+    providers: Arc<[Text]>,
 
     identities: Vec<Option<VerifiedIdentity>>,
     replays: Vec<Option<Arc<ReplayAdmission>>>,
@@ -1033,7 +962,7 @@ impl UnitState {
         generation: u64,
         line: u32,
         secret: [u64; 2],
-        providers: &Arc<[String]>,
+        providers: &Arc<[Text]>,
         binding: RequestBinding,
         table: Arc<Table>,
     ) -> Self {
@@ -1118,13 +1047,13 @@ impl UnitState {
 
 fn fixed_answer_at(
     answers: &[Option<Judged>],
-    providers: &[String],
+    providers: &[Text],
     request_auths: &HashSet<String>,
     peer: bool,
 ) -> Option<Fixed> {
     for (i, a) in answers.iter().enumerate() {
         if peer
-            && request_auths.contains(&providers[i])
+            && request_auths.contains(providers[i].as_str())
             && matches!(a, Some(Judged::Identity | Judged::Pass))
         {
             return None;
@@ -1164,7 +1093,7 @@ struct InheritedPeerAnswer {
 }
 
 fn inherited_peer_answers<'a>(
-    providers: &'a [String],
+    providers: &'a [Text],
     request_auths: &'a HashSet<String>,
     answers: &'a [Option<Judged>],
     identities: &'a [Option<VerifiedIdentity>],
@@ -1175,7 +1104,7 @@ fn inherited_peer_answers<'a>(
         .copied()
         .enumerate()
         .filter_map(move |(index, answer)| {
-            if request_auths.contains(&providers[index])
+            if request_auths.contains(providers[index].as_str())
                 && matches!(answer, Some(Judged::Identity | Judged::Pass))
             {
                 return None;
@@ -1331,7 +1260,7 @@ pub(crate) struct Table {
     pub(crate) doors: crate::core_routes::CoreRouteTable,
 
     /// Each line's auth chain in walk order (the keys module last), ordered once at install.
-    pub(crate) providers: Vec<Arc<[String]>>,
+    pub(crate) providers: Vec<Arc<[Text]>>,
 
     pub(crate) lines_by_id: HashMap<u64, u32>,
 
@@ -1473,20 +1402,20 @@ enum PositionKind {
 
 struct Position<'a> {
     index: usize,
-    provider: &'a str,
+    provider: &'a Text,
     kind: PositionKind,
 }
 
 /// Position `index` of a line's ordered chain, read off the installed table as the walk reaches
 /// it: the keys arm, or the plugin `provider` names.
-fn walk_position<'a>(table: &Table, index: usize, provider: &'a str) -> Position<'a> {
+fn walk_position<'a>(table: &Table, index: usize, provider: &'a Text) -> Position<'a> {
     Position {
         index,
         provider,
-        kind: if provider == crate::config::KEYS_MODULE {
+        kind: if *provider == crate::config::KEYS_MODULE {
             PositionKind::Keys
         } else {
-            PositionKind::Plugin(table.listener.auths.get(provider).cloned())
+            PositionKind::Plugin(table.listener.auths.get(provider.as_str()).cloned())
         },
     }
 }
@@ -1598,7 +1527,7 @@ fn signed_then_keys(
                             (key.enabled
                                 && !crate::governance::key_row_expired(&key, now)
                                 && cred.meta.is_live(now)
-                                && !g.is_revoked(&key.id))
+                                && !g.is_revoked_at(&key.id, now))
                             .then_some(key)
                         })
                     });
@@ -2107,10 +2036,7 @@ impl Inbound {
         let admission = RequestAdmission {
             inner: Arc::new(AdmittedRequest {
                 pending: Arc::clone(unit.pending.as_ref().ok_or(UNIT_FOREIGN)?),
-                owner,
                 line: unit.line,
-                binding: unit.binding,
-                upgrade_used: std::sync::atomic::AtomicBool::new(false),
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
                 // Moved, never copied: the claimed request is the credential's one transport
@@ -2225,7 +2151,7 @@ impl Inbound {
         owner: u64,
         generation: u64,
         line: u32,
-        providers: &Arc<[String]>,
+        providers: &Arc<[Text]>,
         binding: RequestBinding,
         table: Arc<Table>,
     ) -> Result<UnitRef, &'static str> {
@@ -2679,7 +2605,7 @@ impl Inbound {
                                     Judged::Denied
                                 });
                                 let admitted = key.map(|key| Admitted {
-                                    provider: crate::config::KEYS_MODULE.to_string(),
+                                    provider: Text::fixed(crate::config::KEYS_MODULE),
                                     identity: VerifiedIdentity {
                                         subject: key.id.clone(),
                                         key_id: Some(key.id.clone()),
@@ -2823,7 +2749,7 @@ impl Inbound {
         &self,
         target: Target,
         index: usize,
-        provider: &str,
+        provider: &Text,
         judging: Judging<'_>,
         table: &Table,
     ) {
@@ -2834,10 +2760,10 @@ impl Inbound {
         // The signed reader's provider is shared (a refcount), not copied: the judging is moved
         // below, and the replay claim reads the name after it.
         let signed_provider = match &judging {
-            Judging::Keys(_, _, Some(signed)) => Some(Arc::clone(&signed.provider)),
+            Judging::Keys(_, _, Some(signed)) => Some(Text::from(Arc::clone(&signed.provider))),
             _ => None,
         };
-        let replay_provider = signed_provider.as_deref().unwrap_or(provider);
+        let replay_provider = signed_provider.as_ref().unwrap_or(provider);
         let (judged, identity, strips, resolved, authority) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None, None),
             Judging::Keys(head, derived, signed) => signed_then_keys(

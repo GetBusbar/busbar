@@ -210,12 +210,12 @@ impl SourceBucket {
     }
 
     /// The base bucket and, for IPv6, its /48 and /32 aggregates.
-    #[must_use]
-    pub fn hierarchy(ip: IpAddr) -> Vec<Self> {
-        match canonical(ip) {
-            IpAddr::V4(v4) => vec![Self::V4(v4)],
-            IpAddr::V6(v6) => vec![Self::v6(v6, 64), Self::v6(v6, 48), Self::v6(v6, 32)],
-        }
+    pub fn hierarchy(ip: IpAddr) -> impl Iterator<Item = Self> {
+        let aggregates = match canonical(ip) {
+            IpAddr::V4(_) => None,
+            IpAddr::V6(v6) => Some([Self::v6(v6, 48), Self::v6(v6, 32)]),
+        };
+        std::iter::once(Self::base(ip)).chain(aggregates.into_iter().flatten())
     }
 
     /// How this bucket is named in logs and audit (an address or `net/len`).

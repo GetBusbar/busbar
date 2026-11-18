@@ -28,7 +28,9 @@ pub struct IdentitySnapshot {
     pub revision: u64,
     pub keys: Vec<VirtualKey>,
     pub credentials: Vec<CredentialSecret>,
-    pub denied: Vec<String>,
+    /// The denied subjects, read straight into the set the revocation list keeps: each subject
+    /// is read once and never gathered a second time.
+    pub denied: foldhash::HashSet<String>,
 }
 
 /// Exact rows prepared by one confirmed canonical identity transaction.
@@ -81,15 +83,17 @@ impl From<keys::KeyError> for Error {
 }
 impl From<Error> for RecordStoreError {
     fn from(value: Error) -> Self {
-        let message = match value {
+        // A fixed word is borrowed; only a failure that carries detail renders a text.
+        let message: std::borrow::Cow<'static, str> = match value {
             Error::Conflict => "identity conflict retry budget exhausted".into(),
             Error::Invalid(message) => message.into(),
-            Error::Backend(failure) => format!("identity backend: {failure:?}"),
-            Error::Access(failure) => format!("identity access: {failure:?}"),
+            Error::Backend(failure) => format!("identity backend: {failure:?}").into(),
+            Error::Access(failure) => format!("identity access: {failure:?}").into(),
             Error::Pending(id) => format!(
                 "identity outcome unresolved; retained operation {}",
                 hex::encode(id.0)
-            ),
+            )
+            .into(),
         };
         Self(message)
     }
@@ -1143,13 +1147,13 @@ impl Identity<'_> {
                     }
                     credentials.push(tx.credential(&meta.id).await?.ok_or_else(corrupt)?);
                 }
-                let mut denied = Vec::new();
+                let mut denied = foldhash::HashSet::default();
                 for (at, value) in tx.scan(vec![b'D']).await? {
                     let entry: Denied = decode(&value, None, false)?;
                     if row(b'D', &entry.subject)? != at {
                         return Err(corrupt());
                     }
-                    denied.push(entry.subject);
+                    denied.insert(entry.subject);
                 }
                 Output::Snapshot(IdentitySnapshot {
                     revision: tx.revision,

@@ -104,7 +104,7 @@ fn select(
         pattern: "/requests".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec!["pool".into()],
+        resource_kinds: vec![Box::<str>::from("pool")].into(),
     };
     let mut out = busbar_plugin_abi::records::Reply::new();
     let scopes: Vec<_> = scopes
@@ -208,12 +208,12 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
         pattern: "/requests".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec!["agent".into()],
+        resource_kinds: vec![Box::<str>::from("agent")].into(),
     };
     assert!(inventory
         .select_wire(request(1), &mounted, out.as_bytes())
         .is_err());
-    mounted.resource_kinds = vec!["pool".into()];
+    mounted.resource_kinds = vec![Box::<str>::from("pool")].into();
     mounted.route = 4;
     assert!(inventory
         .select_wire(request(1), &mounted, out.as_bytes())

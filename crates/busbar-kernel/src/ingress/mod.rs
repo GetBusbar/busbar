@@ -229,7 +229,7 @@ pub fn destination_guard(
             proto,
             StatusCode::BAD_REQUEST,
             busbar_contract::protocol::KIND_INVALID_REQUEST,
-            &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
+            &crate::door::VerifyRefusal::NoRate { name: pool }.message(),
         );
         return Err(Box::new(finish_rejected(
             app, gov, proto, label, started, charged_at, resp,
@@ -386,8 +386,6 @@ mod terminal_tests;
 pub mod arrival;
 
 pub mod byte_duplex;
-
-pub mod session;
 
 pub mod protocol;
 

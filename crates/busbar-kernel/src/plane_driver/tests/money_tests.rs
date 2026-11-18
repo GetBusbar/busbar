@@ -664,14 +664,14 @@ async fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     let _ = r.money.checkpoint(&ctx(1), &reported(5));
     r.money.laned(&ctx(1), "other\u{1f}x");
     assert_eq!(
-        r.money.serving(UnitKey::new(1)).as_deref(),
+        r.money.serving(UnitKey::new(1), str::to_owned).as_deref(),
         Some("tp\u{1f}srv"),
         "a lane carrying the separator names nothing"
     );
     r.money.laned(&ctx(1), "srv_read");
     r.money.served(&ctx(1), "tp\u{1f}srv", "srv");
     assert_eq!(
-        r.money.serving(UnitKey::new(1)).as_deref(),
+        r.money.serving(UnitKey::new(1), str::to_owned).as_deref(),
         Some("tp\u{1f}srv_read"),
         "the plane's lane, qualified by its own key, holds over the serving member"
     );
@@ -767,7 +767,7 @@ async fn a_unit_naming_no_lane_keeps_its_route_entry() {
     r.money.laned(&ctx(1), "");
     r.money.served(&ctx(1), "tp\u{1f}srv", "srv");
     assert_eq!(
-        r.money.serving(UnitKey::new(1)).as_deref(),
+        r.money.serving(UnitKey::new(1), str::to_owned).as_deref(),
         Some("tp\u{1f}srv")
     );
 }
@@ -1709,7 +1709,10 @@ async fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance()
     r.money.served(&ctx(1), "m2", "provider");
     r.money.laned(&ctx(1), "m");
     child(&r, &parent, 17).expect("same-shard child after parent Arc changed");
-    assert_eq!(r.money.serving(UnitKey::new(17)).as_deref(), Some("m"));
+    assert_eq!(
+        r.money.serving(UnitKey::new(17), str::to_owned).as_deref(),
+        Some("m")
+    );
     let _ = r.money.checkpoint(&ctx(17), &reported(31));
     r.money.settle_end(UnitKey::new(1), 200);
     r.money.settle_end(UnitKey::new(17), 200);
@@ -2056,7 +2059,10 @@ async fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_o
             Ok(()) => panic!("existing destination must not be replaced"),
         };
         let (_, reservation) = returned.into_parts();
-        assert_eq!(r.money.serving(UnitKey::new(2)).as_deref(), Some("m"));
+        assert_eq!(
+            r.money.serving(UnitKey::new(2), str::to_owned).as_deref(),
+            Some("m")
+        );
         assert_eq!((r.money.open_units(), usage(&r).await.1), (1, 5));
         r.money.settle_end(UnitKey::new(2), 503);
         if retry {

@@ -382,7 +382,7 @@ async fn a_day_old_correction_sent_here_resends_its_operation_and_applies_once()
         .find(|event| event.kind == RecoveryKind::Correction)
         .expect("the sent correction is selected in the recovery book")
         .operation_id;
-    gov.backdate_recovery_send(operation, std::time::Duration::from_secs(24 * 60 * 60 + 1));
+    gov.backdate_recovery_send(operation);
     gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
     assert_eq!(
         input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
@@ -1489,6 +1489,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
             plain.clone(),
             dated.clone(),
             &Default::default(),
+            crate::store::now_ms(),
         )
         .unwrap();
     assert!(
@@ -1497,8 +1498,15 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     );
     let journal_len = journal.selected.lock().unwrap().len();
     assert!(
-        gov.capture_usage_recovery(&key.id, 0, plain, dated, &Default::default())
-            .is_err(),
+        gov.capture_usage_recovery(
+            &key.id,
+            0,
+            plain,
+            dated,
+            &Default::default(),
+            crate::store::now_ms()
+        )
+        .is_err(),
         "an unconfirmed immutable take cannot spend the same selected capacity twice"
     );
     assert_eq!(journal.selected.lock().unwrap().len(), journal_len);

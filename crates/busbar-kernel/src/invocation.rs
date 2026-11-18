@@ -192,6 +192,11 @@ impl InvocationContext {
         self.caller.namespace()
     }
 
+    /// The instance's name as shared text: the caller's own name, shared, never copied.
+    pub fn instance_name(&self) -> busbar_contract::kept::Text {
+        busbar_contract::kept::Text::from(Arc::clone(self.caller.namespace()))
+    }
+
     pub fn is_live(&self) -> bool {
         self.accepts(&self.caller)
     }

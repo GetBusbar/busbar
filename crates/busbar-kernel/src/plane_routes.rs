@@ -81,19 +81,12 @@ impl std::fmt::Debug for PlaneRefusalSpec {
 
 pub fn pair_door_refusals(
     routes: &[PlaneRouteSpec],
-    sessions: &[PlaneSessionSpec],
     refusals: &[PlaneRefusalSpec],
 ) -> Result<(), String> {
     let credentialed: Vec<DoorRouteId> = routes
         .iter()
         .filter(|r| matches!(r.auth, RouteAuth::Key))
         .map(PlaneRouteSpec::route_id)
-        .chain(
-            sessions
-                .iter()
-                .filter(|s| matches!(s.auth, RouteAuth::Key))
-                .map(PlaneSessionSpec::route_id),
-        )
         .collect();
     let mut seen: std::collections::HashSet<&DoorRouteId> = std::collections::HashSet::new();
     for r in refusals {
@@ -169,7 +162,9 @@ pub struct PlaneReqCtx {
 
     pub host_ticket_admission: Option<crate::host_services::HostTicketAdmission>,
 
-    pub consumed_fields: Vec<(String, String)>,
+    /// The consumed credential carriers the request presented, each with its `Authorization`
+    /// scheme word (empty for any other carrier).
+    pub consumed_fields: Vec<(axum::http::HeaderName, String)>,
 
     pub engine: Arc<dyn Any + Send + Sync>,
 
@@ -184,162 +179,6 @@ pub struct PlaneReqCtx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListenerScheme(pub u8);
 
-/// One frame toward a session route's caller: its bytes, and whether they are ONE text message
-/// (the plane answered `PIECE_OUT_TEXT`); otherwise one binary message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionOut {
-    /// The bytes.
-    pub bytes: Vec<u8>,
-    /// One text message.
-    pub text: bool,
-}
-
-/// THE CALLER'S SIDE OF AN ADMITTED SESSION ROUTE, as the core adapter carries it over today's
-/// hyper upgrade, using the `IngressCaller` pattern: each
-/// message the caller sends goes into `from_caller` (dropped when the caller closes); every frame the
-/// session writes comes out of `to_caller` (the socket closes when its sender is dropped).
-#[derive(Debug)]
-pub struct SessionPipe {
-    /// The caller's messages, one per message, text or binary, as bytes.
-    pub from_caller: tokio::sync::mpsc::Sender<crate::plane_driver::SessionInput>,
-    /// The frames toward the caller.
-    pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
-}
-
-/// One request's admission to a framed connection, answered by its owning transport actor.
-/// The stream identifies the request on that connection; no callback or ABI loan is retained.
-#[derive(Debug)]
-pub struct SessionAdmission {
-    pub permit: Option<crate::inbound::UpgradePermit>,
-    pub stream: u64,
-    pub reply: tokio::sync::oneshot::Sender<bool>,
-}
-
-#[derive(Debug)]
-struct PendingAdmission {
-    permit: Option<crate::inbound::UpgradePermit>,
-    sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
-    stream: u64,
-}
-
-/// The transport-owned route slot for one framed request. Admission is consumed once across
-/// every clone; a default slot carries no admission authority and cannot enter a session handler.
-#[derive(Debug, Clone, Default)]
-pub struct FramedSession {
-    pipe: Arc<std::sync::Mutex<Option<SessionPipe>>>,
-    admission: Arc<std::sync::Mutex<Option<PendingAdmission>>>,
-}
-
-impl FramedSession {
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn with_admission(
-        sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
-        stream: u64,
-    ) -> Self {
-        Self {
-            pipe: Default::default(),
-            admission: Arc::new(std::sync::Mutex::new(Some(PendingAdmission {
-                permit: None,
-                sender,
-                stream,
-            }))),
-        }
-    }
-
-    /// A session slot whose upgrade authority comes from the exact host-admitted route.
-    #[must_use]
-    pub fn with_request_admission(
-        sender: tokio::sync::mpsc::UnboundedSender<SessionAdmission>,
-        stream: u64,
-        request: &crate::inbound::RequestAdmission,
-    ) -> Self {
-        Self {
-            pipe: Default::default(),
-            admission: Arc::new(std::sync::Mutex::new(Some(PendingAdmission {
-                sender,
-                stream,
-                permit: request.upgrade_permit(),
-            }))),
-        }
-    }
-
-    pub async fn admit(&self) -> bool {
-        let pending = self
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let Some(PendingAdmission {
-            sender,
-            stream,
-            permit,
-        }) = pending
-        else {
-            return false;
-        };
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        if sender
-            .send(SessionAdmission {
-                stream,
-                reply,
-                permit,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        answer.await.unwrap_or(false)
-    }
-
-    pub fn put(&self, pipe: SessionPipe) {
-        *self
-            .pipe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pipe);
-    }
-
-    #[must_use]
-    pub fn take(&self) -> Option<SessionPipe> {
-        self.pipe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    }
-}
-
-pub enum SessionAnswer {
-    Refused(PlaneResponse),
-
-    Accepted(SessionPipe),
-}
-
-pub type PlaneSessionFuture = Pin<Box<dyn Future<Output = SessionAnswer> + Send>>;
-
-pub type PlaneSessionFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneSessionFuture + Send + Sync>;
-
-pub struct PlaneSessionSpec {
-    pub path: String,
-
-    pub auth: RouteAuth,
-
-    pub handler: PlaneSessionFn,
-}
-
-impl PlaneSessionSpec {
-    #[must_use]
-    pub(crate) fn route_id(&self) -> DoorRouteId {
-        DoorRouteId {
-            path: self.path.clone(),
-            method: RouteMethod::Get,
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "tests/plane_routes_pairing.rs"]
 mod pairing_tests;
-
-#[cfg(test)]
-#[path = "tests/session_admission_tests.rs"]
-mod session_admission_tests;

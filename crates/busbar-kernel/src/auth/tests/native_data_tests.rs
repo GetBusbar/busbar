@@ -296,7 +296,7 @@ fn fixture(allowed: bool) -> Fixture {
         pattern: "/resource".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec!["pool".into()],
+        resource_kinds: vec![Box::<str>::from("pool")].into(),
     };
     let line = Line {
         route: Route {
@@ -330,7 +330,6 @@ fn fixture(allowed: bool) -> Fixture {
         PreparedListener::new(
             &app,
             &crate::plugin_routes::PluginRouteTable::empty(),
-            vec![],
             vec![],
             vec![],
             None,

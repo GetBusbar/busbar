@@ -24,6 +24,7 @@ fn synthetic_original_values_keep_exact_submission_order_and_fingerprint() {
         60,
         ExactUsageDelta::try_from_signed(&plain).unwrap(),
         ExactUsageDelta::try_from_signed(&dated).unwrap(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();

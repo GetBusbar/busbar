@@ -101,7 +101,7 @@ pub fn implicit_strategies(
     let mut implicit = BTreeMap::new();
     for word in strategies {
         let binding = crate::hooks::strategy::resolve_strategy(word, &configured, &words)
-            .map_err(|why| why.0)?;
+            .map_err(|why| why.to_string())?;
         if binding.implicit {
             // resolve_strategy has already proved exactly one admitted image declares this word.
             let image = words
@@ -109,7 +109,7 @@ pub fn implicit_strategies(
                 .find(|(_, declared)| declared.contains(&word))
                 .map(|(image, _)| *image)
                 .ok_or_else(|| format!("strategy `{word}` lost its admitted image"))?;
-            implicit.insert(binding.instance.into_string(), image.to_owned());
+            implicit.insert(binding.instance.to_owned(), image.to_owned());
         }
     }
     Ok(implicit)
@@ -468,9 +468,9 @@ impl Calls<'_> {
             .iter()
             .map(|(image, words)| (image.as_str(), words.iter().map(AsRef::as_ref).collect()))
             .collect::<Vec<_>>();
-        let binding =
-            crate::hooks::strategy::resolve_strategy(word, &configured, &words).map_err(|e| e.0)?;
-        let opened = self.port(&binding.instance, POINT_ROUTE)?;
+        let binding = crate::hooks::strategy::resolve_strategy(word, &configured, &words)
+            .map_err(|e| e.to_string())?;
+        let opened = self.port(binding.instance, POINT_ROUTE)?;
         if !opened.words.iter().any(|w| w.as_ref() == word)
             || !self
                 .words
@@ -485,7 +485,7 @@ impl Calls<'_> {
         let mut signals = RequestedSignals::default();
         signals.insert(crate::hooks::Signal::CandidateRouteCost);
         Ok(Arc::new(Call {
-            name: Arc::from(binding.instance.as_ref()),
+            name: Arc::from(binding.instance),
             port: opened.port.clone(),
             timeout: opened.timeout,
             prompt: crate::config::PromptAccess::No,

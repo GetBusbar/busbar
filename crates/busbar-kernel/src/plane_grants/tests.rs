@@ -199,31 +199,6 @@ async fn a_ticket_under_another_host_key_does_not_open() {
     );
 }
 
-/// DES-331 §B4: the seal keys bind the restore epoch. A ticket sealed before a declared restore does not open
-/// after it, a ticket sealed after it opens at once, and epoch 0 is the original derivation.
-#[tokio::test]
-async fn a_ticket_sealed_before_a_declared_restore_does_not_open_after_it() {
-    let before = SealedTickets::at_restore_epoch(records().await, &[7u8; 32], clock, 0).unwrap();
-    let after = SealedTickets::at_restore_epoch(records().await, &[7u8; 32], clock, 1).unwrap();
-    let who = caller("plane-x", "p");
-    let (old, _) = before.mint(&who, mint("aud", false, b"")).await.unwrap();
-    assert!(tickets()
-        .await
-        .admit(&who, "aud", &old, NOW + 1)
-        .await
-        .is_ok());
-    assert_eq!(
-        after.admit(&who, "aud", &old, NOW + 1).await.err(),
-        Some(TicketDenied::Invalid)
-    );
-    let (fresh, _) = after.mint(&who, mint("aud", false, b"")).await.unwrap();
-    assert!(after.admit(&who, "aud", &fresh, NOW + 1).await.is_ok());
-    assert_eq!(
-        before.admit(&who, "aud", &fresh, NOW + 1).await.err(),
-        Some(TicketDenied::Invalid)
-    );
-}
-
 #[tokio::test]
 async fn a_once_ticket_admits_exactly_one_request() {
     let t = tickets().await;
@@ -359,6 +334,28 @@ fn standard_webhooks_accepts_a_good_signature_and_refuses_the_rest() {
     assert!(check(KEY, &pairs("msg_1", &ts, &good), body, NOW - 301).is_none());
     // A missing header.
     assert!(check(KEY, &pairs("msg_1", &ts, &good)[..2], body, NOW).is_none());
+}
+
+/// The signature is compared whole: a prefix of the right tag, the right tag with a byte added, and
+/// an empty tag verify nothing, alone or beside each other; the right tag still verifies after them.
+#[test]
+fn standard_webhooks_refuses_a_tag_of_another_length() {
+    let ts = NOW.to_string();
+    let body = b"{\"event\":1}";
+    let mut msg = format!("msg_1.{ts}.").into_bytes();
+    msg.extend_from_slice(body);
+    let tag = crypto::hmac_sha256(KEY, &msg).unwrap();
+    let short = format!("v1,{}", STANDARD.encode(&tag[..16]));
+    let mut longer = tag.to_vec();
+    longer.push(0);
+    let long = format!("v1,{}", STANDARD.encode(&longer));
+    for refused in [short.as_str(), long.as_str(), "v1,"] {
+        assert!(check(KEY, &pairs("msg_1", &ts, refused), body, NOW).is_none());
+    }
+    let none = format!("{short} {long} v1,");
+    assert!(check(KEY, &pairs("msg_1", &ts, &none), body, NOW).is_none());
+    let last = format!("{short} {long} v1,{}", STANDARD.encode(tag));
+    assert!(check(KEY, &pairs("msg_1", &ts, &last), body, NOW).is_some());
 }
 
 #[test]

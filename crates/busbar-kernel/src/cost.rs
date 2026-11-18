@@ -368,8 +368,8 @@ impl CostModel {
     }
 
     pub fn request_fee_on(&self, plane: &str) -> i64 {
-        let lane = busbar_kernel_ledger::cost::plane_fee_lane(plane);
-        self.card.plane_lane(&lane).0.fee()
+        // The plane's fee lane is priced by the card its key names: no lane is spelled to ask.
+        self.card.plane_fee_card(plane).fee()
     }
 
     #[must_use]

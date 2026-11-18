@@ -95,7 +95,7 @@ fn ends_answers_a_programs_own_exit_in_the_exited_byte() {
     );
     let stream = Ends {
         port: 8080,
-        peer: "\x310.0.0.1:443".into(),
+        peer: busbar_contract::io_host::AddrText::of(&"\x310.0.0.1:443".parse().unwrap()),
         exit: None,
     };
     // SAFETY: as above.

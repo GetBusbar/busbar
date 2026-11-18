@@ -4,7 +4,7 @@
 //! Raw branch custody for a conditional correction. This contains no priced projection.
 
 use super::*;
-use crate::off_path::governance::ledger::{ModelRef, RawCell, RawDebt, RawTarget};
+use crate::off_path::governance::ledger::{ModelRef, RawCell, RawDebt, RawEra, RawTarget};
 
 fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128) {
     if change == 0 {
@@ -217,32 +217,23 @@ fn positive_current(
             before.requests.saturating_sub(before.flushed_requests),
         ));
     }
-    let fees = ledger_off_path::ledger_correction_fee_eras(accepted.fee_eras.dated());
-    let flushed = ledger_off_path::ledger_correction_fee_eras(accepted.flushed_fee_eras.dated());
+    // The fee splits are read where they lie (a few eras each): no map of them is built.
+    let (fees, flushed) = (accepted.fee_eras.dated(), accepted.flushed_fee_eras.dated());
     let mut legacy_fee =
         i128::from(accepted.billable_requests) - i128::from(accepted.flushed_billable_requests);
     let mut fee_transfers = BTreeMap::new();
-    let before_fees = ledger_off_path::ledger_correction_fee_eras(before.fee_eras.dated());
-    let before_flushed =
-        ledger_off_path::ledger_correction_fee_eras(before.flushed_fee_eras.dated());
+    let (before_fees, before_flushed) = (before.fee_eras.dated(), before.flushed_fee_eras.dated());
     let before_legacy_fee = i128::from(before.billable_requests)
         - i128::from(before.flushed_billable_requests)
-        - before_fees
-            .values()
-            .map(|count| i128::from(*count))
-            .sum::<i128>()
-        + before_flushed
-            .values()
-            .map(|count| i128::from(*count))
-            .sum::<i128>();
-    for era in crate::governance::sorted_union(fees.keys().copied(), flushed.keys().copied()) {
-        let count = i128::from(fees.get(&era).copied().unwrap_or(0))
-            - i128::from(flushed.get(&era).copied().unwrap_or(0));
+        - fee_total(before_fees)
+        + fee_total(before_flushed);
+    for era in eras_ascending(eras_of(fees), eras_of(flushed)) {
+        let count = i128::from(fee_count(fees, era)) - i128::from(fee_count(flushed, era));
         legacy_fee -= count;
         let common_count = if common_only {
             count.min(
-                i128::from(before_fees.get(&era).copied().unwrap_or(0))
-                    - i128::from(before_flushed.get(&era).copied().unwrap_or(0)),
+                i128::from(fee_count(before_fees, era))
+                    - i128::from(fee_count(before_flushed, era)),
             )
         } else {
             count
@@ -282,13 +273,18 @@ fn positive_current(
                 *baseline = baseline.checked_add(*amount).map_err(unresolved)?;
             }
         }
-        let mut baseline =
-            ledger_off_path::ledger_correction_fee_eras(branch.flushed_fee_eras.dated());
-        for (era, amount) in &fee_transfers {
-            let count = baseline.entry(*era).or_default();
-            *count = exact(checked_move(*count, *amount))?;
-        }
-        branch.flushed_fee_eras = RawFeeEras::of(baseline);
+        // The branch's fee baseline, moved by the transfers and rebuilt once in ascending era
+        // order: every era the baseline or a transfer names, each once.
+        let baseline = branch.flushed_fee_eras.dated();
+        branch.flushed_fee_eras = RawFeeEras::try_of(
+            eras_ascending(eras_of(baseline), fee_transfers.keys().copied()).map(|era| {
+                let count = fee_count(baseline, era);
+                match fee_transfers.get(&era) {
+                    Some(amount) => exact(checked_move(count, *amount)).map(|moved| (era, moved)),
+                    None => Ok((era, count)),
+                }
+            }),
+        )?;
     }
     Ok((plain, dated))
 }
@@ -320,6 +316,26 @@ impl RawDebt {
             models,
         })
     }
+}
+
+/// A custody fee split read back as the cell's own. An era that repeats, is legacy zero or holds
+/// no count is refused. The rows are checked where they lie and the split is built from them
+/// once.
+fn fee_split(rows: Vec<(RawEra, u64)>) -> RecordStoreResult<RawFeeEras> {
+    for (at, (era, count)) in rows.iter().enumerate() {
+        let era = RawRateEra::from(*era);
+        if rows[..at]
+            .iter()
+            .any(|(seen, _)| RawRateEra::from(*seen) == era)
+            || era == RawRateEra::legacy(0)
+            || *count == 0
+        {
+            return Err(unresolved("invalid raw fee era in custody"));
+        }
+    }
+    Ok(RawFeeEras::of(
+        rows.into_iter().map(|(era, count)| (era.into(), count)),
+    ))
 }
 
 impl RawCell {
@@ -357,17 +373,22 @@ impl RawCell {
     }
 
     fn restore(self, bucket: &str) -> RecordStoreResult<BudgetCell> {
-        let mut identities = std::collections::BTreeSet::new();
+        {
+            // Each (model, era) is stored once. The stored names are read where they lie: no
+            // name is copied to tell two rows apart.
+            let mut identities = std::collections::BTreeSet::new();
+            for model in &self.models {
+                if !identities.insert((model.model.as_str(), RawRateEra::from(model.era))) {
+                    return Err(unresolved("duplicate raw model era in custody"));
+                }
+            }
+        }
         let (models, dropped) =
             ledger_off_path::ledger_correction_recovery_named_models(self.models.into_iter().map(
                 |model| -> RecordStoreResult<Option<ModelCell>> {
-                    let era = model.era.into();
-                    if !identities.insert((model.model.clone(), era)) {
-                        return Err(unresolved("duplicate raw model era in custody"));
-                    }
                     Ok(ModelCell::new(
                         model.model.into(),
-                        era,
+                        model.era.into(),
                         model.current,
                         model.flushed,
                         model.flushed_era,
@@ -381,11 +402,8 @@ impl RawCell {
                 "correction custody: dropped {dropped} unnamed-lane rows with no counts (UPG-H2)"
             );
         }
-        let fee_eras = ledger_off_path::ledger_correction_recovery_fee_rows(self.fee_eras)
-            .ok_or_else(|| unresolved("invalid raw fee era in custody"))?;
-        let flushed_fee_eras =
-            ledger_off_path::ledger_correction_recovery_fee_rows(self.flushed_fee_eras)
-                .ok_or_else(|| unresolved("invalid raw fee era in custody"))?;
+        let fee_eras = fee_split(self.fee_eras)?;
+        let flushed_fee_eras = fee_split(self.flushed_fee_eras)?;
         let mut cell = BudgetCell {
             group_owners: self.group_owners,
             window_start: self.window_start,
@@ -394,8 +412,8 @@ impl RawCell {
             flushed_requests: self.flushed_requests,
             flushed_billable_requests: self.flushed_billable_requests,
             models,
-            fee_eras: RawFeeEras::of(fee_eras),
-            flushed_fee_eras: RawFeeEras::of(flushed_fee_eras),
+            fee_eras,
+            flushed_fee_eras,
             rolled: ledger_off_path::ledger_correction_recovery_restore_rolled(
                 self.rolled,
                 RawDebt::restore,
@@ -483,6 +501,8 @@ impl Custody {
             return Ok(false);
         }
         let mut changed = false;
+        // One release: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let mut before = target.before.clone_raw(&target.bucket)?;
             before.correction = Some(Box::new(CorrectionBranch {
@@ -496,8 +516,13 @@ impl Custody {
                     "stored common positive has no exact branch custody",
                 ));
             };
-            let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
+            let Some(child) = GovState::usage_recovery_child(
+                &target.bucket,
+                target.window,
+                plain,
+                dated,
+                sent_at_ms,
+            )?
             else {
                 continue;
             };
@@ -537,6 +562,8 @@ impl Custody {
         if self.terminal {
             return Ok(());
         }
+        // One transfer: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let selected = if decision == Decision::Applied {
                 &target.accepted
@@ -560,7 +587,7 @@ impl Custody {
                 }
             }
             if let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, window, plain, dated)?
+                GovState::usage_recovery_child(&target.bucket, window, plain, dated, sent_at_ms)?
             {
                 self.handoffs.push(child);
             }
@@ -615,6 +642,8 @@ impl Custody {
                 "no conditional successor owns the revalidated correction",
             ));
         }
+        // One repost: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let plain = target
                 .absorbed_plain
@@ -628,9 +657,13 @@ impl Custody {
                 .map(RawDebt::restore)
                 .transpose()?
                 .unwrap_or_default();
-            if let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
-            {
+            if let Some(child) = GovState::usage_recovery_child(
+                &target.bucket,
+                target.window,
+                plain,
+                dated,
+                sent_at_ms,
+            )? {
                 self.handoffs.push(child);
             }
         }
@@ -648,21 +681,20 @@ impl Custody {
         })
     }
 
+    /// The operator's verdict this custody retains, as the resolution that replays it. The
+    /// custody is spent here: its operator provenance moves into the resolution, uncopied.
     pub(super) fn retained_resolution(
-        &self,
+        self,
         event: &RecoveryEvent,
     ) -> RecordStoreResult<RecoveryResolution> {
         let audit = self
             .audit
-            .as_ref()
             .ok_or_else(|| unresolved("audited correction has no operator provenance"))?;
         if !audit.sender_quiesced || !audit.backend_quiesced {
             return Err(unresolved(
                 "audited correction has no explicit quiescence attestations",
             ));
         }
-        let (actor, reason) =
-            crate::off_path::governance::ledger::operator_provenance(&audit.actor, &audit.reason);
         Ok(RecoveryResolution {
             operation_id: event.operation_id,
             body_fingerprint: event.body_fingerprint,
@@ -672,8 +704,8 @@ impl Custody {
             } else {
                 RecoveryVerdict::NotLanded
             },
-            actor,
-            reason,
+            actor: audit.actor,
+            reason: audit.reason,
             sender_quiesced: audit.sender_quiesced,
             backend_quiesced: audit.backend_quiesced,
         })
@@ -780,7 +812,7 @@ impl Custody {
                     .expect("target shard held");
                 let cell = guards[index]
                     .1
-                    .get(bucket)
+                    .get(bucket.as_str())
                     .ok_or_else(|| unresolved("raw custody cell missing"))?;
                 let branch = cell
                     .correction
@@ -1151,3 +1183,11 @@ pub(super) fn apply_selected_cut(
     live.dirty = has_debt(live);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/ledger_correction_custody_bytes.rs"]
+mod custody_bytes;
+
+#[cfg(test)]
+#[path = "tests/ledger_correction_fee_split_tests.rs"]
+mod fee_split_tests;

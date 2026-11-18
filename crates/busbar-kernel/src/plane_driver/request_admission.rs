@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
+use busbar_contract::kept::Text;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
@@ -78,6 +79,41 @@ pub enum RequestDomain {
     Local,
 }
 
+/// The members a unit may reach, walk by walk, by their qualified names
+/// (`<instance><sep><member>`). A walk the key reaches whole shares the routes' own member list,
+/// made once with the generation; a narrowed walk holds its own shorter list. Either way a name
+/// is shared text: a grant spells no name and copies none.
+pub type MemberGrants = BTreeMap<Text, Arc<[Text]>>;
+
+/// One walk's key and its members' qualified names, in configured order.
+type WalkLanes = (Text, Arc<[Text]>);
+
+/// A configured name as shared text: made once, as the routes are built.
+fn shared(name: &str) -> Text {
+    Text::from(Arc::<str>::from(name))
+}
+
+/// `members` of `instance` by their qualified names, in order: made once, as the routes are built.
+fn lanes_of<'m>(instance: &str, members: impl Iterator<Item = &'m str>) -> Arc<[Text]> {
+    members
+        .map(|member| shared(&format!("{instance}{PLANE_LANE_SEP}{member}")))
+        .collect()
+}
+
+/// `lanes` less the ones `keep` drops, in order. When none is dropped it is the routes' own
+/// list, shared: an unnarrowed grant builds nothing.
+fn granted(lanes: &Arc<[Text]>, keep: impl Fn(usize, &Text) -> bool) -> Arc<[Text]> {
+    if lanes.iter().enumerate().all(|(at, lane)| keep(at, lane)) {
+        return Arc::clone(lanes);
+    }
+    lanes
+        .iter()
+        .enumerate()
+        .filter(|(at, lane)| keep(*at, lane))
+        .map(|(_, lane)| lane.clone())
+        .collect()
+}
+
 /// Immutable route metadata from root's selected generation. It grants no unit authority.
 pub struct RequestRoutes {
     identity: Arc<()>,
@@ -87,6 +123,13 @@ pub struct RequestRoutes {
     registration: Option<Arc<SeatPool>>,
     registrations: Option<Arc<crate::upstreams::ConfiguredUpstreams>>,
     section_pools: BTreeMap<String, SectionPool>,
+    /// The catalog's walks, in `catalog.pools()` order, each with its members' qualified names.
+    catalog_lanes: Vec<WalkLanes>,
+    /// The registration pool with its members' qualified names.
+    registration_lanes: Option<WalkLanes>,
+    /// The section pools, in `section_pools` order, each with its members' qualified names
+    /// (index for index with the pool's `members`).
+    section_lanes: Vec<WalkLanes>,
 }
 impl RequestRoutes {
     pub fn new(
@@ -100,7 +143,7 @@ impl RequestRoutes {
             || catalog.as_ref().is_some_and(|p| p.instance != instance)
             || registration
                 .as_ref()
-                .is_some_and(|r| r.pool != instance || !r.pools.contains_key(&r.pool))
+                .is_some_and(|r| r.pool != instance || !r.pools.contains_key(r.pool.as_str()))
         {
             return Err(AdmissionError::Route);
         }
@@ -109,6 +152,19 @@ impl RequestRoutes {
                 return Err(AdmissionError::Route);
             }
         }
+        let catalog_lanes = catalog.as_ref().map_or_else(Vec::new, |plan| {
+            plan.pools()
+                .iter()
+                .map(|(walk, pool)| {
+                    let members = pool.config.members.iter().map(|member| member.name());
+                    (shared(walk), lanes_of(instance, members))
+                })
+                .collect()
+        });
+        let registration_lanes = registration.as_ref().map(|seat| {
+            let members = seat.members.iter().map(|member| &*member.upstream);
+            (shared(&seat.pool), lanes_of(instance, members))
+        });
         Ok(Self {
             identity: Arc::new(()),
             instance: instance.into(),
@@ -117,6 +173,9 @@ impl RequestRoutes {
             registration,
             registrations: None,
             section_pools: BTreeMap::new(),
+            catalog_lanes,
+            registration_lanes,
+            section_lanes: Vec::new(),
         })
     }
 
@@ -158,42 +217,34 @@ impl RequestRoutes {
         &self,
         key: &VirtualKey,
         selection: Option<&SelectedResources>,
-    ) -> BTreeMap<String, Vec<String>> {
+    ) -> MemberGrants {
         let allowed = |name: &str| self.scope_admits(key, selection, name);
         let selected = |walk: &str, member: &str| {
             selection.is_none_or(|selected| selected.grants_member(walk, member))
         };
-        let mut grants = BTreeMap::new();
+        let mut grants = MemberGrants::new();
         if let Some(catalog) = &self.catalog {
-            for (walk, pool) in catalog.pools() {
+            // `catalog_lanes` was read off this same immutable catalog, walk for walk.
+            for (pool, (walk, lanes)) in catalog.pools().values().zip(&self.catalog_lanes) {
                 let name = match &pool.kind {
                     RouteKind::NamedPool(name) | RouteKind::DirectModel(name) => name,
                 };
                 if !allowed(name) {
                     continue;
                 }
-                let members: Vec<_> = pool
-                    .config
-                    .members
-                    .iter()
-                    .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.name()))
-                    .filter(|member| selected(walk.as_str(), member.as_str()))
-                    .collect();
+                let members = granted(lanes, |_, lane| selected(walk.as_str(), lane.as_str()));
                 if !members.is_empty() {
                     grants.insert(walk.clone(), members);
                 }
             }
         }
-        if let Some(registration) = &self.registration {
+        if let (Some(registration), Some((pool, lanes))) =
+            (&self.registration, &self.registration_lanes)
+        {
             if allowed(&registration.pool) {
-                let members: Vec<_> = registration
-                    .members
-                    .iter()
-                    .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.upstream))
-                    .filter(|member| selected(registration.pool.as_str(), member.as_str()))
-                    .collect();
+                let members = granted(lanes, |_, lane| selected(pool.as_str(), lane.as_str()));
                 if !members.is_empty() {
-                    grants.insert(registration.pool.clone(), members);
+                    grants.insert(pool.clone(), members);
                 }
             }
         }
@@ -330,12 +381,12 @@ impl RequestAllocation {
         };
         let grants = if let Some((_, walk_key)) = &walk {
             let grants = routes.member_grants(&self.key, self.selection.as_deref());
-            if !grants.contains_key(walk_key) {
+            if !grants.contains_key(walk_key.as_str()) {
                 return Err(AdmissionError::Scope);
             }
             grants
         } else {
-            BTreeMap::new()
+            MemberGrants::new()
         };
         let pool = format!("{}{PLANE_LANE_SEP}{name}", routes.instance);
         self.context.admission_phase().change(RESOLVING, READY)?;
@@ -369,7 +420,7 @@ pub struct RequestPoolReceipt {
     context: InvocationContext,
     key: Arc<VirtualKey>,
     routes: Arc<()>,
-    grants: Arc<BTreeMap<String, Vec<String>>>,
+    grants: Arc<MemberGrants>,
     cost: Arc<CostModel>,
     arrived: u64,
     pool: String,
@@ -386,7 +437,12 @@ impl RequestPoolReceipt {
     pub fn domain(&self) -> &RequestDomain {
         &self.domain
     }
-    pub fn member_grants(&self) -> &BTreeMap<String, Vec<String>> {
+    pub fn member_grants(&self) -> &MemberGrants {
+        &self.grants
+    }
+    /// The receipt's grants, shared: a unit route that confines its walk to them holds this
+    /// same map, never a copy.
+    pub fn shared_member_grants(&self) -> &Arc<MemberGrants> {
         &self.grants
     }
     pub fn walk_key(&self) -> Option<&str> {
@@ -534,7 +590,7 @@ impl Drop for CommittingRequest {
 pub struct AdmittedRequest {
     context: InvocationContext,
     routes: Arc<()>,
-    grants: Arc<BTreeMap<String, Vec<String>>>,
+    grants: Arc<MemberGrants>,
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     command: Option<SelectedCommand>,
@@ -593,7 +649,7 @@ impl AdmittedRequest {
     pub fn domain(&self) -> &RequestDomain {
         &self.domain
     }
-    pub fn member_grants(&self) -> &BTreeMap<String, Vec<String>> {
+    pub fn member_grants(&self) -> &MemberGrants {
         &self.grants
     }
     pub fn charge(&self) -> &crate::governance::FeeCharge {

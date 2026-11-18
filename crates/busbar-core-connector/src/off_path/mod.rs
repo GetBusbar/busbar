@@ -15,7 +15,6 @@ pub(crate) mod dtls;
 pub(crate) mod egress;
 pub(crate) mod framing;
 pub(crate) mod guard;
-pub(crate) mod hostio;
 pub(crate) mod lines;
 pub(crate) mod process;
 pub(crate) mod program;

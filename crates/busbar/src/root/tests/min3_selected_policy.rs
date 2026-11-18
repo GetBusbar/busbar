@@ -105,7 +105,6 @@ fn token_support_requires_declared_physical_classes_with_attempt_accounting() {
                 .collect(),
             schema: None,
             metrics: Vec::new(),
-            error_codes_refused: None,
         }
     };
     assert!(supports_tokens(&described(p::UNIT_TOKENS, p::FB_ATTEMPT_USAGE, true)).unwrap());

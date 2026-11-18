@@ -582,12 +582,12 @@ impl TrustStore {
     /// The client config for `host` on a cache miss: the entries matching it, the config built from
     /// them, and (when `key` names the host) the config held for the next dial of it. A withdrawal
     /// that lands while it builds keeps it out of the cache.
-    pub(crate) fn config_miss(
+    pub(crate) fn config_miss<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         d: &crate::tls::store::Dialled<'_>,
         key: Option<CacheKey<'_>>,
-    ) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal> {
+    ) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal<'h>> {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
         let matched: Vec<usize> = self
             .entries
@@ -609,14 +609,13 @@ impl TrustStore {
     /// Compose the operator's logical-destination policy with a host-checked Need plan.
     /// SNI affects peer naming only; it never selects operator roots or pins.
     /// Configurations containing client identities are never cached here.
-    pub fn config_for_need(
+    pub fn config_for_need<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         plan: &crate::need::TlsPlan<'_>,
         alpn: &[Vec<u8>],
-    ) -> Result<Arc<rustls::ClientConfig>, TrustRefusal> {
-        let destination = crate::tls::store::dialled(host)
-            .ok_or_else(|| TrustRefusal::NoAnchors(host.to_owned()))?;
+    ) -> Result<Arc<rustls::ClientConfig>, TrustRefusal<'h>> {
+        let destination = crate::tls::store::dialled(host).ok_or(TrustRefusal::NoAnchors(host))?;
         let matched: Vec<_> = self
             .entries
             .iter()
@@ -629,12 +628,12 @@ impl TrustStore {
         Ok(Arc::new(config))
     }
 
-    fn build_for(
+    fn build_for<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         matched: &[usize],
         need: Option<&crate::need::TlsPlan<'_>>,
-    ) -> Result<rustls::ClientConfig, TrustRefusal> {
+    ) -> Result<rustls::ClientConfig, TrustRefusal<'h>> {
         let withdrawn = self.withdrawn.read().expect("withdrawn").clone();
         let entries: Vec<&Entry> = matched.iter().map(|i| &self.entries[*i]).collect();
         let listed: Vec<&Anchor> = entries.iter().flat_map(|e| e.anchors.iter()).collect();
@@ -651,7 +650,7 @@ impl TrustStore {
                 .map_err(|e| TrustRefusal::Build(format!("anchor {}: {e}", a.fingerprint())))?;
         }
         if !listed.is_empty() && own_left == 0 {
-            return Err(TrustRefusal::Withdrawn(host.to_owned()));
+            return Err(TrustRefusal::Withdrawn(host));
         }
         if !replaces {
             roots.extend(self.base.anchors.iter().cloned());
@@ -673,7 +672,7 @@ impl TrustStore {
             }
         }
         if roots.is_empty() {
-            return Err(TrustRefusal::NoAnchors(host.to_owned()));
+            return Err(TrustRefusal::NoAnchors(host));
         }
         let pins: Vec<[u8; 32]> = entries
             .iter()

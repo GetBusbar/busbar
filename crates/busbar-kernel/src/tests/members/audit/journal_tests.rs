@@ -217,14 +217,14 @@ fn v7_frames_whole_and_fractional_quantities() {
                 attempts: [
                     Some(Attempt {
                         outcome: AttemptOutcome::Failover,
-                        target: "lane-a".into(),
-                        reason: "upstream_5xx".into(),
+                        target: busbar_contract::kept::Text::fixed("lane-a"),
+                        reason: busbar_contract::kept::Text::fixed("upstream_5xx"),
                         us: 0,
                     }),
                     Some(Attempt {
                         outcome: AttemptOutcome::Ok,
-                        target: "lane-b".into(),
-                        reason: String::new(),
+                        target: busbar_contract::kept::Text::fixed("lane-b"),
+                        reason: busbar_contract::kept::Text::EMPTY,
                         us: 7,
                     }),
                     None,

@@ -265,7 +265,7 @@ pub trait Conns: Send + Sync {
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         let _ = located;
         self.open_with_security(caller, need, desc, require_secure)
@@ -283,7 +283,7 @@ pub trait Conns: Send + Sync {
         desc: &OpenDesc<'_>,
         head: OwnedHead,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         let fields = head.view();
         self.open_located(
@@ -857,13 +857,24 @@ impl HeadDefaults {
         carried: impl Fn(&[u8]) -> bool,
         body_len: usize,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut added: Vec<(Vec<u8>, Vec<u8>)> = self
-            .lines
+        Self::completing_lines(&self.lines, self.states_length, carried, body_len)
+    }
+
+    /// [`HeadDefaults::completing`] over lent `lines`: the same lines added, for a holder that
+    /// shares its locate answer and so lends the framer's lines instead of handing them over.
+    #[must_use]
+    pub fn completing_lines(
+        lines: &[(Vec<u8>, Vec<u8>)],
+        states_length: bool,
+        carried: impl Fn(&[u8]) -> bool,
+        body_len: usize,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut added: Vec<(Vec<u8>, Vec<u8>)> = lines
             .iter()
             .filter(|(name, _)| !carried(name))
             .cloned()
             .collect();
-        if self.states_length
+        if states_length
             && body_len != 0
             && !carried(CONTENT_LENGTH)
             && !added

@@ -24,15 +24,17 @@ impl<'de> serde::Deserialize<'de> for ExactModelDelta {
             #[serde(with = "decimal_units")]
             usage_units: BTreeMap<String, i128>,
         }
-        let row = Stored::deserialize(deserializer)?;
+        let mut row = Stored::deserialize(deserializer)?;
+        // Rescaled to micro-units in place: each count is replaced where it sits.
+        for count in row.usage_units.values_mut() {
+            *count = Count::from_stored(*count, row.scale)
+                .map_err(serde::de::Error::custom)?
+                .micros();
+        }
         Ok(Self {
             model: row.model,
             scale: COUNT_SCALE,
-            usage_units: crate::off_path::governance::runtime::exact_debt_stored_units(
-                row.usage_units,
-                row.scale,
-            )
-            .map_err(serde::de::Error::custom)?,
+            usage_units: row.usage_units,
         })
     }
 }
@@ -46,19 +48,32 @@ pub(crate) struct ExactUsageDelta {
     pub(crate) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
+    /// Take an acknowledged chunk off this debt, reading the chunk where it lies: its model and
+    /// unit names are not copied into a second delta first.
     pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
-        let acknowledged = Self::from_signed(chunk);
+        let micros = |count: i128, scale: u32| {
+            Count::from_stored(count, scale)
+                .expect("internally generated raw debt has a valid scale")
+                .micros()
+        };
+        // Every count is read at its scale before anything is taken off, as it was when the
+        // chunk was converted whole: a chunk with an invalid scale changes nothing.
+        for model in &chunk.models {
+            for count in model.usage_units.values() {
+                let _ = micros(*count, model.scale);
+            }
+        }
         self.requests = self
             .requests
-            .checked_sub(acknowledged.requests)
+            .checked_sub(i128::from(chunk.requests))
             .expect("acknowledged request debt overflow");
         self.billable_requests = self
             .billable_requests
-            .checked_sub(acknowledged.billable_requests)
+            .checked_sub(i128::from(chunk.billable_requests))
             .expect("acknowledged fee debt overflow");
-        for model in &acknowledged.models {
+        for model in &chunk.models {
             for (unit, count) in &model.usage_units {
-                self.subtract_unit(&model.model, unit, *count)
+                self.subtract_unit(&model.model, unit, micros(*count, model.scale))
                     .expect("acknowledged raw debt overflow");
             }
         }
@@ -80,6 +95,39 @@ impl ExactUsageDelta {
             None => {
                 self.models.push(ExactModelDelta {
                     model: model.into(),
+                    scale: COUNT_SCALE,
+                    usage_units: BTreeMap::new(),
+                });
+                self.models.last_mut().expect("just inserted raw model")
+            }
+        };
+        let slot = row.usage_units.entry(unit.into()).or_default();
+        *slot = slot
+            .checked_add(change)
+            .expect("raw debt exceeds Count range");
+    }
+    /// [`Self::unit`] for the dated row of `model` in `era`, whose name is `era SEP model`: an
+    /// existing row is found by its parts, and the dated name is built only for a new row, which
+    /// keeps it.
+    fn unit_in_era(&mut self, era: &str, model: &str, unit: &str, change: i128) {
+        if change == 0 {
+            return;
+        }
+        let position = crate::off_path::governance::runtime::exact_debt_era_model_index(
+            &self.models,
+            era,
+            ERA_MODEL_SEP,
+            model,
+        );
+        let row = match position {
+            Some(position) => &mut self.models[position],
+            None => {
+                self.models.push(ExactModelDelta {
+                    model: crate::off_path::governance::runtime::exact_debt_era_model(
+                        era,
+                        ERA_MODEL_SEP,
+                        model,
+                    ),
                     scale: COUNT_SCALE,
                     usage_units: BTreeMap::new(),
                 });
@@ -133,7 +181,9 @@ impl ExactUsageDelta {
     pub(super) fn try_from_signed(delta: &UsageDelta) -> Result<Self, CountError> {
         crate::off_path::governance::runtime::exact_debt_from_signed(delta)
     }
-    pub(super) fn signed(&self) -> Option<UsageDelta> {
+    /// This debt as the signed wire delta a flush chunk sends, when it fits. The debt is handed
+    /// over: its model and unit names move into the chunk, none is copied.
+    pub(super) fn signed(self) -> Option<UsageDelta> {
         crate::off_path::governance::runtime::exact_debt_signed(self)
     }
     pub(super) fn of(cell: &BudgetCell, dated: bool) -> Self {
@@ -221,7 +271,7 @@ mod decimal_count {
 }
 mod decimal_units {
     use super::BTreeMap;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serialize, Serializer};
     /// A count written as its decimal string, in place.
     struct Decimal<'a>(&'a i128);
     impl Serialize for Decimal<'_> {
@@ -239,9 +289,24 @@ mod decimal_units {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<String, i128>, D::Error> {
-        crate::off_path::governance::runtime::exact_debt_parse_units(
-            BTreeMap::<String, String>::deserialize(deserializer)?,
-        )
+        struct Units;
+        impl<'de> serde::de::Visitor<'de> for Units {
+            type Value = BTreeMap<String, i128>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut entries: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut units = BTreeMap::new();
+                while let Some((unit, count)) = entries.next_entry::<String, String>()? {
+                    units.insert(unit, count.parse().map_err(serde::de::Error::custom)?);
+                }
+                Ok(units)
+            }
+        }
+        deserializer.deserialize_map(Units)
     }
 }
 
@@ -373,23 +438,16 @@ impl SegmentedUsage {
             UsageSegment::Unit { model, unit, era } => {
                 plain.unit(model, unit, count);
                 if let Some(era) = era {
-                    dated.unit(
-                        &crate::off_path::governance::runtime::exact_debt_era_model(
-                            era,
-                            ERA_MODEL_SEP,
-                            model,
-                        ),
-                        unit,
-                        count,
-                    );
+                    dated.unit_in_era(era, model, unit, count);
                 }
             }
         }
     }
-    pub(super) fn positive(&self) -> Self {
-        Self(crate::off_path::governance::runtime::exact_debt_positive(
-            &self.0,
-        ))
+    /// Only the positive segments, in place: every caller owns the usage it narrows and does not
+    /// read it again, so no segment is copied.
+    pub(super) fn positive(mut self) -> Self {
+        crate::off_path::governance::runtime::exact_debt_keep_positive(&mut self.0);
+        self
     }
     pub(super) fn merge(&mut self, other: &Self) {
         for (segment, count) in &other.0 {
@@ -488,7 +546,8 @@ struct FlightDebt {
 }
 
 pub(crate) struct BudgetFlushFlight {
-    pub(crate) bucket: String,
+    /// The bucket, by the budget map's own key: shared, not copied.
+    pub(crate) bucket: Text,
     pub(crate) window: u64,
     debt: std::sync::Mutex<FlightDebt>,
     runner: BudgetFlushRunner,
@@ -563,7 +622,7 @@ impl BudgetFlushRunner {
 
 pub(super) struct BudgetDeleteGuard<'a> {
     state: &'a GovState,
-    bucket: String,
+    bucket: &'a str,
 }
 impl Drop for BudgetDeleteGuard<'_> {
     fn drop(&mut self) {
@@ -571,12 +630,15 @@ impl Drop for BudgetDeleteGuard<'_> {
             .deleting_budget_buckets
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.bucket);
+            .remove(self.bucket);
     }
 }
 
 impl GovState {
-    pub(super) fn hold_budget_flush_deletion(&self, bucket: &str) -> BudgetDeleteGuard<'_> {
+    pub(super) fn hold_budget_flush_deletion<'a>(
+        &'a self,
+        bucket: &'a str,
+    ) -> BudgetDeleteGuard<'a> {
         let _cells = self.budget.write(bucket);
         self.deleting_budget_buckets
             .lock()
@@ -584,7 +646,7 @@ impl GovState {
             .insert(bucket.into());
         BudgetDeleteGuard {
             state: self,
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket,
         }
     }
 
@@ -595,29 +657,35 @@ impl GovState {
             .contains(bucket)
     }
 
+    /// Capture `cell`'s flush flights, one per window that has debt, in window order, handing
+    /// each to `keep` as it is captured: no list is made per cell. The flight table holds every
+    /// flight too, so a walk that keeps none hands them nowhere.
     pub(super) fn capture_budget_flushes(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         settled: &super::raw_recovery::ForeignSettledSnapshot,
-    ) -> Vec<Arc<BudgetFlushFlight>> {
+        mut keep: impl FnMut(Arc<BudgetFlushFlight>),
+    ) {
         if self.budget_bucket_deleting(bucket) {
-            return Vec::new();
+            return;
         }
         let windows = crate::off_path::governance::runtime::exact_debt_flush_windows(
             cell.window_start,
             cell.rolled.iter().map(|(window, _)| *window),
             cell.rolled_eras.iter().map(|(window, _)| *window),
         );
-        crate::off_path::governance::runtime::exact_debt_capture_windows(windows, |window| {
-            self.capture_budget_flush(bucket, cell, settled, window)
-        })
+        for window in windows {
+            if let Some(flight) = self.capture_budget_flush(bucket, cell, settled, window) {
+                keep(flight);
+            }
+        }
     }
 
     /// One window's flush flight, captured from the cell (the flusher, one call per window).
     fn capture_budget_flush(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         settled: &super::raw_recovery::ForeignSettledSnapshot,
         window: u64,
@@ -636,7 +704,7 @@ impl GovState {
                 Ok(None) => return None,
                 Err(e) => {
                     tracing::warn!(
-                        bucket = bucket,
+                        bucket = bucket.as_str(),
                         window = window,
                         error = ?e,
                         "take_correction_positives failed; \
@@ -689,9 +757,11 @@ impl GovState {
             )
         });
         let durable = if self.recovery_enabled() {
+            // The capture's one reading: the child it makes, by either arm, is first sent at it.
+            let sent_at_ms = crate::store::now_ms();
             let prepared = if correcting {
-                Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone()).and_then(
-                    |child| {
+                Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone(), sent_at_ms)
+                    .and_then(|child| {
                         let Some(child) = child else {
                             return Ok(super::raw_recovery::DurableUsageFlight {
                                 child: None,
@@ -708,10 +778,16 @@ impl GovState {
                             deferred_plain: ExactUsageDelta::default(),
                             deferred_dated: ExactUsageDelta::default(),
                         })
-                    },
-                )
+                    })
             } else {
-                self.capture_usage_recovery(bucket, window, plain.clone(), dated.clone(), settled)
+                self.capture_usage_recovery(
+                    bucket,
+                    window,
+                    plain.clone(),
+                    dated.clone(),
+                    settled,
+                    sent_at_ms,
+                )
             };
             match prepared {
                 Ok(flight) => Some(flight),
@@ -730,7 +806,7 @@ impl GovState {
             .map(|flight| (flight.deferred_plain.clone(), flight.deferred_dated.clone()))
             .unwrap_or_default();
         let flight = Arc::new(BudgetFlushFlight {
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket: bucket.clone(),
             window,
             debt: std::sync::Mutex::new(FlightDebt {
                 plain,
@@ -745,7 +821,7 @@ impl GovState {
         self.budget_flushes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((bucket.into(), window), flight.clone());
+            .insert((bucket.clone(), window), flight.clone());
         cell.mutate(|cell| {
             if !correcting {
                 crate::off_path::governance::runtime::exact_debt_unpark(&mut cell.rolled, window);
@@ -780,7 +856,7 @@ impl GovState {
     /// immutable capture; it performs no Store write and is never labelled Applied.
     fn capture_fee_no_write(
         &self,
-        bucket: &str,
+        bucket: &Text,
         cell: &mut BudgetCell,
         window: u64,
     ) -> Option<Arc<BudgetFlushFlight>> {
@@ -799,7 +875,7 @@ impl GovState {
             true,
         );
         let flight = Arc::new(BudgetFlushFlight {
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket: bucket.clone(),
             window,
             debt: std::sync::Mutex::new(FlightDebt {
                 plain: ExactUsageDelta::default(),
@@ -814,7 +890,7 @@ impl GovState {
         self.budget_flushes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((bucket.into(), window), flight.clone());
+            .insert((bucket.clone(), window), flight.clone());
         cell.mutate(|cell| {
             cell.fee_captured = cell.fee_sequence;
             cell.flushing += 1;
@@ -900,10 +976,8 @@ impl GovState {
                         .budget_flushes
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    let address = crate::off_path::governance::runtime::exact_debt_flight_address(
-                        &flight.bucket,
-                        flight.window,
-                    );
+                    // The flight's own shared bucket name: the address copies nothing.
+                    let address = (flight.bucket.clone(), flight.window);
                     if flights
                         .get(&address)
                         .is_some_and(|held| Arc::ptr_eq(held, flight))

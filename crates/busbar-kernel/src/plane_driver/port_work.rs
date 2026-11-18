@@ -204,7 +204,7 @@ impl DurableWork for StoreWork {
             let work = Work {
                 instance: Arc::clone(&instance),
                 reference: key,
-                kind: KIND.to_owned(),
+                kind: busbar_contract::kept::Text::fixed(KIND),
                 owner: owner_of(Some(subject)),
                 live: true,
                 opened_ms: now_ms,

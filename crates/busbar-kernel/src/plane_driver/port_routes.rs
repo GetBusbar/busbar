@@ -17,6 +17,7 @@
 //! the operator's `routes.<id>.auth` when it lies inside the route's mask, else the lowest bit plus `AUTH_TICKET`
 //! when the mask holds both `AUTH_PRINCIPAL` and `AUTH_TICKET`.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::plane::{
@@ -43,7 +44,8 @@ pub struct Mounted {
     pub pattern: Box<str>,
     /// D_ROUTE_CRED_HEADER, lowercase.
     pub cred_header: Option<Box<str>>,
-    pub resource_kinds: Vec<Box<str>>,
+    /// The route's declared resource kinds: the route's own list, shared.
+    pub resource_kinds: Arc<[Box<str>]>,
     /// A `ROUTE_CATALOG` route.
     pub catalog: bool,
 }
@@ -145,7 +147,7 @@ pub fn plan(
             effective,
             pattern: r.pattern.clone(),
             cred_header: r.cred_header.clone(),
-            resource_kinds: r.resource_kinds.clone(),
+            resource_kinds: Arc::clone(&r.resource_kinds),
             catalog: r.flags & ROUTE_CATALOG != 0,
         };
         match special {
@@ -208,7 +210,7 @@ pub fn recovery_request<'a>(
 
 /// A WORK target's path and query (no fragment): `/jobs/1?cursor=2` is (`/jobs/1`, `cursor=2`).
 #[must_use]
-pub fn target_parts(target: &str) -> (&str, &str) {
+fn target_parts(target: &str) -> (&str, &str) {
     let target = target.split('#').next().unwrap_or_default();
     target.split_once('?').unwrap_or((target, ""))
 }

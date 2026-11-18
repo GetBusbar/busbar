@@ -4,7 +4,8 @@
 use super::*;
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::cost::{
-    plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
+    fee_lane_of, plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT,
+    PER_REQUEST,
 };
 use std::collections::BTreeMap;
 
@@ -83,7 +84,9 @@ impl From<KeyMutationError> for RecordStoreError {
     fn from(error: KeyMutationError) -> Self {
         match error {
             KeyMutationError::Store(error) => error,
-            revoked @ KeyMutationError::Revoked { .. } => rendered_error(Self, revoked),
+            revoked @ KeyMutationError::Revoked { .. } => {
+                rendered_error(<Self as From<String>>::from, revoked)
+            }
             KeyMutationError::Applied {
                 key_id,
                 operation,
@@ -95,7 +98,7 @@ impl From<KeyMutationError> for RecordStoreError {
                     REVOCATION_DURABLE_MARKER
                 };
                 rendered_error(
-                    Self,
+                    <Self as From<String>>::from,
                     format_args!(
                         "{marker}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})"
                     ),
@@ -147,7 +150,7 @@ impl From<MintError> for RecordStoreError {
     fn from(error: MintError) -> Self {
         match error {
             MintError::Store(error) => error,
-            applied => rendered_error(Self, applied),
+            applied => rendered_error(<Self as From<String>>::from, applied),
         }
     }
 }
@@ -155,7 +158,12 @@ impl From<MintError> for RecordStoreError {
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
-    drawn.map_err(|e| rendered_error(RecordStoreError, format_args!("CSPRNG unavailable: {e}")))?;
+    drawn.map_err(|e| {
+        rendered_error(
+            RecordStoreError::from,
+            format_args!("CSPRNG unavailable: {e}"),
+        )
+    })?;
     let id = crate::off_path::governance::state::state_vk_id(VK_ID_PREFIX, &raw);
     let generation = generate_binding_generation().store()?;
     let generation_hash = binding_marker(&id, &generation);
@@ -426,12 +434,16 @@ impl GovState {
         })
     }
 
-    pub fn sign_in_domain(&self, domain: &str, input: &[u8]) -> Option<(String, [u8; 64])> {
+    /// Signs `input` with the subkey of `domain`: appends the signature, then the signing key's
+    /// id, to `out` (the caller's own buffer) and answers the signature's length. `None` = no
+    /// key, and `out` is left as it was. The key id is written from the key itself, never copied
+    /// into a value of its own.
+    pub fn sign_in_domain(&self, domain: &str, input: &[u8], out: &mut Vec<u8>) -> Option<usize> {
         let m = self.signing_material()?;
-        Some((
-            m.signer.kid().to_string(),
-            m.signer.sign_with_subkey(domain, input),
-        ))
+        let signature = m.signer.sign_with_subkey(domain, input);
+        out.extend_from_slice(&signature);
+        out.extend_from_slice(m.signer.kid().as_bytes());
+        Some(signature.len())
     }
 
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
@@ -562,16 +574,17 @@ impl GovState {
         now: u64,
     ) -> Result<(), CountError> {
         let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(lane);
-        let usage_units: std::collections::BTreeMap<String, Count> = units
+        // The classes this call meters, lent from the caller's counts: the pending cell adds them
+        // in place and copies a class name only the first time it counts that class.
+        let usage_units = units
             .iter()
             .filter(|(class, n)| {
                 !n.is_zero()
                     && !(plane.is_empty()
                         && busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()))
             })
-            .map(|(class, n)| (class.clone(), *n))
-            .collect();
-        if usage_units.is_empty() {
+            .map(|(class, n)| (class, *n));
+        if usage_units.clone().next().is_none() {
             return Ok(());
         }
         let (model, provider) = if plane.is_empty() {
@@ -588,13 +601,7 @@ impl GovState {
             key_group_at_use: key.group.as_deref().unwrap_or(""),
             version: era.entry_id,
         };
-        self.pending_metering.try_accrue_ref(
-            key,
-            MeterCounts {
-                usage_units,
-                ..MeterCounts::default()
-            },
-        )
+        self.pending_metering.try_accrue_units_ref(key, usage_units)
     }
 
     pub fn record_lane_metering(
@@ -1060,7 +1067,7 @@ impl GovState {
             if let Some(group) = group {
                 cell.group_owners.insert(group);
             }
-            if let Some(previous) = cells.get(&bucket_id) {
+            if let Some(previous) = cells.get(bucket_id.as_str()) {
                 if previous.correction.is_some() || previous.dirty || previous.flushing != 0 {
                     return Err(RecordStoreError(
                         "budget hydration has unresolved raw usage custody".into(),
@@ -1069,7 +1076,7 @@ impl GovState {
                 cell.group_owners
                     .extend(previous.group_owners.iter().cloned());
             }
-            cells.insert(bucket_id, cell);
+            crate::governance::sharded::put(&mut cells, &bucket_id, cell);
         }
         Ok(())
     }
@@ -1686,12 +1693,21 @@ impl GovState {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
             let window = budget_window(bucket.window, now);
             let map = guards[gi].as_deref_mut().expect("guard held");
-            let cell = match map.get_mut(bucket.bucket_id) {
-                Some(c) if window > c.window_start => {
-                    c.roll(window);
-                    c
+            // The map's own key names the cell the fee reaches: shared with the charge below,
+            // never copied. A bucket charged for the first time is keyed here, once.
+            let (name, cell) = match map
+                .get_key_value(bucket.bucket_id)
+                .map(|(name, _)| name.clone())
+            {
+                Some(name) => {
+                    let cell = map
+                        .get_mut(bucket.bucket_id)
+                        .expect("found under this shard lock");
+                    if window > cell.window_start {
+                        cell.roll(window);
+                    }
+                    (name, cell)
                 }
-                Some(c) => c,
                 None => {
                     crate::cold::governance::state::state_fresh_cell(map, bucket.bucket_id, window)
                 }
@@ -1720,7 +1736,7 @@ impl GovState {
                 Self::fee_marker(&self.fee_debt, observer, bi, bucket.bucket_id, cell, true);
             }
 
-            let reached = (bucket.bucket_id.to_string(), cell.window_start);
+            let reached = (name, cell.window_start);
             grant.charge.cells.push(reached);
         }
         Ok(grant)
@@ -1902,11 +1918,10 @@ impl GovState {
         era: Option<RawRateEra>,
         observer: &super::fee_debt::FeeDebtObserver,
     ) {
-        let (plane, _) = split_plane_lane(pool);
-        if plane.is_empty() {
+        // The plane's fee lane is the qualified pool's own leading `"<plane>\u{1f}"`, borrowed.
+        let Some(fee_lane) = fee_lane_of(pool) else {
             return;
-        }
-        let fee_lane = plane_fee_lane(plane);
+        };
         let mut leg = 0;
         while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
             leg += 1;
@@ -1926,7 +1941,7 @@ impl GovState {
             cell.mutate(|cell| {
                 let held = (cell.models.iter_mut())
                     .filter(|m| {
-                        &*m.model == fee_lane.as_str()
+                        &*m.model == fee_lane
                             && era.is_none_or(|era| m.era == era)
                             && m.cur.get(fee_unit).is_some_and(|n| *n >= Count::ONE)
                     })
@@ -1949,12 +1964,12 @@ impl GovState {
         fee_unit: &str,
         era: Option<RawRateEra>,
     ) {
-        let (plane, pool) = split_plane_lane(pool);
-        if plane.is_empty() {
+        // The plane's fee lane is the qualified pool's own leading `"<plane>\u{1f}"`, borrowed.
+        let Some(fee_lane) = fee_lane_of(pool) else {
             return;
-        }
-        let fee_lane = plane_fee_lane(plane);
-        let lane = (fee_lane.as_str(), fee_unit);
+        };
+        let (_, pool) = split_plane_lane(pool);
+        let lane = (fee_lane, fee_unit);
         let Ok(chain) = cost.chain_for(key) else {
             self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane, era);
             return;
@@ -2036,6 +2051,8 @@ impl GovState {
                 } else {
                     flagged
                 };
+                // The first walk keeps no flight: the flight table holds each one, and the resume
+                // below reads them from it.
                 for (index, mut map) in self.budget.write_masked(mask1) {
                     let unflagged = backstop && flagged & (1u64 << index) == 0;
                     for (id, cell) in map.iter_mut() {
@@ -2047,7 +2064,7 @@ impl GovState {
                             if unflagged {
                                 report_unflagged_dirty_cell(id);
                             }
-                            let _ = self.capture_budget_flushes(id, cell, &foreign_settled);
+                            self.capture_budget_flushes(id, cell, &foreign_settled, drop);
                         }
                     }
                 }
@@ -2064,7 +2081,9 @@ impl GovState {
                 // held.
                 let new_flights = crate::off_path::governance::state::state_flush_walk(
                     self.budget.write_masked(mask2),
-                    |id: &str, cell: &mut BudgetCell, flights: &mut Vec<Arc<BudgetFlushFlight>>| {
+                    |id: &Text,
+                     cell: &mut BudgetCell,
+                     flights: &mut Vec<Arc<BudgetFlushFlight>>| {
                         #[cfg(test)]
                         self.budget
                             .flush_cells_visited
@@ -2075,7 +2094,9 @@ impl GovState {
                         if self.budget_bucket_deleting(id) {
                             return true;
                         }
-                        flights.extend(self.capture_budget_flushes(id, cell, &foreign_settled));
+                        self.capture_budget_flushes(id, cell, &foreign_settled, |flight| {
+                            flights.push(flight);
+                        });
                         cell.mutate(|cell| {
                             cell.dirty = cell.correction.is_some()
                                 || !ExactUsageDelta::of(cell, false).is_zero()
@@ -2245,7 +2266,7 @@ fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
     rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("the spend of bucket `{bucket_id}` cannot be priced: {e}"),
     )
 }

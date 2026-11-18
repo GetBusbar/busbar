@@ -126,6 +126,12 @@ pub trait FramerDoor: Send + Sync {
     }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// THE DEADLINE A REQUEST HEAD CARRIES across `locate`: `timeout_ms` (never `0`) from now, on
+    /// the clock the entry's framer reads a head deadline by. Here that is the host's own clock; an
+    /// entry whose plugin reads another clock states the deadline on that clock, read once.
+    fn request_deadline(&self, timeout_ms: u64) -> Result<u64, Refused> {
+        Ok(now_ns().saturating_add(timeout_ms.saturating_mul(1_000_000)))
+    }
     /// The entry's SETTINGS EPOCH: a number that changes whenever a settings refresh it took has
     /// returned, so a place it located before then may no longer be what it locates now (its
     /// protocol offer can follow its settings). An entry with no live settings keeps `0`.
@@ -735,7 +741,10 @@ impl Buffers {
         buffers
     }
 
-    pub(crate) fn sink(&mut self) -> FramerSink {
+    /// The sink one crossing lends: the buffers' pointers, taken now (a sink is made for each
+    /// crossing and never kept across two), and `at`, the one clock reading of the operation the
+    /// crossing belongs to.
+    pub(crate) fn sink(&mut self, at: At) -> FramerSink {
         FramerSink {
             wire: self.wire.as_mut_ptr(),
             wire_cap: self.wire.len(),
@@ -743,8 +752,8 @@ impl Buffers {
             frame_cap: self.frame.len(),
             pieces: self.pieces.as_mut_ptr(),
             pieces_cap: self.pieces.len(),
-            now_monotonic_ns: now_ns(),
-            now_unix_ns: unix_ns(),
+            now_monotonic_ns: at.mono_ns,
+            now_unix_ns: at.unix_ns,
             heads: self.heads.as_mut_ptr(),
             heads_cap: self.heads.len(),
         }
@@ -993,6 +1002,56 @@ pub fn instant_of(ns: u64) -> Instant {
 
 fn unix_ns() -> u64 {
     crate::off_path::framing::unix_ns()
+}
+
+/// The host-clock nanoseconds that name `instant`: the inverse of [`instant_of`] (never `0`; an
+/// instant before the epoch names the epoch).
+fn ns_of(instant: Instant) -> u64 {
+    u64::try_from(instant.saturating_duration_since(epoch()).as_nanos())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+}
+
+/// ONE READING OF THE HOST'S CLOCKS, taken once by one synchronous operation and passed down as a
+/// value: every crossing of that operation states this one time to the framer
+/// (`FramerSink::now_monotonic_ns`, `now_unix_ns`). An operation that waits takes a new one when
+/// it resumes; a reading is never kept across a wait.
+#[derive(Debug, Clone, Copy)]
+pub struct At {
+    instant: Instant,
+    mono_ns: u64,
+    unix_ns: u64,
+}
+
+impl At {
+    /// The reading of an operation that begins here: the monotonic clock and the wall clock, each
+    /// read once.
+    #[must_use]
+    pub fn now() -> At {
+        let mono_ns = now_ns();
+        At {
+            instant: instant_of(mono_ns),
+            mono_ns,
+            unix_ns: unix_ns(),
+        }
+    }
+
+    /// The reading of an operation whose caller already read the monotonic clock for it: `now` is
+    /// its monotonic instant, unchanged, and the wall clock is read once here.
+    #[must_use]
+    pub fn of(now: Instant) -> At {
+        At {
+            instant: now,
+            mono_ns: ns_of(now),
+            unix_ns: unix_ns(),
+        }
+    }
+
+    /// The reading's monotonic instant.
+    #[must_use]
+    pub fn instant(self) -> Instant {
+        self.instant
+    }
 }
 
 /// Where one connection's framing stands with its entry.
@@ -1377,8 +1436,9 @@ pub struct Established {
     pub offered_name: Option<String>,
     /// The protocol the handshake agreed.
     pub agreed_protocol: Option<Vec<u8>>,
-    /// The claim the connection resolved to.
-    pub claim: Option<String>,
+    /// The claim the connection resolved to: the door's own word for it (`DoorFacts::claims`),
+    /// fixed in the program, so a connection names its claim without copying it.
+    pub claim: Option<&'static str>,
     /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` = no
     /// certificate (the transport pin).
     pub peer_key_pin: Option<String>,
@@ -1421,7 +1481,7 @@ impl Established {
             peer_subject: NO_TEXT,
             peer_issuer: NO_TEXT,
             peer_fingerprint: NO_TEXT,
-            claim: text(self.claim.as_deref().map(str::as_bytes)),
+            claim: text(self.claim.map(str::as_bytes)),
             local_certificate: NO_TEXT,
         }
     }
@@ -1481,29 +1541,18 @@ pub fn locate_request(
     target: &str,
     timeout_ms: u64,
 ) -> Result<Located, Refused> {
-    let deadline_ns = if timeout_ms == 0 {
-        0
-    } else {
-        now_ns().saturating_add(timeout_ms.saturating_mul(1_000_000))
-    };
-    locate_as(door, target, false, deadline_ns)
+    locate_as(door, target, false, timeout_ms)
 }
 
 fn locate_as(
     door: &dyn FramerDoor,
     target: &str,
     accept: bool,
-    deadline_ns: u64,
+    timeout_ms: u64,
 ) -> Result<Located, Refused> {
     let mut alpn = LOCATE_ALPN.with(std::cell::Cell::take);
     let mut defaults = LOCATE_DEFAULTS.with(std::cell::Cell::take);
-    let located = locate_in(
-        door,
-        target,
-        (accept, deadline_ns),
-        &mut alpn,
-        &mut defaults,
-    );
+    let located = locate_in(door, target, (accept, timeout_ms), &mut alpn, &mut defaults);
     LOCATE_ALPN.with(|kept| kept.set(alpn));
     LOCATE_DEFAULTS.with(|kept| kept.set(defaults));
     located
@@ -1514,7 +1563,7 @@ fn locate_as(
 fn locate_in(
     door: &dyn FramerDoor,
     target: &str,
-    (accept, deadline_ns): (bool, u64),
+    (accept, timeout_ms): (bool, u64),
     alpn: &mut Vec<u8>,
     defaults: &mut Vec<u8>,
 ) -> Result<Located, Refused> {
@@ -1522,6 +1571,13 @@ fn locate_in(
         door.facts().require_dial()?;
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Locate);
     }
+    // The head's deadline (`0` = none), stated once for the locate and its one re-call, on the
+    // clock the entry's framer reads it by.
+    let deadline_ns = if timeout_ms == 0 {
+        0
+    } else {
+        door.request_deadline(timeout_ms)?
+    };
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
     for _ in 0..2 {
@@ -1666,7 +1722,8 @@ pub fn encode_head(
     i.fields_len = fields.len();
     i.body = body.as_ptr();
     i.body_len = body.len();
-    i.sink = bufs.sink();
+    // An encode is one crossing: its one reading is taken here.
+    i.sink = bufs.sink(At::now());
     let mut o: FramerOut = blank_out();
     ready(door.cross(Call::Encode(&mut i, &mut o)))?;
     let mut y = Yielded::default();
@@ -1898,7 +1955,7 @@ impl Framing {
             .map(|policy| Arc::new(GuestLines::published(policy)))
             .or(guests);
         let mut bufs = Buffers::for_side(side);
-        bufs.set_status(door.facts(), established.claim.as_deref())?;
+        bufs.set_status(door.facts(), established.claim)?;
         let mut f = Self {
             door,
             context,
@@ -1916,7 +1973,8 @@ impl Framing {
             binding,
             guests,
         };
-        let y = f.run(op, Yielded::default(), false, false, ticket)?;
+        // Opening a framing is one operation: its one reading, for every crossing of the begin.
+        let y = f.run(op, Yielded::default(), false, false, ticket, At::now())?;
         Ok((f, y.unwrap_or_default()))
     }
 
@@ -1954,13 +2012,22 @@ impl Framing {
         if self.parked.is_empty() {
             return std::task::Poll::Ready(Ok(Yielded::default()));
         }
+        // One poll re-drives every parked op: one reading for the poll.
+        let at = At::now();
         let mut waiting = self.parked.take().into_iter();
         let mut out = Yielded::default();
         let (mut completed, mut failed) = (false, None);
         for p in waiting.by_ref() {
             p.ticket.register(cx.waker());
-            match self.run_with_recalls(p.op, p.yielded, p.recall, true, Some(p.ticket), p.recalls)
-            {
+            match self.run_with_recalls(
+                p.op,
+                p.yielded,
+                p.recall,
+                true,
+                Some(p.ticket),
+                p.recalls,
+                at,
+            ) {
                 Ok(Some(y)) => {
                     merge(&mut out, y);
                     completed = true;
@@ -2018,8 +2085,9 @@ impl Framing {
         recall: bool,
         resume: bool,
         ticket: Option<&dyn crate::carrier::Side>,
+        at: At,
     ) -> (Crossed, FramerOut) {
-        let sink = self.bufs.sink();
+        let sink = self.bufs.sink(at);
         let mut o: FramerOut = blank_out();
         let door = &self.door;
         let cross = |call: Call<'_>| door.cross_scoped(self.context.as_ref(), ticket, resume, call);
@@ -2175,8 +2243,9 @@ impl Framing {
         recall: bool,
         resume: bool,
         ticket: Option<Box<dyn crate::carrier::Side>>,
+        at: At,
     ) -> Result<Option<Yielded>, Refused> {
-        self.run_with_recalls(op, yielded, recall, resume, ticket, Recalls::default())
+        self.run_with_recalls(op, yielded, recall, resume, ticket, Recalls::default(), at)
     }
 
     fn run_with_recalls(
@@ -2187,6 +2256,7 @@ impl Framing {
         resume: bool,
         ticket: Option<Box<dyn crate::carrier::Side>>,
         recalls: Recalls,
+        at: At,
     ) -> Result<Option<Yielded>, Refused> {
         let mut ticket = ticket;
         let operation = ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket());
@@ -2195,7 +2265,7 @@ impl Framing {
                 context.operation_started(operation);
             }
         }
-        let r = self.run_on(op, yielded, recall, resume, &mut ticket, recalls);
+        let r = self.run_on(op, yielded, recall, resume, &mut ticket, recalls, at);
         if !matches!(&r, Ok(None)) {
             if let Some(context) = &self.context {
                 context.operation_finished(operation, r.is_err());
@@ -2214,9 +2284,10 @@ impl Framing {
         mut resume: bool,
         ticket: &mut Option<Box<dyn crate::carrier::Side>>,
         mut recalls: Recalls,
+        at: At,
     ) -> Result<Option<Yielded>, Refused> {
         loop {
-            let (c, o) = self.cross_ticketed(&op, recall, resume, ticket.as_deref());
+            let (c, o) = self.cross_ticketed(&op, recall, resume, ticket.as_deref(), at);
             let control_progress = self.context.as_ref().is_some_and(|context| {
                 context.take_control_progress(
                     ticket.as_ref().map_or(Ticket::NONE, |side| side.ticket()),
@@ -2273,10 +2344,11 @@ impl Framing {
                     false,
                     ticket,
                     recalls,
+                    at,
                 );
             }
             if begin {
-                self.more_with_recalls(Again::Timer, &mut yielded, recalls)?;
+                self.more_with_recalls(Again::Timer, &mut yielded, recalls, at)?;
                 return Ok(Some(yielded));
             }
             recall = true;
@@ -2340,7 +2412,7 @@ impl Framing {
             None => door.framing_context(0, 0)?,
         };
         let mut bufs = Buffers::for_side(side);
-        bufs.set_status(door.facts(), established.claim.as_deref())?;
+        bufs.set_status(door.facts(), established.claim)?;
         let mut framing = Self {
             door,
             context,
@@ -2356,7 +2428,8 @@ impl Framing {
             leftover,
             prewire,
         };
-        let yielded = framing.run(op, Yielded::default(), false, false, ticket)?;
+        // Adopting a framing is one operation: its one reading.
+        let yielded = framing.run(op, Yielded::default(), false, false, ticket, At::now())?;
         Ok((framing, yielded.unwrap_or_default()))
     }
 
@@ -2373,8 +2446,8 @@ impl Framing {
     }
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
-    fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
-        self.more_with_recalls(again, y, Recalls::default())
+    fn more(&mut self, again: Again, y: &mut Yielded, at: At) -> Result<(), Refused> {
+        self.more_with_recalls(again, y, Recalls::default(), at)
     }
 
     fn more_with_recalls(
@@ -2382,11 +2455,12 @@ impl Framing {
         again: Again,
         y: &mut Yielded,
         recalls: Recalls,
+        at: At,
     ) -> Result<(), Refused> {
         if let Some(context) = &self.context {
             context.operation_started(Ticket::NONE);
         }
-        let result = self.more_on(again, y, recalls);
+        let result = self.more_on(again, y, recalls, at);
         if let Some(context) = &self.context {
             context.operation_finished(Ticket::NONE, result.is_err());
         }
@@ -2398,9 +2472,10 @@ impl Framing {
         again: Again,
         y: &mut Yielded,
         mut recalls: Recalls,
+        at: At,
     ) -> Result<(), Refused> {
         loop {
-            let sink = self.bufs.sink();
+            let sink = self.bufs.sink(at);
             let mut o: FramerOut = blank_out();
             let c = match again {
                 Again::Refuse(stream, status, head_sent) => {
@@ -2450,8 +2525,9 @@ impl Framing {
             end,
         };
         let ticket = self.take_ticket()?;
+        // An ingest is one operation: its one reading, for every crossing it makes.
         Ok(self
-            .run(op, Yielded::default(), false, false, ticket)?
+            .run(op, Yielded::default(), false, false, ticket, At::now())?
             .unwrap_or_default())
     }
 
@@ -2575,8 +2651,9 @@ impl Framing {
             extensions: head.extensions,
         };
         let ticket = self.take_ticket()?;
+        // An emit is one operation: its one reading, for every crossing it makes.
         Ok(self
-            .run(op, Yielded::default(), false, false, ticket)?
+            .run(op, Yielded::default(), false, false, ticket, At::now())?
             .unwrap_or_default())
     }
 
@@ -2598,7 +2675,9 @@ impl Framing {
         i.head_sent = u32::from(head_sent);
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
-        i.sink = self.bufs.sink();
+        // A refusal is one operation: its one reading, for this crossing and its re-calls.
+        let at = At::now();
+        i.sink = self.bufs.sink(at);
         let mut o: FramerOut = blank_out();
         ready(self.door.cross_scoped(
             self.context.as_ref(),
@@ -2610,7 +2689,12 @@ impl Framing {
         if !self.bufs.take(&o, &mut y)? {
             let mut recalls = Recalls::default();
             recalls.owed(&o, &self.bufs)?;
-            self.more_with_recalls(Again::Refuse(stream, status, head_sent), &mut y, recalls)?;
+            self.more_with_recalls(
+                Again::Refuse(stream, status, head_sent),
+                &mut y,
+                recalls,
+                at,
+            )?;
         }
         Ok(y)
     }
@@ -2619,7 +2703,8 @@ impl Framing {
     pub fn timer(&mut self) -> Result<Yielded, Refused> {
         self.idle(None)?;
         let mut y = Yielded::default();
-        self.more(Again::Timer, &mut y)?;
+        // A timer is one operation: its one reading, for every crossing it makes.
+        self.more(Again::Timer, &mut y, At::now())?;
         Ok(y)
     }
 
@@ -2691,8 +2776,10 @@ impl Framing {
         }
         let mut y = Yielded::default();
         let mut recalls = Recalls::default();
+        // The finish is one operation: its one reading, for this crossing and its re-calls.
+        let at = At::now();
         loop {
-            i.sink = self.bufs.sink();
+            i.sink = self.bufs.sink(at);
             let mut o: FramerOut = blank_out();
             ready(self.door.cross_scoped(
                 self.context.as_ref(),
@@ -2726,7 +2813,8 @@ impl Framing {
         let mut i: FinishIn = blank_in();
         i.framing = self.token;
         i.reason = reason;
-        i.sink = self.bufs.sink();
+        // The close is one crossing: its one reading.
+        i.sink = self.bufs.sink(At::now());
         let mut o: FramerOut = blank_out();
         if self
             .door

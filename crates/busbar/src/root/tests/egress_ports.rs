@@ -85,18 +85,12 @@ async fn a_wait_over_an_unlimited_member_answers_at_once() {
     assert_eq!(got, Some(FREE));
 }
 
+/// Each pool's depth is the pool's own count now (`busbar_kernel_egress::pool::QueueDepth`, tested there).
 #[test]
-fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
+fn the_counters_label_a_member_by_name() {
     let t = WalkTelemetry::new([(A, "first".to_string())]);
     assert_eq!(t.lane(A), "first");
     assert_eq!(t.lane(B), "", "a member the seal did not name");
-    t.queued("p", 1);
-    t.queued("p", 1);
-    t.queued("q", 1);
-    t.queued("p", -1);
-    assert_eq!((t.depth("p"), t.depth("q")), (1, 1));
-    t.queued("p", -5);
-    assert_eq!(t.depth("p"), 0, "a depth never reads below empty");
 }
 
 /// A connection table that opens nothing: the sealing below never dials.
@@ -281,7 +275,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         need: busbar_contract::conn::NeedId(0),
         base_url: "https://far.invalid".to_string(),
         auth: None,
-        provider: provider.to_string(),
+        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(provider)),
         keep: busbar_kernel::plane_driver::ResponseKeep::default(),
         rides: Vec::new(),
         anchors: busbar_contract::transport::trust::Anchors::default(),

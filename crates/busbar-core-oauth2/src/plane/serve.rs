@@ -97,7 +97,7 @@ impl Registrations {
 impl AsPlane {
     pub(crate) async fn verify_dpop(
         &self,
-        presented: busbar_kernel::oauth_as::seam::DpopPresentation,
+        presented: busbar_kernel::oauth_as::seam::DpopPresentation<'_>,
     ) -> bool {
         use base64::Engine as _;
         use oauth_as::store::Storage as _;
@@ -105,8 +105,8 @@ impl AsPlane {
         let Ok(proof) = oauth_as::dpop::verify_proof_with_crypto(
             &crate::crypto_provider::FacadeCrypto,
             &self.dpop_verifiers,
-            &presented.proof,
-            &presented.method,
+            presented.proof,
+            presented.method,
             &htu,
             crate::shared::now_time(),
         ) else {
@@ -114,10 +114,10 @@ impl AsPlane {
         };
         let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(busbar_contract::crypto::sha256(presented.token.as_bytes()));
-        let ath_matches = oauth_as::jwt::CompactJws::parse(&presented.proof)
+        let ath_matches = oauth_as::jwt::CompactJws::parse(presented.proof)
             .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
         let bound_to_proof_key =
-            oauth_as::jwt::CompactJws::parse(&presented.token).is_ok_and(|jws| {
+            oauth_as::jwt::CompactJws::parse(presented.token).is_ok_and(|jws| {
                 jws.payload
                     .get("cnf")
                     .and_then(|cnf| cnf.get("jkt"))
@@ -129,7 +129,7 @@ impl AsPlane {
         }
 
         if !matches!(
-            self.server.store().get_token(&presented.token).await,
+            self.server.store().get_token(presented.token).await,
             Ok(Some(_))
         ) {
             return false;
@@ -419,10 +419,10 @@ fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeS
     .unwrap_or_default()
 }
 
-pub(crate) fn seam_verify_dpop(
-    plane: &Arc<dyn std::any::Any + Send + Sync>,
-    presented: busbar_kernel::oauth_as::seam::DpopPresentation,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+pub(crate) fn seam_verify_dpop<'a>(
+    plane: &'a Arc<dyn std::any::Any + Send + Sync>,
+    presented: busbar_kernel::oauth_as::seam::DpopPresentation<'a>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
     let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
     Box::pin(async move {
         match plane {

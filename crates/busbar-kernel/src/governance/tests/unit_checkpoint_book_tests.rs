@@ -249,7 +249,7 @@ fn assert_index_matches(gov: &GovState) {
 fn preload_overflow(gov: &GovState, bucket: &str) {
     let mut cells = gov.budget.write(bucket);
     let cell = cells
-        .entry(bucket.to_string())
+        .entry(bucket.into())
         .or_insert_with(|| crate::governance::BudgetCell::fresh(0));
     cell.accrue_raw(
         "m",

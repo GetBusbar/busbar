@@ -473,16 +473,15 @@ fn submit_async(
 }
 
 pub trait SignKey: Send + Sync {
-    /// Signs `data` in `domain`: appends the signature to `sig` (the answer's own buffer) and
-    /// answers the signing key's id. `None` = no key, and `sig` is left as it was.
-    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String>;
+    /// Signs `data` in `domain`: appends the signature, then the signing key's id, to `out` (the
+    /// answer's own buffer) and answers the signature's length. `None` = no key, and `out` is
+    /// left as it was.
+    fn sign(&self, domain: &str, data: &[u8], out: &mut Vec<u8>) -> Option<usize>;
 }
 
 impl SignKey for crate::governance::GovState {
-    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
-        let (kid, signature) = self.sign_in_domain(domain, data)?;
-        sig.extend_from_slice(&signature);
-        Some(kid)
+    fn sign(&self, domain: &str, data: &[u8], out: &mut Vec<u8>) -> Option<usize> {
+        self.sign_in_domain(domain, data, out)
     }
 }
 
@@ -641,7 +640,10 @@ pub(crate) const RESERVED_RECORD_KINDS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmitRefused {
     /// A cold bootstrap namespace cannot admit another generation in this process.
-    BootstrapHeld { instance: String },
+    ///
+    /// Every instance label a refusal names is the shared label its holder already has (the
+    /// label admission was called with, or the admitted instance's key): a refusal copies none.
+    BootstrapHeld { instance: Arc<str> },
     /// The label is longer than 65535 bytes or holds a control character: every per-instance key
     /// is built from it, and only a label without them keeps those keys apart.
     LabelUnfit {
@@ -650,26 +652,26 @@ pub enum AdmitRefused {
     },
     /// Another instance holds the signing domain the instance declares.
     DomainHeld {
-        /// The domain.
+        /// The domain: the refused declaration's own, moved out of it.
         domain: String,
         /// The instance holding it.
-        held_by: String,
+        held_by: Arc<str>,
         /// The instance refused.
-        asked_by: String,
+        asked_by: Arc<str>,
     },
     /// Another instance owns this delegated-credential consumer namespace.
     TicketPrefixHeld {
-        /// The declared namespace.
+        /// The declared namespace: the refused declaration's own, moved out of it.
         prefix: String,
         /// The instance holding it.
-        held_by: String,
+        held_by: Arc<str>,
         /// The instance refused.
-        asked_by: String,
+        asked_by: Arc<str>,
     },
     /// An admitted instance tried to release a namespace whose credentials may remain live.
     TicketPrefixChanged {
         /// The admitted instance.
-        instance: String,
+        instance: Arc<str>,
         /// Its original namespace.
         prefix: String,
     },
@@ -689,8 +691,8 @@ pub enum AdmitRefused {
     },
     /// Native claim retention could not bind an admitted record scope.
     ClaimMaintenance {
-        /// The declared record kind.
-        kind: String,
+        /// The declared record kind: its schema's own name.
+        kind: &'static str,
     },
     /// The store could not be read for the demotions and the operator's trust decisions this
     /// instance's trust stands on.
@@ -699,9 +701,9 @@ pub enum AdmitRefused {
     /// ([`RESERVED_RECORD_KINDS`]): its retention rule would govern the kernel's own rows.
     KindReserved {
         /// The instance refused.
-        instance: String,
-        /// The reserved kind it declares.
-        kind: String,
+        instance: Arc<str>,
+        /// The reserved kind it declares: its schema's own name.
+        kind: &'static str,
     },
 }
 
@@ -1496,10 +1498,16 @@ impl KernelServices {
         crate::off_path::host_services::ticket_prefix(facts)
     }
 
-    pub fn open_carrier_session(&self, caller: &Caller, principal: &str, sink: CarrierSink) -> u64 {
-        let principal = crate::off_path::host_services::intern(principal);
+    /// Open a carrier session serving as `principal`: the line's own shared name, held by the
+    /// session for its life and not copied. Runs once as a carrier line opens.
+    pub fn open_carrier_session(
+        &self,
+        caller: &Caller,
+        principal: &Arc<str>,
+        sink: CarrierSink,
+    ) -> u64 {
         self.sessions
-            .open(caller.incarnation(), principal, sink)
+            .open(caller.incarnation(), Arc::clone(principal), sink)
             .get()
     }
 
@@ -1591,12 +1599,13 @@ impl KernelServices {
         self.work_bounds
     }
 
-    pub fn bound_work(&self, instance: &str, bounds: WorkBounds) {
-        let instance = crate::off_path::host_services::intern(instance);
+    /// Set `instance`'s work bounds, keyed by the caller's own shared label. Runs as an instance
+    /// is admitted (boot, reload).
+    pub fn bound_work(&self, instance: &Arc<str>, bounds: WorkBounds) {
         self.bounds_of
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(instance, bounds);
+            .insert(Arc::clone(instance), bounds);
     }
 
     #[must_use]
@@ -1807,7 +1816,11 @@ impl KernelServices {
         self
     }
 
-    pub async fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
+    /// Admit `label`'s declared facts. Runs when a plane instance is admitted (boot, reload),
+    /// never on a request. The label is the caller's own shared one: it keys the instance here
+    /// and names it in a refusal, and is copied for neither.
+    pub async fn admit(&self, label: &Arc<str>, facts: InstanceFacts) -> Result<(), AdmitRefused> {
+        let instance: &str = label;
         if instance.len() > usize::from(u16::MAX) || instance.chars().any(char::is_control) {
             return Err(AdmitRefused::LabelUnfit {
                 len: instance.len(),
@@ -1827,10 +1840,10 @@ impl KernelServices {
                  the instance is refused rather than write beside, or purge under its own rule, \
                  the kernel's records"
             );
-            return Err(crate::cold::host::services_kind_reserved(
-                instance,
-                kind.as_str(),
-            ));
+            return Err(AdmitRefused::KindReserved {
+                instance: Arc::clone(label),
+                kind: kind.as_str(),
+            });
         }
 
         for chain in &facts.record_chains {
@@ -1860,7 +1873,7 @@ impl KernelServices {
                 return Err(AdmitRefused::ConditionalKind { kind });
             }
         }
-        let key = crate::off_path::host_services::intern(instance);
+        let key = Arc::clone(label);
 
         let (snapshot, default) = match self.demotions.as_ref() {
             Some(d) => (
@@ -1881,7 +1894,9 @@ impl KernelServices {
             .contains_key(instance)
             && instances.contains_key(instance)
         {
-            return Err(crate::cold::host::services_bootstrap_held(instance));
+            return Err(AdmitRefused::BootstrapHeld {
+                instance: Arc::clone(label),
+            });
         }
         if self
             .record_bootstrap
@@ -1892,41 +1907,61 @@ impl KernelServices {
                 grant.instance == instance && (instances.contains_key(instance) || !grant.bound())
             })
         {
-            return Err(crate::cold::host::services_bootstrap_held(instance));
+            return Err(AdmitRefused::BootstrapHeld {
+                instance: Arc::clone(label),
+            });
         }
         let decided = if instances.contains_key(instance) {
             Vec::new()
         } else {
             decided
         };
-        if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
-            let holder = instances.iter().find(|(label, f)| {
-                &***label != instance && f.signing.as_ref().is_some_and(|s| s.domain == domain)
+        let domain_holder = facts.signing.as_ref().and_then(|declared| {
+            instances
+                .iter()
+                .find(|(held, f)| {
+                    &***held != instance
+                        && f.signing
+                            .as_ref()
+                            .is_some_and(|s| s.domain == declared.domain)
+                })
+                .map(|(held_by, _)| Arc::clone(held_by))
+        });
+        if let Some(held_by) = domain_holder {
+            // The refused declaration is dropped with this refusal: its domain is moved out of
+            // it into the refusal, not copied.
+            return Err(AdmitRefused::DomainHeld {
+                domain: facts.signing.map(|s| s.domain).unwrap_or_default(),
+                held_by,
+                asked_by: Arc::clone(label),
             });
-            if let Some((held_by, _)) = holder {
-                return Err(crate::cold::host::services_domain_held(
-                    domain, held_by, instance,
-                ));
-            }
         }
         if let Some(prefix) = instances
             .get(instance)
             .and_then(|f| f.ticket_prefix.as_ref())
         {
             if facts.ticket_prefix.as_ref() != Some(prefix) {
-                return Err(crate::cold::host::services_ticket_prefix_changed(
-                    instance, prefix,
-                ));
+                // The admitted prefix stays with the admitted instance: the refusal names it in
+                // one copy of its own.
+                return Err(AdmitRefused::TicketPrefixChanged {
+                    instance: Arc::clone(label),
+                    prefix: prefix.clone(),
+                });
             }
         }
-        if let Some(prefix) = &facts.ticket_prefix {
-            if let Some((held_by, _)) = instances.iter().find(|(label, f)| {
-                &***label != instance && f.ticket_prefix.as_ref() == Some(prefix)
-            }) {
-                return Err(crate::cold::host::services_ticket_prefix_held(
-                    prefix, held_by, instance,
-                ));
-            }
+        let prefix_holder = facts.ticket_prefix.as_ref().and_then(|prefix| {
+            instances
+                .iter()
+                .find(|(held, f)| &***held != instance && f.ticket_prefix.as_ref() == Some(prefix))
+                .map(|(held_by, _)| Arc::clone(held_by))
+        });
+        if let Some(held_by) = prefix_holder {
+            // As the domain above: the refused declaration's own prefix, moved out of it.
+            return Err(AdmitRefused::TicketPrefixHeld {
+                prefix: facts.ticket_prefix.unwrap_or_default(),
+                held_by,
+                asked_by: Arc::clone(label),
+            });
         }
         let prefix = demotion_key(instance, "");
         if let Some(store) = self.persistence.as_ref() {
@@ -1934,7 +1969,7 @@ impl KernelServices {
                 store
                     .register_claim_scope(instance, schema.as_str())
                     .map_err(|_| AdmitRefused::ClaimMaintenance {
-                        kind: schema.as_str().into(),
+                        kind: schema.as_str(),
                     })?;
             }
         }
@@ -2642,8 +2677,19 @@ impl KernelServices {
 
     /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
     pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
-        crate::off_path::host_services::drain_cleanup_until(deadline, |cx| self.cleanup_planes(cx))
-            .await
+        // Sweep until idle, every 2 ms, under the runtime's own timer: no clock is read here.
+        let sweep = || std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx)));
+        let swept = tokio::time::timeout(deadline, async {
+            while !sweep().await {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        // The deadline passed: one last sweep decides, as the loop's own last pass did.
+        match swept {
+            Ok(()) => true,
+            Err(_) => sweep().await,
+        }
     }
 
     /// Every unit still open in the planes registered for cleanup (every composed plane), read
@@ -2659,8 +2705,11 @@ impl KernelServices {
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
-        let mut at = crate::off_path::host_services::flush_ticks(every);
+        let mut at = tokio::time::interval(every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A new interval's first tick is immediate: taken here, so the first flush comes one
+        // interval after the flusher starts, as before.
+        at.tick().await;
         let mut jobs = futures::stream::FuturesUnordered::new();
         loop {
             tokio::select! {
@@ -2824,9 +2873,14 @@ impl KernelServices {
     }
 }
 
+/// A found handle's answer: its state byte as the one item's key, its record as the value, laid
+/// straight into the answer's own bytes (the layout [`spans_of`] gives one row).
 fn work_found(handle: u64, w: &Work) -> Stored {
-    let mut s = spans_of(vec![(vec![w.state()], w.record.clone())]);
-    s.value = handle;
+    let mut s = Stored::ready(handle);
+    s.bytes.reserve_exact(w.record.len().saturating_add(1));
+    s.bytes.push(w.state());
+    s.bytes.extend_from_slice(&w.record);
+    s.spans.push(span(0, 1, 1, w.record.len()));
     s
 }
 
@@ -3408,23 +3462,23 @@ impl HostServices for KernelServices {
         let Some(signing) = facts.signing.as_ref() else {
             return Stored::refused(NO_DOMAIN);
         };
-        // The key (prefix + kid) leads the answer, the signature follows: signed first into the
-        // answer's own buffer, then the key appended and rotated to the front, in place.
+        // The key (prefix + kid) leads the answer, the signature follows. The prefix is written
+        // first; the signer appends the signature and then its key id to the answer's own buffer;
+        // the key id is rotated in front of the signature, in place.
         let mut stored = Stored::ready(0);
-        let Some(kid) = self
+        let prefix_len = signing.kid_prefix.len();
+        stored
+            .bytes
+            .extend_from_slice(signing.kid_prefix.as_bytes());
+        let Some(sig_len) = self
             .signer
             .as_ref()
             .and_then(|s| s.sign(&signing.domain, data, &mut stored.bytes))
         else {
             return Stored::refused(NO_KEY);
         };
-        let sig_len = stored.bytes.len();
-        stored
-            .bytes
-            .extend_from_slice(signing.kid_prefix.as_bytes());
-        stored.bytes.extend_from_slice(kid.as_bytes());
         let key_len = stored.bytes.len() - sig_len;
-        stored.bytes.rotate_right(key_len);
+        stored.bytes[prefix_len..].rotate_right(key_len - prefix_len);
         stored.spans.push(span(0, key_len, key_len, sig_len));
         stored
     }
@@ -3472,11 +3526,13 @@ impl HostServices for KernelServices {
 
         let record = Arc::clone(&d.record);
         let key = demotion_key(caller.namespace(), counterparty);
+        // The settle job outlives this call, and the counterparty's name is the plugin's for the
+        // call only: the job keeps one copy of it, for its audit row and (the default instance)
+        // its unprefixed row. The instance's name is its caller's shared one.
         let (audit_instance, audit_counterparty) =
-            (caller.namespace().to_string(), counterparty.to_string());
+            (Arc::clone(caller.namespace()), counterparty.to_string());
 
-        let unprefixed = (d.default_instance.as_ref() == Some(caller.namespace()))
-            .then(|| crate::cold::host::services_counterparty_row(counterparty));
+        let unprefixed = d.default_instance.as_ref() == Some(caller.namespace());
         let owed = TrustSightOwed {
             permit: Some(permit),
             later: Some(later),
@@ -3493,10 +3549,10 @@ impl HostServices for KernelServices {
                 )
                 .await;
                 match (result, unprefixed) {
-                    (Ok(()), Some(cp)) => {
+                    (Ok(()), true) => {
                         crate::trust::demotion::settle(
                             &record,
-                            &cp,
+                            &audit_counterparty,
                             crate::trust::TrustState::Approved,
                         )
                         .await
@@ -3511,7 +3567,7 @@ impl HostServices for KernelServices {
             } else {
                 "trust_unquarantine"
             };
-            let at = (audit_instance.as_str(), audit_counterparty.as_str(), None);
+            let at = (&*audit_instance, audit_counterparty.as_str(), None);
             if let Err(error) = settled {
                 tracing::error!(%error,"the durable trust demotion could not be settled");
                 kernel_trust_row(
@@ -4030,7 +4086,8 @@ impl HostServices for KernelServices {
                 let book = Arc::clone(&self.work);
                 let bounds = self.work_bounds_of(caller.namespace());
                 let wall_ms = Arc::clone(&self.wall_ms);
-                let (kind, record) = (kind.to_string(), record.to_vec());
+                let kind = busbar_contract::kept::Text::from(Arc::<str>::from(kind));
+                let record = record.to_vec();
                 let owed = Owed(Some(later));
                 let pool = Arc::clone(&writer.pool);
                 pool.run_async(Box::pin(async move {

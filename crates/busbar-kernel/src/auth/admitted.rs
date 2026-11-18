@@ -12,7 +12,7 @@ pub struct AdmittedContext {
     pub principal: AuthPrincipal,
     pub gov: crate::governance::GovCtx,
     pub consumed: ConsumedCredentials,
-    pub consumed_fields: Vec<(String, String)>,
+    pub consumed_fields: Vec<(HeaderName, String)>,
 }
 
 #[derive(Debug)]
@@ -77,7 +77,7 @@ async fn complete_context(
         dpop::SenderConstraint::Unconstrained => {
             (client_token.map(std::borrow::Cow::Borrowed), false)
         }
-        dpop::SenderConstraint::Proven(token) => (Some(std::borrow::Cow::Owned(token)), true),
+        dpop::SenderConstraint::Proven(token) => (Some(std::borrow::Cow::Borrowed(token)), true),
         dpop::SenderConstraint::Refused(reason) => {
             return Err(AdmittedRefusal::SenderConstraint(reason))
         }
@@ -177,7 +177,7 @@ impl AdmittedRefusal {
                 let app = request.app();
                 let present = request.client_token().is_some()
                     || (app.oauth_as.is_some()
-                        && dpop::dpop_credential(request.original_headers()).is_some());
+                        && dpop::dpop_token(request.original_headers()).is_some());
                 (
                     if present {
                         challenge::ChallengeError::InvalidToken

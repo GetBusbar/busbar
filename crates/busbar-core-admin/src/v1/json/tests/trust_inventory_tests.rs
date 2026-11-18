@@ -29,7 +29,7 @@ async fn readout() -> TrustReadout {
     let kernel = KernelServices::new();
     kernel
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: vec![
                     ("cp".to_string(), entry(5_000, 100)),

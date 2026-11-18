@@ -189,7 +189,6 @@ fn prepared_with_auth(
             &crate::plugin_routes::PluginRouteTable::empty(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             None,
             false,
         )
@@ -379,6 +378,41 @@ fn native_physical_connection_drop_cancels_retained_requests_without_early_credi
     assert_eq!(f.budget.used(), (8, 8));
     drop(retained);
     assert_eq!(f.budget.used(), (0, 0));
+}
+
+/// The liveness check answers the reading it judged the binding's deadline at: a caller judges
+/// the deadline beside it at that same reading. It is a reading of now, inside the deadline, and
+/// a cancelled request answers none.
+#[test]
+fn native_physical_live_check_answers_the_reading_it_judged_at() {
+    let f = fixture();
+    let conn = f.listener.connect(accepted());
+    let before = Instant::now();
+    let deadline = before + std::time::Duration::from_secs(3600);
+    let (request, owner) = conn
+        .head(
+            1,
+            head("/one"),
+            f.budget.try_enter(f.listener.class).unwrap(),
+            Some(deadline),
+        )
+        .unwrap();
+    let judged = request
+        .binding()
+        .check_live_now()
+        .expect("live before its deadline");
+    assert!(judged >= before, "the reading is taken by the check itself");
+    assert!(judged < deadline);
+    assert!(Instant::now() >= judged);
+    assert!(conn.cancel(&owner));
+    assert_eq!(
+        request.binding().check_live_now(),
+        Err(ArrivalRefusal::Cancelled)
+    );
+    assert_eq!(
+        request.binding().check_live(),
+        Err(ArrivalRefusal::Cancelled)
+    );
 }
 
 #[test]

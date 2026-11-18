@@ -1631,3 +1631,77 @@ fn numbered_pieces_keep_the_selected_claim_and_separate_opening_namespace() {
         Some("opening")
     );
 }
+
+/// A framer door that answers every crossing at once and records nothing (the B-FRAMING-OPEN door).
+struct Quiet {
+    facts: DoorFacts,
+}
+
+impl FramerDoor for Quiet {
+    fn facts(&self) -> &DoorFacts {
+        &self.facts
+    }
+
+    fn accepts(&self) -> bool {
+        true
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        if let Call::Begin(_, out) = call {
+            out.framing = 1;
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+}
+
+/// THE RELEASE PROOF FOR A CONNECTION'S WORKING BUFFERS (owner's ruling on allocation, addendum; GROUP-storage
+/// R2.5 item 1, B1: `Buffers::new`'s wire, frame, pieces and heads, about 130 KiB a framing). Needed: a framing's
+/// ops write into them for the connection's whole life. After one warm open (the clock's epoch and the
+/// thread's lazies), 50 framings opened and closed leave less than one framing's wire buffer held: each one's
+/// buffers went back when it closed.
+#[test]
+fn a_framing_opened_and_closed_returns_its_working_buffers() {
+    use busbar_contract::abi::transport::ROLE_FRAMER;
+    let door: Arc<dyn FramerDoor> = Arc::new(Quiet {
+        facts: DoorFacts {
+            dials: false,
+            name: "release".to_owned(),
+            claims: vec!["release"],
+            role: ROLE_FRAMER,
+            composes_over: Vec::new(),
+            ported: false,
+            status_rows: Vec::new(),
+            status_namespaces: vec![None],
+            handoff_status: vec![None],
+            duplex: Vec::new(),
+            datagram: false,
+        },
+    });
+    let established = Established::plain_for_test();
+    drop(Framing::begin(
+        Arc::clone(&door),
+        SIDE_ACCEPT,
+        "release://x",
+        &established,
+    ));
+    let start = crate::support::held_bytes();
+    let mut peak = 0;
+    for _ in 0..50 {
+        let opened = Framing::begin(Arc::clone(&door), SIDE_ACCEPT, "release://x", &established);
+        assert!(opened.is_ok(), "the quiet door opens");
+        peak = peak.max(crate::support::held_bytes() - start);
+        drop(opened);
+    }
+    assert!(
+        peak >= isize::try_from(WIRE_CAP + FRAME_CAP).unwrap(),
+        "an open framing holds its buffers ({peak} bytes)"
+    );
+    let held = crate::support::held_bytes() - start;
+    assert!(
+        held < isize::try_from(WIRE_CAP).unwrap(),
+        "50 framings opened and closed still hold {held} bytes"
+    );
+}

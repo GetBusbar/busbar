@@ -51,14 +51,21 @@ pub fn self_subject_id(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
     GovState::derive_self_subject(seed, user_sub, epoch)
 }
 
+/// `epoch`'s decimal text, written into `digits` (20 bytes hold any `u64`): a binding's generation
+/// text, borrowed from the stack instead of owned.
+fn epoch_digits(digits: &mut [u8; 20], epoch: u64) -> &str {
+    let mut cursor: &mut [u8] = &mut digits[..];
+    let _ = std::io::Write::write_fmt(&mut cursor, format_args!("{epoch}"));
+    let written = 20 - cursor.len();
+    std::str::from_utf8(&digits[..written]).unwrap_or_default()
+}
+
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
         // The epoch's decimal digits, written on the stack: the MAC input is the same text as
         // `{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}`, fed in parts so it is never materialized.
         let mut digits = [0u8; 20];
-        let mut cursor: &mut [u8] = &mut digits;
-        let _ = std::io::Write::write_fmt(&mut cursor, format_args!("{epoch}"));
-        let written = 20 - cursor.len();
+        let epoch_text = epoch_digits(&mut digits, epoch);
         // PANIC: `seed` is the fixed 32-byte token-signing secret; no backend refuses a 32-byte
         // HMAC-SHA256 key (FIPS's floor is 14 bytes), so this cannot fail for a running node.
         let key = busbar_contract::crypto::HmacSha256Key::new(seed).unwrap_or_else(|e| {
@@ -68,7 +75,7 @@ impl GovState {
             SELF_KEY_GROUP_PREFIX.as_bytes(),
             user_sub.as_bytes(),
             b"#",
-            &digits[..written],
+            epoch_text.as_bytes(),
         ]);
         crate::off_path::governance::runtime::self_serve_key_id(VK_ID_PREFIX, &tag[..16])
     }
@@ -221,7 +228,7 @@ impl GovState {
             };
         }
         Err(rendered_error(
-            RecordStoreError,
+            RecordStoreError::from,
             format_args!(
                 "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on existing \
                  rows; refusing to write over a key id already in use"
@@ -242,10 +249,11 @@ impl GovState {
     ) -> RecordStoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch).await?;
-        let generation = crate::off_path::governance::runtime::self_serve_generation(epoch);
+        let mut digits = [0u8; 20];
+        let generation = epoch_digits(&mut digits, epoch);
         let binding = VirtualKey {
             id: id.clone(),
-            generation_hash: binding_marker(&id, &generation),
+            generation_hash: binding_marker(&id, generation),
             name: crate::off_path::governance::runtime::self_serve_binding_name(user_sub),
 
             allowed_scopes,
@@ -310,7 +318,7 @@ impl GovState {
         };
         let binding = super::identity_runtime::committed_key(&commit, &id)?;
         self.publish_identity(commit);
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material.signer.mint(&id, exp, Some(generation));
         Ok((binding, token))
     }
 
@@ -381,15 +389,8 @@ impl GovState {
                     let token = material.signer.mint(&updated.id, exp, generation);
                     Ok((updated, token))
                 } else {
-                    self.publish_identity(
-                        crate::governance::persistence::identity::IdentityCommit {
-                            changed: false,
-                            revision: existing.revision,
-                            keys: vec![(*existing).clone()],
-                            credentials: Vec::new(),
-                            denied: Vec::new(),
-                        },
-                    );
+                    // Nothing changed: the cache takes the row just re-read, shared, not a copy.
+                    self.publish_unchanged_key(Arc::clone(&existing));
                     let generation = binding_generation(&existing.generation_hash);
                     let token = material.signer.mint(&existing.id, exp, generation);
                     Ok(((*existing).clone(), token))

@@ -26,7 +26,6 @@ fn described(schema: Option<&str>, secret_paths: &[&str]) -> Described {
             .collect(),
         schema: schema.map(Into::into),
         metrics: Vec::new(),
-        error_codes_refused: None,
     }
 }
 

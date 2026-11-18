@@ -99,7 +99,7 @@ fn laneless_unit(cm: &CostModel, key: &VirtualKey, now: u64, id: u8) -> UnitChec
 fn assert_no_laneless_rows(gov: &GovState, targets: &[UnitTarget], when: &str) {
     for target in targets {
         let map = gov.budget.read(&target.bucket);
-        if let Some(cell) = map.get(&target.bucket) {
+        if let Some(cell) = map.get(target.bucket.as_str()) {
             assert_eq!(
                 laneless_rows(cell),
                 0,
@@ -162,7 +162,7 @@ async fn a_laneless_failed_unit_leaves_no_unnamed_lane_row_and_the_group_keeps_s
     for target in &targets {
         let map = gov.budget.read(&target.bucket);
         let cell = map
-            .get(&target.bucket)
+            .get(target.bucket.as_str())
             .expect("the admission opened the cell");
         assert_eq!(cell.requests, 1, "the failed request is still counted");
     }
@@ -351,7 +351,7 @@ async fn laneless_trip_then_refusal_then_serve_keeps_bucket_admissible() {
     for target in &targets {
         let map = gov.budget.read(&target.bucket);
         let cell = map
-            .get(&target.bucket)
+            .get(target.bucket.as_str())
             .expect("the admissions opened the cell");
         assert_eq!(
             cell.requests, 3,

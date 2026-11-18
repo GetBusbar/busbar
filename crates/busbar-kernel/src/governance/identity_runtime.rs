@@ -49,21 +49,27 @@ impl GovState {
         core.register_claim_scope(crate::auth::AUTH_REPLAY_OWNER, crate::auth::AUTH_REPLAY)
             .map_err(|error| {
                 rendered_error(
-                    RecordStoreError,
+                    RecordStoreError::from,
                     format_args!("auth replay maintenance scope: {error:?}"),
                 )
             })?;
         core.identity().settle_pending().await?;
         let mut snapshot = core.identity().snapshot().await?;
-        let denied = crate::off_path::governance::runtime::identity_runtime_denied(std::mem::take(
-            &mut snapshot.denied,
-        ));
-        let caches = Arc::new(RwLock::new(cache_snapshot(snapshot)));
+        // The snapshot read its denied subjects straight into the set the revocation list keeps.
+        let denied = std::mem::take(&mut snapshot.denied);
+        // The build's one reading, taken after the snapshot's read: the cache's credential
+        // liveness, the denylist's wall stamp and its monotonic origin.
+        let built = crate::store::Stamp::now();
+        let caches = Arc::new(RwLock::new(cache_snapshot(
+            snapshot,
+            built.wall_ns / 1_000_000_000,
+        )));
         let order = Arc::new(CacheOrder::default());
         let denylist = revocation::RevocationSync::native(
             core.clone(),
             denied,
-            crate::store::now(),
+            built.wall_ns / 1_000_000_000,
+            built.mono_ns,
             caches.clone(),
             order.clone(),
         );
@@ -82,6 +88,19 @@ impl GovState {
         self.core.identity().list_keys().await
     }
 
+    /// Publish one exact live row the caller already holds shared, when a re-read under the key
+    /// claim found nothing to change: the cache effect of a commit that carries only that row
+    /// (no credentials, no denials), without copying the row or building a commit around it.
+    pub(crate) fn publish_unchanged_key(&self, key: Arc<VirtualKey>) {
+        self.refresh_order.patch(|| {
+            let mut cache = self.caches_write();
+            cache.revision = cache.revision.max(key.revision);
+            if admit_key_row(&mut cache, &key) {
+                install_live_key(&mut cache, key);
+            }
+        });
+    }
+
     /// Apply only exact rows returned after a native Applied decision. Tombstone
     /// revisions survive eviction, and older same-key deltas cannot resurrect it.
     pub(crate) fn publish_identity(&self, commit: IdentityCommit) {
@@ -93,28 +112,8 @@ impl GovState {
                 self.denylist.insert(&subject);
             }
             for key in commit.keys {
-                if cache
-                    .key_revisions
-                    .get(&key.id)
-                    .is_some_and(|rev| *rev > key.revision)
-                {
-                    continue;
-                }
-                cache.key_revisions.insert(key.id.clone(), key.revision);
-                if key.deleted_at.is_some() {
-                    cache.by_id.remove(&key.id);
-                    crate::off_path::governance::runtime::identity_runtime_retain_credentials(
-                        &mut cache.by_credential,
-                        |(owner, _)| owner.id != key.id,
-                    );
-                } else {
-                    let key = Arc::new(key);
-                    for (owner, _) in cache.by_credential.values_mut() {
-                        if owner.id == key.id {
-                            *owner = key.clone();
-                        }
-                    }
-                    cache.by_id.insert(key.id.clone(), key);
+                if admit_key_row(&mut cache, &key) {
+                    install_live_key(&mut cache, Arc::new(key));
                 }
             }
             for credential in commit.credentials {
@@ -286,7 +285,7 @@ impl GovState {
         };
         let secret = keys
             .seal(&meta, plain.expose(&crate::seal::lend()).as_bytes())
-            .map_err(RecordStoreError)?;
+            .map_err(RecordStoreError::from)?;
         let commit = self
             .core
             .identity()
@@ -507,7 +506,7 @@ impl GovState {
             let _claim = self.identity_key_guard(&row.meta.key_id).await;
             let sealed = keys
                 .seal(&row.meta, plain.as_bytes())
-                .map_err(RecordStoreError)?;
+                .map_err(RecordStoreError::from)?;
             let commit = self.core.identity().rewrap_committed(&row, &sealed).await?;
             if commit.changed {
                 pass.resealed += 1;
@@ -531,6 +530,39 @@ impl GovState {
     }
 }
 
+/// One exact key row's revision and tombstone, applied to the cache. `true` when the row is live
+/// and not older than what the cache holds, so the caller installs it. A tombstone revision
+/// survives eviction, and an older same-key row cannot resurrect it.
+fn admit_key_row(cache: &mut GovCaches, key: &VirtualKey) -> bool {
+    if cache
+        .key_revisions
+        .get(&key.id)
+        .is_some_and(|rev| *rev > key.revision)
+    {
+        return false;
+    }
+    cache.key_revisions.insert(key.id.clone(), key.revision);
+    if key.deleted_at.is_some() {
+        cache.by_id.remove(&key.id);
+        crate::off_path::governance::runtime::identity_runtime_retain_credentials(
+            &mut cache.by_credential,
+            |(owner, _)| owner.id != key.id,
+        );
+        return false;
+    }
+    true
+}
+
+/// Install a live key row: every credential it owns and the id index hold this one shared row.
+fn install_live_key(cache: &mut GovCaches, key: Arc<VirtualKey>) {
+    for (owner, _) in cache.by_credential.values_mut() {
+        if owner.id == key.id {
+            *owner = key.clone();
+        }
+    }
+    cache.by_id.insert(key.id.clone(), key);
+}
+
 pub(super) fn committed_key(commit: &IdentityCommit, id: &str) -> RecordStoreResult<VirtualKey> {
     commit
         .keys
@@ -540,12 +572,14 @@ pub(super) fn committed_key(commit: &IdentityCommit, id: &str) -> RecordStoreRes
         .ok_or_else(|| RecordStoreError("confirmed identity change omitted its key".into()))
 }
 
-fn cache_snapshot(snapshot: IdentitySnapshot) -> GovCaches {
+/// The caches of `snapshot` as they stand at `now`: the caller's reading, taken after it read the
+/// snapshot.
+fn cache_snapshot(snapshot: IdentitySnapshot, now: u64) -> GovCaches {
     let (key_revisions, credential_revisions, by_id, by_credential) =
         crate::off_path::governance::runtime::identity_runtime_cache_maps(
             snapshot.keys,
             snapshot.credentials,
-            crate::store::now(),
+            now,
         );
     GovCaches {
         revision: snapshot.revision,
@@ -565,7 +599,8 @@ pub(crate) async fn reload_native(
         let ticket = order.ticket();
         let mut snapshot = core.identity().snapshot_for_refresh().await?;
         let denied = std::mem::take(&mut snapshot.denied);
-        let mut fresh = cache_snapshot(snapshot);
+        // Each attempt reads after its own snapshot: a later attempt sees a later time.
+        let mut fresh = cache_snapshot(snapshot, crate::store::now());
         match order.turn(ticket) {
             CacheTurn::Swap(_turn) => {
                 let mut current = caches.write().unwrap_or_else(|p| p.into_inner());

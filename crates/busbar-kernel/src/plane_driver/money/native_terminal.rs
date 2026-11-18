@@ -97,7 +97,7 @@ impl SelectedTerminalReceipt {
         }
         match self.terminal.as_mut().expect("terminal transferred") {
             Ok(terminal) => terminal.wait().await,
-            Err(error) => Err(RecordStoreError(error.clone())),
+            Err(error) => Err(RecordStoreError::from(error.clone())),
         }
     }
 }
@@ -112,161 +112,6 @@ impl Drop for SelectedTerminalReceipt {
 }
 
 impl NativeRequestMoney {
-    /// Root binds the actual registered response to its original checkpoint attachment. This
-    /// loan first proves the journal uses the same real Store as the original governor; root
-    /// then compares its captured audit node/incarnation/nonce against the same registered ACK.
-    pub fn checkpoint_for_response(
-        &self,
-        journal: &crate::persistence::journal::runtime::RuntimeJournal,
-    ) -> Result<Arc<UnitCheckpoint>, NativeAdmissionError> {
-        let core = self
-            .money
-            .gov
-            .core_store_handle()
-            .map_err(NativeAdmissionError::Custody)?;
-        if !journal.is_bound_to(&core) {
-            return Err(NativeAdmissionError::NotLive);
-        }
-        let all = self.money.shard(self.request.unit());
-        let open = all
-            .get(&self.request.unit())
-            .ok_or(NativeAdmissionError::NotLive)?;
-        self.check_open_identity(open)
-            .map_err(|_| NativeAdmissionError::NotLive)?;
-        Ok(open
-            .native
-            .as_ref()
-            .ok_or(NativeAdmissionError::Declaration)?
-            .checkpoint()
-            .clone())
-    }
-
-    /// Root lends both values from the same privately registered response owner. That owner
-    /// binds the full ACK key to the original admission and captured audit identity before output.
-    /// This consumer additionally checks the exact retained admission and requires a frozen
-    /// physical-delivery outcome; a work END alone cannot retire monetary custody.
-    pub fn finish_delivery(
-        &self,
-        admission: &AdmittedRequest,
-        key: busbar_contract::response_delivery::ResponseKey,
-        observed: busbar_contract::response_delivery::DeliverySnapshot,
-        mut end: super::UnitEnd,
-    ) -> Result<super::UnitEnd, NativeAdmissionError> {
-        use crate::governance::unit_checkpoint::partitions::{
-            Disposition, Finality, ValidatedSelectedCheckpoint,
-        };
-        if !self.request.same_admission(admission) || key.unit != Some(self.request.unit()) {
-            return Err(NativeAdmissionError::NotLive);
-        }
-        let (mut removed, terminal, release_request) = {
-            let mut all = self.money.shard(self.request.unit());
-            let open = all
-                .get_mut(&self.request.unit())
-                .ok_or(NativeAdmissionError::NotLive)?;
-            self.check_open_identity(open)
-                .map_err(|_| NativeAdmissionError::NotLive)?;
-            let native = open
-                .native
-                .as_ref()
-                .ok_or(NativeAdmissionError::Declaration)?;
-            let ending = native.work.ok_or(NativeAdmissionError::NotLive)?;
-            let (disposition, written, cut) = delivery_facts(ending, observed)?;
-            end.cut |= cut;
-            let mut snapshot = native.checkpoint().as_ref().clone();
-            self.capture_checkpoint_facts(&mut snapshot)
-                .map_err(|error| match error {
-                    NativeAttemptError::Custody(error) => NativeAdmissionError::Custody(error),
-                    _ => NativeAdmissionError::NotLive,
-                })?;
-            let expected = native.accepted_revision();
-            let parts = snapshot
-                .partitions
-                .as_mut()
-                .ok_or(NativeAdmissionError::Declaration)?;
-            if parts.disposition != Disposition::Running
-                || parts
-                    .attempts
-                    .iter()
-                    .any(|attempt| attempt.finality == Finality::Live)
-            {
-                return Err(NativeAdmissionError::NotLive);
-            }
-            parts.disposition = disposition;
-            // far_end_answered and final_target came from the committed host attempt guard.
-            // In particular, written=true with no upstream head still bills zero on Cancel.
-            parts.caller_bytes_committed = written;
-            let (fee, completion) = open.fee.selected_fee();
-            parts.fee = fee;
-            snapshot.ended = true;
-            snapshot.metered = false;
-            let has_bill = ValidatedSelectedCheckpoint::try_from(&snapshot)
-                .and_then(|view| view.project())
-                .map_err(NativeAdmissionError::Custody)?
-                .partitions
-                .iter()
-                .any(|part| {
-                    part.billed_counts()
-                        .iter()
-                        .any(|(_, count)| !count.is_zero())
-                });
-            snapshot.metered = match snapshot
-                .partitions
-                .as_ref()
-                .expect("checked partitions")
-                .disposition
-            {
-                Disposition::End => (200..=299).contains(&end.caller_status),
-                Disposition::Cancel { .. } | Disposition::Failed => has_bill,
-                Disposition::Running | Disposition::RecoveredRunning => {
-                    return Err(NativeAdmissionError::Declaration)
-                }
-            };
-            let unspent = open.last.iter().all(|count| count.amount == 0)
-                && snapshot
-                    .partitions
-                    .as_ref()
-                    .expect("checked partitions")
-                    .attempts
-                    .iter()
-                    .all(|attempt| {
-                        attempt.usage.classes.values().all(|facts| {
-                            [facts.reported, facts.floor, facts.estimated]
-                                .into_iter()
-                                .flatten()
-                                .all(|count| count.is_zero())
-                        })
-                    });
-            let terminal = match self.money.gov.finish_selected_checkpoint_with_fee(
-                snapshot,
-                Some(expected),
-                completion,
-            ) {
-                SelectedTransfer::Applied(snapshot) => NativeTerminal::Ready(snapshot),
-                SelectedTransfer::RetainedPending(accepted) => NativeTerminal::Pending {
-                    accepted,
-                    gov: self.money.gov.clone(),
-                    completion: None,
-                },
-                SelectedTransfer::RejectedNotOwned { error, .. } => {
-                    return Err(NativeAdmissionError::Custody(error))
-                }
-            };
-            (
-                all.remove(&self.request.unit())
-                    .expect("same checked Open under shard"),
-                terminal,
-                end.refused_unspent && unspent,
-            )
-        };
-        if release_request {
-            self.money.gov.release_request(&removed.money.charge);
-        }
-        removed.fee.refundable = removed.money.fee.refunds(end.caller_status, &removed.last);
-        drop(removed);
-        self.terminal.publish(Ok(terminal));
-        Ok(end)
-    }
-
     pub(crate) fn work_ended(
         &self,
         ending: crate::plane_driver::usage::Ending,
@@ -320,35 +165,6 @@ impl NativeRequestMoney {
     }
 }
 
-fn delivery_facts(
-    ending: crate::plane_driver::usage::Ending,
-    observed: busbar_contract::response_delivery::DeliverySnapshot,
-) -> Result<
-    (
-        crate::governance::unit_checkpoint::partitions::Disposition,
-        bool,
-        bool,
-    ),
-    NativeAdmissionError,
-> {
-    use crate::governance::unit_checkpoint::partitions::Disposition;
-    use crate::plane_driver::usage::Ending;
-    use busbar_contract::response_delivery::DeliveryTerminal;
-    let terminal = observed.terminal.ok_or(NativeAdmissionError::NotLive)?;
-    let disposition = match ending {
-        Ending::End => Disposition::End,
-        Ending::Failed => Disposition::Failed,
-        Ending::Cancel { cause, .. } => Disposition::Cancel {
-            reason: cause.as_str().to_owned(),
-        },
-    };
-    Ok((
-        disposition,
-        observed.first_payload_written,
-        matches!(terminal, DeliveryTerminal::Failed(_)),
-    ))
-}
-
 impl PlaneMoney {
     /// The callback guard proves no Task effect or connector attempt has started. Transfer its
     /// failed terminal before consuming the original fee participant outside money locks.
@@ -384,11 +200,11 @@ impl PlaneMoney {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
-            snapshot.audit = Some(self.post.checkpoint_facts(request.unit()).ok_or_else(|| {
-                NativeAttemptError::Custody(RecordStoreError(
-                    "selected request lost its original audit capture owner".into(),
-                ))
-            })?);
+            snapshot.audit = Some(
+                self.post
+                    .checkpoint_facts(request.unit())
+                    .ok_or(NativeAttemptError::Custody)?,
+            );
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions
@@ -405,7 +221,7 @@ impl PlaneMoney {
             parts.disposition = match native.work {
                 Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
                     Disposition::Cancel {
-                        reason: cause.as_str().to_owned(),
+                        reason: busbar_contract::kept::Text::fixed(cause.as_str()),
                     }
                 }
                 None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,
@@ -428,8 +244,8 @@ impl PlaneMoney {
                     gov: self.gov.clone(),
                     completion: None,
                 },
-                SelectedTransfer::RejectedNotOwned { error, .. } => {
-                    return Err(NativeAttemptError::Custody(error))
+                SelectedTransfer::RejectedNotOwned { .. } => {
+                    return Err(NativeAttemptError::Custody)
                 }
             };
             (
@@ -447,7 +263,3 @@ impl PlaneMoney {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "native_terminal_tests.rs"]
-mod tests;

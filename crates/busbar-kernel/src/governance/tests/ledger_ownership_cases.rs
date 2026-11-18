@@ -389,7 +389,12 @@ async fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_o
     }
     metered(&gov, &key.id, "m", 1, next).await;
 
-    let key_snapshot = gov.budget.read(&key.id).get(&key.id).unwrap().clone();
+    let key_snapshot = gov
+        .budget
+        .read(&key.id)
+        .get(key.id.as_str())
+        .unwrap()
+        .clone();
     store
         .ledger()
         .add_usage(&key.id, 0, &key_snapshot.unflushed())
@@ -406,7 +411,7 @@ async fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_o
         .unwrap();
     {
         let mut cells = gov.budget.write(&key.id);
-        let cell = cells.get_mut(&key.id).unwrap();
+        let cell = cells.get_mut(key.id.as_str()).unwrap();
         cell.flushed_requests = key_snapshot.requests;
         cell.flushed_billable_requests = key_snapshot.billable_requests;
         cell.flushed_fee_eras = key_snapshot.fee_eras.clone();

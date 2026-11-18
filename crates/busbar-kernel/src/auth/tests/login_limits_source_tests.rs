@@ -48,7 +48,7 @@ fn v4_mapped_peer_is_grouped_as_ipv4() {
 
 #[test]
 fn ipv6_is_bucketed_by_64_with_48_and_32_aggregates() {
-    let h = SourceBucket::hierarchy(ip("2001:db8:aaaa:bbbb:1:2:3:4"));
+    let h: Vec<_> = SourceBucket::hierarchy(ip("2001:db8:aaaa:bbbb:1:2:3:4")).collect();
     assert_eq!(
         h,
         vec![
@@ -62,7 +62,7 @@ fn ipv6_is_bucketed_by_64_with_48_and_32_aggregates() {
         h[0],
         "one /64 is one source"
     );
-    assert_eq!(SourceBucket::hierarchy(ip("192.0.2.1")).len(), 1);
+    assert_eq!(SourceBucket::hierarchy(ip("192.0.2.1")).count(), 1);
 }
 
 #[test]

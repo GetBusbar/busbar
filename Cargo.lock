@@ -666,6 +666,7 @@ dependencies = [
  "busbar-ports",
  "busbar-plugin-abi",
  "foldhash",
+ "tikv-jemallocator",
 ]
 
 [[package]]

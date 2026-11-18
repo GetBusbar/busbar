@@ -454,7 +454,7 @@ fn a_host_that_maps_to_nothing_is_refused_as_unjudgeable() {
                 (DEST_NO_HOST, None),
                 "{host}"
             );
-            assert_eq!(refusal.host, host);
+            assert_eq!(refusal.host, crate::guard::Refused::Name(host));
             let said = refusal.to_string();
             assert!(
                 said.starts_with(&format!("host `{host}` cannot be judged")),
@@ -565,7 +565,7 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
                 (DEST_NO_HOST, None),
                 "{host}"
             );
-            assert_eq!(refusal.host, host);
+            assert_eq!(refusal.host, crate::guard::Refused::Name(host));
             assert!(
                 refusal
                     .to_string()

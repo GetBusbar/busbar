@@ -521,7 +521,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 /// An auth binding answering `authorization: Bearer <credential>`, counting its calls.
@@ -655,7 +655,7 @@ fn rig(
                     connection_required: false,
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
-                    provider: format!("p{k}"),
+                    provider: format!("p{k}").as_str().into(),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
                     spelled: Vec::new(),
@@ -680,17 +680,13 @@ fn rig(
             )
         })
         .collect();
-    let pool = Pool {
-        name: POOL.into(),
-        members,
-        failover: Failover {
-            timeout_secs: 30,
-            max_hops: 3,
-            exclusions: Vec::new(),
-        },
-        on_exhausted,
-        floor: Default::default(),
-    };
+    let mut pool = Pool::new(POOL, members);
+    pool.set_failover(Failover {
+        timeout_secs: 30,
+        max_hops: 3,
+        exclusions: Vec::new(),
+    });
+    pool.on_exhausted = on_exhausted;
     let egress = Egress {
         caller: InstanceId(9),
         conns: table.clone(),
@@ -699,7 +695,7 @@ fn rig(
         clock: busbar_ports::clock::HostClock::system(tokio_sleep),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        pools: [(POOL.to_string(), pool)].into_iter().collect(),
+        pools: [(POOL.into(), pool)].into_iter().collect(),
         routes,
         stream_ceiling_secs: 600,
         stated_ceiling_secs: 0,
@@ -753,8 +749,8 @@ async fn selected_registration_probes_retain_the_exact_pool_and_member() {
 fn request() -> OutboundRequest {
     OutboundRequest {
         text: false,
-        member: String::new(),
-        pool: String::new(),
+        member: busbar_contract::kept::Text::EMPTY,
+        pool: busbar_contract::kept::Text::EMPTY,
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/chat".to_vec(),
@@ -999,10 +995,10 @@ async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
     pool.members[1].name = "plane\u{1f}m1".into();
     let t = token();
     let far = r.egress.unit(UnitRoute {
-        native_member_grants: Some(std::collections::BTreeMap::from([(
+        native_member_grants: Some(Arc::new(std::collections::BTreeMap::from([(
             POOL.into(),
-            vec!["plane\u{1f}m1".into()],
-        )])),
+            ["plane\u{1f}m1".into()].into(),
+        )]))),
         ..route()
     });
     let candidates = far.candidates(&t).unwrap();
@@ -1016,10 +1012,10 @@ async fn native_member_grants_match_qualified_identity_and_deny_absent_pools() {
     assert!(matches!(far.member(&t, 2).await, Pick::Exhausted { .. }));
     assert_eq!(r.table.opened.lock().unwrap().len(), 1);
     let denied = r.egress.unit(UnitRoute {
-        native_member_grants: Some(std::collections::BTreeMap::from([(
+        native_member_grants: Some(Arc::new(std::collections::BTreeMap::from([(
             "absent".into(),
-            vec!["plane\u{1f}m1".into()],
-        )])),
+            ["plane\u{1f}m1".into()].into(),
+        )]))),
         ..route()
     });
     assert!(denied.candidates(&t).unwrap().members.is_empty());
@@ -1629,7 +1625,7 @@ impl Telemetry for Labels {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 #[tokio::test]
@@ -1646,12 +1642,12 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     r.egress.telemetry = Arc::clone(&labels) as Arc<dyn Telemetry>;
     let t = token();
     let direct = || UnitRoute {
-        pool: String::new(),
+        pool: busbar_contract::kept::Text::EMPTY,
         ..UnitRoute::default()
     };
 
     r.egress.pools.insert(
-        String::new(),
+        busbar_contract::kept::Text::EMPTY,
         Pool::new(
             String::new(),
             vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
@@ -1665,7 +1661,7 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     }
 
     r.egress.pools.insert(
-        String::new(),
+        busbar_contract::kept::Text::EMPTY,
         Pool::new(
             String::new(),
             vec![Member::new(DestinationId::new(2), "gpt-4o", 1)],
@@ -1679,7 +1675,7 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     }
 
     r.egress.pools.insert(
-        "prod-pool".to_string(),
+        "prod-pool".into(),
         Pool::new(
             "prod-pool",
             vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
@@ -2313,7 +2309,10 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     for (member, window) in pool.members.iter_mut().zip([8_000, 4_000, 16_000]) {
         member.context_max = Some(window);
     }
-    pool.failover.exclusions = vec!["m1".into()];
+    pool.set_failover(Failover {
+        exclusions: vec!["m1".into()],
+        ..pool.failover().clone()
+    });
     let t = token();
     let far = r.egress.unit(route());
     assert!(
@@ -2406,25 +2405,20 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         OnExhausted::FallbackPool("fb".into()),
         None,
     );
-    let fallback = Pool {
-        name: "fb".into(),
-        members: vec![Member::new(DestinationId::new(1), "m0", 1)],
-        failover: Failover {
-            timeout_secs: 30,
-            max_hops: 3,
-            exclusions: Vec::new(),
-        },
-        on_exhausted: OnExhausted::Status503,
-        floor: Default::default(),
-    };
-    r.egress.pools.insert("fb".to_string(), fallback);
+    let mut fallback = Pool::new("fb", vec![Member::new(DestinationId::new(1), "m0", 1)]);
+    fallback.set_failover(Failover {
+        timeout_secs: 30,
+        max_hops: 3,
+        exclusions: Vec::new(),
+    });
+    r.egress.pools.insert("fb".into(), fallback);
     let t = token();
     let far = r.egress.unit(route());
     far.constrain(
         &t,
         Constraint {
             restricts: vec![Restrict {
-                tags_any: vec!["baa".to_string()],
+                tags_any: vec!["baa".into()],
                 on_empty: crate::config::PolicyOnError::Reject,
                 name: "compliance".into(),
             }],
@@ -2454,7 +2448,13 @@ async fn prioritize_keeps_ranking_inside_groups_and_all_eligible_fallbacks() {
         OnExhausted::Status503,
         None,
     );
-    r.egress.pools.get_mut(POOL).unwrap().failover.max_hops = 4;
+    {
+        let pool = r.egress.pools.get_mut(POOL).unwrap();
+        pool.set_failover(Failover {
+            max_hops: 4,
+            ..pool.failover().clone()
+        });
+    }
     let t = token();
     let far = r.egress.unit(route());
     far.constrain(
@@ -3192,7 +3192,7 @@ impl Telemetry for Failures {
     }
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 async fn read_last_as(
@@ -3821,7 +3821,9 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
     // Root qualifies member ledger names, while the plane selects its configured entry.
     for pool in r.egress.pools.values_mut() {
         for member in &mut pool.members {
-            member.name = format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name);
+            member.name = format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name)
+                .as_str()
+                .into();
         }
     }
     let services = crate::host_services::KernelServices::new();

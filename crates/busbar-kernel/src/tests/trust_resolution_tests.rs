@@ -37,7 +37,7 @@ async fn kernel(record: Arc<DemotionRecord>) -> KernelServices {
         )))
         .with_demotions(record, "");
     k.admit(
-        "inst",
+        &"inst".into(),
         InstanceFacts {
             trust: vec![(
                 "cp".to_string(),

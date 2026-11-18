@@ -48,7 +48,7 @@ use crate::upstreams::{UpstreamDef, Upstreams};
 
 /// The longest a session is held for channels, a media bridge, a wake time or a signal: a DETACH's `ttl_s` is
 /// clamped to it, and a session that is not detached is released at it.
-pub const HELD_MAX: Duration = Duration::from_secs(3600);
+const HELD_MAX: Duration = Duration::from_secs(3600);
 
 /// How many signals a detached session buffers (a full one drops, counted by the registry).
 const SIGNAL_QUEUE: usize = 32;
@@ -238,11 +238,11 @@ enum Event {
 }
 
 /// The REFUSAL a plane reads on an exchange whose channel or media session is gone.
-fn unavailable() -> Vec<u8> {
+fn unavailable() -> Reply {
     let mut reply = Reply::new();
     let put = encode_refusal(&mut reply, 502, F_UNAVAILABLE, "the channel is unavailable");
     debug_assert!(put.is_ok(), "a REFUSAL fits a Reply");
-    reply.as_bytes().to_vec()
+    reply
 }
 
 /// Applies the EX_MSG items of `answers` to the channels the session holds, in answer order. An exchange that holds
@@ -283,7 +283,7 @@ pub(super) fn write_channels<K: Calls + ?Sized>(
                         FROM_CORE,
                         message.exchange,
                         P_ERROR,
-                        &unavailable(),
+                        unavailable().as_bytes(),
                         effects,
                     )?;
                     more.extend(task.resolve(piece, resolver, effects)?);
@@ -428,7 +428,13 @@ impl CarrierSession {
                 }
                 Event::Channel(exchange, _) => {
                     task.held.remove(&exchange);
-                    task.piece(FROM_CORE, exchange, P_ERROR, &unavailable(), effects)?
+                    task.piece(
+                        FROM_CORE,
+                        exchange,
+                        P_ERROR,
+                        unavailable().as_bytes(),
+                        effects,
+                    )?
                 }
                 Event::Signal(Some(signalled)) => {
                     task.piece(FROM_CORE, 0, signalled.flags, &signalled.bytes, effects)?

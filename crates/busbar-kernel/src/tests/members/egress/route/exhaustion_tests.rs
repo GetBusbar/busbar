@@ -210,7 +210,10 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
     });
 
     node.tune("overflow", |p| {
-        p.failover.exclusions = vec!["b".to_string()];
+        p.set_failover(busbar_kernel_egress::Failover {
+            exclusions: vec!["b".to_string()],
+            ..p.failover().clone()
+        });
     });
     node.breaker.set(
         DestinationId::new(0),
@@ -365,7 +368,12 @@ fn the_last_resort_skips_a_saturated_best_member_for_a_free_sibling() {
 #[test]
 fn the_last_resort_never_reaches_a_blocklisted_member() {
     let mut node = least_bad_node();
-    node.tune("primary", |p| p.failover.exclusions = vec!["b".to_string()]);
+    node.tune("primary", |p| {
+        p.set_failover(busbar_kernel_egress::Failover {
+            exclusions: vec!["b".to_string()],
+            ..p.failover().clone()
+        });
+    });
     node.breaker.set(
         DestinationId::new(0),
         Health {
@@ -1371,17 +1379,21 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
 struct Restrict(Vec<DestinationId>);
 
 impl busbar_kernel_egress::walk::Shape for Restrict {
-    fn shape(
+    fn shape<'m>(
         &self,
         _pool: &str,
-        members: Vec<busbar_kernel_egress::pool::Member>,
+        members: &'m [busbar_kernel_egress::pool::Member],
         _primary: bool,
-    ) -> Option<(Vec<busbar_kernel_egress::pool::Member>, Vec<DestinationId>)> {
+    ) -> Option<(
+        std::borrow::Cow<'m, [busbar_kernel_egress::pool::Member]>,
+        Vec<DestinationId>,
+    )> {
         let kept: Vec<_> = members
-            .into_iter()
+            .iter()
             .filter(|m| self.0.contains(&m.destination))
+            .cloned()
             .collect();
-        (!kept.is_empty()).then_some((kept, Vec::new()))
+        (!kept.is_empty()).then_some((std::borrow::Cow::Owned(kept), Vec::new()))
     }
 }
 

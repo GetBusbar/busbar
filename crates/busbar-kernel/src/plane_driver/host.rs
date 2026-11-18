@@ -22,7 +22,7 @@ impl EngineHostImpl {
     }
 
     #[must_use]
-    pub fn from_handle(handle: &crate::state::AppHandle) -> Self {
+    fn from_handle(handle: &crate::state::AppHandle) -> Self {
         EngineHostImpl { app: handle.load() }
     }
 }
@@ -148,20 +148,13 @@ fn standing_with(
         governance,
         role_bindings,
     };
-    let standing = busbar_kernel::trust::validate::Standing::opened(
-        Some(admitted),
-        busbar_kernel::trust::validate::Snapshot::Watching,
-        std::time::Duration::MAX,
-    );
-    match standing.still_permitted(
+    // Asked once per call and held by nobody: no standing is opened, so no lifetime clock is read.
+    busbar_kernel::trust::validate::standing_now(
+        admitted,
         Some(&resolve as &dyn busbar_kernel::trust::validate::GovResolve),
-        0,
         now,
-    ) {
-        Ok(Some(live)) => Some(live),
-        Ok(None) => Some(Arc::clone(admitted)),
-        Err(_) => None,
-    }
+    )
+    .ok()
 }
 
 #[cfg(test)]

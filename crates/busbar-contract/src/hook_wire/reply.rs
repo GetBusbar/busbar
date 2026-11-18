@@ -291,92 +291,123 @@ pub fn parse_status_metrics_counted(raw: &[serde_json::Value]) -> (Vec<HookMetri
         if out.len() >= MAX_HOOK_METRICS {
             break;
         }
-        let Ok(mut m) = serde_json::from_value::<HookMetric>(v.clone()) else {
+        let Ok(m) = serde_json::from_value::<HookMetric>(v.clone()) else {
             continue;
         };
-
-        if !valid_metric_name(&m.name)
-            || !matches!(m.kind.as_str(), "counter" | "gauge" | "histogram")
-            || !m.value.is_finite()
-        {
-            continue;
+        if let Some(m) = bound_metric(m, &mut cuts) {
+            out.push(m);
         }
-
-        m.labels = m.labels.map(|labels| {
-            labels
-                .into_iter()
-                .filter(|(k, _)| valid_metric_name(k))
-                .map(|(k, val)| {
-                    let val = cap_noting(
-                        &mut cuts,
-                        TextField::MetricLabelValue,
-                        &val,
-                        MAX_METRIC_LABEL_CHARS,
-                    );
-                    (k, val)
-                })
-                .take(MAX_METRIC_LABELS)
-                .collect()
-        });
-
-        m.quantiles = m
-            .quantiles
-            .map(|q| {
-                q.into_iter()
-                    .filter(|(k, val)| {
-                        val.is_finite() && k.parse::<f64>().is_ok_and(|p| (0.0..=1.0).contains(&p))
-                    })
-                    .take(MAX_METRIC_LABELS)
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            })
-            .filter(|q| !q.is_empty());
-
-        m.buckets = m
-            .buckets
-            .map(|b| {
-                b.into_iter()
-                    .filter(|(k, val)| {
-                        val.is_finite()
-                            && *val >= 0.0
-                            && (k == "+Inf" || k.parse::<f64>().is_ok_and(f64::is_finite))
-                    })
-                    .take(MAX_METRIC_LABELS * 8)
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            })
-            .filter(|b| !b.is_empty());
-
-        match (m.ci_low, m.ci_high) {
-            (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && lo <= hi => {}
-            _ => {
-                m.ci_low = None;
-                m.ci_high = None;
-            }
-        }
-        m.help = m
-            .help
-            .map(|h| cap_noting(&mut cuts, TextField::MetricHelp, &h, MAX_METRIC_HELP_CHARS));
-        m.label = m.label.map(|l| {
-            cap_noting(
-                &mut cuts,
-                TextField::MetricLabel,
-                &l,
-                MAX_METRIC_LABEL_CHARS,
-            )
-        });
-        m.unit = m
-            .unit
-            .map(|u| cap_noting(&mut cuts, TextField::MetricUnit, &u, MAX_METRIC_UNIT_CHARS))
-            .filter(|s| !s.is_empty());
-        m.viz = m.viz.filter(|v| {
-            matches!(
-                v.as_str(),
-                "number" | "gauge" | "counter" | "sparkline" | "histogram"
-            )
-        });
-        m.max = m.max.filter(|v| v.is_finite());
-        out.push(m);
     }
     (out, cuts)
+}
+
+/// One reported metric, validated and bounded as [`parse_status_metrics_counted`] bounds each
+/// entry it keeps: `None` when the entry is refused (a bad name, an unknown type, a value that is
+/// not finite), else the entry with its strings capped, noting each cut in `cuts`. An entry that
+/// arrives typed (a plugin's back-channel metric, read off its declared family) is bounded here
+/// exactly as one read off a reply's JSON array is.
+pub fn bound_metric(mut m: HookMetric, cuts: &mut TextCuts) -> Option<HookMetric> {
+    if !valid_metric_name(&m.name)
+        || !matches!(m.kind.as_str(), "counter" | "gauge" | "histogram")
+        || !m.value.is_finite()
+    {
+        return None;
+    }
+
+    m.labels = m.labels.map(|labels| {
+        labels
+            .into_iter()
+            .filter(|(k, _)| valid_metric_name(k))
+            .map(|(k, val)| {
+                let val = cap_noting(
+                    cuts,
+                    TextField::MetricLabelValue,
+                    &val,
+                    MAX_METRIC_LABEL_CHARS,
+                );
+                (k, val)
+            })
+            .take(MAX_METRIC_LABELS)
+            .collect()
+    });
+
+    m.quantiles = m
+        .quantiles
+        .map(|q| {
+            q.into_iter()
+                .filter(|(k, val)| {
+                    val.is_finite() && k.parse::<f64>().is_ok_and(|p| (0.0..=1.0).contains(&p))
+                })
+                .take(MAX_METRIC_LABELS)
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .filter(|q| !q.is_empty());
+
+    m.buckets = m
+        .buckets
+        .map(|b| {
+            b.into_iter()
+                .filter(|(k, val)| {
+                    val.is_finite()
+                        && *val >= 0.0
+                        && (k == "+Inf" || k.parse::<f64>().is_ok_and(f64::is_finite))
+                })
+                .take(MAX_METRIC_LABELS * 8)
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .filter(|b| !b.is_empty());
+
+    match (m.ci_low, m.ci_high) {
+        (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && lo <= hi => {}
+        _ => {
+            m.ci_low = None;
+            m.ci_high = None;
+        }
+    }
+    m.help = m
+        .help
+        .map(|h| cap_noting(cuts, TextField::MetricHelp, &h, MAX_METRIC_HELP_CHARS));
+    m.label = m
+        .label
+        .map(|l| cap_noting(cuts, TextField::MetricLabel, &l, MAX_METRIC_LABEL_CHARS));
+    m.unit = m
+        .unit
+        .map(|u| cap_noting(cuts, TextField::MetricUnit, &u, MAX_METRIC_UNIT_CHARS))
+        .filter(|s| !s.is_empty());
+    m.viz = m.viz.filter(|v| {
+        matches!(
+            v.as_str(),
+            "number" | "gauge" | "counter" | "sparkline" | "histogram"
+        )
+    });
+    m.max = m.max.filter(|v| v.is_finite());
+    Some(m)
+}
+
+/// A back-channel metric in the shape a plugin publishes it ([`PluginMetric`], the published
+/// shape of an envelope's `metrics` entries) as the host's own entry: field for field, the entry
+/// its JSON form deserializes into.
+///
+/// [`PluginMetric`]: crate::abi::mechanism::observe::PluginMetric
+impl From<crate::abi::mechanism::observe::PluginMetric> for HookMetric {
+    fn from(m: crate::abi::mechanism::observe::PluginMetric) -> Self {
+        HookMetric {
+            name: m.name,
+            kind: m.kind,
+            value: m.value,
+            labels: m.labels,
+            quantiles: m.quantiles,
+            buckets: m.buckets,
+            estimated: m.estimated,
+            ci_low: m.ci_low,
+            ci_high: m.ci_high,
+            help: m.help,
+            label: m.label,
+            unit: m.unit,
+            viz: m.viz,
+            max: m.max,
+        }
+    }
 }
 
 use crate::hooks::RewriteReply;

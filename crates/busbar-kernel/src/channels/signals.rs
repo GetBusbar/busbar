@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use busbar_plugin_abi::plane::MAX_FANOUT;
 use tokio::sync::mpsc;
 
-use super::authority::ChannelAuthority;
+use super::authority::{AdmissionBucket, ChannelAuthority};
 use super::SessionSignals;
 use crate::plugin_records::RecordsDenied;
 
@@ -28,17 +28,34 @@ struct Member {
     tx: mpsc::Sender<Signalled>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum Scope {
-    Legacy(u64),
-    Command(u64, ChannelAuthority),
+/// One command-channel registration.
+struct CommandMember {
+    session: u64,
+    tx: mpsc::Sender<Signalled>,
 }
-type Key = (Scope, Box<[u8]>);
+
+/// The sessions registered under one admission and one key. It holds the actual admission once:
+/// a signal compares it once, then reaches every member.
+struct CommandGroup {
+    authority: ChannelAuthority,
+    members: Vec<CommandMember>,
+}
+
+type LegacyKey = (u64, Box<[u8]>);
+type CommandKey = (u64, AdmissionBucket, Box<[u8]>);
 
 #[derive(Default)]
 struct Table {
-    by_key: HashMap<Key, Vec<Member>>,
+    legacy: HashMap<LegacyKey, Vec<Member>>,
+    /// Almost always one group per key. Two admissions whose bucket values are equal get one each.
+    command: HashMap<CommandKey, Vec<CommandGroup>>,
     next: u64,
+}
+
+/// Where a registration sits, so its guard can remove it.
+enum Seat {
+    Legacy(LegacyKey),
+    Command(CommandKey),
 }
 
 /// The registry. Sessions register under the key their DETACH named; the guard unregisters on drop.
@@ -51,7 +68,7 @@ pub struct SignalRegistry {
 /// Held by the session's task; dropping it removes the session from the registry.
 pub struct Registered {
     registry: Arc<SignalRegistry>,
-    key: Key,
+    seat: Seat,
     session: u64,
 }
 
@@ -70,11 +87,11 @@ impl SignalRegistry {
         subject: Option<[u8; 32]>,
         tx: mpsc::Sender<Signalled>,
     ) -> Registered {
-        let key: Key = (Scope::Legacy(instance), key.into());
+        let key: LegacyKey = (instance, key.into());
         let mut table = self.lock();
         table.next += 1;
         let session = table.next;
-        table.by_key.entry(key.clone()).or_default().push(Member {
+        table.legacy.entry(key.clone()).or_default().push(Member {
             session,
             subject,
             tx,
@@ -82,7 +99,7 @@ impl SignalRegistry {
         drop(table);
         Registered {
             registry: Arc::clone(self),
-            key,
+            seat: Seat::Legacy(key),
             session,
         }
     }
@@ -98,7 +115,7 @@ impl SignalRegistry {
         if !authority.is_live() || key.is_empty() || key.len() > super::carrier::MAX_KEY {
             return Err(RecordsDenied::Invalid);
         }
-        let key = (Scope::Command(instance, authority.clone()), key.into());
+        let key: CommandKey = (instance, authority.bucket(), key.into());
         let mut table = self.lock();
         if !authority.is_live() {
             return Err(RecordsDenied::Invalid);
@@ -108,14 +125,24 @@ impl SignalRegistry {
             .checked_add(1)
             .ok_or(RecordsDenied::Unavailable)?;
         let session = table.next;
-        table.by_key.entry(key.clone()).or_default().push(Member {
-            session,
-            subject: None,
-            tx,
-        });
+        let groups = table.command.entry(key.clone()).or_default();
+        let at = match groups
+            .iter()
+            .position(|group| group.authority == *authority)
+        {
+            Some(at) => at,
+            None => {
+                groups.push(CommandGroup {
+                    authority: authority.clone(),
+                    members: Vec::new(),
+                });
+                groups.len() - 1
+            }
+        };
+        groups[at].members.push(CommandMember { session, tx });
         Ok(Registered {
             registry: Arc::clone(self),
-            key,
+            seat: Seat::Command(key),
             session,
         })
     }
@@ -130,8 +157,8 @@ impl SignalRegistry {
     #[must_use]
     pub fn live(&self, instance: u64, key: &[u8]) -> usize {
         self.lock()
-            .by_key
-            .get(&(Scope::Legacy(instance), Box::<[u8]>::from(key)))
+            .legacy
+            .get(&(instance, Box::<[u8]>::from(key)))
             .map_or(0, Vec::len)
     }
 
@@ -140,13 +167,35 @@ impl SignalRegistry {
     }
 }
 
+/// Take `session` out of `members`. `true`: the list is now empty.
+fn leave<M>(members: &mut Vec<M>, session_of: impl Fn(&M) -> u64, session: u64) -> bool {
+    members.retain(|m| session_of(m) != session);
+    members.is_empty()
+}
+
 impl Drop for Registered {
     fn drop(&mut self) {
         let mut table = self.registry.lock();
-        if let Some(members) = table.by_key.get_mut(&self.key) {
-            members.retain(|m| m.session != self.session);
-            if members.is_empty() {
-                table.by_key.remove(&self.key);
+        match &self.seat {
+            Seat::Legacy(key) => {
+                if table
+                    .legacy
+                    .get_mut(key)
+                    .is_some_and(|members| leave(members, |m| m.session, self.session))
+                {
+                    table.legacy.remove(key);
+                }
+            }
+            Seat::Command(key) => {
+                if let Some(groups) = table.command.get_mut(key) {
+                    for group in groups.iter_mut() {
+                        leave(&mut group.members, |m| m.session, self.session);
+                    }
+                    groups.retain(|group| !group.members.is_empty());
+                    if groups.is_empty() {
+                        table.command.remove(key);
+                    }
+                }
             }
         }
     }
@@ -161,12 +210,21 @@ impl SessionSignals for SignalRegistry {
         flags: u32,
         bytes: &[u8],
     ) -> u32 {
-        self.deliver(
-            &(Scope::Legacy(instance), key.into()),
-            subject,
-            flags,
-            bytes,
-        )
+        let table = self.lock();
+        let Some(members) = table.legacy.get(&(instance, Box::<[u8]>::from(key))) else {
+            return 0;
+        };
+        let mut accepted = 0;
+        for member in members
+            .iter()
+            .filter(|m| subject.is_none() || m.subject == subject)
+            .take(MAX_FANOUT as usize)
+        {
+            if self.send(&member.tx, flags, bytes) {
+                accepted += 1;
+            }
+        }
+        accepted
     }
 
     fn signal_command(
@@ -180,40 +238,39 @@ impl SessionSignals for SignalRegistry {
         if !authority.is_live() || key.is_empty() || key.len() > super::carrier::MAX_KEY {
             return 0;
         }
-        self.deliver(
-            &(Scope::Command(instance, authority.clone()), key.into()),
-            None,
-            flags,
-            bytes,
-        )
+        let table = self.lock();
+        let Some(group) = table
+            .command
+            .get(&(instance, authority.bucket(), Box::<[u8]>::from(key)))
+            .and_then(|groups| groups.iter().find(|group| group.authority == *authority))
+        else {
+            return 0;
+        };
+        let mut accepted = 0;
+        for member in group.members.iter().take(MAX_FANOUT as usize) {
+            if !authority.is_live() {
+                break;
+            }
+            if self.send(&member.tx, flags, bytes) {
+                accepted += 1;
+            }
+        }
+        accepted
     }
 }
 
 impl SignalRegistry {
-    fn deliver(&self, key: &Key, subject: Option<[u8; 32]>, flags: u32, bytes: &[u8]) -> u32 {
-        let table = self.lock();
-        let Some(members) = table.by_key.get(key) else {
-            return 0;
+    /// Hand one signal to one session's channel. `false`: the channel was full and the drop is counted.
+    fn send(&self, tx: &mpsc::Sender<Signalled>, flags: u32, bytes: &[u8]) -> bool {
+        let signalled = Signalled {
+            flags,
+            bytes: bytes.into(),
         };
-        let mut accepted = 0;
-        for member in members
-            .iter()
-            .filter(|m| subject.is_none() || m.subject == subject)
-            .take(MAX_FANOUT as usize)
-        {
-            if matches!(&key.0, Scope::Command(_, authority) if !authority.is_live()) {
-                break;
-            }
-            let signalled = Signalled {
-                flags,
-                bytes: bytes.into(),
-            };
-            if member.tx.try_send(signalled).is_ok() {
-                accepted += 1;
-            } else {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        if tx.try_send(signalled).is_ok() {
+            true
+        } else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            false
         }
-        accepted
     }
 }

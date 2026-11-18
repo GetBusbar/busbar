@@ -13,9 +13,7 @@ pub use busbar_kernel::plane_driver::slots::runtime_slot_key;
 pub mod activation;
 mod selected_rates;
 pub use selected_rates::SelectedRateAdmission;
-pub(crate) use selected_rates::{
-    SelectedCommitRejected, SelectedHeadroomRejected, SelectedRateRejected,
-};
+pub(crate) use selected_rates::{SelectedCommitRejected, SelectedRateRejected};
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance — the things that must SURVIVE a config change) and deep-copies the

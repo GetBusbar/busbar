@@ -247,6 +247,64 @@ fn ordered_forms(plan: &Plan) {
     }
 }
 
+/// R2 and H1's `expects` (GROUP-lookups R1.5): `Indexed` over the real key shapes beside the scan it
+/// would replace, hitting the first row and the last (newest) row, at 1, 3 and 16 rows.
+fn indexed_shapes(plan: &Plan) {
+    for rows in [1usize, 3, 16] {
+        // R2: header names as `String` keys.
+        let mut by_name = Indexed::<String, String>::new();
+        let mut list: Vec<(String, String)> = Vec::new();
+        for i in 0..rows {
+            let name = format!("x-credential-{i}");
+            *by_name.row(name.clone(), String::new) = format!("value-{i}");
+            list.push((name, format!("value-{i}")));
+        }
+        for (label, at) in [("first", 0usize), ("last", rows - 1)] {
+            let key = list[at].0.clone();
+            measure(
+                plan,
+                &format!("R2 Indexed<String,String>::get {label} rows={rows}"),
+                || {
+                    black_box(by_name.get(black_box(key.as_str())).map(String::as_str));
+                },
+            );
+            measure(
+                plan,
+                &format!("R2 Vec scan (String names) {label} rows={rows}"),
+                || {
+                    let key = black_box(key.as_str());
+                    black_box(list.iter().find(|(n, _)| n == key).map(|(_, v)| v.as_str()));
+                },
+            );
+        }
+        // H1 expects: a small class number as the key.
+        let mut by_class = Indexed::<u32, u64>::new();
+        let mut classes: Vec<(u32, u64)> = Vec::new();
+        for i in 0..rows as u32 {
+            *by_class.row(i, || 0) = u64::from(i);
+            classes.push((i, u64::from(i)));
+        }
+        for (label, at) in [("first", 0usize), ("last", rows - 1)] {
+            let key = classes[at].0;
+            measure(
+                plan,
+                &format!("H1 Indexed<u32,_>::row {label} rows={rows}"),
+                || {
+                    black_box(by_class.row(black_box(key), || 0));
+                },
+            );
+            measure(
+                plan,
+                &format!("H1 Vec scan (u32 class) {label} rows={rows}"),
+                || {
+                    let key = black_box(key);
+                    black_box(classes.iter_mut().find(|(c, _)| *c == key));
+                },
+            );
+        }
+    }
+}
+
 fn main() {
     let plan = Plan {
         runs: env_or("B_LOOKUP_RUNS", 5),
@@ -256,10 +314,12 @@ fn main() {
     if std::env::var_os("B_LOOKUP_ONLY_P0B").is_some() {
         keyed_rows(&plan);
         ordered_forms(&plan);
+        indexed_shapes(&plan);
         return;
     }
     keyed_rows(&plan);
     grouped_rows(&plan);
     bits(&plan);
     ordered_forms(&plan);
+    indexed_shapes(&plan);
 }

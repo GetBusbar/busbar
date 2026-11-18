@@ -86,7 +86,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 /// The host clock with a sleep that never waits: the walk under test never parks.
@@ -99,7 +99,8 @@ fn main() {
         .map(|i| Member::new(DestinationId::new(i), format!("m{i}"), 1))
         .collect();
     let mut pools = foldhash::HashMap::default();
-    pools.insert("p".to_string(), Pool::new("p", members));
+    let name = busbar_contract::kept::Text::fixed("p");
+    pools.insert(name.clone(), Pool::new("p", members));
     let clock = HostClock::system(no_sleep);
     let ports = WalkPorts {
         breaker: &Open,
@@ -114,7 +115,7 @@ fn main() {
         let started = Instant::now();
         for _ in 0..ROUNDS / SAMPLES as u32 {
             let at = clock.now();
-            let mut walk = Walk::start(&ports, "p", at);
+            let mut walk = Walk::start(&ports, &name, at);
             let step = walk.next(&ports, None, &token, at);
             assert!(matches!(step, Step::Take(_)));
             black_box(step);

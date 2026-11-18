@@ -216,15 +216,31 @@ impl PlaneMoney {
             .iter()
             .map(|class| class.class.to_string())
             .collect();
-        let declared_classes = classes.iter().cloned().collect();
-        let attempt_classes = classes
+        // The checkpoint's class names are made shared text once, here: the attempt and physical
+        // sets share the declared set's names, and every later copy of the checkpoint (each
+        // accepted update starts from one) copies no name.
+        let shared = |name: &str| busbar_contract::kept::Text::from(Arc::<str>::from(name));
+        let declared_classes: std::collections::BTreeSet<busbar_contract::kept::Text> =
+            classes.iter().map(|class| shared(class)).collect();
+        let attempt_classes = declared_classes
             .iter()
             .filter(|class| declared.is_attempt_class(class))
             .cloned()
             .collect();
-        let physical_classes = declared.physical_classes().map(str::to_owned).collect();
-        let instance = request.context().instance().to_owned();
+        let physical_classes = declared
+            .physical_classes()
+            .map(|class| {
+                declared_classes
+                    .get(class)
+                    .cloned()
+                    .unwrap_or_else(|| shared(class))
+            })
+            .collect();
+        // The instance's name is the caller's own, shared.
+        let instance = request.context().instance_name();
         let lane = format!("{instance}{PLANE_LANE_SEP}");
+        let session_lane = shared(&lane);
+        let request_pool = shared(request.pool());
         let plan = request
             .cost()
             .plan_chain(request.key())
@@ -233,7 +249,7 @@ impl PlaneMoney {
             key: request.key().clone(),
             cost: request.cost().clone(),
             pool: request.pool().to_owned(),
-            lane: lane.clone(),
+            lane,
             classes,
             arrived: request.arrived(),
             mode,
@@ -255,7 +271,7 @@ impl PlaneMoney {
         self.install_native_pending_with(key, pending, |open| {
             let parts = PartitionedUsageV1 {
                 version: 1,
-                request_pool: open.money.pool.clone(),
+                request_pool,
                 routing_generation: routing_generation.get(),
                 attempt_limit: attempt_limit.get(),
                 declared_classes,
@@ -263,7 +279,7 @@ impl PlaneMoney {
                 physical_classes,
                 session_origin: SessionOrigin {
                     instance,
-                    lane,
+                    lane: session_lane,
                     provider: None,
                 },
                 fee: open.fee.selected_fee().0,

@@ -182,7 +182,7 @@ async fn a_failed_ruling_and_a_re_admit_both_retire_the_original_decision_owner(
     let node = r.node.clone();
     let mut changed = facts();
     changed.trust[0].1.pin.as_mut().unwrap().fingerprint = Some(CHANGED.into());
-    let admission = tokio::spawn(async move { node.admit(INSTANCE, changed).await });
+    let admission = tokio::spawn(async move { node.admit(&INSTANCE.into(), changed).await });
     r.backend.release.notify_one();
     approval.await.unwrap().unwrap();
     admission.await.unwrap().unwrap();
