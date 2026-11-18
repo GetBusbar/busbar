@@ -485,3 +485,36 @@ fn slots_match_a_vec_model() {
         assert_eq!(slots.is_empty(), live == 0);
     }
 }
+
+/// The newest row is found without the map, and the answers are the same as the map's.
+#[test]
+fn indexed_finds_the_newest_row_first_and_every_other_row_by_the_map() {
+    let mut rows = Indexed::<u64, u64>::new();
+    for key in 1..=5 {
+        *rows.row(key, || 0) += key;
+    }
+    // The newest row (5), an older row (2) and a key never inserted.
+    *rows.row(5, || 0) += 10;
+    assert_eq!(rows.get(&5), Some(&15));
+    *rows.get_mut(&5).unwrap() += 1;
+    *rows.get_mut(&2).unwrap() += 100;
+    assert_eq!(rows.get(&2), Some(&102));
+    assert_eq!(rows.get(&5), Some(&16));
+    assert_eq!(rows.get(&9), None);
+    assert_eq!(rows.len(), 5);
+    assert_eq!(
+        rows.rows().iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5]
+    );
+}
+
+/// A key given twice to `from_rows` is found at its FIRST row, as before, even when the newest row
+/// carries the same key.
+#[test]
+fn indexed_from_rows_with_a_repeated_key_still_finds_the_first_row() {
+    let mut rows = Indexed::from_rows(vec![(1_u64, 10_u64), (2, 20), (1, 30)]);
+    assert_eq!(rows.get(&1), Some(&10));
+    *rows.get_mut(&1).unwrap() += 1;
+    assert_eq!(rows.rows(), &[(1, 11), (2, 20), (1, 30)]);
+    assert_eq!(*rows.row(1, || 0), 11);
+}

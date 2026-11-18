@@ -159,6 +159,9 @@ impl<const W: usize> Default for Bits<W> {
 pub struct Indexed<K, V> {
     rows: Vec<(K, V)>,
     at: HashMap<K, u32>,
+    /// Whether `from_rows` was given a key twice: then the newest row is not always the row of its
+    /// key (the first one is), and the newest-row shortcut is off.
+    repeats: bool,
 }
 
 impl<K: Clone + Eq + Hash, V> Indexed<K, V> {
@@ -173,11 +176,19 @@ impl<K: Clone + Eq + Hash, V> Indexed<K, V> {
     #[must_use]
     pub fn from_rows(rows: Vec<(K, V)>) -> Self {
         let mut at = HashMap::with_capacity_and_hasher(rows.len(), Default::default());
+        let mut repeats = false;
         for (position, (key, _)) in rows.iter().enumerate() {
-            at.entry(key.clone())
-                .or_insert_with(|| position_of(position));
+            repeats |= at.insert(key.clone(), position_of(position)).is_some();
         }
-        Self { rows, at }
+        if repeats {
+            // The first row of a key is the one found: index it again, first row winning.
+            at.clear();
+            for (position, (key, _)) in rows.iter().enumerate() {
+                at.entry(key.clone())
+                    .or_insert_with(|| position_of(position));
+            }
+        }
+        Self { rows, at, repeats }
     }
 
     /// The value of the row of `key`.
@@ -186,6 +197,12 @@ impl<K: Clone + Eq + Hash, V> Indexed<K, V> {
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        // The newest row first: the row a request meets most is the one most recently added.
+        if let Some((newest, value)) = self.rows.last() {
+            if !self.repeats && newest.borrow() == key {
+                return Some(value);
+            }
+        }
         let at = *self.at.get(key)?;
         self.rows.get(at as usize).map(|(_, value)| value)
     }
@@ -196,12 +213,24 @@ impl<K: Clone + Eq + Hash, V> Indexed<K, V> {
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
+        if !self.repeats
+            && self
+                .rows
+                .last()
+                .is_some_and(|(newest, _)| newest.borrow() == key)
+        {
+            return self.rows.last_mut().map(|(_, value)| value);
+        }
         let at = *self.at.get(key)?;
         self.rows.get_mut(at as usize).map(|(_, value)| value)
     }
 
     /// The row of `key`, appended with `make()` when there is none.
     pub fn row(&mut self, key: K, make: impl FnOnce() -> V) -> &mut V {
+        if !self.repeats && self.rows.last().is_some_and(|(newest, _)| *newest == key) {
+            let at = self.rows.len() - 1;
+            return &mut self.rows[at].1;
+        }
         let at = match self.at.get(&key) {
             Some(at) => *at as usize,
             None => {
@@ -245,6 +274,7 @@ impl<K, V> Default for Indexed<K, V> {
         Self {
             rows: Vec::new(),
             at: HashMap::default(),
+            repeats: false,
         }
     }
 }
