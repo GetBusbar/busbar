@@ -107,7 +107,7 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
 }
 
 pub(crate) async fn send(
-    client: &reqwest::Client,
+    client: &super::Client,
     jar: &mut Jar,
     method: reqwest::Method,
     url: &str,
@@ -246,7 +246,7 @@ pub(crate) fn csrf_of(page: &str) -> String {
 /// Answer the consent screen `page`, served at `consent` on the admin origin, as the operator's
 /// browser does: the form's fields, posted back to the page's origin.
 pub(crate) async fn answer_consent(
-    client: &reqwest::Client,
+    client: &super::Client,
     jar: &mut Jar,
     consent: &str,
     page: &str,
