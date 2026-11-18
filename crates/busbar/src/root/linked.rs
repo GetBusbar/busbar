@@ -321,7 +321,7 @@ pub fn register_stores() {
         auth_axis: Some(crate::root::dispatch::auth_axis),
 
         in_process_auth: None,
-        native_auth: None,
+        native_auth: Some(crate::root::native_operator::answers_auth),
         config_projection: Some(crate::root::door_steps::door_config),
         admitted_grammar: Some(crate::root::boot::admitted_grammar),
     });

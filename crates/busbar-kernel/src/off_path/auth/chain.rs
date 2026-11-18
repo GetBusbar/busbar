@@ -91,6 +91,9 @@ impl AdminAuthChain {
                 _ if backed && entry.settings.is_empty() => {}
                 // The built-in `keys` position opens no plugin: the admin chain judges it itself.
                 crate::config::KEYS_MODULE => {}
+                // A native (MIN-3) auth image's admin chain is the root's native one (min3_admin_auth), built over its
+                // opened instance; the door axis does not answer it, so it opens nothing here.
+                other if crate::preflight::native_auth_answers(other) => {}
                 other => {
                     let name = entry.name.as_str();
                     let refused = |e: String| {

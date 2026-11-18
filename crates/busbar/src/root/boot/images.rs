@@ -130,6 +130,9 @@ impl FileImages {
             &self.images,
             &self.aliases,
         ));
+        crate::root::native_operator::NATIVE.publish_auth_names(
+            crate::root::native_operator::auth_names_of(&self.images, &self.aliases),
+        );
     }
 
     pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {

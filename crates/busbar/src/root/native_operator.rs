@@ -24,17 +24,25 @@ pub(crate) const NATIVE_OPERATOR_PRINCIPAL: &str = "admin";
 /// The published native operator claims: one per process ([`NATIVE`]).
 pub(crate) struct NativeOperator {
     claims: ArcSwapOption<Vec<OperatorClaim>>,
+    /// Every name an admitted native auth image answers to (identity, alias, former names).
+    auth_names: ArcSwapOption<std::collections::BTreeSet<String>>,
 }
 
 /// The process's native operator claims, published by the start stage's image prepare.
 pub(crate) static NATIVE: NativeOperator = NativeOperator {
     claims: ArcSwapOption::const_empty(),
+    auth_names: ArcSwapOption::const_empty(),
 };
 
 impl NativeOperator {
     /// Publish the claims of the images the start stage admitted.
     pub(crate) fn publish(&self, claims: Vec<OperatorClaim>) {
         self.claims.store(Some(Arc::new(claims)));
+    }
+
+    /// Publish the names the admitted native auth images answer to (the kernel's `RootInstall::native_auth`).
+    pub(crate) fn publish_auth_names(&self, names: std::collections::BTreeSet<String>) {
+        self.auth_names.store(Some(Arc::new(names)));
     }
 
     /// `claims` with the published native claims added. One canonical plugin is one claim: a native claim whose
@@ -84,4 +92,33 @@ pub(crate) fn claims_of(
             },
         })
         .collect()
+}
+
+/// Every name an admitted auth image answers to: its identity, the alias admission paired it with, and its former names.
+pub(crate) fn auth_names_of(
+    images: &busbar_plugin_loader::instance::Images,
+    aliases: &[(String, String)],
+) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for (identity, alias) in aliases {
+        if images
+            .described(identity)
+            .is_some_and(|described| described.kind == busbar_plugin_abi::types::KindCode::Auth)
+        {
+            names.extend(images.names(identity).into_iter().map(str::to_owned));
+            if !alias.is_empty() {
+                names.insert(alias.clone());
+            }
+        }
+    }
+    names
+}
+
+/// The kernel's `RootInstall::native_auth`: whether an admitted native auth image answers `module`.
+pub(crate) fn answers_auth(module: &str) -> bool {
+    NATIVE
+        .auth_names
+        .load()
+        .as_ref()
+        .is_some_and(|names| names.contains(module))
 }
