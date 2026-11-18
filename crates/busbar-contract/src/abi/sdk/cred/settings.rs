@@ -12,8 +12,8 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::Zeroize;
 
-use super::settings_json::wipe;
 use super::Cred;
+use crate::plugin_settings::guarded_reader::wipe;
 use crate::secret_fields::SECRET_MARKER;
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
@@ -135,7 +135,7 @@ pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<
 }
 
 fn document(bytes: &[u8]) -> Result<Value, SettingsError> {
-    super::settings_json::document(bytes, false)
+    crate::plugin_settings::guarded_reader::document(bytes, false)
         .map(|mut value| core::mem::take(&mut value.0))
         .map_err(|e| {
             SettingsError::new(format!(

@@ -16,9 +16,40 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use super::budget::{
     CapacityDenied, Charge, Claim, InstanceBudget, LinkBudget, UnitBudget, REPLY_BYTES,
 };
-use super::frame::{Framing, MAX_MESSAGE};
+use super::frame::{stays_one_message, Framing, MAX_MESSAGE};
 
 pub const OUTPUT_BYTES: usize = MAX_MESSAGE + 24;
+
+/// Why a guarded write was not admitted. Nothing is reserved, charged or copied for a refused write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteRefused {
+    /// The message is longer than one message may be, or its account cannot fund it.
+    Capacity,
+    /// The message holds a line break its framing would write as a second message
+    /// ([`stays_one_message`]).
+    LineBreak,
+}
+
+impl From<CapacityDenied> for WriteRefused {
+    fn from(_: CapacityDenied) -> Self {
+        Self::Capacity
+    }
+}
+
+/// The one check every guarded write passes before anything is reserved: a message that would not reach the far
+/// end as one message is refused, counted and logged.
+fn one_message(framing: Framing, bytes: &[u8]) -> Result<(), WriteRefused> {
+    if stays_one_message(framing, bytes) {
+        return Ok(());
+    }
+    metrics::counter!(crate::snapshot::LINE_BREAK_REFUSED_TOTAL).increment(1);
+    tracing::warn!(
+        ?framing,
+        len = bytes.len(),
+        "a channel message holding a line break was refused"
+    );
+    Err(WriteRefused::LineBreak)
+}
 
 pub struct ReplyStorage {
     // Rust drops fields in declaration order: storage is wiped/freed before its charge.
@@ -76,11 +107,12 @@ impl ReplyStorage {
         mut self,
         payload: Range<usize>,
         link: &LinkBudget,
-    ) -> Result<GuardedWrite, CapacityDenied> {
+    ) -> Result<GuardedWrite, WriteRefused> {
         let bytes = self.output.as_slice().get(payload).ok_or(CapacityDenied)?;
         if bytes.len() > MAX_MESSAGE {
-            return Err(CapacityDenied);
+            return Err(WriteRefused::Capacity);
         }
+        one_message(Framing::Ndjson, bytes)?;
         let retained = bytes.len().checked_add(1).ok_or(CapacityDenied)?;
         let outbound = self.unit.reserve_reply(
             Claim {
@@ -145,7 +177,8 @@ impl GuardedWrite {
         link: &LinkBudget,
         framing: Framing,
         bytes: &[u8],
-    ) -> Result<Self, CapacityDenied> {
+    ) -> Result<Self, WriteRefused> {
+        one_message(framing, bytes)?;
         let wire = Self::wire_len(framing, bytes)?;
         let (payload, outbound) = instance.reserve_fallback(link, bytes.len(), wire)?;
         let mut owned = SecureVec::zeroed(bytes.len());
@@ -181,10 +214,11 @@ impl GuardedWrite {
         framing: Framing,
         bytes: &[u8],
         ask: bool,
-    ) -> Result<Self, CapacityDenied> {
+    ) -> Result<Self, WriteRefused> {
         if bytes.len() > MAX_MESSAGE {
-            return Err(CapacityDenied);
+            return Err(WriteRefused::Capacity);
         }
+        one_message(framing, bytes)?;
         let wire_bytes = Self::wire_len(framing, bytes)?;
         let payload = unit.reserve(
             Claim {

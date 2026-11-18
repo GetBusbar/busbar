@@ -15,7 +15,8 @@ use tokio::sync::{mpsc, watch, Notify};
 use super::ask_line::{AskLine, Write};
 use super::budget::{Charge, LinkBudget, UnitBudget};
 use super::frame::Framing;
-use super::protected::GuardedWrite;
+use super::protected::{GuardedWrite, WriteRefused};
+use crate::plugin_records::RecordsDenied;
 
 /// Who holds the greeting of a generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,17 +95,23 @@ impl Link {
         (Arc::new(link), queue)
     }
 
-    /// One EX_MSG of `slot`. Err = the generation's writer is gone (the generation ended).
+    /// One EX_MSG of `slot`. `Invalid` = the message holds a line break its framing would write as a second
+    /// message; `Unavailable` = no capacity for it, or the generation's writer is gone (the generation ended).
     pub(super) fn send(
         &self,
         slot: u64,
         unit: &UnitBudget,
         message: &[u8],
         ask: bool,
-    ) -> Result<(), ()> {
-        let message =
-            GuardedWrite::new(unit, &self.budget, self.framing, message, ask).map_err(|_| ())?;
-        self.send_owned(slot, message).map_err(|_| ())
+    ) -> Result<(), RecordsDenied> {
+        let message = GuardedWrite::new(unit, &self.budget, self.framing, message, ask).map_err(
+            |refused| match refused {
+                WriteRefused::LineBreak => RecordsDenied::Invalid,
+                WriteRefused::Capacity => RecordsDenied::Unavailable,
+            },
+        )?;
+        self.send_owned(slot, message)
+            .map_err(|_| RecordsDenied::Unavailable)
     }
 
     pub fn budget(&self) -> &LinkBudget {

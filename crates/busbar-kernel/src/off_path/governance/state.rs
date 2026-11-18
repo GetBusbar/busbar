@@ -99,6 +99,7 @@ pub(crate) fn mod_token_series(
 
 /// `mod`: a legacy whole-unit count map converted to exact counts (the whole-unit test and
 /// embedder entry points; the served path carries exact counts).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn mod_whole_counts(units: &BTreeMap<String, u64>) -> BTreeMap<String, Count> {
     units
         .iter()

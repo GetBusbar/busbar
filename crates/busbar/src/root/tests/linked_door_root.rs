@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::root::linked::linked_transport;
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
 #[test]
@@ -35,5 +34,3 @@ fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
         "each linked row is keyed and layered by its door's Statement"
     );
 }
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(linked_transport_rows);

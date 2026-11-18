@@ -450,56 +450,6 @@ impl GovState {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }
 
-    pub fn record_usage(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        model: &str,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-    ) {
-        self.record_usage_served(cost, key, pool, model, None, units, now);
-    }
-
-    pub fn record_usage_served(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        model: &str,
-        provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-    ) {
-        let era = crate::rate_apply::era_at(crate::store::now_ms());
-        self.record_usage_served_in_era(cost, key, pool, model, provider, units, now, era);
-    }
-
-    pub fn record_usage_served_in_era(
-        &self,
-        cost: &crate::cost::CostModel,
-        key: &VirtualKey,
-        pool: &str,
-        model: &str,
-        provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-        era: RawRateEra,
-    ) {
-        self.record_counts_served_in_era(
-            cost,
-            key,
-            pool,
-            model,
-            provider,
-            &whole_counts(units),
-            now,
-            era,
-        )
-        .expect("whole usage accrual exceeds Count range");
-    }
-
     pub fn record_counts_served_in_era(
         &self,
         cost: &crate::cost::CostModel,
@@ -604,57 +554,6 @@ impl GovState {
         self.pending_metering.try_accrue_units_ref(key, usage_units)
     }
 
-    pub fn record_lane_metering(
-        &self,
-        key_id: &str,
-        lane: &str,
-        provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-    ) {
-        self.record_lane_metering_attributed(
-            key_id,
-            "",
-            lane,
-            provider,
-            &whole_counts(units),
-            now,
-            crate::rate_apply::era_at(wall_ms()),
-        )
-        .expect("whole metering accumulation exceeds Count range");
-    }
-
-    pub fn record_lane_metering_for_key(
-        &self,
-        key: &VirtualKey,
-        lane: &str,
-        provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-    ) {
-        self.record_lane_metering_in_era(
-            key,
-            lane,
-            provider,
-            units,
-            now,
-            crate::rate_apply::era_at(wall_ms()),
-        );
-    }
-
-    pub fn record_lane_metering_in_era(
-        &self,
-        key: &VirtualKey,
-        lane: &str,
-        provider: Option<&str>,
-        units: &std::collections::BTreeMap<String, u64>,
-        now: u64,
-        era: RawRateEra,
-    ) {
-        self.record_lane_counts_in_era(key, lane, provider, &whole_counts(units), now, era)
-            .expect("whole metering accrual exceeds Count range");
-    }
-
     pub fn record_lane_counts_in_era(
         &self,
         key: &VirtualKey,
@@ -679,7 +578,7 @@ impl GovState {
         Ok(())
     }
 
-    fn record_lane_metering_attributed(
+    pub(super) fn record_lane_metering_attributed(
         &self,
         key_id: &str,
         key_group_at_use: &str,

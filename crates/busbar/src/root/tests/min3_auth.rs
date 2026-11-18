@@ -918,7 +918,6 @@ async fn admin_physical_fixture_with_body(
             &busbar_kernel::plugin_routes::PluginRouteTable::empty(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             None,
             false,
         )

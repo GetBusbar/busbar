@@ -192,11 +192,7 @@ impl Attachment {
         message: &'a [u8],
         ask: bool,
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Box::pin(async move {
-            self.link
-                .send(self.slot, &self.budget, message, ask)
-                .map_err(|()| RecordsDenied::Unavailable)
-        })
+        Box::pin(async move { self.link.send(self.slot, &self.budget, message, ask) })
     }
     /// Move a validated charged reply without copying or substituting its destination generation.
     pub fn send_owned(&mut self, message: protected::GuardedWrite) -> Result<(), RecordsDenied> {

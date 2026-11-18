@@ -6,11 +6,11 @@
 //!
 //! * `CH_FRAME_NONE`: each read is one message; a write is the message as it is.
 //! * `CH_FRAME_NDJSON`: one message per `\n`-terminated line (a trailing `\r` is dropped, a blank line is nothing); a
-//!   write is the message and one `\n`.
+//!   write is the message and one `\n`, and a message holding a `\n` or a `\r` is refused before it is charged.
 //! * `CH_FRAME_SSE`: one message per Server-Sent Event (WHATWG: `data:` lines joined by `\n`, a blank line ends the
 //!   event, `:` comments, `id:` and `retry:` ignored). An event with no `event:` name, or the name `message`, is its
 //!   data; any other named event is `event: <name>\ndata: <data>` so the plane can tell it apart (the legacy MCP
-//!   `endpoint` event). A write is `data:` lines and a blank line.
+//!   `endpoint` event). A write is `data:` lines and a blank line; a message holding a `\r` is refused.
 
 use busbar_plugin_abi::plane::{CH_FRAME_NDJSON, CH_FRAME_NONE, CH_FRAME_SSE};
 
@@ -222,26 +222,15 @@ impl Framer {
     }
 }
 
-/// `message` as the bytes core writes to the channel.
+/// Whether `message`, written under `framing`, reaches the far end as the one message it is. Newline-delimited: no
+/// `\n` and no `\r` anywhere (a reader that ends a line on a lone `\r`, as universal-newline readers do, would split
+/// it too). SSE: no `\r` (an event-stream reader ends a field on `\r`; each `\n` is written as its own `data:` line).
+/// No framing: always. One scan of the bytes, no copy.
 #[must_use]
-pub fn frame(framing: Framing, message: &[u8]) -> Vec<u8> {
+pub fn stays_one_message(framing: Framing, message: &[u8]) -> bool {
     match framing {
-        Framing::None => message.to_vec(),
-        Framing::Ndjson => {
-            let mut out = Vec::with_capacity(message.len() + 1);
-            out.extend_from_slice(message);
-            out.push(b'\n');
-            out
-        }
-        Framing::Sse => {
-            let mut out = Vec::with_capacity(message.len() + 8);
-            for line in message.split(|b| *b == b'\n') {
-                out.extend_from_slice(b"data: ");
-                out.extend_from_slice(line);
-                out.push(b'\n');
-            }
-            out.push(b'\n');
-            out
-        }
+        Framing::None => true,
+        Framing::Ndjson => !message.iter().any(|b| matches!(b, b'\n' | b'\r')),
+        Framing::Sse => !message.contains(&b'\r'),
     }
 }

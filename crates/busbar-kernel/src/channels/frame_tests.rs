@@ -3,7 +3,7 @@
 
 //! IF §8.6 CH_FRAME_*: how a channel's byte stream is split into messages and how a message is written.
 
-use super::frame::{frame, Framer, Framing, Overlong, MAX_MESSAGE};
+use super::frame::{Framer, Framing, Overlong, MAX_MESSAGE};
 
 fn texts(messages: Vec<bytes::Bytes>) -> Vec<String> {
     messages
@@ -105,16 +105,6 @@ fn a_message_that_never_ends_is_refused_not_buffered_without_bound() {
     assert_eq!(framer.push(&vec![b'x'; MAX_MESSAGE + 1]), Err(Overlong));
     let mut whole = funded_framer(Framing::None);
     assert_eq!(whole.push(&vec![b'x'; MAX_MESSAGE + 1]), Err(Overlong));
-}
-
-#[test]
-fn a_message_is_written_the_way_its_framing_reads_back() {
-    assert_eq!(frame(Framing::None, b"ab"), b"ab");
-    assert_eq!(frame(Framing::Ndjson, b"{\"a\":1}"), b"{\"a\":1}\n");
-    let written = frame(Framing::Sse, b"one\ntwo");
-    assert_eq!(written, b"data: one\ndata: two\n\n");
-    let mut back = funded_framer(Framing::Sse);
-    assert_eq!(texts(back.push(&written).unwrap()), ["one\ntwo"]);
 }
 
 #[test]

@@ -274,6 +274,7 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-sqlite",
     "https://github.com/GetBusbar/busbar-transport-grpc",
     "https://github.com/GetBusbar/busbar-transport-http",
+    "https://github.com/GetBusbar/busbar-transport-stdio",
     "https://github.com/GetBusbar/busbar-transport-webrtc",
     "https://github.com/GetBusbar/busbar-transport-ws",
     # postgres-protocol fork at its exact rev, via busbar-store-postgres in dist/default (busbar#429).
