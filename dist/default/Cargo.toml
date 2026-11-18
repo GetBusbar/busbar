@@ -725,7 +725,7 @@ busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webre
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "931d17d372f22935fda599e9712f1b0a05fd86dd" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "bd473e4265e2d006034c4897dc101c0382f6455a" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "9215146350b750191fd53f5a07c5cd7e0b6888d1" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }

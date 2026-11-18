@@ -95,13 +95,13 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "dd9a736cb2e1ffc650dfbe0634d8be28c49b8b6c",
+      "commit": "9215146350b750191fd53f5a07c5cd7e0b6888d1",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
       "image": "libbusbar_plane_llm_plugin.so",
       "declares": "plane-llm/declares.json",
-      "lock_sha256": "0b5640a12caa329497f7c804d01ab2863331637e2815d1fd7de20959b81db0ff"
+      "lock_sha256": "8490e4ed6153b3f94a275aba1bddcf50addd25ac14eb685eccc36476cb0873b8"
     },
     {
       "repo": "busbar-secret-env",
