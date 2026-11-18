@@ -15,5 +15,14 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 foldhash = { workspace = true }
 
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
+# B-WINDOW: one outcome pushed and the window read, timed (median, p99).
+[[bench]]
+name = "b_window"
+path = "benches/b_window.rs"
+harness = false
+
 [lints]
 workspace = true

@@ -64,6 +64,10 @@ impl OutcomeWindow {
     }
 }
 
+#[cfg(test)]
+#[path = "tests/window.rs"]
+mod window_tests;
+
 /// One breaker cell: the FSM state for a single `(pool, destination)` pair.
 pub struct BreakerCell {
     breaker_state: AtomicU64,
