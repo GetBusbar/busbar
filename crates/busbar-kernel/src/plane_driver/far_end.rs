@@ -66,7 +66,7 @@ use busbar_kernel_egress::{
         Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkNow, WalkPorts,
 };
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
@@ -296,6 +296,15 @@ pub struct UnitRoute {
     pub accept: busbar_plugin_abi::host_side::caller::Accept,
 }
 
+/// The unit's one reading of the egress clock, both scales at once, at the walk's start (L6-2): the walk reads
+/// no clock of its own.
+fn walk_now(clock: &dyn Clock) -> WalkNow {
+    WalkNow {
+        secs: clock.now_secs(),
+        millis: clock.now_millis(),
+    }
+}
+
 /// Whether `url` names TLS from its first byte (`https://`, `wss://`); every other scheme does not.
 fn url_is_tls(url: &str) -> bool {
     let named = |prefix: &str| {
@@ -378,7 +387,11 @@ impl Egress {
     #[must_use]
     pub fn unit(&self, route: UnitRoute) -> EgressFarEnd<'_> {
         let breaker = (self.breaker)();
-        let walk = Walk::start(&self.ports(breaker.as_ref()), &route.pool);
+        let walk = Walk::start(
+            &self.ports(breaker.as_ref()),
+            &route.pool,
+            walk_now(&*self.clock),
+        );
         EgressFarEnd {
             egress: self,
             breaker,
@@ -457,7 +470,7 @@ impl Egress {
     fn probe_member(&self, pool: String, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
         let destination = member.destination;
         let breaker = (self.breaker)();
-        let walk = Walk::pinned(&self.ports(breaker.as_ref()), timeout.as_secs().max(1));
+        let walk = Walk::pinned(timeout.as_secs().max(1), walk_now(&*self.clock));
         EgressFarEnd {
             egress: self,
             breaker,

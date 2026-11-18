@@ -121,6 +121,17 @@ pub struct Waited<'p> {
     won: Option<(Member, Permit, Option<u64>)>,
 }
 
+/// The op's one reading of the egress clock's two scales, taken at its entry and handed to the walk (which reads
+/// no clock itself): `secs` (epoch seconds, the deadline) and `millis` (the monotonic point the bounded wait
+/// measures from).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkNow {
+    /// `Clock::now_secs`: whole seconds since the epoch.
+    pub secs: u64,
+    /// `Clock::now_millis`: milliseconds since the clock's fixed point.
+    pub millis: u128,
+}
+
 /// ONE UNIT'S WALK: its request context (deadline, every member tried, every pool visited), where
 /// it is, and how many hops it has taken.
 #[derive(Debug, Clone)]
@@ -135,13 +146,9 @@ pub struct Walk {
 impl Walk {
     /// A walk over `pool` starting now: its budget is the pool's request timeout.
     #[must_use]
-    pub fn start(ports: &WalkPorts<'_>, pool: &str) -> Self {
+    pub fn start(ports: &WalkPorts<'_>, pool: &str, now: WalkNow) -> Self {
         Self {
-            ctx: RequestCtx::new(
-                budget_secs(ports.pools, pool),
-                ports.clock.now_secs(),
-                ports.clock.now_millis(),
-            ),
+            ctx: RequestCtx::new(budget_secs(ports.pools, pool), now.secs, now.millis),
             phase: Phase::Primary(pool.to_string()),
             hops: 0,
             taken: 0,
@@ -150,13 +157,9 @@ impl Walk {
 
     /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
     #[must_use]
-    pub fn pinned(ports: &WalkPorts<'_>, budget_secs: u64) -> Self {
+    pub fn pinned(budget_secs: u64, now: WalkNow) -> Self {
         Self {
-            ctx: RequestCtx::new(
-                budget_secs,
-                ports.clock.now_secs(),
-                ports.clock.now_millis(),
-            ),
+            ctx: RequestCtx::new(budget_secs, now.secs, now.millis),
             phase: Phase::Shed(Shed::empty_pool()),
             hops: 0,
             taken: 0,
