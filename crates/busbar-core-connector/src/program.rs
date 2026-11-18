@@ -93,6 +93,13 @@ struct Inbox {
     mid_frame: bool,
 }
 
+impl Inbox {
+    /// Open and holding [`RECEIVE_BUFFER_BYTES`] unread: the program is not read again for it.
+    fn full(&self) -> bool {
+        self.ended.is_none() && self.queued >= RECEIVE_BUFFER_BYTES
+    }
+}
+
 /// The program as it runs.
 struct Live {
     /// Its connection while it is at home: `None` while a lease drives it with no lock held
@@ -110,6 +117,9 @@ struct State {
     key_retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
+    /// How many open leases of each generation hold [`RECEIVE_BUFFER_BYTES`] unread (kept with
+    /// `leases` at every change of a lease's queue, end or presence, so [`State::backlogged`] is no scan).
+    backlog: HashMap<u64, usize>,
     /// A lease is spawning the next generation, with no lock held: another open waits for it.
     spawning: bool,
     /// Spawn attempts and connections whose close has not returned yet.
@@ -377,9 +387,31 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
 impl State {
     /// Whether a lease of `generation` still open holds [`RECEIVE_BUFFER_BYTES`] unread: the
     fn backlogged(&self, generation: u64) -> bool {
-        self.leases.values().any(|i| {
-            i.generation == generation && i.ended.is_none() && i.queued >= RECEIVE_BUFFER_BYTES
-        })
+        self.backlog.get(&generation).is_some_and(|n| *n > 0)
+    }
+
+    /// `inbox` was (`was`) and now is (`is`) an open lease holding a full queue: the count of its
+    /// generation follows.
+    fn backlog_moved(backlog: &mut HashMap<u64, usize>, generation: u64, was: bool, is: bool) {
+        match (was, is) {
+            (false, true) => *backlog.entry(generation).or_default() += 1,
+            (true, false) => {
+                if let Some(n) = backlog.get_mut(&generation) {
+                    *n -= 1;
+                    if *n == 0 {
+                        backlog.remove(&generation);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Let go of `lease`, its share of the backlog with it.
+    fn remove_lease(&mut self, lease: u64) -> Option<Inbox> {
+        let inbox = self.leases.remove(&lease)?;
+        Self::backlog_moved(&mut self.backlog, inbox.generation, inbox.full(), false);
+        Some(inbox)
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
@@ -393,7 +425,9 @@ impl State {
         }
         for inbox in self.leases.values_mut() {
             if inbox.generation == generation && inbox.ended.is_none() {
+                let was = inbox.full();
                 inbox.ended = Some(failure.cloned());
+                Self::backlog_moved(&mut self.backlog, generation, was, false);
             }
         }
         let missed = std::mem::take(&mut self.missed);
@@ -439,6 +473,7 @@ impl Member {
                 key_retired: false,
                 next_lease: 1,
                 leases: HashMap::default(),
+                backlog: HashMap::default(),
                 spawning: false,
                 programs_outstanding: 0,
                 missed: Missed::default(),
@@ -652,7 +687,7 @@ impl Member {
             self.flush_unsent(st, lease, &mut Context::from_waker(&waker), &waker);
         if let Err(f) = flushed {
             st.ended(generation, Some(&f));
-            st.leases.remove(&lease);
+            st.remove_lease(lease);
             return Err(map(&f));
         }
         Ok(lease)
@@ -679,9 +714,11 @@ impl Member {
             if let Some((mut bytes, end)) = inbox.pieces.pop_front() {
                 let n = bytes.len().min(buf.len());
                 buf[..n].copy_from_slice(&bytes[..n]);
+                let was = inbox.full();
                 let full = inbox.queued >= RECEIVE_BUFFER_BYTES;
                 inbox.queued = inbox.queued.saturating_sub(n);
                 let unblocked = full && inbox.queued < RECEIVE_BUFFER_BYTES;
+                let (generation, is) = (inbox.generation, inbox.full());
                 let piece = if n < bytes.len() {
                     bytes.drain(..n);
                     inbox.pieces.push_front((bytes, end));
@@ -689,6 +726,7 @@ impl Member {
                 } else {
                     piece(PieceKind::Body, n, end)
                 };
+                State::backlog_moved(&mut st.backlog, generation, was, is);
                 if unblocked {
                     st.wake_fan = true;
                 }
@@ -736,7 +774,8 @@ impl Member {
                     if got.fields || (got.bytes.is_empty() && !got.end_of_frame) {
                         continue;
                     }
-                    for inbox in st.leases.values_mut() {
+                    let state: &mut State = &mut st;
+                    for inbox in state.leases.values_mut() {
                         if inbox.generation != generation || inbox.ended.is_some() {
                             continue;
                         }
@@ -744,7 +783,9 @@ impl Member {
                             inbox.mid_frame = !got.end_of_frame;
                             continue;
                         }
+                        let was = inbox.full();
                         inbox.queued += got.bytes.len();
+                        State::backlog_moved(&mut state.backlog, generation, was, inbox.full());
                         inbox
                             .pieces
                             .push_back((got.bytes.clone(), got.end_of_frame));
@@ -855,8 +896,7 @@ impl Member {
         st.retired_wakers.extend(self.fan.forget(lease));
 
         if st
-            .leases
-            .remove(&lease)
+            .remove_lease(lease)
             .is_some_and(|i| i.queued >= RECEIVE_BUFFER_BYTES)
         {
             st.wake_fan = true;
