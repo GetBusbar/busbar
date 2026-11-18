@@ -223,6 +223,7 @@ pub mod capture;
     )
 )]
 pub mod lent;
+pub mod off_path;
 // busbar:request-path
 #[cfg_attr(
     not(test),

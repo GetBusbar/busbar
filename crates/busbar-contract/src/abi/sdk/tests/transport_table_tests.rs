@@ -9,27 +9,33 @@ use super::*;
 #[derive(Debug, PartialEq, Eq)]
 struct Framing(u32);
 
-/// Slots fill each segment in turn, every index in exactly one place.
+/// The table holds what it was made for and no more: the next insert answers `None`, and a freed slot
+/// is claimed again.
 #[test]
-fn every_index_has_one_place() {
-    let mut seen = std::collections::HashSet::new();
-    let mut expect = (0, 0);
-    for i in 0..BASE * ((1 << 6) - 1) {
-        let p = place(i);
-        assert_eq!(p, expect, "index {i}");
-        assert!(seen.insert(p));
-        expect = if expect.1 + 1 == BASE << expect.0 {
-            (expect.0 + 1, 0)
-        } else {
-            (expect.0, expect.1 + 1)
-        };
-    }
+fn the_nth_plus_one_insert_answers_none() {
+    let table = Table::with_capacity(3);
+    let tokens: Vec<u64> = (0..3)
+        .map(|i| table.insert(Framing(i)).expect("room"))
+        .collect();
+    assert_eq!(table.insert(Framing(9)), None);
+    assert_eq!(table.remove(tokens[1]), Ok(Framing(1)));
+    let again = table.insert(Framing(9)).expect("the freed slot");
+    assert_eq!(table.reach(again).as_deref().ok(), Some(&Framing(9)));
+    assert_eq!(table.insert(Framing(10)), None);
+}
+
+/// A table of no slots holds nothing.
+#[test]
+fn a_table_of_no_slots_holds_nothing() {
+    let table: Table<Framing> = Table::with_capacity(0);
+    assert_eq!(table.insert(Framing(1)), None);
+    assert_eq!(table.reach(1).err(), Some(Reach::Gone));
 }
 
 /// A framing another op holds is answered at once (`Busy`), never waited for; once it is let go
 #[test]
 fn a_held_framing_answers_busy_at_once() {
-    let table = Table::default();
+    let table = Table::with_capacity(8);
     let a = table.insert(Framing(1)).expect("a");
     let b = table.insert(Framing(2)).expect("b");
     let held = table.reach(a).expect("reach a");
@@ -50,7 +56,7 @@ fn a_held_framing_answers_busy_at_once() {
 /// `hold` waits for the op that holds the framing, then reaches what that op left.
 #[test]
 fn hold_waits_for_the_op_that_holds_it() {
-    let table = Table::default();
+    let table = Table::with_capacity(8);
     let a = table.insert(Framing(1)).expect("a");
     let mut held = table.reach(a).expect("reach a");
     std::thread::scope(|s| {
@@ -70,7 +76,7 @@ fn hold_waits_for_the_op_that_holds_it() {
 /// A finished framing's token reaches nothing, even once its slot holds a new framing; `remove`
 #[test]
 fn a_token_that_outlived_its_framing_reaches_nothing() {
-    let table = Table::default();
+    let table = Table::with_capacity(8);
     let a = table.insert(Framing(1)).expect("a");
     assert_eq!(table.remove(a), Ok(Framing(1)));
     assert_eq!(table.reach(a).err(), Some(Reach::Gone));
@@ -88,7 +94,7 @@ fn a_token_that_outlived_its_framing_reaches_nothing() {
 /// A held framing released by its op gives its slot back to the next insert.
 #[test]
 fn a_released_framing_gives_its_slot_back() {
-    let table = Table::default();
+    let table = Table::with_capacity(8);
     let a = table.insert(Framing(1)).expect("a");
     let held = table.hold(a).expect("hold a");
     assert_eq!(held.release(), Framing(1));
