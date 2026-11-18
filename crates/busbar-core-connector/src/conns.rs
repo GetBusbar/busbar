@@ -2016,6 +2016,8 @@ impl Connector {
             return Err(verdict_reason(v, false));
         }
         if socket::address_of(&located.authority).is_some() {
+            // The admission's clock memo: either refusal below is its one reading.
+            let mut now = None;
             match self.judge.judge_target_all(
                 busbar_kernel::host_services::Destination {
                     authority: &located.authority,
@@ -2041,6 +2043,7 @@ impl Connector {
                         Some(egress_class),
                         "plaintext",
                         Some((owner.0, need.0)),
+                        &mut now,
                     );
                     return Err(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 }
@@ -2050,6 +2053,7 @@ impl Connector {
                         Some(egress_class),
                         egress_audit::verdict_name(v),
                         Some((owner.0, need.0)),
+                        &mut now,
                     );
                     return Err(verdict_reason(v, false));
                 }
@@ -2524,6 +2528,8 @@ impl Connector {
     }
 
     fn settle_dial(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        // The dial's clock memo: its refusals (exclusive branches) share one reading.
+        let mut now = None;
         if held.retired.load(Ordering::Acquire) {
             return Err(ConnError::Closed);
         }
@@ -2591,12 +2597,19 @@ impl Connector {
                             Some(j.egress_class),
                             egress_audit::verdict_name(v),
                             None,
+                            &mut now,
                         );
                         held.refused(verdict_reason(v, false));
                         return Err(held.fail(judging, pended_verdict(v)));
                     }
                     Ok(at) if !class_admits(j.egress_class, secure, plain, &[], at) => {
-                        egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
+                        egress_audit::dial_refused(
+                            target,
+                            Some(j.egress_class),
+                            "plaintext",
+                            None,
+                            &mut now,
+                        );
                         held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                         return Err(held.fail(judging, ConnError::Refused));
                     }
@@ -2683,13 +2696,14 @@ impl Connector {
                     Some(j.egress_class),
                     egress_audit::verdict_name(v),
                     None,
+                    &mut now,
                 );
                 held.refused(verdict_reason(v, false));
                 return Err(held.fail(judging, pended_verdict(v)));
             }
         };
         if !class_admits(j.egress_class, secure, plain, &j.within, addr) {
-            egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
+            egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None, &mut now);
             held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
             return Err(held.fail(judging, ConnError::Refused));
         }
@@ -2855,6 +2869,8 @@ impl Connector {
         reach: bool,
         why: &mut Option<NeedRefusal>,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
+        // The dial's clock memo: its refusals (exclusive branches) share one reading.
+        let mut now = None;
         let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
 
         let judged = self.judge_into(
@@ -2893,6 +2909,7 @@ impl Connector {
                         Some(egress_class),
                         egress_audit::verdict_name(v),
                         None,
+                        &mut now,
                     );
                     *why = Some(verdict_reason(v, false));
                     return Err(ConnError::Refused);
@@ -2911,6 +2928,7 @@ impl Connector {
                         Some(egress_class),
                         "plaintext",
                         None,
+                        &mut now,
                     );
                     *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                     return Err(ConnError::Refused);
@@ -2964,6 +2982,7 @@ impl Connector {
                     Some(egress_class),
                     egress_audit::verdict_name(v),
                     None,
+                    &mut now,
                 );
                 *why = Some(verdict_reason(v, false));
                 return Err(ConnError::Refused);
@@ -2982,6 +3001,7 @@ impl Connector {
                     Some(egress_class),
                     "plaintext",
                     None,
+                    &mut now,
                 );
                 *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 return Err(ConnError::Refused);

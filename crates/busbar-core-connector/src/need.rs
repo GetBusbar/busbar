@@ -516,7 +516,13 @@ where
     }
 
     fn audit_refused(&self, cx: &Caller<'_>, dest: &str, class: u32, why: &str) {
-        crate::egress_audit::dial_refused(dest, Some(class), why, Some((cx.instance, 0)));
+        crate::egress_audit::dial_refused(
+            dest,
+            Some(class),
+            why,
+            Some((cx.instance, 0)),
+            &mut None,
+        );
     }
 
     /// Answer a conn the chain now holds: a = conn id, b = flags, data0 = ALPN, data1 = the

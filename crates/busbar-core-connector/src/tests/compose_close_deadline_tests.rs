@@ -558,7 +558,7 @@ fn tls_close_notify_ignores_later_carrier_bytes_without_spinning() {
         assert!(!c.read_end, "the underlying carrier is still open");
         tail.send(()).unwrap();
 
-        poll_fn(|cx| match c.read(cx) {
+        poll_fn(|cx| match c.read(cx, &mut None) {
             Ok(true) => Poll::Ready(()),
             Ok(false) => Poll::Pending,
             Err(f) => panic!("post-close carrier bytes are ignored: {f}"),

@@ -574,7 +574,7 @@ fn refused(e: impl std::fmt::Display) -> Failure {
 /// for the rest of it, so a drive reads the clock at most once, and not at all when no deadline is
 /// set. A reading taken earlier in the drive is a few µs early: it can only judge a deadline not yet
 /// due, never fire one late, and the timer [`Connection::keep_deadlines`] arms wakes the drive for it.
-fn clock(now: &mut Option<Instant>) -> Instant {
+pub(crate) fn clock(now: &mut Option<Instant>) -> Instant {
     *now.get_or_insert_with(|| {
         busbar_contract::work_count::tally(busbar_contract::work_count::Work::ClockRead);
         #[cfg(test)]
@@ -2011,7 +2011,15 @@ impl Connection {
         if self.tls.is_none() && !bytes.is_empty() {
             if let Some(left) = self.clear_window.as_mut() {
                 if *left == 0 || bytes.len() > CLEAR_WINDOW_BYTES {
-                    crate::egress_audit::dial_refused(&self.target, None, "plaintext-window", None);
+                    // The refusal is this op's only clock reading: it returns before any drive.
+                    let mut now = None;
+                    crate::egress_audit::dial_refused(
+                        &self.target,
+                        None,
+                        "plaintext-window",
+                        None,
+                        &mut now,
+                    );
                     return Err(Failure::Refused(CLEAR_WINDOW_REFUSED.into()));
                 }
                 *left -= 1;
@@ -2086,7 +2094,7 @@ impl Connection {
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             moved |= self.flush(cx)?;
-            moved |= self.tunnel_read(cx)?;
+            moved |= self.tunnel_read(cx, &mut now)?;
         } else if matches!(self.phase, Phase::Connecting) {
             match self.carried.poll_connected(cx) {
                 Poll::Ready(Ok(())) => {
@@ -2117,7 +2125,7 @@ impl Connection {
                 && self.buffered_input().saturating_add(self.receive_held) < RECEIVE_BUFFER_BYTES
                 && self.out.len() < 2 * WRITE_BUFFER_BYTES
             {
-                moved |= self.read(cx)?;
+                moved |= self.read(cx, &mut now)?;
             }
         }
         moved |= self.keep_deadlines(cx, &mut now)?;
@@ -2135,7 +2143,11 @@ impl Connection {
     }
 
     /// Read the proxy's answer to the tunnel request: once its head is whole and 2xx the socket is
-    fn tunnel_read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+    fn tunnel_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        now: &mut Option<Instant>,
+    ) -> Result<bool, Failure> {
         let mut buf = [0_u8; 256];
         let n = match self.carried.poll_read(cx, &mut buf) {
             Poll::Pending => return Ok(false),
@@ -2162,7 +2174,7 @@ impl Connection {
         self.tunnel = None;
         self.connected()?;
         if let Some(rest) = head.get(end..).filter(|rest| !rest.is_empty()) {
-            self.feed(rest, false, false)?;
+            self.feed(rest, false, false, now)?;
         }
         Ok(true)
     }
@@ -2237,7 +2249,7 @@ impl Connection {
     }
 
     /// Read what the carrier has, and hand it on.
-    fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+    fn read(&mut self, cx: &mut Context<'_>, now: &mut Option<Instant>) -> Result<bool, Failure> {
         if self.read_end {
             return Ok(false);
         }
@@ -2267,11 +2279,11 @@ impl Connection {
             Ok(0) if !end_of_frame => {
                 self.read_end = true;
                 self.carrier_lost = true;
-                self.feed(&[], true, false)?;
+                self.feed(&[], true, false, now)?;
                 Ok(true)
             }
             Ok(_) => {
-                self.feed(scratch.as_slice(), false, end_of_frame)?;
+                self.feed(scratch.as_slice(), false, end_of_frame, now)?;
                 Ok(true)
             }
             Err(e) => {
@@ -2513,7 +2525,7 @@ impl Connection {
     }
 
     /// THE TRANSPORT PIN, held on a dialled connection whose handshake just completed: the far end's
-    fn hold_to_anchors(&mut self) -> Result<(), Failure> {
+    fn hold_to_anchors(&mut self, now: &mut Option<Instant>) -> Result<(), Failure> {
         let Some(rustls::Connection::Client(c)) = self.tls.as_ref() else {
             return Ok(());
         };
@@ -2525,7 +2537,7 @@ impl Connection {
 
         match self.pinned.as_ref().and_then(|a| a.key_pin.as_deref()) {
             Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin) => {
-                crate::egress_audit::tls_failed(&self.target, PIN_REFUSED);
+                crate::egress_audit::tls_failed(&self.target, PIN_REFUSED, now);
                 Err(Failure::Refused(PIN_REFUSED.into()))
             }
             _ => Ok(()),
@@ -2533,7 +2545,13 @@ impl Connection {
     }
 
     /// What the carrier read (`end` = its clean end; `end_of_frame` = the bytes complete a frame of
-    fn feed(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        end: bool,
+        end_of_frame: bool,
+        now: &mut Option<Instant>,
+    ) -> Result<(), Failure> {
         let Some(tls) = self.tls.as_mut() else {
             return self.ingest(bytes, end, end_of_frame);
         };
@@ -2554,7 +2572,7 @@ impl Connection {
                         matches!(tls, rustls::Connection::Client(_)),
                     );
                     if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
-                        crate::egress_audit::tls_failed(&self.target, &text);
+                        crate::egress_audit::tls_failed(&self.target, &text, now);
                     }
                     self.security_error = Some(text);
                     // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
@@ -2588,7 +2606,7 @@ impl Connection {
                     let asked = s.server_name().map(crate::off_path::compose::owned);
                     self.established.offered_name = asked;
                 }
-                self.hold_to_anchors()?;
+                self.hold_to_anchors(now)?;
                 self.begin()?;
             }
         }
