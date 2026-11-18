@@ -496,7 +496,12 @@ fn facts() -> busbar_migrate::Facts {
 /// variable already refused, as 1.5.5 would not have booted); the listener addresses it resolves
 /// feed 1f.
 fn parse_planned(text: &str) -> Result<Vec<String>, String> {
-    let grammar = crate::root::boot::start_grammar()?;
+    // The boot reads under the image prepare's grammar (native plane sections such as a linked plane's settled block);
+    // the upgraded document is read under the same, else the start scan's.
+    let grammar = match crate::root::boot::images::start_images_grammar() {
+        Some(grammar) => grammar,
+        None => crate::root::boot::start_grammar()?,
+    };
     let deploy = busbar_kernel::config::deploy_from_yaml_str(text, grammar)
         .map_err(|error| format!("config.yaml: {error}"))?;
     Ok(vec![deploy.listen, deploy.admin_listen])
@@ -506,7 +511,10 @@ fn parse_planned(text: &str) -> Result<Vec<String>, String> {
 fn strict_catalog(catalog: Option<&str>) -> Result<(), String> {
     match catalog {
         Some(catalog) => {
-            let grammar = crate::root::boot::start_grammar()?;
+            let grammar = match crate::root::boot::images::start_images_grammar() {
+                Some(grammar) => grammar,
+                None => crate::root::boot::start_grammar()?,
+            };
             busbar_kernel::config::providers::catalog_from_str(catalog, grammar)
                 .map(drop)
                 .map_err(|error| format!("{}: {error}", busbar_migrate::CATALOG_FILE))

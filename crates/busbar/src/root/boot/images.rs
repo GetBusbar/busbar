@@ -349,6 +349,15 @@ pub(crate) fn process() -> Result<Arc<ProcessResources>, String> {
 /// the start scan and the start grammar. So `--validate`, `--list-plugins` and the start grammar read the native
 /// secret words, from the one source every later read uses. With no readable `plugins:` block the linked images
 /// alone are prepared.
+/// The grammar the start stage's image prepare judged (its native plane sections, secret words and classified items): the
+/// grammar the boot's own reads use (`ConfigRules`). The conversion's re-read of the upgraded document reads under it.
+static START_IMAGES_GRAMMAR: std::sync::OnceLock<Grammar> = std::sync::OnceLock::new();
+
+/// [`START_IMAGES_GRAMMAR`], once the start stage has prepared its images.
+pub(crate) fn start_images_grammar() -> Option<&'static Grammar> {
+    START_IMAGES_GRAMMAR.get()
+}
+
 pub(crate) fn publish_start() -> Result<(), String> {
     let process = process()?;
     let plugins = super::configured_block().unwrap_or_else(|| busbar_kernel::config::PluginsCfg {
@@ -359,6 +368,7 @@ pub(crate) fn publish_start() -> Result<(), String> {
     prepared.publish_secrets();
     prepared.publish_hooks();
     prepared.publish_operator();
+    let _ = START_IMAGES_GRAMMAR.set(prepared.grammar.clone());
     Ok(())
 }
 

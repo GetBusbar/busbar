@@ -1369,6 +1369,9 @@ pub(crate) struct ServingReady {
     built: Built,
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
+    /// The secret instances the boot opened for a shorthand alone (`{ env: .. }`), with no `secrets.<name>` block in the
+    /// document: a conversion has no block of theirs to settle.
+    shorthand_only: std::collections::BTreeSet<String>,
     leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
     reserved: Vec<(u32, PreparedInstance)>,
     provisioning: Vec<busbar_kernel::directory::ProvisioningInstance>,
@@ -1815,6 +1818,13 @@ fn prepare_serving_owned(
         auth_policy: cfg.min3.clone(),
         request_body_cap: cfg.limits.request_body_max_bytes,
         built,
+        shorthand_only: instances
+            .iter()
+            .filter(|instance| {
+                instance.kind == KindCode::Secret && !cfg.secrets.contains_key(&instance.name)
+            })
+            .map(|instance| instance.name.clone())
+            .collect(),
         instances,
         declared,
         leases,
@@ -1938,6 +1948,7 @@ pub(super) async fn finish_with_store(
         built,
         instances,
         declared,
+        shorthand_only,
         leases,
         reserved,
         provisioning,
@@ -2132,6 +2143,11 @@ pub(super) async fn finish_with_store(
             } else {
                 &built.registry
             };
+            if instance.kind == KindCode::Secret && shorthand_only.contains(&instance.name) {
+                // Opened for a shorthand only: the document holds no `secrets.<name>` block to settle into.
+                let _ = settlement_registry.take_settled(&instance.name);
+                continue;
+            }
             let answer = settlement_registry
                 .take_settled(&instance.name)
                 .ok_or_else(|| {
