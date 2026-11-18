@@ -208,10 +208,10 @@ pub(crate) fn run_kit<O: Opener>(
     total: Duration,
 ) -> Result<(), String> {
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.block_on(tokio::time::timeout(
-            total,
-            store_kit::run_within(fixture, case),
-        ))
+        // The deadline is made inside the runtime: a tokio timer needs its reactor when it is created.
+        runtime.block_on(async {
+            tokio::time::timeout(total, store_kit::run_within(fixture, case)).await
+        })
     }));
     match ran {
         Ok(Ok(())) => Ok(()),
