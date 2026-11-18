@@ -162,6 +162,8 @@ impl private::Source for crate::socket::Sock {
 #[derive(Debug)]
 pub struct Registered<T: Source> {
     registration: Registration,
+    /// The runtime the socket is registered on: what a listener accepts is registered there too.
+    runtime: tokio::runtime::Handle,
     socket: PhantomData<fn() -> T>,
 }
 
@@ -181,6 +183,7 @@ pub fn register_on<T: Source>(
     let _entered = runtime.enter();
     Ok(Registered {
         registration: private::Source::registration(io)?,
+        runtime: runtime.clone(),
         socket: PhantomData,
     })
 }
@@ -294,8 +297,9 @@ impl Registered<TcpListener> {
         let Backend::Listener(listener) = &self.registration.0 else {
             return Poll::Ready(Err(mismatched()));
         };
-        // Off a task, the accepted socket's (momentary) registration needs the process reactor.
-        let _entered = enter_process_runtime();
+        // The accepted socket's (momentary) registration goes on the listener's own runtime, never
+        // the ambient one: the caller may poll from a runtime without an I/O driver (2169710925).
+        let _entered = self.runtime.enter();
         let (stream, peer) = std::task::ready!(listener.poll_accept(cx))?;
         Poll::Ready(stream.into_std().map(|stream| (stream, peer)))
     }
