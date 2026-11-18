@@ -290,9 +290,6 @@ impl CardStore {
             .map(|(key, _)| *key)
             .or_else(|| state.voiding.keys().next().copied())
     }
-    pub fn pending_refusal(&self) -> Option<String> {
-        self.pending().map(|key|format!("rate-card entry {key} is pending native Store confirmation or generation commit; previous confirmed prices remain active"))
-    }
     pub fn own(&self) -> Option<(EntryKey, CardFields)> {
         let state = self.lock();
         let key = state.own?;
