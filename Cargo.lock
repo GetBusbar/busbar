@@ -485,6 +485,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "socket2",
+ "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-rustls",

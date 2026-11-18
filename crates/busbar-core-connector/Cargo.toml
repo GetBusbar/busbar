@@ -72,3 +72,13 @@ time = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
+
+# B-FRAMING-OPEN: accept one framing on a test door and drop it, timed (median, p99), and the
+# resident memory with 1,000 held open.
+[[bench]]
+name = "b_framing_open"
+path = "benches/b_framing_open.rs"
+harness = false
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
