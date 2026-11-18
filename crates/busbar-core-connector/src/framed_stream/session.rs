@@ -1083,13 +1083,14 @@ impl Task {
         acts: Actions,
         io: &mut DeliveryIo<S>,
         write_timeout: Duration,
+        clock: &mut Option<(Instant, u64)>,
     ) -> Flow {
         let mut prefix = io.ledger().adopted_prefix();
         if let Err(reason) = io.prepare(&acts) {
             return Flow::Rejected(reason);
         }
         let mut wrote = false;
-        let deadline = tokio::time::Instant::now() + write_timeout;
+        let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
         for act in acts {
             match act {
                 Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
@@ -1122,7 +1123,7 @@ impl Task {
                     return if abort { Flow::Aborted } else { Flow::Closed };
                 }
                 Act::Wake(ns) => {
-                    let (now, mono) = crate::off_path::framing::session_clock();
+                    let (now, mono) = wake_clock(clock);
                     self.wake_at = Some(now + Duration::from_nanos(ns.saturating_sub(mono)));
                 }
                 Act::Upgrade { protocol, leftover } => {
@@ -1245,6 +1246,12 @@ async fn finish_prefix<S: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// THE WAKE'S CLOCK: the session clock's one reading for this wake (the OS instant and the host's
+/// `mono` taken together), read the first time the wake asks and kept for the rest of it.
+fn wake_clock(at: &mut Option<(Instant, u64)>) -> (Instant, u64) {
+    *at.get_or_insert_with(crate::off_path::framing::session_clock)
+}
+
 /// Core closes the session with `reason`: E_CLOSE once (or skipped and counted), its bytes written under
 /// the write timeout (the drain grace for CR_DRAIN), its CLOSE applied; the handle drops when `conn` does,
 /// after the bytes are out.
@@ -1255,14 +1262,15 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     write_timeout: Duration,
     drain_grace: Duration,
     counters: &SessionCounters,
+    clock: &mut Option<(Instant, u64)>,
 ) -> Ended2 {
     let limit = if reason == wire::CR_DRAIN {
         drain_grace.min(write_timeout)
     } else {
         write_timeout
     };
-    let deadline = tokio::time::Instant::now() + limit;
-    let (now, _) = crate::off_path::framing::session_clock();
+    let (now, _) = wake_clock(clock);
+    let deadline = tokio::time::Instant::from_std(now) + limit;
     let acts = match conn.close(reason, now) {
         Ok(Some(acts)) => acts,
         Ok(None) => {
@@ -1368,7 +1376,11 @@ where
     let mut feeds_open = true;
     let mut registrations_open = true;
 
-    match task.apply(first, &mut io, wiring.write_timeout).await {
+    let mut clock = None;
+    match task
+        .apply(first, &mut io, wiring.write_timeout, &mut clock)
+        .await
+    {
         Flow::Go => {}
         Flow::Closed => {
             return finish_closed(
@@ -1399,6 +1411,9 @@ where
     }
 
     loop {
+        // THE WAKE'S CLOCK: one reading per pass of the loop (a pass is one wake), taken the first
+        // time the pass needs it. Before the wait only the close below reads it, and it returns.
+        let mut clock = None;
         if eof && task.idle() {
             while let Ok(feed) = wiring.feeds.try_recv() {
                 attach(&mut task.slots, feed);
@@ -1415,6 +1430,7 @@ where
                 wiring.write_timeout,
                 wiring.drain_grace,
                 &wiring.counters,
+                &mut clock,
             )
             .await
             .into();
@@ -1423,9 +1439,7 @@ where
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        let sleep_until = tokio::time::Instant::from_std(
-            deadline.unwrap_or_else(|| crate::off_path::framing::session_clock().0),
-        );
+        let sleep_until = deadline.map(tokio::time::Instant::from_std);
         let can_read = task.reading && task.pending.is_empty() && !eof;
         let can_feed = !task.slots.by_stream.is_empty() || !task.slots.opening.is_empty();
         let step = tokio::select! {
@@ -1447,7 +1461,7 @@ where
                 }
                 Step::Again
             },
-            event = next_io(&mut io, &mut buf, can_read, deadline.map(|_| sleep_until)) => event,
+            event = next_io(&mut io, &mut buf, can_read, sleep_until) => event,
             permit = wiring.inbound.reserve(), if !task.pending.is_empty() => match permit {
                 Ok(permit) => {
                     if let Some(item) = task.pending.pop_front() {
@@ -1469,7 +1483,11 @@ where
             },
             next = next_piece(&mut task.slots), if can_feed => Step::Feed(next),
         };
-        let (now, _) = crate::off_path::framing::session_clock();
+        let step = match step {
+            Step::Again => continue,
+            step => step,
+        };
+        let (now, _) = wake_clock(&mut clock);
         let mut settlement = None;
         let answered = match step {
             Step::Again => continue,
@@ -1481,6 +1499,7 @@ where
                     wiring.write_timeout,
                     wiring.drain_grace,
                     &wiring.counters,
+                    &mut clock,
                 )
                 .await
                 .into();
@@ -1563,7 +1582,10 @@ where
             Ok(acts) => acts,
             Err(ended) => return Outcome::Ended(ended),
         };
-        match task.apply(acts, &mut io, wiring.write_timeout).await {
+        match task
+            .apply(acts, &mut io, wiring.write_timeout, &mut clock)
+            .await
+        {
             Flow::Go => {}
             Flow::Closed => {
                 return finish_closed(
@@ -1631,7 +1653,7 @@ async fn finish_closed<S: AsyncWrite + Unpin>(
             let Some(control) = control else { return Outcome::Closed; };
             match control {
                 DeliveryControl::Settled { stream } => {
-                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], Instant::now()) {
+                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], crate::off_path::framing::session_clock().0) {
                         Ok(acts) => acts,
                         Err(ended) => return Outcome::Ended(ended),
                     };
@@ -1666,8 +1688,7 @@ async fn next_io<S: AsyncRead + Unpin>(
     can_read: bool,
     deadline: Option<tokio::time::Instant>,
 ) -> Step {
-    let sleep = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now));
-    tokio::pin!(sleep);
+    let mut sleep = std::pin::pin!(deadline.map(tokio::time::sleep_until));
     poll_fn(|cx| {
         if let Poll::Ready(control) = io.poll_control(cx) {
             return Poll::Ready(Step::Control(control));
@@ -1676,7 +1697,11 @@ async fn next_io<S: AsyncRead + Unpin>(
         if io.ledger().poll_idle(cx).is_ready() && had_responses {
             return Poll::Ready(Step::Again);
         }
-        if deadline.is_some() && std::future::Future::poll(sleep.as_mut(), cx).is_ready() {
+        if sleep
+            .as_mut()
+            .as_pin_mut()
+            .is_some_and(|sleep| std::future::Future::poll(sleep, cx).is_ready())
+        {
             return Poll::Ready(Step::Tick);
         }
         if can_read {

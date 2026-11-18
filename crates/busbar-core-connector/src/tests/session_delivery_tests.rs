@@ -72,7 +72,12 @@ async fn real_raw_prefix_and_flush_join_response_completion() {
     let mut io = DeliveryIo::new(raw, Delivery::new(ledger, progress), source.clone());
     assert!(matches!(
         task()
-            .apply(answer(&source, 1), &mut io, Duration::from_secs(1))
+            .apply(
+                answer(&source, 1),
+                &mut io,
+                Duration::from_secs(1),
+                &mut None
+            )
             .await,
         Flow::Go
     ));
@@ -100,7 +105,12 @@ async fn malformed_late_fence_prevents_the_entire_answer_from_writing() {
     let mut io = DeliveryIo::new(raw, Delivery::new(ledger, progress.clone()), source.clone());
     assert!(matches!(
         task()
-            .apply(answer(&source, 99), &mut io, Duration::from_secs(1))
+            .apply(
+                answer(&source, 99),
+                &mut io,
+                Duration::from_secs(1),
+                &mut None
+            )
             .await,
         Flow::Rejected(ResponseStop::Integrity)
     ));
@@ -148,7 +158,12 @@ async fn outer_error_preserves_actual_prefix_before_writer_retirement() {
     );
     assert!(matches!(
         task()
-            .apply(answer(&source, 1), &mut io, Duration::from_secs(1))
+            .apply(
+                answer(&source, 1),
+                &mut io,
+                Duration::from_secs(1),
+                &mut None
+            )
             .await,
         Flow::Lost(_)
     ));
