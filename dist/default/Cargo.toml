@@ -622,7 +622,18 @@ hex = { workspace = true }
 # the `ws` wire composed over `http`; composition left with ARCHITECT ruling Q128 U7 (no transport
 # names another), and the upgrade's cells return with the http detach -> ws adopt battery
 # (p2-transport-stack stage B).
-busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal", "tls", "test-support"] }
+busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal", "tls", "test-support", "stage-probe"] }
+# The root crate's own dev-dependencies (crates/busbar/Cargo.toml), which this package compiles the tests of:
+# the escapes check parses the binary's sources (R34, 01b648a46e); the migrate seam counts busbar_migrate's entries
+# (MIGRATE-ON-BOOT §9 C1 (sz2)); the stage probes (6c349b3e20) are read by the root's tests.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+busbar-migrate = { path = "../../crates/busbar-migrate", features = ["counted"] }
+
+# The root tests' allocation counters (UNSAFE-MIN QJ and §4.4, 4793e7b460), as crates/busbar has them.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemalloc-ctl = { workspace = true }
+stats_alloc = { workspace = true }
 
 # THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
 # module (the LINKED door) and built here as a `cdylib` (the DROPPED door), so one unit runs end to end
@@ -986,7 +997,12 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
+# Test-only (the root tests' dev-dependencies, as in the core workspace): per-thread allocation counters (UNSAFE-MIN QJ;
+# `paste` is a recorded cargo-deny exception, RUSTSEC-2024-0436, dev graph only) and `StatsAlloc<Jemalloc>` (§4.4;
+# `nightly` only makes `StatsAlloc::new` a `const fn`).
+tikv-jemalloc-ctl = { version = "=0.6.1", default-features = false, features = ["stats"] }
 tikv-jemallocator = "0.6"
+stats_alloc = { version = "0.1.10", features = ["nightly"] }
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
 tokio = "1"
