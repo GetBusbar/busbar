@@ -199,31 +199,6 @@ async fn a_ticket_under_another_host_key_does_not_open() {
     );
 }
 
-/// DES-331 §B4: the seal keys bind the restore epoch. A ticket sealed before a declared restore does not open
-/// after it, a ticket sealed after it opens at once, and epoch 0 is the original derivation.
-#[tokio::test]
-async fn a_ticket_sealed_before_a_declared_restore_does_not_open_after_it() {
-    let before = SealedTickets::at_restore_epoch(records().await, &[7u8; 32], clock, 0).unwrap();
-    let after = SealedTickets::at_restore_epoch(records().await, &[7u8; 32], clock, 1).unwrap();
-    let who = caller("plane-x", "p");
-    let (old, _) = before.mint(&who, mint("aud", false, b"")).await.unwrap();
-    assert!(tickets()
-        .await
-        .admit(&who, "aud", &old, NOW + 1)
-        .await
-        .is_ok());
-    assert_eq!(
-        after.admit(&who, "aud", &old, NOW + 1).await.err(),
-        Some(TicketDenied::Invalid)
-    );
-    let (fresh, _) = after.mint(&who, mint("aud", false, b"")).await.unwrap();
-    assert!(after.admit(&who, "aud", &fresh, NOW + 1).await.is_ok());
-    assert_eq!(
-        before.admit(&who, "aud", &fresh, NOW + 1).await.err(),
-        Some(TicketDenied::Invalid)
-    );
-}
-
 #[tokio::test]
 async fn a_once_ticket_admits_exactly_one_request() {
     let t = tickets().await;

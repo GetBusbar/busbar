@@ -218,9 +218,6 @@ mod admin_auth_row_projection;
 #[path = "admin_application/admin_budget_group_contracts.rs"]
 mod admin_budget_group_contracts;
 
-#[path = "admin_application/admin_restore_quarantine.rs"]
-mod admin_application_admin_restore_quarantine;
-
 #[path = "admin_application/admin_configuration_health.rs"]
 mod admin_configuration_health;
 

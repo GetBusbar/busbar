@@ -92,9 +92,6 @@ ENVIRONMENT:
 
 Flags:
     --ignore-overlay    boot on base config.yaml alone (the Store overlay is left untouched)
-    --restore-quarantine
-                        start in restore quarantine after restoring the Store from a backup:
-                        admin reads and the restore declaration only (docs/operations.md)
 ";
 
 const HELP_ENDPOINTS_HEAD: &str = "
@@ -123,8 +120,6 @@ pub(crate) struct Argv {
     pub(crate) config: Option<String>,
     pub(crate) providers: Option<String>,
     pub(crate) ignore_overlay: bool,
-    /// `--restore-quarantine`: start in restore quarantine to declare a restored Store (DES-331 §B5.1).
-    pub(crate) restore_quarantine: bool,
     /// `--stdio`: serve the one configured plane line route on stdin/stdout (WP1-GAP r3 §1.3).
     pub(crate) stdio: bool,
     /// Every other argument, in order: the first one is the command.
@@ -187,9 +182,6 @@ impl Argv {
                         .words
                         .push(format!("{name}={}", value.to_string_lossy())),
                     None if name == crate::OPTION_IGNORE_OVERLAY => argv.ignore_overlay = true,
-                    None if name == busbar_kernel::persistence::restore::LAUNCH_OPTION => {
-                        argv.restore_quarantine = true
-                    }
                     None => {
                         if name.starts_with("-c=") {
                             argv.refusal

@@ -2032,12 +2032,6 @@ diagnostics! {
         "This dataset's records are being converted to a newer format by another process (the migration owner the manifest names), and the conversion's rows (dataset root, manifest, step cursor, owner's writer row) changed within the stall window, so this process waits instead of claiming it. It binds no listener while it waits. The line names the owner's writer id, how long ago the conversion last changed and when this process claims it if nothing changes. A restart resets the wait.",
         "Let it wait: once the owner publishes the new format this process is admitted, and once the owner stops making progress for the window this process claims the conversion and resumes it from the step cursor. A record-format upgrade needs the whole fleet stopped (docs/migration-1.6.md, Shared datasets with a changing core record format): stop any process of the old release that still reaches this store.";
 
-    /// This process is in restore quarantine (DES-331 §B5, §B10.5).
-    STORE_RESTORED = 9026, Boot, Actionable, "store-restored", "1.6.0", false,
-        "This node is in restore quarantine: the Store was restored and is not yet declared",
-        "This node will not serve the data plane or mutate state, because the Store it opened was restored from a backup or another node began a restore. It entered quarantine because it was started with --restore-quarantine (reason flag), because the Store's restore row says a restore is pending (pending_row), or because a node-lease refresh saw a restore epoch other than the one this process started with (epoch_changed). The line names the reason, the restore epoch and, once a tail is supplied, the covered nodes, the per-node gaps and what was not re-applied. /readyz answers 503 with the reason store_restored; /livez stays up; admin reads are served.",
-        "Finish the restore: verify the exported audit tail with POST /api/v1/admin/store-restore/verify, then declare it with POST /api/v1/admin/store-restore (docs/operations.md, Backup set and order). Start the node launched with --restore-quarantine first and the other nodes only after it reports this line. A node that entered quarantine at a lease refresh restarts after the declaration.";
-
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
         "A retired launch environment variable is set and IGNORED",
