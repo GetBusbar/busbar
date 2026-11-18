@@ -707,7 +707,9 @@ pub(crate) struct TrustKeyReq {
     /// sighted. Revoke: the current `seen` or the current `approved`; `null` matches a null one of
     /// them. Omitted: 428 `reviewed_digest_required`. Anything else: 409 `reviewed_digest_stale`,
     /// and nothing changes.
-    #[schemars(required, regex(pattern = r"\S"))]
+    // `required` on an Option emits its non-null schema (schemars 1.2), which refused the `null`
+    // review this field takes: the type is restated so the schema says what is accepted.
+    #[schemars(required, regex(pattern = r"\S"), extend("type" = ["string", "null"]))]
     #[serde(rename = "expected_digest")]
     _expected_digest: Option<String>,
 }

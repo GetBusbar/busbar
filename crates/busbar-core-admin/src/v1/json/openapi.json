@@ -8041,7 +8041,10 @@
           "expected_digest": {
             "description": "Required: the digest the operator reviewed from `GET /trust` (TRUST-ADMIN-PRODUCER-DESIGN\nr3 §4.1). Approve: exactly the key's current `seen`; `null` only while it was never\nsighted. Revoke: the current `seen` or the current `approved`; `null` matches a null one of\nthem. Omitted: 428 `reviewed_digest_required`. Anything else: 409 `reviewed_digest_stale`,\nand nothing changes.",
             "pattern": "\\S",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "key": {
             "description": "`<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.",
