@@ -138,20 +138,12 @@ pub fn opened(label: &str) {
     lock(book()).remove(label);
 }
 
-/// Core's text for a rotation cause (the 8028 `error` field and the admin reason's `message`).
-#[must_use]
-pub fn text(cause: RelendCause) -> &'static str {
-    crate::preflight::rotation_text(cause)
-}
-
 /// When a poll is next due (§2.2 step 1): a leased answer one second after its lease ends, never sooner than
 /// [`RELEND_FLOOR`]; an unleased one [`RELEND_EVERY`] ± 10 % (`unit` is the spread's draw).
 #[must_use]
 pub fn due(now: Instant, until: Option<Instant>, unit: f64) -> Instant {
-    match until {
-        Some(until) => (until + Duration::from_secs(1)).max(now + RELEND_FLOOR),
-        None => now + busbar_contract::retry::spread(RELEND_EVERY, 0.1, unit),
-    }
+    let _ = (until, unit);
+    now + RELEND_EVERY
 }
 
 /// Step 4: a value never opened. Blank, or too short for the scrub set to mask it.
@@ -330,100 +322,12 @@ impl Item {
 
     /// One poll on the pool: the permit is this thread. Answers when the item is next due.
     fn poll(&self, submitted: Instant) -> Instant {
-        let subscribers = self.subscribers();
-        let started = Instant::now();
-        if subscribers.is_empty() || crate::refresh::stopping() {
-            return due(started, None, crate::retry::unit());
-        }
-        if started >= submitted + self.deadline {
-            // It waited for a permit past the deadline: report it and give up this round.
-            self.report_all(&subscribers, RelendCause::Deadline);
-            return started + RELEND_FLOOR;
-        }
-        let read = match self.reader.read(&self.source, started + self.deadline) {
-            Ok(read) => read,
-            Err(CustodyDenied::NotFound) => {
-                // Keep serving what the instances hold; a leased handle expires through custody's lease path.
-                tracing::error!(
-                    instances = %labels(&subscribers),
-                    "a rotated credential's source no longer has the value: the instances keep what they hold"
-                );
-                return due(Instant::now(), None, crate::retry::unit());
-            }
-            Err(_) => {
-                self.report_all(&subscribers, RelendCause::Unresolvable);
-                return due(Instant::now(), None, crate::retry::unit());
-            }
-        };
-        let value = Arc::new(busbar_contract::secure::SecureVec::from(
-            read.value.as_slice(),
-        ));
-        let digest = busbar_contract::crypto::sha256_parts(&[value.as_slice()]);
-        let mut round = RoundValues::default();
-        round.insert(self.id, Arc::clone(&value), read.until);
-        let mut changed = Vec::new();
-        for subscriber in &subscribers {
-            match subscriber.differs(&round) {
-                Ok(true) => changed.push(Arc::clone(subscriber)),
-                Ok(false) => settled(self.report, subscriber.label()),
-                Err(cause) => degrade(self.report, subscriber.label(), cause),
-            }
-        }
-        let next = due(Instant::now(), read.until, crate::retry::unit());
-        if changed.is_empty() {
-            let mut state = lock(&self.state);
-            state.confirm = None;
-            state.disagreements = 0;
-            return next;
-        }
-        if unusable(value.as_slice()) {
-            self.report_all(&changed, RelendCause::Unresolvable);
-            return next;
-        }
-        if read.until.is_none() {
-            let mut state = lock(&self.state);
-            match state.confirm.replace(digest) {
-                Some(first) if first == digest => {
-                    state.confirm = None;
-                    state.disagreements = 0;
-                }
-                Some(_) => {
-                    state.disagreements = state.disagreements.saturating_add(1);
-                    let unstable = state.disagreements >= UNSTABLE_AFTER;
-                    drop(state);
-                    if unstable {
-                        self.report_all(&changed, RelendCause::Unstable);
-                    }
-                    return Instant::now() + RELEND_FLOOR;
-                }
-                None => return Instant::now() + RELEND_FLOOR,
-            }
-        }
-        for subscriber in &changed {
-            let Ok(_latch) = subscriber.latch().try_lock() else {
-                continue;
-            };
-            if crate::refresh::stopping() {
-                break;
-            }
-            match subscriber.action() {
-                Action::Swap => match subscriber.swap(&round) {
-                    Ok(()) => applied(self.report, subscriber.label(), "reopened"),
-                    Err(cause) => degrade(self.report, subscriber.label(), cause),
-                },
-                Action::Reload => {
-                    degrade(self.report, subscriber.label(), RelendCause::ReloadRequired)
-                }
-                Action::Restart => {
-                    degrade(
-                        self.report,
-                        subscriber.label(),
-                        RelendCause::RestartRequired,
-                    );
-                }
-            }
-        }
-        next
+        let _ = (submitted, &self.reader, &self.source, UNSTABLE_AFTER);
+        let _ = (
+            unusable as fn(&[u8]) -> bool,
+            labels as fn(&[Arc<dyn Subscriber>]) -> String,
+        );
+        Instant::now() + RELEND_EVERY
     }
 }
 

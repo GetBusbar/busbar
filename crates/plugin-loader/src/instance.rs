@@ -1971,17 +1971,6 @@ impl SlotTable {
         page.get(slot % PAGE)
     }
 
-    /// The kind and configured name of the instance leasing `slot` now, and a weak handle on its scrub set that
-    /// dies with the instance (DES-454: a rotation subscriber's identity and liveness).
-    pub fn owner(&self, slot: u32) -> Option<(KindCode, Arc<str>, std::sync::Weak<Scrub>)> {
-        let record = self.record(slot)?;
-        Some((
-            record.kind,
-            Arc::clone(&record.name),
-            Arc::downgrade(&record.scrub),
-        ))
-    }
-
     /// The record of a slot that is leased now (the log sink's attribution for a running entry).
     pub(crate) fn record(&self, slot: u32) -> Option<Arc<SlotRecord>> {
         self.entry(slot)?.record.load_full()

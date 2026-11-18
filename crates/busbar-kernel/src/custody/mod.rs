@@ -257,16 +257,6 @@ pub trait CustodyHost: Send + Sync + 'static {
     fn source(&self, module: &str) -> Option<SecretSource>;
     /// One audit row, attributed to `who`'s kind and configured name (§12.20). Core text only: no value, no source.
     fn audit(&self, who: &Caller<'_>, handle: u32, event: CustodyEvent);
-    /// DES-454 §2.1: `who`'s `handle` now publishes a value of `binding`, leased until `until` (None: unleased).
-    /// The rotation refresher subscribes unleased handles here. Default: nothing.
-    fn published(
-        &self,
-        _who: &Caller<'_>,
-        _handle: u32,
-        _binding: &SecretRef,
-        _until: Option<Instant>,
-    ) {
-    }
     /// The monotonic clock leases are measured on.
     fn now(&self) -> Instant;
 }
@@ -383,21 +373,6 @@ impl<H: CustodyHost> Custody<H> {
             next.remove(&instance);
             self.instances.store(Arc::new(next));
         }
-    }
-
-    /// DES-454 §2.2: what `r` resolves to for an instance seeded with `round`, through the normal path for every
-    /// other source. Registers and publishes nothing.
-    pub async fn resolve_with(
-        &self,
-        cx: CallCx,
-        r: &SecretRef,
-        round: &RoundValues,
-    ) -> Result<Leased, CustodyDenied> {
-        let resolved = self.resolved(cx, r, Some(round)).await?;
-        Ok(Leased {
-            value: SecureVec::from(resolved.value.as_slice()),
-            until: resolved.until,
-        })
     }
 
     /// Every in-flight leader of `instance` is superseded: each entry gets a fresh cell under its lock, so the
@@ -539,7 +514,6 @@ impl<H: CustodyHost> Custody<H> {
             scrub.register(key.handle, &values);
             publish(entry, &held);
         }
-        self.host.published(who, key.handle, &binding, held.until);
         self.host.audit(who, key.handle, CustodyEvent::Resolved);
         Ok(held)
     }
