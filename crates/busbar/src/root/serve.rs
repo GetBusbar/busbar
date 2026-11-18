@@ -1544,7 +1544,7 @@ pub(crate) struct DoorRequest {
 
     pub(crate) scheme: u8,
 
-    pub(crate) consumed_fields: Vec<(String, String)>,
+    pub(crate) consumed_fields: Vec<(HeaderName, String)>,
 }
 
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
@@ -1571,7 +1571,7 @@ impl DoorRequest {
             None => self
                 .consumed_fields
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| n.as_str() == name)
                 .map(|(_, scheme)| scheme.as_str()),
         }
     }

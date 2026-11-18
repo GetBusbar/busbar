@@ -281,7 +281,9 @@ impl AuthMiddleware {
                         refused,
                     )?;
                     chain.push(ChainEntry {
-                        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(entry.name.as_str())),
+                        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(
+                            entry.name.as_str(),
+                        )),
                         name: calls.name().to_string(),
                         calls,
                     });

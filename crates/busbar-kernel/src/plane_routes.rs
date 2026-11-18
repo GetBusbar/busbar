@@ -162,7 +162,9 @@ pub struct PlaneReqCtx {
 
     pub host_ticket_admission: Option<crate::host_services::HostTicketAdmission>,
 
-    pub consumed_fields: Vec<(String, String)>,
+    /// The consumed credential carriers the request presented, each with its `Authorization`
+    /// scheme word (empty for any other carrier).
+    pub consumed_fields: Vec<(axum::http::HeaderName, String)>,
 
     pub engine: Arc<dyn Any + Send + Sync>,
 

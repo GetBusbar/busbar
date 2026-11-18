@@ -434,13 +434,14 @@ fn without_query_where(
 ) -> Option<axum::http::Uri> {
     let query = uri.query()?;
     let kept = without_query_text_where(query, named)?;
+    // With no pair kept the path is parsed in place; only a kept query needs the joined text.
     let path_and_query = if kept.is_empty() {
-        uri.path().to_string()
+        uri.path().parse().ok()?
     } else {
-        format!("{}?{kept}", uri.path())
+        format!("{}?{kept}", uri.path()).parse().ok()?
     };
     let mut parts = uri.clone().into_parts();
-    parts.path_and_query = Some(path_and_query.parse().ok()?);
+    parts.path_and_query = Some(path_and_query);
     axum::http::Uri::from_parts(parts).ok()
 }
 
@@ -1717,8 +1718,9 @@ pub struct AdminWho {
     pub kind: &'static str,
     /// The credential's id: the key id for `key`, the principal id for `identity_provider`.
     pub id: Option<String>,
-    /// The identity provider (or operator provider) that identified the principal.
-    pub provider: Option<String>,
+    /// The identity provider (or operator provider) that identified the principal: the verdict's
+    /// own shared name.
+    pub provider: Option<busbar_contract::kept::Text>,
     /// The credential's expiry, Unix seconds, when one is stated.
     pub expires_at: Option<u64>,
 }
@@ -1781,14 +1783,14 @@ fn admin_who_of(
             crate::config::operator_principal_id(),
         ) =>
         {
-            ("operator", None, Some(module.as_str().to_owned()), None)
+            ("operator", None, Some(module.clone()), None)
         }
         ChainVerdict::Identified {
             module, principal, ..
         } => (
             "identity_provider",
             Some(principal.id.clone()),
-            Some(module.as_str().to_owned()),
+            Some(module.clone()),
             None,
         ),
     };
@@ -2491,7 +2493,8 @@ pub(crate) async fn auth_middleware(
             dpop::SenderConstraint::Unconstrained => client_token,
             dpop::SenderConstraint::Proven(token) => {
                 dpop_proven = true;
-                Some(token)
+                // Kept past the request (the caller-token extension): its one owned copy.
+                Some(token.to_owned())
             }
             dpop::SenderConstraint::Refused(reason) => {
                 if let Some(inbound) = inbound.as_ref() {

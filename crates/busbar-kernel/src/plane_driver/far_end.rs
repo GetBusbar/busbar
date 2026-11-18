@@ -55,10 +55,10 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
-use busbar_contract::kept::Text;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -1301,13 +1301,10 @@ impl EgressFarEnd<'_> {
     /// The unit's pool by its shared name: the configured pool's own, or (a pool the generation
     /// does not hold) the route's name made shared once.
     fn route_pool(&self) -> Text {
-        self.egress
-            .pools
-            .get(&self.route.pool)
-            .map_or_else(
-                || Text::from(Arc::<str>::from(self.route.pool.as_str())),
-                |pool| pool.name.clone(),
-            )
+        self.egress.pools.get(&self.route.pool).map_or_else(
+            || Text::from(Arc::<str>::from(self.route.pool.as_str())),
+            |pool| pool.name.clone(),
+        )
     }
 
     fn metric_pool<'m>(pool: &'m Text, member: &'m Member) -> &'m Text {

@@ -148,7 +148,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
         credential: WhoamiCredential {
             kind: who.kind,
             id: who.id.clone(),
-            provider: who.provider.clone(),
+            provider: who.provider.as_ref().map(|name| name.as_str().to_owned()),
             expires_at: who.expires_at,
         },
         scope: scope_of(door),

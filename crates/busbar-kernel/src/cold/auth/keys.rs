@@ -52,18 +52,6 @@ pub(crate) fn challenge_fields(challenge: String) -> crate::plane_driver::HeadFi
     ]
 }
 
-/// The provider name a self-serve key is minted under, owned once per exchange.
-#[cold]
-pub(crate) fn self_key_provider(provider: &str) -> String {
-    provider.to_owned()
-}
-
-/// The mint refusal when governance is disabled.
-#[cold]
-pub(crate) fn governance_disabled() -> String {
-    "governance is disabled: cannot mint keys".to_owned()
-}
-
 /// The personal budget group a self-serve key charges through (`user:<sub>`).
 #[cold]
 pub(crate) fn self_group(principal_id: &str) -> String {
@@ -96,13 +84,6 @@ pub(crate) fn self_mint_parts(
 #[cold]
 pub(crate) fn mint_store_failed(error: &dyn std::fmt::Display) -> String {
     error.to_string()
-}
-
-/// What a self-serve group provision owns across its config transaction: the leaf, its parent
-/// and the acting principal.
-#[cold]
-pub(crate) fn provision_parts(leaf: &str, parent: &str, actor: &str) -> (String, String, String) {
-    (leaf.to_owned(), parent.to_owned(), actor.to_owned())
 }
 
 /// The audit row of a token exchange refused because its verified principal is held (`auth:<module>`

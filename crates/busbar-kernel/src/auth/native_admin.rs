@@ -222,7 +222,7 @@ impl ExecutionAdmission {
         Some(super::admin_door_of(
             app,
             super::ChainVerdict::Identified {
-                module: super::admin_module(prepared.provider()),
+                module: prepared.provider_text(),
                 principal: super::Principal {
                     id: identity.subject().to_owned(),
                     name: None,
@@ -242,7 +242,7 @@ impl ExecutionAdmission {
         super::admin_who_of(
             lease.generation(),
             super::ChainVerdict::Identified {
-                module: super::admin_module(prepared.provider()),
+                module: prepared.provider_text(),
                 principal: super::Principal {
                     id: identity.subject().to_owned(),
                     name: None,

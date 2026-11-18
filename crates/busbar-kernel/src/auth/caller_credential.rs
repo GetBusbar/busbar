@@ -40,7 +40,19 @@ impl ConsumedCredentials {
         }
     }
 
-    pub(crate) fn fields_of(consumed: Option<&Self>, headers: &HeaderMap) -> Vec<(String, String)> {
+    /// Whether the request presents any consumed carrier: asked in place, nothing built.
+    pub(crate) fn present_in(consumed: Option<&Self>, headers: &HeaderMap) -> bool {
+        consumed
+            .is_some_and(|consumed| consumed.names.iter().any(|name| headers.contains_key(name)))
+    }
+
+    /// The consumed carriers the request presents, each with its `Authorization` scheme word
+    /// (empty for any other carrier): what the request context keeps once the carriers are
+    /// stripped. The name is the gate's own header name, shared, never copied.
+    pub(crate) fn fields_of(
+        consumed: Option<&Self>,
+        headers: &HeaderMap,
+    ) -> Vec<(HeaderName, String)> {
         let Some(consumed) = consumed else {
             return Vec::new();
         };
@@ -56,7 +68,7 @@ impl ConsumedCredentials {
                     .and_then(|v| v.split_once(' '))
                     .map(|(word, _)| word.to_owned())
                     .unwrap_or_default();
-                Some((name.as_str().to_owned(), scheme))
+                Some((name.clone(), scheme))
             })
             .collect()
     }

@@ -21,12 +21,14 @@ type AsPlaneBuildFn =
 
 type AsPlaneCheckFn = fn(&busbar_contract::yaml::Value) -> Result<Vec<(String, SecretRef)>, String>;
 
-pub struct DpopPresentation {
-    pub method: String,
+/// One DPoP presentation, lent for the length of its verification: the request's own method,
+/// path, token and proof, borrowed from the request (no copy of a credential is made to verify it).
+pub struct DpopPresentation<'a> {
+    pub method: &'a str,
 
-    pub path: String,
-    pub token: busbar_contract::secure::SecureString,
-    pub proof: busbar_contract::secure::SecureString,
+    pub path: &'a str,
+    pub token: &'a str,
+    pub proof: &'a str,
 }
 
 /// An `oauth_as:` block its owner has ACCEPTED ([`AsPlaneSeam::check`]), carried by `RootCfg`: the
@@ -41,8 +43,10 @@ pub struct CheckedAsBlock {
     pub admin_origin: String,
 }
 
-type AsDpopVerifyFn =
-    fn(&Arc<dyn Any + Send + Sync>, DpopPresentation) -> Pin<Box<dyn Future<Output = bool> + Send>>;
+type AsDpopVerifyFn = for<'a> fn(
+    &'a Arc<dyn Any + Send + Sync>,
+    DpopPresentation<'a>,
+) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
 pub struct AsPlaneSeam {
     /// Owner-produced raw oauth_as user-input schema; separate from resolved server state.

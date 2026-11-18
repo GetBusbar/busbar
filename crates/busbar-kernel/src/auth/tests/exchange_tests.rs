@@ -186,7 +186,7 @@ async fn exchange_verifier_outcome_projection_preserves_failed_and_faulted_503()
             Verified::Failed
         };
         let judged = crate::auth::data_verdict_of("door", verified.into(), faulted).map(|judged| {
-            crate::auth::chain_position_verdict(&"door".into(),judged.verdict)
+            crate::auth::chain_position_verdict(&"door".into(), judged.verdict)
                 .unwrap_or(crate::auth::ChainVerdict::Denied)
         });
         let response =
