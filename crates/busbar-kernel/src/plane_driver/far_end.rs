@@ -1103,22 +1103,38 @@ fn fail_over() -> FarPiece {
     }
 }
 
+/// The last credential cause warned about, per provider. Made once, by `declare_providers`, when a
+/// generation is built.
+pub(crate) static CREDENTIAL_WARNED: std::sync::OnceLock<
+    Mutex<busbar_contract::fixed::Seats<Option<ConnError>>>,
+> = std::sync::OnceLock::new();
+
+/// Whether `err` is a new cause for `provider`, and remembers it. The table is made when a
+/// generation is built (`declare_providers`), never here; a provider it has no seat for is not
+/// warned about.
+fn credential_cause_changed(provider: &str, err: ConnError) -> bool {
+    let Some(last) = CREDENTIAL_WARNED.get() else {
+        return false;
+    };
+    let mut last = last
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match last.claim(provider) {
+        Ok(seen) if *seen == Some(err) => false,
+        Ok(seen) => {
+            *seen = Some(err);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Say, at WARN, why `provider`'s credential could not be presented to its upstream `base_url`:
 /// once per (provider, cause) change, never per request (a refusal repeats on every request until
 /// the configuration changes). The upstream is named by its scheme and host only.
 fn warn_credential_refused(provider: &str, base_url: &str, err: ConnError) {
-    static LAST: std::sync::OnceLock<Mutex<foldhash::HashMap<String, ConnError>>> =
-        std::sync::OnceLock::new();
-    {
-        let mut last = LAST
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match last.get_mut(provider) {
-            Some(seen) if *seen == err => return,
-            Some(seen) => *seen = err,
-            None => crate::cold::far_end_first_refusal(&mut last, provider, err),
-        }
+    if !credential_cause_changed(provider, err) {
+        return;
     }
     if err == ConnError::AuthRefused {
         let (scheme, rest) = base_url.split_once("://").unwrap_or(("", base_url));
