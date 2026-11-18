@@ -457,12 +457,11 @@ impl FeeDebtObserver {
             .source
             .try_reserve(bytes)
             .map_err(|_| FeeDebtRefusal::Capacity)?;
-        let mut targets = Vec::new();
-        if targets.try_reserve_exact(count).is_err() {
+        if state.targets.try_reserve_exact(count).is_err() {
             return Err(FeeDebtRefusal::Capacity);
         }
         for bucket in buckets {
-            targets.push(Target {
+            state.targets.push(Target {
                 bucket: Arc::from(bucket),
                 incarnation: 0,
                 window: None,
@@ -472,7 +471,6 @@ impl FeeDebtObserver {
                 unresolved: false,
             });
         }
-        state.targets = targets;
         state.credit = Some(credit);
         state.prepared = true;
         Ok(())
