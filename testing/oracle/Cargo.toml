@@ -41,7 +41,7 @@ socket2 = { version = "0.6", features = ["all"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "test-util"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
 prost = { version = "0.14", default-features = false, features = ["std"] }
 
