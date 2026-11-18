@@ -564,8 +564,6 @@ pub use busbar_kernel::config::auth::{
     ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
-pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
     let op = operator_provider();
     if has_token && !op.is_empty() && !names_operator(module) {
