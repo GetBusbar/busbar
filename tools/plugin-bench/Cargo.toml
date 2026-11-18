@@ -51,7 +51,6 @@ rustls = { git = "https://github.com/MattJackson/rustls", rev = "02181ad51e81f9c
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
-fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
 http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
