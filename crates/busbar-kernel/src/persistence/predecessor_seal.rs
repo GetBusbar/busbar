@@ -286,10 +286,10 @@ impl PredecessorFence {
                 .get(NODE_SCHEMA, &super::id_key(assignment.id))
                 .await
                 .map_err(RetireError::from)?;
-            if reserved
+            // Compared in place: no copy of the reserved row leaves custody.
+            if !reserved
                 .as_ref()
-                .map(|v| v.expose(&crate::seal::lend()).to_vec())
-                != Some(assignment.bytes())
+                .is_some_and(|v| v.expose(&crate::seal::lend())[..] == assignment.bytes()[..])
             {
                 out.refused.push(RefusedNode {
                     id: Some(assignment.id),

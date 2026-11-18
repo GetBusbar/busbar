@@ -41,7 +41,8 @@ pub(crate) struct DeviceQuery {
 #[derive(serde::Deserialize)]
 pub(crate) struct DeviceForm {
     user_code: Option<String>,
-    csrf_token: Option<String>,
+    /// Held in wiping custody (credential typecheck; PM ruling 2026-11-17).
+    csrf_token: Option<busbar_contract::secure::SecureString>,
     /// `approve` or `deny`; anything else shows the confirm page again.
     action: Option<String>,
 }
@@ -62,7 +63,8 @@ pub(crate) struct ConsentForm {
     return_to: Option<String>,
     #[serde(rename = "ref")]
     reference: Option<String>,
-    csrf_token: Option<String>,
+    /// Held in wiping custody (credential typecheck; PM ruling 2026-11-17).
+    csrf_token: Option<busbar_contract::secure::SecureString>,
     /// `approve` or `deny`.
     answer: Option<String>,
 }
@@ -112,7 +114,10 @@ pub(crate) async fn device_decide(
     };
     let consumed = match (
         crate::consent::cookie(&headers, DEVICE_FORM_COOKIE),
-        form.csrf_token.as_deref().filter(|t| !t.is_empty()),
+        form.csrf_token
+            .as_ref()
+            .map(busbar_contract::secure::SecureString::as_str)
+            .filter(|t| !t.is_empty()),
     ) {
         (Some(id), Some(csrf)) => {
             match plane
@@ -323,7 +328,10 @@ pub(crate) async fn consent_submit(
     // screen showed do not match it, so they are never trusted on their own.
     let consumed = match (
         crate::consent::cookie(&headers, CONSENT_FORM_COOKIE),
-        form.csrf_token.as_deref().filter(|t| !t.is_empty()),
+        form.csrf_token
+            .as_ref()
+            .map(busbar_contract::secure::SecureString::as_str)
+            .filter(|t| !t.is_empty()),
     ) {
         (Some(id), Some(csrf)) => {
             match plane
@@ -379,9 +387,11 @@ pub(crate) async fn consent_submit(
         plane.identity().origin(),
         crate::consent::HANDLE_PARAM
     );
-    let Ok(back) = axum::http::HeaderValue::from_str(&back) else {
+    let Ok(mut back) = axum::http::HeaderValue::from_str(&back) else {
         return not_representable();
     };
+    // The Location carries the one-time consent handle: never indexed or logged as plain.
+    back.set_sensitive(true);
     (
         axum::http::StatusCode::FOUND,
         [
