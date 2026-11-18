@@ -213,14 +213,12 @@ interim:
   crates/busbar-kernel/tests/support/plane_driver_session_input_cases.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/tests/support/plane_driver_unbilled_cases.rs: { tokens: 7, by: "W3-D-BINARY" }
   crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/main.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/serve_datagram.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/door_steps.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/inbound.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_door_root.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
@@ -230,7 +228,7 @@ interim:
   crates/busbar/src/root/tests/serve_money.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/test_plugins.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/tests/distribution.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/tests/generated_escapes.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/tests/generated_escapes.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/plugin-loader/src/auth_door.rs: { tokens: 11, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/auth_login.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/answer.rs: { tokens: 3, by: "W2 / W3 (old dispatch and doors)" }
@@ -314,7 +312,6 @@ interim:
   crates/plugin-loader/src/tests/ordinary_plane_sessions_actual.rs: { tokens: 12, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_suite_dispatch_tests.rs: { tokens: 9, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/ordinary_suite_hook_ticket_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/pack_tests.rs: { tokens: 2, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/plane_probe_tests.rs: { tokens: 19, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/plugin_log_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/sdk_registration_tests.rs: { tokens: 18, by: "W2 / W3 (old dispatch and doors)" }
@@ -333,9 +330,8 @@ interim:
   dist/default/tests/door_ready_alloc.rs: { tokens: 19, by: "W3-D-BINARY" }
   dist/default/tests/export_otlp_delivers_spans.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/fixtures/plane_driver_test_plane.rs: { tokens: 34, by: "W3-D-BINARY" }
-  dist/default/tests/hook_parity_driver/main.rs: { tokens: 2, by: "W3-D-BINARY" }
   dist/default/tests/linked_export_sinks_boot_as_their_own_kind.rs: { tokens: 1, by: "W3-D-BINARY" }
-  dist/default/tests/linked/mod.rs: { tokens: 2, by: "W3-D-BINARY" }
+  dist/default/tests/linked/mod.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/otlp_span_records.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/product/money_one_function_equivalence.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/traces_stream_both_doors.rs: { tokens: 1, by: "W3-D-BINARY" }
@@ -346,9 +342,7 @@ interim:
   tools/plugin-bench/src/auth.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/export.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/frames.rs: { tokens: 4, by: "W3-D-CONTRACT (deleted)" }
-  tools/plugin-bench/src/hook.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/plane.rs: { tokens: 4, by: "W3-D-CONTRACT (deleted)" }
-  tools/plugin-bench/src/secret.rs: { tokens: 2, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/stats.rs: { tokens: 7, by: "W3-D-CONTRACT (deleted)" }
   tools/plugin-bench/src/transport.rs: { tokens: 3, by: "W3-D-CONTRACT (deleted)" }
 # E2: package roots that do not yet carry both #![forbid(unsafe_code)] and
