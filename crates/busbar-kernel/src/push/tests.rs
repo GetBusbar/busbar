@@ -12,7 +12,7 @@ use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::{BoxFut, CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::types::KindCode;
 
-use super::{Dropped, PushQueue, PushSink, Round, StorePushQueue, MAX_PUSH};
+use super::{Dropped, PushSink, Round, StorePushQueue, MAX_PUSH};
 use crate::plugin_records::RecordsDenied;
 use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
 

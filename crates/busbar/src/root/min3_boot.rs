@@ -44,7 +44,7 @@ use busbar_kernel::plane_grants::{
 };
 use busbar_kernel::plugin_config::ConfigBinder;
 use busbar_kernel::plugin_records::{PluginRecords, RecordsDenied, StoreRecords};
-use busbar_kernel::push::{PushQueue, StorePushQueue};
+use busbar_kernel::push::StorePushQueue;
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
 use busbar_plugin_abi::types::KindCode;
@@ -85,7 +85,7 @@ pub(crate) struct CoreSecrets {
 /// The serving instances' shared owners, constructed after the Store deployment checks.
 struct Shared {
     records: Records,
-    push: Arc<dyn PushQueue>,
+    push: Arc<StorePushQueue>,
     signals: Arc<SignalRegistry>,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
@@ -185,7 +185,7 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 impl Shared {
     fn new(
         records: Records,
-        push: Arc<dyn PushQueue>,
+        push: Arc<StorePushQueue>,
         store: Arc<busbar_kernel::persistence::facade::CoreStore>,
         binder: Arc<WorkBinder>,
     ) -> Self {
@@ -2412,7 +2412,7 @@ pub(super) async fn finish_with_store(
     for probe in probes {
         workers.push(probe);
     }
-    let queue: Arc<dyn PushQueue> = shared.push.clone();
+    let queue: Arc<StorePushQueue> = shared.push.clone();
     for seat in ticking {
         let queue = Arc::clone(&queue);
         workers.push(async move { seat.tick_task(queue).await });

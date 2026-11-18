@@ -39,7 +39,7 @@ use super::port_session::{ClientSink, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
 
 use super::{AuditSink, CoreAudit};
-use crate::push::PushQueue;
+use crate::push::StorePushQueue;
 use crate::refusal::{ClientRefusal, RefusalMap};
 use crate::teller::UnitCtx;
 use busbar_plugin_abi::types::{Bytes, Pair, Str};
@@ -164,7 +164,7 @@ impl PortSeat {
     /// One `admin(ADMIN_TICK)`: the plane's PUSHes are queued under this instance's namespace (EMITs already went
     /// to their carriers). A refused or failed tick, or a push the queue refuses, is logged and dropped: the next
     /// tick is the retry. Answers how many pushes were queued.
-    pub async fn tick_once(&self, queue: &dyn PushQueue) -> usize {
+    pub async fn tick_once(&self, queue: &StorePushQueue) -> usize {
         let out = match self.driver.tick().await {
             Ok(out) => out,
             Err(error) => {
@@ -187,7 +187,7 @@ impl PortSeat {
 
     /// The tick timer task (§8.6 `tick_s`): `tick_once` every period until the task is dropped. A plane that
     /// states no period is never ticked (the task returns at once).
-    pub async fn tick_task(self, queue: Arc<dyn PushQueue>) {
+    pub async fn tick_task(self, queue: Arc<StorePushQueue>) {
         let Some(period) = self.driver.tick_s().filter(|s| *s > 0) else {
             return;
         };

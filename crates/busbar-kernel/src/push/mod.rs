@@ -29,22 +29,6 @@ use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
 mod fetch;
 pub use fetch::ConnectorPushSink;
 
-/// Plane PUSH intents. Durable (CoreStore, rows keyed by (who.plugin, who.name), never the runtime id),
-/// at-least-once, deliveries through the connector's fetch with the live instance of that name as Caller
-/// (the connector's guard judges every new connection, §12.1), retries via RetryPolicy(PlanePush), dropped and audited after ttl_s or when no
-/// instance of that name is configured. The plane learns nothing back (it may record its own bookkeeping).
-/// Round 16: a plane that must refuse a bad callback **when the client sets it** (plane-a2a's push config) asks
-/// first with the JUDGE intent (§8.6, §12.1 `PlaneJudge`) and refuses in its own protocol; the delivery-time judge
-/// here still applies to every attempt (DNS can change between the two).
-pub trait PushQueue: Send + Sync + 'static {
-    fn enqueue<'a>(
-        &'a self,
-        who: &'a Caller<'_>,
-        ttl_s: u64,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-}
-
 /// The queued pushes.
 pub(crate) const PUSHES: &str = "busbar.plane-push.v1";
 
@@ -134,8 +118,15 @@ impl StorePushQueue {
     }
 }
 
-impl PushQueue for StorePushQueue {
-    fn enqueue<'a>(
+impl StorePushQueue {
+    /// Queue one plane PUSH (arch lints section 3.1: the one queue is this concrete type). Durable (CoreStore,
+    /// rows keyed by (who.plugin, who.name), never the runtime id), at-least-once, delivered through the
+    /// connector's fetch with the live instance of that name as Caller (the connector's guard judges every new
+    /// connection, section 12.1), retried via RetryPolicy(PlanePush), dropped and audited after ttl_s or when no
+    /// instance of that name is configured. The plane learns nothing back. Round 16: a plane that must refuse a
+    /// bad callback when the client sets it asks first with the JUDGE intent (section 8.6, 12.1 `PlaneJudge`);
+    /// the delivery-time judge still applies to every attempt (DNS can change between the two).
+    pub fn enqueue<'a>(
         &'a self,
         who: &'a Caller<'_>,
         ttl_s: u64,

@@ -55,7 +55,7 @@ use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{
     CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope, MAX_KEY, MAX_VALUE,
 };
-use crate::push::PushQueue;
+use crate::push::StorePushQueue;
 
 /// How many rounds of intents one answer may chain (an answer's pieces answering with more intents) before the
 /// session is cut. A plane's real chains are two or three deep (LOOKUP, then COMMIT, then WORK).
@@ -1411,12 +1411,12 @@ impl Namespace {
     }
 }
 
-/// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`PushQueue`], signals
+/// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`StorePushQueue`], signals
 /// through the [`SessionSignals`] registry, WORK through the decider (default [`NoWork`]). Its calls block on `rt`,
 /// so they run from `spawn_blocking`, never on a runtime worker.
 pub struct KernelIntents<R: PluginRecords> {
     records: Arc<R>,
-    push: Arc<dyn PushQueue>,
+    push: Arc<StorePushQueue>,
     signals: Arc<dyn SessionSignals>,
     work: Arc<dyn WorkDecider>,
     services: Services,
@@ -1558,7 +1558,7 @@ impl<R: PluginRecords> KernelIntents<R> {
     #[must_use]
     pub fn new(
         records: Arc<R>,
-        push: Arc<dyn PushQueue>,
+        push: Arc<StorePushQueue>,
         signals: Arc<dyn SessionSignals>,
         who: Namespace,
         rt: Handle,

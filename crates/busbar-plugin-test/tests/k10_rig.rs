@@ -24,8 +24,8 @@ use busbar_kernel::plane_driver::port_intents::{
 };
 use busbar_kernel::plane_driver::port_services::Services;
 use busbar_kernel::plane_grants::{CoreJwsSigner, GrantResolver, RequestGrants, SealedTickets};
-use busbar_kernel::plugin_records::{RecordsDenied, StoreRecords};
-use busbar_kernel::push::PushQueue;
+use busbar_kernel::plugin_records::StoreRecords;
+use busbar_kernel::push::StorePushQueue;
 use busbar_kernel::upstreams::{UpstreamAuth, UpstreamDef, UpstreamTls, Upstreams};
 use busbar_plugin_abi::auth::{FB_LOGIN_REDIRECT, SECURITY_CHECK};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
@@ -330,7 +330,11 @@ impl Deployment {
         };
         KernelIntents::new(
             Arc::new(StoreRecords::new(Arc::clone(&self.store))),
-            Arc::new(NoPush),
+            // The one push queue (arch lints section 3.1): durable rows in this deployment's store.
+            Arc::new(StorePushQueue::new(
+                Arc::clone(&self.store),
+                Arc::new(busbar_kernel::retry::Policy::default()),
+            )),
             Arc::new(NoSignals),
             Namespace {
                 plugin: Arc::from(PLANE_PLUGIN),
@@ -350,19 +354,6 @@ struct Chat;
 impl GrantResolver for Chat {
     fn grants(&self, _identity: &[u8], sink: &mut dyn FnMut(&str)) {
         sink("chat");
-    }
-}
-
-struct NoPush;
-
-impl PushQueue for NoPush {
-    fn enqueue<'a>(
-        &'a self,
-        _who: &'a Caller<'_>,
-        _ttl_s: u64,
-        _recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Box::pin(async { Err(RecordsDenied::Unavailable) })
     }
 }
 
