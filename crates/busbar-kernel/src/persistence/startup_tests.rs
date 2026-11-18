@@ -872,10 +872,10 @@ async fn startup_lost_bootstrap_and_cancelled_registration_replay_exactly() {
     assert!(start.store().is_none());
     let store = admitted(&mut start).await;
     let native = backend.0.lock().unwrap();
-    assert_eq!(
-        native.sends[native.sends.len() - 2],
-        native.sends[native.sends.len() - 1]
-    );
+    // DES-264 §3.2 (86f2c543e0): the last commit opens generation 0; the two before it are the
+    // cancelled registration and its exact replay.
+    let opened = native.sends.len() - 1;
+    assert_eq!(native.sends[opened - 2], native.sends[opened - 1]);
     assert_eq!(
         native
             .rows
@@ -947,8 +947,8 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
         admitted(&mut reopened).await;
         assert_eq!(
             backend.0.lock().unwrap().applied,
-            2,
-            "only initialization and new-writer registration"
+            3,
+            "only initialization, new-writer registration and generation 0's open (DES-264 §3.2)"
         );
     }
 }

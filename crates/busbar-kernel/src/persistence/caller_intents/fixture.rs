@@ -260,7 +260,26 @@ impl PersistenceBackend for Backend {
                         changed.insert(address.namespace);
                         state.rows.remove(address);
                     }
-                    Mutation::DeleteRange { .. } => panic!("caller intent uses no range deletion"),
+                    // The one range delete here is a closed writer's slot cleanup, part of the
+                    // shared writer transition a fence carries (D299 3853418ae9, retained in the
+                    // retirement candidate since d01322db5f). Caller intents use none.
+                    Mutation::DeleteRange {
+                        namespace,
+                        prefix,
+                        exact_key_length,
+                    } => {
+                        assert_eq!(
+                            *namespace,
+                            control::SLOT_NS,
+                            "caller intent uses no range deletion"
+                        );
+                        changed.insert(namespace.0);
+                        state.rows.retain(|at, _| {
+                            !(at.namespace == namespace.0
+                                && at.key.starts_with(prefix)
+                                && at.key.len() as u64 == *exact_key_length)
+                        });
+                    }
                 }
             }
             for namespace in changed {
