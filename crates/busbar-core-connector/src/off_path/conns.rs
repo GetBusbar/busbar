@@ -180,12 +180,6 @@ impl crate::Connector {
         }
         self.pools.forget(owner);
 
-        // The listeners it bound are dropped with no lock held.
-        let gone: Vec<Arc<crate::conns::Accepting>> =
-            take_owned(&mut *self.listeners.lock().expect("listeners"), |(o, _)| {
-                *o == owner
-            });
-        drop(gone);
         let needs = needs_of(&*self.over.lock().expect("needs"), owner);
         for need in needs {
             self.set_need(owner, need, None);
