@@ -1584,8 +1584,14 @@ fn admin_door_claim_of(
     denial: Option<&'static str>,
 ) -> (AdminDoor, Option<PendingClaim>) {
     let identified = matches!(verdict, ChainVerdict::Identified { .. });
-    let now = busbar_kernel::store::now();
-    let claim = unclaimed_admin_replay(identified, replay, now);
+    // The claim's time is read here, after the chain's waits, and only when there is a claim to
+    // make: an admin request whose identity asked for no replay claim reads no clock.
+    let claim = match replay {
+        Some(replay) if identified => {
+            unclaimed_admin_replay(identified, Some(replay), busbar_kernel::store::now())
+        }
+        _ => None,
+    };
     (
         match (admin_door_of(app, verdict, cap), denial) {
             (AdminDoor::Denied, Some(reason)) => AdminDoor::Rejected(reason),
@@ -2938,9 +2944,7 @@ pub(crate) async fn auth_middleware(
 
                     pending = PendingClaim::of(
                         ReplayClaim::of(
-                            &busbar_contract::kept::Text::from(std::sync::Arc::clone(
-                                &reader.name,
-                            )),
+                            &busbar_contract::kept::Text::from(std::sync::Arc::clone(&reader.name)),
                             id.replay,
                             now,
                         ),
