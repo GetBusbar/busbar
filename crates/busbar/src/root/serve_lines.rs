@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use busbar_kernel::channels::frame::{stays_one_message, Framing};
 use busbar_kernel::limits::process_admission::{
     AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
 };
@@ -77,12 +78,16 @@ impl LinePool {
         }
     }
 
-    /// `bytes` as one newline-terminated output line, in a handed-back buffer.
-    fn line(&self, bytes: &[u8]) -> Vec<u8> {
+    /// `bytes` as one newline-terminated output line, in a handed-back buffer; `None` (nothing taken) when they are
+    /// not one line ([`one_line`]).
+    fn line(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !one_line(bytes) {
+            return None;
+        }
         let mut line = self.take();
         line.extend_from_slice(bytes);
         terminate(&mut line);
-        line
+        Some(line)
     }
 }
 
@@ -120,13 +125,20 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(self.spare.line(bytes)).await.is_ok()
+        match self.spare.line(bytes) {
+            Some(line) => self.out.send(line).await.is_ok(),
+            None => false,
+        }
     }
 }
 
 impl<R> LineCaller<R> {
+    /// A refused line (not one line) is not written and does not end the session.
     fn emit(&self, bytes: &[u8]) -> bool {
-        match self.out.try_send(self.spare.line(bytes)) {
+        let Some(line) = self.spare.line(bytes) else {
+            return false;
+        };
+        match self.out.try_send(line) {
             Ok(()) => true,
             Err(error) => {
                 let kind = match error {
@@ -143,6 +155,23 @@ impl<R> LineCaller<R> {
     }
 }
 
+/// Whether a plane's `bytes` go out as one line of standard output: one trailing `\n` is the line's own end; any
+/// other `\n`, or any `\r` (a universal-newline reader ends a line on a lone `\r`), would make the caller read more
+/// than one line. A refused line is counted and logged.
+fn one_line(bytes: &[u8]) -> bool {
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if stays_one_message(Framing::Ndjson, body) {
+        return true;
+    }
+    metrics::counter!(busbar_kernel::snapshot::LINE_BREAK_REFUSED_TOTAL).increment(1);
+    tracing::warn!(
+        len = bytes.len(),
+        "an output line holding a line break was refused"
+    );
+    false
+}
+
+/// Ends a line already judged [`one_line`] with its one `\n`.
 fn terminate(line: &mut Vec<u8>) {
     if !line.ends_with(b"\n") {
         line.push(b'\n');
@@ -151,7 +180,9 @@ fn terminate(line: &mut Vec<u8>) {
 
 #[cfg(test)]
 fn terminated(bytes: &[u8]) -> Vec<u8> {
-    LinePool::default().line(bytes)
+    LinePool::default()
+        .line(bytes)
+        .expect("a test line is one line")
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
@@ -260,8 +291,10 @@ where
                         .await
                     {
                         Ok(mut body) if !body.is_empty() => {
-                            terminate(&mut body);
-                            let _ = caller.out.send(body).await;
+                            if one_line(&body) {
+                                terminate(&mut body);
+                                let _ = caller.out.send(body).await;
+                            }
                         }
                         Ok(_) => {}
                         Err(refused) => {

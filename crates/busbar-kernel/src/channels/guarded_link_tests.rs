@@ -4,7 +4,7 @@
 use super::budget::{ChannelBudget, Claim, REPLY_BYTES, UNIT_BYTES};
 use super::frame::Framing;
 use super::link::Link;
-use super::protected::{GuardedWrite, ReplyStorage};
+use super::protected::{GuardedWrite, ReplyStorage, WriteRefused};
 
 #[tokio::test]
 async fn saturated_general_capacity_still_enqueues_one_owned_reply() {
@@ -230,8 +230,9 @@ fn an_ordinary_send_holding_a_line_break_is_refused_before_it_is_charged() {
     let budget = instance.link();
     for message in NOT_ONE_LINE {
         for ask in [false, true] {
-            assert!(
-                GuardedWrite::new(&unit, &budget, Framing::Ndjson, message, ask).is_err(),
+            assert_eq!(
+                GuardedWrite::new(&unit, &budget, Framing::Ndjson, message, ask).err(),
+                Some(WriteRefused::LineBreak),
                 "{message:?} (ask {ask}) is not one line"
             );
             assert_eq!(
@@ -249,8 +250,9 @@ fn a_fallback_holding_a_line_break_is_refused_before_it_is_charged() {
     let instance = process.instance();
     let budget = instance.link();
     for message in NOT_ONE_LINE {
-        assert!(
-            GuardedWrite::fallback(&instance, &budget, Framing::Ndjson, message).is_err(),
+        assert_eq!(
+            GuardedWrite::fallback(&instance, &budget, Framing::Ndjson, message).err(),
+            Some(WriteRefused::LineBreak),
             "{message:?} is not one line"
         );
         assert_eq!(
@@ -271,8 +273,9 @@ fn a_protected_reply_holding_a_line_break_is_refused_before_it_is_charged() {
         let mut storage = ReplyStorage::new(&unit).unwrap();
         let end = 24 + message.len();
         storage.output_mut()[24..end].copy_from_slice(message);
-        assert!(
-            storage.into_write(24..end, &budget).is_err(),
+        assert_eq!(
+            storage.into_write(24..end, &budget).err(),
+            Some(WriteRefused::LineBreak),
             "{message:?} is not one line"
         );
         assert_eq!(
@@ -290,12 +293,14 @@ fn an_sse_message_holding_a_carriage_return_is_refused() {
     let unit = instance.unit();
     let budget = instance.link();
     for message in [b"a\rreturn".as_slice(), b"a return\r", b"\r\n"] {
-        assert!(
-            GuardedWrite::new(&unit, &budget, Framing::Sse, message, false).is_err(),
+        assert_eq!(
+            GuardedWrite::new(&unit, &budget, Framing::Sse, message, false).err(),
+            Some(WriteRefused::LineBreak),
             "{message:?} would end an SSE field"
         );
-        assert!(
-            GuardedWrite::fallback(&instance, &budget, Framing::Sse, message).is_err(),
+        assert_eq!(
+            GuardedWrite::fallback(&instance, &budget, Framing::Sse, message).err(),
+            Some(WriteRefused::LineBreak),
             "{message:?} would end an SSE field"
         );
         assert_eq!(process.used(), Claim::default());

@@ -70,6 +70,7 @@ busbar_lane_inflight gauge [lane,pool] count -\n\
 busbar_lane_recovery_hint_ms gauge [lane,pool] milliseconds -\n\
 busbar_lane_request_duration_seconds histogram [instance,model,pool,target] seconds -\n\
 busbar_lane_state gauge [lane,pool] count -\n\
+busbar_line_break_refused_total counter [] - -\n\
 busbar_login_attempts_total counter [method,outcome] - -\n\
 busbar_login_throttled_total counter [limiter,method] - -\n\
 busbar_metering_pending_coalesced_total counter [] - -\n\

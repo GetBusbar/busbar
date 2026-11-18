@@ -490,6 +490,13 @@ pub const HOST_METRICS: &[MetricDecl] = &[
         "Plane channel messages dropped because the receiving slot's queue was full",
     ),
     row(
+        LINE_BREAK_REFUSED_TOTAL,
+        Counter,
+        &[],
+        None,
+        "Messages refused before they were written because a line break inside would make them more than one framed message",
+    ),
+    row(
         PLUGIN_TEXT_CUT_TOTAL,
         Counter,
         &["plugin", "field"],
