@@ -192,6 +192,14 @@ impl PortUpstream for CurrentTargets {
 
 struct NoSend;
 impl FarEnd for NoSend {
+    // The far end a selected walk admits names its pool (64b918c418: a request is selected only
+    // onto a far end scoped to the receipt's walk).
+    fn scope(&self, _: &Pass<Route>) -> Option<crate::plane_driver::RoutedScope> {
+        Some(crate::plane_driver::RoutedScope {
+            pool: "seat".into(),
+            container: String::new(),
+        })
+    }
     async fn send_selected(
         &self,
         _: &Pass<Route>,
@@ -350,7 +358,7 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
         .units()
         .pre_admitted_signed_for(unit.ctx.key.get(), &caller, authority, 0));
     let context = InvocationContext::new(
-        Arc::new(ServingGeneration::new(core.clone(), Arc::new(NoChildren))),
+        Arc::new(ServingGeneration::try_new(core.clone(), Arc::new(NoChildren)).unwrap()),
         caller.clone(),
         unit.ctx.key.get(),
     )
