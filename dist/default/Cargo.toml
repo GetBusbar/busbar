@@ -330,10 +330,10 @@ export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
-# MIN-3 auth images register their PLUGIN header (the operator credential and oauth).
+# MIN-3 auth images register their PLUGIN header (the operator credential, oauth, and the header and sigv4 outbound styles).
 auth-admin-tokens = "min3-images"
-auth-header = "auths"
-auth-sigv4 = "auths"
+auth-header = "min3-images"
+auth-sigv4 = "min3-images"
 auth-oauth = "min3-images"
 auth-webhook-signature = "auths"
 transport-tcp = "transport transport-door"
@@ -796,7 +796,7 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "2889a997008ffcd3508b2d561aeebebb9658e5a4" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "bee0f44ba87f86cd5bb981fab09569b1504a8113" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -815,7 +815,7 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "1c457d415173fb069624fca676ae0ae4dbc71e9f" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c4c80db023c40d3730e01868eea47c7d3d1d937a" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (row `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so

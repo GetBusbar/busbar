@@ -357,13 +357,12 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=2889a997008ffcd3508b2d561aeebebb9658e5a4#2889a997008ffcd3508b2d561aeebebb9658e5a4"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bee0f44ba87f86cd5bb981fab09569b1504a8113#bee0f44ba87f86cd5bb981fab09569b1504a8113"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
 ]
 
 [[package]]
@@ -406,17 +405,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=1c457d415173fb069624fca676ae0ae4dbc71e9f#1c457d415173fb069624fca676ae0ae4dbc71e9f"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=c4c80db023c40d3730e01868eea47c7d3d1d937a#c4c80db023c40d3730e01868eea47c7d3d1d937a"
 dependencies = [
- "busbar-contract",
- "foldhash 0.2.0",
- "hex",
+ "busbar-plugin-abi",
  "percent-encoding",
- "serde_json",
+ "serde",
  "smallvec",
+ "sonic-rs",
  "time",
- "tracing",
- "zeroize",
 ]
 
 [[package]]
