@@ -292,7 +292,7 @@ async fn read_whole(
     let mut whole = bytes::BytesMut::new();
     loop {
         match std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-            None => break,
+            None => return Ok(whole.freeze()),
             Some(Err(_)) => return Err(hyper::StatusCode::BAD_REQUEST),
             Some(Ok(frame)) => {
                 if let Ok(mut data) = frame.into_data() {
@@ -304,7 +304,6 @@ async fn read_whole(
             }
         }
     }
-    Ok(whole.freeze())
 }
 
 fn status_response(status: hyper::StatusCode) -> axum::response::Response {
