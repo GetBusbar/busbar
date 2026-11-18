@@ -348,9 +348,14 @@ fn transport_no_loopback_exemption() {
                 let refused = h
                     .check(name, &declaring(&[entry.as_str()]))
                     .expect_err(dest);
+                // 86156571aa's BUSBAR-3160 frame names the destination twice: whole (`{dest}`) and
+                // as the pin's `match:` host.
+                let host = dest.rsplit_once(':').map_or(dest, |(host, _)| host);
                 assert_eq!(
                     config_text(&refused),
-                    remote.replace("db:5432", dest),
+                    remote
+                        .replace("db:5432", dest)
+                        .replace("(match: db,", &format!("(match: {host},")),
                     "{name} {dest} (egress {class})"
                 );
             }
