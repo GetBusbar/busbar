@@ -477,6 +477,7 @@ impl ConnState {
         let dials = lock(&self.dialling).drain_where(|k, _| gone(k));
         let waits = self.take_waits(|handle, _| gone(&handle.ticket));
         Closes {
+            dial: None,
             dials,
             streams: Vec::new(),
             waits,
@@ -515,6 +516,7 @@ impl ConnState {
             .drain_pairs_where(|_, stream| stream.authority.belongs_to(binding));
         let dials = lock(&self.dialling).drain_where(|_, dial| dial.authority.belongs_to(binding));
         let mut closes = Closes {
+            dial: None,
             dials,
             streams: Vec::with_capacity(streams.len()),
             waits: Vec::new(),
@@ -539,6 +541,8 @@ impl ConnState {
 #[must_use = "dropped, it closes its connections outside the state locks"]
 #[derive(Default)]
 pub(crate) struct Closes {
+    /// One ticket's own dial ([`ConnState::forget`]), held apart: forgetting builds no list.
+    dial: Option<Dial>,
     dials: Vec<Dial>,
     streams: Vec<Stream>,
     waits: Vec<ReplyWait>,
@@ -546,7 +550,7 @@ pub(crate) struct Closes {
 
 impl Drop for Closes {
     fn drop(&mut self) {
-        for dial in self.dials.drain(..) {
+        for dial in self.dial.take().into_iter().chain(self.dials.drain(..)) {
             let (owner, table) = &dial.authority.conn;
             let _ = table.close(*owner, dial.conn);
         }
@@ -1130,7 +1134,8 @@ impl ConnState {
         // The ticket's own dial, by key; its waits are keyed by (ticket, seq).
         let dial = lock(&self.dialling).remove(&ticket);
         let closes = Closes {
-            dials: dial.map_or_else(Vec::new, |dial| vec![dial]),
+            dial,
+            dials: Vec::new(),
             streams: Vec::new(),
             waits: self.take_waits(|handle, _| handle.ticket == ticket),
         };
@@ -1306,6 +1311,7 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         // A purged instance's streams are detached once.
         let streams = std::mem::take(&mut *st.streams()).drain_values();
         drop(Closes {
+            dial: None,
             streams,
             waits: st.take_waits(|_, _| true),
             dials: Vec::new(),
