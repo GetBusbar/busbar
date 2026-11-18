@@ -34,3 +34,9 @@ harness = false
 name = "frame_allocs"
 path = "benches/frame_allocs.rs"
 harness = false
+
+# B-FRAME (three readers): one payload handed to three readers, on 1 and 8 threads, with allocations and bytes held.
+[[bench]]
+name = "frame_readers"
+path = "benches/frame_readers.rs"
+harness = false
