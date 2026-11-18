@@ -329,10 +329,6 @@ impl ChargedRequestSnapshot {
     pub fn request(&self) -> &RequestLease {
         self.credit.request()
     }
-    pub fn same_snapshot(this: &Arc<Self>, other: &Arc<Self>) -> bool {
-        Arc::ptr_eq(this, other)
-    }
-
     pub fn headers(&self) -> impl Clone + ExactSizeIterator<Item = (&str, &[u8])> {
         Headers {
             bytes: self.slice(&self.headers),
