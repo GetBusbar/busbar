@@ -462,16 +462,26 @@ pub(crate) mod guard {
     // A guard is built once at boot and its lists re-published once per config commit: off the
     // request path (callers: the root's boot and config commit, the store kit's run).
     impl crate::guard::Guard {
-        /// The guard a deployment states.
+        /// The guard a deployment states, the engine's own listen addresses (`d.listens`) in its
+        /// own-node set from the start, so no guard frozen from it ever judges without them.
         ///
         /// # Errors
         /// None today; the `Result` is the boot's.
         pub fn from_config(d: &Destinations) -> Result<crate::guard::Guard, String> {
-            Ok(crate::guard::Guard {
+            let guard = crate::guard::Guard {
                 block_private: d.block_private_addresses,
                 metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
                 node: Arc::default(),
-            })
+            };
+            let listens: Vec<&str> = d.listens.iter().map(String::as_str).collect();
+            let bound: Vec<IpAddr> = d
+                .listens
+                .iter()
+                .filter_map(|l| l.parse::<std::net::SocketAddr>().ok())
+                .map(|at| at.ip())
+                .collect();
+            guard.publish_own(&crate::off_path::lines::own_ports(&listens), &bound);
+            Ok(guard)
         }
 
         /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)

@@ -186,6 +186,7 @@ fn the_extra_metadata_refusals_hold_in_every_class() {
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
         blocked: vec!["imds.corp.example".into(), "203.0.113.9".into()],
+        listens: Vec::new(),
     })
     .unwrap();
     for class in EVERY_CLASS {
@@ -211,6 +212,7 @@ fn a_commit_republishes_the_metadata_lists() {
     let blocking = Destinations {
         block_private_addresses: true,
         blocked: vec!["93.184.216.34".into()],
+        listens: Vec::new(),
     };
     let g = Guard::from_config(&Destinations {
         block_private_addresses: true,
@@ -479,6 +481,7 @@ fn the_configured_lists_compare_in_the_mapped_form() {
         let g = Guard::from_config(&Destinations {
             block_private_addresses: true,
             blocked: vec![entry.to_owned()],
+            listens: Vec::new(),
         })
         .expect("a guard");
         assert_eq!(
