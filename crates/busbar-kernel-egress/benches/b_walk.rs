@@ -33,7 +33,13 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 
 fn pool(members: u64, blocked: Option<&str>) -> Pool {
     let list = (0..members)
-        .map(|i| Member::new(DestinationId::new(i), format!("member-{i}"), 1 + (i % 3) as u32))
+        .map(|i| {
+            Member::new(
+                DestinationId::new(i),
+                format!("member-{i}"),
+                1 + (i % 3) as u32,
+            )
+        })
         .collect();
     let mut pool = Pool::new("p", list);
     if let Some(name) = blocked {
