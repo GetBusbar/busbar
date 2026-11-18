@@ -175,7 +175,7 @@ psl = "2.1"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry", "tracing-log", "smallvec"] }
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 h2 = "0.4"
 log = "0.4"
