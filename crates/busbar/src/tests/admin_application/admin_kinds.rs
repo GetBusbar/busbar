@@ -87,18 +87,12 @@ fn shown(path: &std::path::Path) -> String {
 async fn serve(name: &str) -> Served {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let (module, directory, settings) = crate::distribution::rig::actual_store(name);
-    let settings = busbar_contract::json::parse_value(settings.to_string().as_bytes()).unwrap();
+    let plugins = crate::root::test_plugins::trusted_config_document(&directory);
     let signing_key = directory.join("signing-key");
     let operator_token = directory.join("operator-token");
     std::fs::write(&signing_key, hex::encode(SIGNING_KEY)).unwrap();
     std::fs::write(&operator_token, ADMIN_TOKEN).unwrap();
     let operator = busbar_kernel::config::operator_provider().to_string();
-    let plugins = busbar_contract::json::parse_value(
-        crate::root::test_plugins::trusted_config_document(&directory)
-            .to_string()
-            .as_bytes(),
-    )
-    .unwrap();
     let mut document = json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator.as_str()],

@@ -3,6 +3,7 @@
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::persistence::*;
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
@@ -29,8 +30,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -152,8 +152,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -325,8 +324,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -416,8 +414,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -554,8 +551,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

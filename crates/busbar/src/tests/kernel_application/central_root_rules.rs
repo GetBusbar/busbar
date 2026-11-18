@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::appbuild::RootRules;
@@ -70,8 +71,7 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -151,8 +151,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -250,8 +249,7 @@ async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -370,8 +368,7 @@ async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

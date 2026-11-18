@@ -109,8 +109,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

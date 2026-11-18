@@ -51,7 +51,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -59,11 +59,10 @@ async fn test_patch_key_three_state_group_and_enabled() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
@@ -205,7 +204,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -213,11 +212,10 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
@@ -351,7 +349,7 @@ async fn test_mint_parent_mismatch_is_409() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -359,11 +357,10 @@ async fn test_mint_parent_mismatch_is_409() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
@@ -434,7 +431,7 @@ async fn test_max_keys_per_principal_cap_trips() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -442,12 +439,11 @@ async fn test_max_keys_per_principal_cap_trips() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
-    document["limits"] = serde_json::json!({"max_keys_per_principal": 2});
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
+    document["limits"] = json::json!({"max_keys_per_principal": 2});
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
@@ -511,7 +507,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -519,12 +515,11 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
-    document["limits"] = serde_json::json!({"max_keys_per_principal": 1});
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
+    document["limits"] = json::json!({"max_keys_per_principal": 1});
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
     let client = reqwest::Client::new();
@@ -611,7 +606,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -619,14 +614,13 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] =
-        serde_json::to_value(&groups).expect("the actual group definitions serialize");
-    document["limits"] = serde_json::json!({"max_keys_per_principal": 3});
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
+    document["limits"] = json::json!({"max_keys_per_principal": 3});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

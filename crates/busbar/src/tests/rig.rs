@@ -104,7 +104,9 @@ pub(super) fn run_isolated(child_var: &str, witness: &str, isolation: Isolation)
 /// Install the distribution root and stage the signed actual Store plugin in scratch `tag`.
 ///
 /// Returns the Store module name, the plugin directory, and the Store settings.
-pub(super) fn actual_store(tag: &str) -> (String, std::path::PathBuf, serde_json::Value) {
+pub(super) fn actual_store(
+    tag: &str,
+) -> (String, std::path::PathBuf, busbar_contract::json::Value) {
     crate::dist_root_install::install();
     let store_library = crate::root::test_plugins::application_store_library();
     let module = crate::root::test_plugins::native_image(&store_library).name;
@@ -120,8 +122,7 @@ pub(super) fn actual_store(tag: &str) -> (String, std::path::PathBuf, serde_json
         &std::fs::read(store_library).expect("the actual Store artifact reads"),
     );
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     (module, directory, settings)
 }
 
@@ -134,7 +135,7 @@ type Served = (
 
 /// Compose the real root over the actual Store from `document`, hydrate it, and serve it.
 pub(super) async fn actual_root(
-    document: serde_json::Value,
+    document: busbar_contract::json::Value,
     directory: &std::path::Path,
     module: &str,
 ) -> Served {
@@ -147,7 +148,7 @@ pub(super) async fn actual_root(
 
 /// [`actual_root`] without hydrating the application before serving it.
 pub(super) async fn actual_root_unhydrated(
-    document: serde_json::Value,
+    document: busbar_contract::json::Value,
     directory: &std::path::Path,
     module: &str,
 ) -> Served {
@@ -157,12 +158,12 @@ pub(super) async fn actual_root_unhydrated(
 }
 
 async fn compose(
-    document: serde_json::Value,
+    document: busbar_contract::json::Value,
     directory: &std::path::Path,
     module: &str,
 ) -> (busbar_kernel::state::App, crate::root::durability::NodeBook) {
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

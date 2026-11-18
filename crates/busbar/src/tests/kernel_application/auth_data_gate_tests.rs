@@ -20,8 +20,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -186,8 +185,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -311,8 +309,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -417,8 +414,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -548,8 +544,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -676,8 +671,7 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

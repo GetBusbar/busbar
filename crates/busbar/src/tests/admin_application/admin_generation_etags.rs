@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use busbar_contract::json;
+use busbar_contract::json::{self, JsonValueTrait as _};
 
 const CHILD: &str = "BUSBAR_ADMIN_GENERATION_CHILD";
 const WITNESS: &str = "actual root generation assertions completed";
@@ -57,7 +57,7 @@ async fn serve_with_effect(
     std::fs::write(&signing_key, hex::encode([5u8; 32])).unwrap();
     std::fs::write(&operator_token, "admintok").unwrap();
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {}, "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key },
                   "require_if_match": require_if_match },
@@ -68,16 +68,16 @@ async fn serve_with_effect(
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["groups"] = serde_json::json!({"team":{"limits":[{"budget":20000,"per":"month"}]}});
+    document["groups"] = json::json!({"team":{"limits":[{"budget":20000,"per":"month"}]}});
     let config_path = directory.join("config.json");
     let providers_path = directory.join("providers.json");
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&document).unwrap()).unwrap();
     std::fs::write(&providers_path, b"{}").unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .unwrap();
@@ -187,7 +187,7 @@ async fn failed_reply_after_effect_is_replayed_without_a_second_effect() {
             .await
             .unwrap();
         assert_eq!(mismatch.status().as_u16(), 409);
-        let mismatch: serde_json::Value = mismatch.json().await.unwrap();
+        let mismatch = json::parse_value(&mismatch.bytes().await.unwrap()).unwrap();
         assert_eq!(mismatch["error"]["reason"], "idempotency_mismatch");
         assert_eq!(effects.load(Ordering::SeqCst), index + 1);
     }
@@ -526,7 +526,7 @@ async fn response_collection_cannot_change_the_generation_bound_to_its_etag() {
         .await
         .unwrap();
     assert_eq!(operation.status(), axum::http::StatusCode::OK);
-    let operation: serde_json::Value = serde_json::from_slice(
+    let operation = json::parse_value(
         &axum::body::to_bytes(operation.into_body(), 8192)
             .await
             .unwrap(),
@@ -627,7 +627,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
         .unwrap();
     assert_eq!(retry.status().as_u16(), 409);
     assert_eq!(retry.headers()["retry-after"], "1");
-    let refusal: serde_json::Value = json::from_slice(
+    let refusal = json::parse_value(
         &axum::body::to_bytes(retry.into_body(), 16 * 1024)
             .await
             .unwrap(),
@@ -640,7 +640,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
         .await
         .unwrap();
     assert_eq!(collision.status().as_u16(), 409);
-    let refusal: serde_json::Value = json::from_slice(
+    let refusal = json::parse_value(
         &axum::body::to_bytes(collision.into_body(), 16 * 1024)
             .await
             .unwrap(),
@@ -653,7 +653,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
         .await
         .unwrap();
     assert_eq!(mismatch.status().as_u16(), 409);
-    let refusal: serde_json::Value = json::from_slice(
+    let refusal = json::parse_value(
         &axum::body::to_bytes(mismatch.into_body(), 16 * 1024)
             .await
             .unwrap(),
@@ -671,7 +671,7 @@ async fn unreadable_reply_retains_the_effect_across_router_reconstruction() {
         .await
         .unwrap();
     assert_eq!(operation.status().as_u16(), 200);
-    let operation: serde_json::Value = json::from_slice(
+    let operation = json::parse_value(
         &axum::body::to_bytes(operation.into_body(), 16 * 1024)
             .await
             .unwrap(),

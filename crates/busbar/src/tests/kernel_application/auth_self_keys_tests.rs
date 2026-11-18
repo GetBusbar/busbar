@@ -99,8 +99,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -298,8 +297,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -461,8 +459,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -612,8 +609,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
@@ -848,8 +844,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store archive");
-            let settings: serde_json::Value =
-                crate::root::test_plugins::application_store_settings(&directory);
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
             assert!(
                 settings.is_object(),
                 "the actual store settings are an object"

@@ -26,7 +26,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -34,11 +34,11 @@ async fn test_admin_v1_auth_read_keys_chain_reports_closed() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -121,7 +121,7 @@ async fn test_admin_v1_get_single_key() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -129,11 +129,11 @@ async fn test_admin_v1_get_single_key() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -252,7 +252,7 @@ async fn minting_a_recoverable_credential_without_a_signing_key_is_refused_and_s
     let operator_token = directory.join("operator-token");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator] },
@@ -260,11 +260,11 @@ async fn minting_a_recoverable_credential_without_a_signing_key_is_refused_and_s
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

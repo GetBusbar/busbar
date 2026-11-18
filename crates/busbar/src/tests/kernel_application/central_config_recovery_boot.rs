@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::appbuild::AcceptAll;
 use busbar_kernel::config::overlay::{persist_root_async as persist_root, RootSettings};
 use std::sync::Arc;
@@ -21,8 +22,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -117,8 +117,7 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -246,8 +245,7 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -327,8 +325,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"

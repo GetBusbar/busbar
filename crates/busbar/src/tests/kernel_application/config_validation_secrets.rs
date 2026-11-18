@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The 1.5 `token:` form through the actual product check: ADMIN-TOKEN-MIGRATE refuses it.
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::config;
 
 use crate::root::test_plugins as plugins;
@@ -22,8 +23,7 @@ fn a_1_5_token_is_refused_with_the_settings_remedy_by_actual_validate() {
     let directory = plugins::scratch("config-secret-token-coverage");
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

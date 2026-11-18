@@ -3,6 +3,7 @@
 
 //! OAuth application assertions compiled by the actual distribution binary.
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 

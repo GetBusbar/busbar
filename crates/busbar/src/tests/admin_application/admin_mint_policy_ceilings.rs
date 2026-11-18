@@ -59,7 +59,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -67,22 +67,22 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
     document["auth"]["policy"] =
-        serde_json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
+        json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -204,7 +204,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -212,22 +212,22 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
     document["auth"]["policy"] =
-        serde_json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
+        json::json!({"mint_ceilings":{"app-admin":{"binding_modes":allowed_modes}}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -332,7 +332,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -340,12 +340,12 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["auth"]["policy"] = serde_json::json!({"max_ttl":"24h"});
+    document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -442,7 +442,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -450,12 +450,12 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["auth"]["policy"] = serde_json::json!({"max_ttl":"24h"});
+    document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -577,7 +577,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -585,21 +585,21 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
-    document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
+    document["auth"]["policy"] = json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -725,7 +725,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -733,21 +733,21 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
-    document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
+    document["auth"]["policy"] = json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -873,7 +873,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -881,21 +881,21 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "app-admin": { "admin_scope": "full" } },
     });
-    document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
+    document["auth"]["policy"] = json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

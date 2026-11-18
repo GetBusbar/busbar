@@ -27,7 +27,7 @@ struct Served {
     server: tokio::task::JoinHandle<()>,
     editor: String,
     viewer: String,
-    document: serde_json::Value,
+    document: json::Value,
     directory: std::path::PathBuf,
 }
 
@@ -51,7 +51,7 @@ async fn served(tag: &str) -> Served {
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -60,23 +60,23 @@ async fn served(tag: &str) -> Served {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": {
             "editors": { "verbs": ["post_config_apply"] },
             "viewers": { "admin_scope": "read-only" },
         },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -151,12 +151,7 @@ async fn fetch_double() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()
     )
 }
 
-async fn post(
-    served: &Served,
-    path: &str,
-    token: &str,
-    body: &serde_json::Value,
-) -> (u16, json::Value) {
+async fn post(served: &Served, path: &str, token: &str, body: &json::Value) -> (u16, json::Value) {
     let response = reqwest::Client::new()
         .post(format!("http://{}/api/v1/admin/{path}", served.addr))
         .header("authorization", format!("Bearer {}", token))
@@ -184,12 +179,12 @@ async fn nonoperator_apply_adding_plugins_fetch_is_forbidden_before_fetch() {
     let served = served("ssb-b3-r12-store").await;
     let (url, connections, double) = fetch_double().await;
     let mut config = served.document.clone();
-    config["plugins"]["fetch"] = serde_json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
+    config["plugins"]["fetch"] = json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
     let (status, body) = post(
         &served,
         "config/apply",
         &served.editor,
-        &serde_json::json!({ "config": config, "providers": {} }),
+        &json::json!({ "config": config, "providers": {} }),
     )
     .await;
     assert_eq!(status, 403, "the apply is forbidden: {body}");
@@ -216,13 +211,13 @@ async fn nonoperator_apply_changing_plugins_dir_is_forbidden_before_scan() {
     let (url, connections, double) = fetch_double().await;
     let elsewhere = served.directory.join("must-not-be-scanned");
     let mut config = served.document.clone();
-    config["plugins"]["dir"] = serde_json::json!(elsewhere);
-    config["plugins"]["fetch"] = serde_json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
+    config["plugins"]["dir"] = json::json!(elsewhere);
+    config["plugins"]["fetch"] = json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
     let (status, body) = post(
         &served,
         "config/apply",
         &served.editor,
-        &serde_json::json!({ "config": config, "providers": {} }),
+        &json::json!({ "config": config, "providers": {} }),
     )
     .await;
     assert_eq!(status, 403, "the apply is forbidden: {body}");
@@ -248,8 +243,8 @@ async fn admin_validate_answers_needs_full_operator_where_apply_forbids() {
     let served = served("ssb-b3-r13-store").await;
     let (url, connections, double) = fetch_double().await;
     let mut config = served.document.clone();
-    config["plugins"]["fetch"] = serde_json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
-    let request = serde_json::json!({ "config": config, "providers": {} });
+    config["plugins"]["fetch"] = json::json!([{ "url": url, "sha256": "0".repeat(64) }]);
+    let request = json::json!({ "config": config, "providers": {} });
 
     let (status, view) = post(&served, "config/validate", &served.viewer, &request).await;
     assert_eq!(status, 200, "validate answers a verdict: {view}");

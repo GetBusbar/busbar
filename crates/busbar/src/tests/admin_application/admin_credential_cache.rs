@@ -39,7 +39,7 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -47,26 +47,26 @@ async fn filtered_credential_flush_uses_actual_admin_and_data_caches() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings(AUDIENCE),
         "max_admin_scope": "full",
     });
-    document["identity-providers"]["omitted"] = serde_json::json!({
+    document["identity-providers"]["omitted"] = json::json!({
         "module": oidc_module,
         "settings": common::credentials::settings("api://omitted-cache"),
         "max_admin_scope": "full",
     });
-    document["auth"]["chain"] = serde_json::json!(["test-scope-module"]);
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", "omitted", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["chain"] = json::json!(["test-scope-module"]);
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", "omitted", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "admins": { "admin_scope": "full" }, "viewers": { "admin_scope": "read-only" } },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

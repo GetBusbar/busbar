@@ -82,8 +82,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     );
     let archive_sha256 = busbar_contract::redacted::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

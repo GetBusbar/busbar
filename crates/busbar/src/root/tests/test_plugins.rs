@@ -43,8 +43,8 @@ pub fn application_store_library() -> PathBuf {
     path
 }
 
-pub fn application_store_settings(directory: &Path) -> serde_json::Value {
-    serde_json::json!({ "db_path": directory.join("application.sqlite") })
+pub fn application_store_settings(directory: &Path) -> busbar_contract::json::Value {
+    busbar_contract::json::json!({ "db_path": directory.join("application.sqlite") })
 }
 
 /// Creation provenance owned only by the provisioner of a new fixture database.
@@ -177,7 +177,7 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
         .as_ref()
         .expect("the fixture explicitly selects its Store");
     assert_eq!(
-        serde_json::to_value(store.settings.authoring(&busbar_kernel::seal::acquire()))
+        busbar_contract::json::to_value(&store.settings.authoring(&busbar_kernel::seal::acquire()))
             .expect("the authorized fixture Store settings serialize"),
         application_store_settings(directory),
         "the fixture owns the exact configured application database path"
@@ -242,14 +242,14 @@ pub(crate) async fn bootstrap_fresh_application_store(
 }
 
 /// The explicit configuration document for the same fixture plugin policy used at boot.
-pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json::Value {
+pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> busbar_contract::json::Value {
     let publishers: Vec<_> = config
         .trust
         .publishers
         .iter()
         .map(|p| {
-            serde_json::json!({
-                "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| serde_json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()
+            busbar_contract::json::json!({
+                "name": p.name, "plugins": p.plugins, "keys": p.keys.iter().map(|key| busbar_contract::json::json!({"public_key": key.public_key, "revoked": key.revoked})).collect::<Vec<_>>()
             })
         })
         .collect();
@@ -258,21 +258,23 @@ pub fn config_document(config: &busbar_kernel::config::PluginsCfg) -> serde_json
         .iter()
         .map(|entry| match entry {
             busbar_kernel::config::PluginFetch::Url(value) => {
-                serde_json::json!({"url": value.url, "sha256": value.sha256})
+                busbar_contract::json::json!({"url": value.url, "sha256": value.sha256})
             }
             busbar_kernel::config::PluginFetch::Github(value) => {
-                serde_json::json!({"github": value.github, "sha256": value.sha256})
+                busbar_contract::json::json!({"github": value.github, "sha256": value.sha256})
             }
-            busbar_kernel::config::PluginFetch::Env(value) => serde_json::json!({"env": value.env}),
+            busbar_kernel::config::PluginFetch::Env(value) => {
+                busbar_contract::json::json!({"env": value.env})
+            }
         })
         .collect();
-    serde_json::json!({
+    busbar_contract::json::json!({
         "enabled": config.enabled, "dir": config.dir, "min_versions": config.min_versions,
         "trust": {"publishers": publishers, "allow_untrusted": config.trust.allow_untrusted}, "fetch": fetch
     })
 }
 
-pub fn trusted_config_document(directory: &Path) -> serde_json::Value {
+pub fn trusted_config_document(directory: &Path) -> busbar_contract::json::Value {
     config_document(&trusted_config(directory))
 }
 

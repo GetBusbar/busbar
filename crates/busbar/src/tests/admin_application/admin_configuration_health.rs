@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use busbar_contract::json::{JsonContainerTrait, JsonValueTrait, Map, Value};
+use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait, Map, Value};
 
 fn assert_pending(body: &Value, path: &str) {
     assert!(
@@ -86,7 +86,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -95,7 +95,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
@@ -115,9 +115,9 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         )
         .expect("actual provider definition"),
     )]);
-    document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
-    document["models"] = serde_json::json!({"m0":{"provider":"test-provider","max_concurrent":4}});
-    document["pools"] = serde_json::json!({"p":{"members":[{"model":"m0"}]}});
+    document["providers"] = json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
+    document["models"] = json::json!({"m0":{"provider":"test-provider","max_concurrent":4}});
+    document["pools"] = json::json!({"p":{"members":[{"model":"m0"}]}});
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
@@ -125,9 +125,9 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         busbar_contract::json::to_vec_pretty(&definitions).unwrap(),
     )
     .unwrap();
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&document).unwrap()).unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -196,7 +196,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
             .header("content-type", "application/json")
     };
 
-    let mut body = serde_json::json!({
+    let mut body = json::json!({
         "providers": {
             "test-provider": {"protocol": protocol, "base_url": "http://127.0.0.1:1/"}
         },
@@ -234,7 +234,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let stale = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .header("if-match", "\"0\"")
         .body(
-            serde_json::json!({
+            json::json!({
                 "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings},
             "plugins": plugin_document, "providers": {}, "models": {}, "pools": {}},
             })
@@ -248,7 +248,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let malformed = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .header("if-match", "\"not-a-version\"")
         .body(
-            serde_json::json!({
+            json::json!({
                 "config": {"listen": "127.0.0.1:0", "store": {"module": module, "settings": settings},
             "plugins": plugin_document, "providers": {}, "models": {}, "pools": {}},
             })
@@ -284,7 +284,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -293,7 +293,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let identity = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
@@ -325,9 +325,9 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         )
         .expect("actual provider definition"),
     )]);
-    document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
-    document["models"] = serde_json::json!({"m0":{"provider":"test-provider","max_concurrent":4}});
-    document["pools"] = serde_json::json!({"p":{"members":[{"model":"m0"}]}});
+    document["providers"] = json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
+    document["models"] = json::json!({"m0":{"provider":"test-provider","max_concurrent":4}});
+    document["pools"] = json::json!({"p":{"members":[{"model":"m0"}]}});
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
@@ -340,12 +340,11 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().into_owned().into();
     disk["advanced"]["worker_threads"] = 3.into();
 
-    disk["models"]["m-new"] = serde_json::json!({"provider":"test-provider","max_concurrent":4});
-    disk["pools"] =
-        serde_json::json!({"reload-pool":{"members":[{"model":"m0"},{"model":"m-new"}]}});
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&disk).unwrap()).unwrap();
+    disk["models"]["m-new"] = json::json!({"provider":"test-provider","max_concurrent":4});
+    disk["pools"] = json::json!({"reload-pool":{"members":[{"model":"m0"},{"model":"m-new"}]}});
+    std::fs::write(&config_path, json::to_vec_pretty(&disk).unwrap()).unwrap();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -476,13 +475,13 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "the new lane starts healthy: {m_new}"
     );
 
-    let invalid = serde_json::json!({
+    let invalid = json::json!({
         "listen":"127.0.0.1:0",
         "store":{"module":module,"settings":settings},
         "providers":{},
         "models":{"broken":{"provider":"nope","max_concurrent":1}},
     });
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&invalid).unwrap()).unwrap();
+    std::fs::write(&config_path, json::to_vec_pretty(&invalid).unwrap()).unwrap();
     let pending_before_failure = read(&client, addr, "/config").await;
     let before = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
         .send()

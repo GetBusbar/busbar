@@ -53,7 +53,7 @@ async fn application_with_native_keys(
     std::fs::write(&signing_key, hex::encode([7u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -61,14 +61,14 @@ async fn application_with_native_keys(
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     if native_keys {
-        document["auth"]["admin_auth"] = serde_json::json!([operator, "keys"]);
+        document["auth"]["admin_auth"] = json::json!([operator, "keys"]);
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

@@ -57,7 +57,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -68,14 +68,14 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    document["identity-providers"]["test-scope-module"] = serde_json::json!({
+    document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module, "settings": common::credentials::settings(AUDIENCE), "max_admin_scope": "full",
     });
-    document["auth"]["admin_auth"] = serde_json::json!(["test-scope-module", operator]);
-    document["auth"]["role_bindings"] = serde_json::json!({
+    document["auth"]["admin_auth"] = json::json!(["test-scope-module", operator]);
+    document["auth"]["role_bindings"] = json::json!({
         "test-scope-module": { "audit-settings-roundtrip": { "admin_scope": "full" } },
     });
     let dir = directory.clone();
@@ -93,17 +93,17 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .expect("actual provider definition"),
     )]);
     document["providers"] =
-        serde_json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
+        json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
     document["models"] =
-        serde_json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
-    document["pools"] = serde_json::json!({ "p": { "members": [{ "model": "m0" }] } });
+        json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
+    document["pools"] = json::json!({ "p": { "members": [{ "model": "m0" }] } });
     document["groups"] =
-        serde_json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
+        json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual base configuration");
     std::fs::write(
@@ -112,7 +112,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -306,7 +306,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -317,7 +317,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
@@ -335,17 +335,17 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .expect("actual provider definition"),
     )]);
     document["providers"] =
-        serde_json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
+        json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
     document["models"] =
-        serde_json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
-    document["pools"] = serde_json::json!({ "p": { "members": [{ "model": "m0" }] } });
+        json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
+    document["pools"] = json::json!({ "p": { "members": [{ "model": "m0" }] } });
     document["groups"] =
-        serde_json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
+        json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual base configuration");
     std::fs::write(
@@ -354,7 +354,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -406,7 +406,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "listen": "127.0.0.1:0",
                 "store": {"module": module, "settings": settings},
                 "store": { "module": module, "settings": settings },
@@ -493,7 +493,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -504,7 +504,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
@@ -522,17 +522,17 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         .expect("actual provider definition"),
     )]);
     document["providers"] =
-        serde_json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
+        json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
     document["models"] =
-        serde_json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
-    document["pools"] = serde_json::json!({ "p": { "members": [{ "model": "m0" }] } });
+        json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
+    document["pools"] = json::json!({ "p": { "members": [{ "model": "m0" }] } });
     document["groups"] =
-        serde_json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
+        json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual base configuration");
     std::fs::write(
@@ -541,7 +541,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -646,7 +646,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -657,7 +657,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
@@ -675,17 +675,17 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
         .expect("actual provider definition"),
     )]);
     document["providers"] =
-        serde_json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
+        json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
     document["models"] =
-        serde_json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
-    document["pools"] = serde_json::json!({ "p": { "members": [{ "model": "m0" }] } });
+        json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
+    document["pools"] = json::json!({ "p": { "members": [{ "model": "m0" }] } });
     document["groups"] =
-        serde_json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
+        json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual base configuration");
     std::fs::write(
@@ -694,7 +694,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -743,11 +743,11 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
 
     let admin = |r: reqwest::RequestBuilder| r.header("authorization", "Bearer admintok");
 
-    let before = serde_json::to_value(
-        busbar_kernel::config::overlay::read_async(&overlay)
+    let before = json::to_value(
+        &busbar_kernel::config::overlay::read_async(&overlay)
             .await
             .map(|doc| {
-                serde_json::to_value(doc.authoring(&busbar_kernel::seal::acquire()))
+                json::to_value(&doc.authoring(&busbar_kernel::seal::acquire()))
                     .expect("the overlay authoring view serializes")
             }),
     )
@@ -769,13 +769,13 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
                 .unwrap();
             assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
             assert_eq!(
-                serde_json::to_value(
-                    busbar_kernel::config::overlay::read_async(&overlay)
+                json::to_value(
+                    &busbar_kernel::config::overlay::read_async(&overlay)
                         .await
-                        .map(|doc| serde_json::to_value(
-                            doc.authoring(&busbar_kernel::seal::acquire())
+                        .map(
+                            |doc| json::to_value(&doc.authoring(&busbar_kernel::seal::acquire()))
+                                .expect("the overlay authoring view serializes")
                         )
-                        .expect("the overlay authoring view serializes"))
                 )
                 .unwrap(),
                 before,
@@ -807,7 +807,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -818,7 +818,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
@@ -836,17 +836,17 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .expect("actual provider definition"),
     )]);
     document["providers"] =
-        serde_json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
+        json::json!({ "test-provider": { "api_key": { "file": upstream_key } } });
     document["models"] =
-        serde_json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
-    document["pools"] = serde_json::json!({ "p": { "members": [{ "model": "m0" }] } });
+        json::json!({ "m0": { "provider": "test-provider", "max_concurrent": 4 } });
+    document["pools"] = json::json!({ "p": { "members": [{ "model": "m0" }] } });
     document["groups"] =
-        serde_json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
+        json::json!({ "team": { "limits": [{ "budget": 20000, "per": "month" }] } });
     let config_path = dir.join("config.json");
     let providers_path = dir.join("providers.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual base configuration");
     std::fs::write(
@@ -855,7 +855,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     )
     .expect("write the actual provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

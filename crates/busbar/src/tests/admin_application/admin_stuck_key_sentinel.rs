@@ -29,8 +29,7 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     );
     let archive_sha256 = plugins::sha256(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual Store settings are an object"

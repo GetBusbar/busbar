@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use busbar_contract::json;
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring;
 use busbar_kernel::config::transaction::config_transaction;
@@ -29,7 +30,7 @@ async fn admin_apply_parse_refusal_is_audited() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -38,11 +39,11 @@ async fn admin_apply_parse_refusal_is_audited() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -93,7 +94,7 @@ async fn admin_apply_parse_refusal_is_audited() {
         .header("authorization", "Bearer admintok")
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "config": {
                     "not_a_config_key": true,
                     "providers": {},
@@ -147,7 +148,7 @@ async fn admin_rows_seal_under_scheme4() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -156,11 +157,11 @@ async fn admin_rows_seal_under_scheme4() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -212,7 +213,7 @@ async fn admin_rows_seal_under_scheme4() {
         .header("if-match", "*")
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({
+            json::json!({
                 "config": {
                     "not_a_config_key": true,
                     "providers": {},
@@ -286,7 +287,7 @@ async fn admin_rows_seal_the_request_correlation() {
     let plugin_document = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -295,11 +296,11 @@ async fn admin_rows_seal_the_request_correlation() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -358,7 +359,7 @@ async fn admin_rows_seal_the_request_correlation() {
             .header("tracestate", "vendor=opaque")
             .header("content-type", "application/json")
             .body(
-                serde_json::json!({
+                json::json!({
                     "config": {
                         "not_a_config_key": true,
                         "providers": {},

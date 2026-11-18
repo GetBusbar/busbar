@@ -53,14 +53,13 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
     let operator = crate::root::test_plugins::bind_operator();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
@@ -70,7 +69,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -249,14 +248,13 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
         );
         let operator = crate::root::test_plugins::bind_operator();
-        let mut document = serde_json::json!({
+        let mut document = json::json!({
             "providers": {},
             "models": {},
             "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
@@ -266,7 +264,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document.clone(),
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the product deployment parses");
@@ -389,7 +387,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         assert_eq!(put(addr, fee).await.status(), StatusCode::BAD_REQUEST);
         let applied = crate::root::test_plugins::operator_client()
             .post(format!("http://{addr}/api/v1/admin/config/apply"))
-            .json(&serde_json::json!({"config": document}))
+            .json(&json::json!({"config": document}))
             .send()
             .await
             .unwrap();
@@ -403,7 +401,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
 
         let original = std::fs::read(&config_path).unwrap();
         let mut invalid = document.clone();
-        invalid["groups"] = serde_json::json!({"broken": {"parent": "missing"}});
+        invalid["groups"] = json::json!({"broken": {"parent": "missing"}});
         std::fs::write(
             &config_path,
             busbar_contract::yaml::to_string(&invalid).unwrap(),
@@ -617,14 +615,13 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
-        let settings: serde_json::Value =
-            crate::root::test_plugins::application_store_settings(&directory);
+        let settings = crate::root::test_plugins::application_store_settings(&directory);
         assert!(
             settings.is_object(),
             "the actual store settings are an object"
         );
         let operator = crate::root::test_plugins::bind_operator();
-        let mut document = serde_json::json!({
+        let mut document = json::json!({
             "providers": {},
             "models": {},
             "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
@@ -634,7 +631,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         });
         document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
         let deploy = busbar_kernel::config::deploy_from_deserializer(
-            document.clone(),
+            &document,
             &crate::root::boot::axis_test_grammar(),
         )
         .expect("the product deployment parses");
@@ -802,14 +799,13 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
     let operator = crate::root::test_plugins::bind_operator();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
@@ -819,7 +815,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");
@@ -1110,14 +1106,13 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
     );
     let operator = crate::root::test_plugins::bind_operator();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "identity-providers": {(operator): {"module": operator, "settings": {"sha256": crate::root::test_plugins::operator_sha256()}}},
@@ -1127,7 +1122,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     });
     document["plugins"] = plugins::config_document(&plugins::trusted_config(&directory));
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document.clone(),
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the product deployment parses");

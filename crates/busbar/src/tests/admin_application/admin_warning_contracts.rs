@@ -54,7 +54,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -62,7 +62,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let upstream_key = directory.join("provider-key");
@@ -79,11 +79,11 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         }))
         .expect("actual provider definition"),
     )]);
-    document["providers"] = serde_json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
-    document["models"] = serde_json::json!({"m":{"provider":"test-provider"}});
-    document["pools"] = serde_json::json!({"smart":{"members":[{"model":"m"}]}});
+    document["providers"] = json::json!({"test-provider":{"api_key":{"file":upstream_key}}});
+    document["models"] = json::json!({"m":{"provider":"test-provider"}});
+    document["pools"] = json::json!({"smart":{"members":[{"model":"m"}]}});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -194,7 +194,7 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -202,11 +202,11 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

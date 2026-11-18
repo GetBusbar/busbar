@@ -25,7 +25,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -36,20 +36,20 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -146,7 +146,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -157,20 +157,20 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -265,7 +265,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -276,20 +276,20 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -418,7 +418,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -429,20 +429,20 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");
@@ -534,7 +534,7 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -545,20 +545,20 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
     document["plugins"] = crate::root::test_plugins::config_document(
         &crate::root::test_plugins::trusted_config(&directory),
     );
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
     std::fs::write(
         &config_path,
-        serde_json::to_vec_pretty(&document).expect("serialize actual base config"),
+        json::to_vec_pretty(&document).expect("serialize actual base config"),
     )
     .expect("write the actual immutable base configuration");
     let providers_path = directory.join("providers.json");
     std::fs::write(&providers_path, b"{}").expect("write the actual empty provider definitions");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
+        &document,
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual admin deployment parses");

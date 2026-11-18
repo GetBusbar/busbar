@@ -6,6 +6,7 @@ use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
 use std::sync::Arc;
@@ -26,8 +27,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     let archive_sha256 = busbar_plugin_loader::sign::sha256_hex(&archive);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"

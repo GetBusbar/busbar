@@ -3,6 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_kernel::config::groups::{LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 use std::collections::BTreeMap;
@@ -130,8 +131,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
@@ -264,8 +264,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
-    let settings: serde_json::Value =
-        crate::root::test_plugins::application_store_settings(&directory);
+    let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(
         settings.is_object(),
         "the actual store settings are an object"
