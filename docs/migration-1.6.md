@@ -591,6 +591,11 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   An upstream that needs no credential declares `api_key: none`; the migration does not insert it.
 - `auth.policy.require_if_match` is spelled `auth.require_if_match`, and the browser-login
   `max_failures` setting is removed: the limit is fixed at 3.
+- `advanced.response_headers.route_policy` is removed, with the `x-busbar-route-policy` /
+  `x-busbar-route-target` headers it turned on. The upgrade drops `route_policy: false` (from
+  config.yaml or the settings overlay) and reports it; `route_policy: true` refuses the upgrade until
+  you delete the key. The deciding policy and the answering member are on the unit record
+  (`GET /api/v1/admin/records`).
 
 ### Plugins and diagnostics
 

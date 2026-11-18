@@ -4,7 +4,8 @@
 //! Immutable native hook inputs. The root resolves configuration once; the driver invokes
 //! opened hook ports directly, without the legacy hook frames or a back-reference to App.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use busbar_contract::hooks::BudgetBucketState;
@@ -13,6 +14,7 @@ use busbar_ports::hook::HookPort;
 use crate::config::{PolicyOnError, PromptAccess, UserAccess};
 use crate::cost::CostModel;
 use crate::hooks::RequestedSignals;
+use crate::snapshot::{ROUTE_POLICY_REJECTIONS_TOTAL, ROUTE_POLICY_SELECTIONS_TOTAL};
 
 use super::hooks::{CallerKey, HookRead};
 
@@ -156,6 +158,83 @@ pub struct Call {
     pub strategy: Option<Arc<str>>,
 }
 
+impl Call {
+    /// The name a decision by this call is known by: its strategy word when it is a bound
+    /// strategy, otherwise its configured hook name.
+    pub fn decider(&self) -> &Arc<str> {
+        self.strategy.as_ref().unwrap_or(&self.name)
+    }
+}
+
+/// The 4xx statuses a hook refusal can carry (`RefusalMap::for_hook` clamps to 400..=499).
+const REJECT_STATUSES: usize = 100;
+
+/// `busbar_route_policy_{selections,rejections}_total` for one bound walk pool: a handle per name
+/// that can decide the walk (every rewrite, gate and base policy of the pool's scope and their
+/// fallbacks, by [`Call::decider`]), resolved once when the walk is bound.
+pub struct RouteCounters {
+    pool: Arc<str>,
+    deciders: BTreeMap<Arc<str>, Decider>,
+}
+
+struct Decider {
+    selections: metrics::Counter,
+    /// Rejections by status, slot `status - 400`. A slot registers its series on the first
+    /// rejection at that status, so an unused status never shows as a zero series.
+    rejections: Box<[OnceLock<metrics::Counter>; REJECT_STATUSES]>,
+}
+
+impl RouteCounters {
+    pub fn bind<'c>(pool: &str, calls: impl IntoIterator<Item = &'c Arc<Call>>) -> Self {
+        let pool: Arc<str> = Arc::from(pool);
+        let mut deciders = BTreeMap::new();
+        let mut pending: Vec<&Arc<Call>> = calls.into_iter().collect();
+        while let Some(call) = pending.pop() {
+            pending.extend(&call.fallbacks);
+            deciders
+                .entry(Arc::clone(call.decider()))
+                .or_insert_with_key(|policy: &Arc<str>| Decider {
+                    selections: metrics::counter!(
+                        ROUTE_POLICY_SELECTIONS_TOTAL,
+                        "policy" => Arc::clone(policy),
+                        "pool" => Arc::clone(&pool),
+                    ),
+                    rejections: Box::new(std::array::from_fn(|_| OnceLock::new())),
+                });
+        }
+        Self { pool, deciders }
+    }
+
+    /// The reconcile installed an order or a preferred set decided by `decider`.
+    pub(crate) fn selected(&self, decider: &str) {
+        if let Some(decider) = self.deciders.get(decider) {
+            decider.selections.increment(1);
+        }
+    }
+
+    /// `decider` rejected the request with the client refusal `status`.
+    pub(crate) fn rejected(&self, decider: &str, status: u16) {
+        let Some((policy, held)) = self.deciders.get_key_value(decider) else {
+            return;
+        };
+        let Some(slot) = status
+            .checked_sub(400)
+            .and_then(|slot| held.rejections.get(usize::from(slot)))
+        else {
+            return;
+        };
+        slot.get_or_init(|| {
+            metrics::counter!(
+                ROUTE_POLICY_REJECTIONS_TOTAL,
+                "policy" => Arc::clone(policy),
+                "pool" => Arc::clone(&self.pool),
+                "status" => status.to_string(),
+            )
+        })
+        .increment(1);
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Taps {
     pub request: Vec<Arc<Call>>,
@@ -177,6 +256,8 @@ pub struct Selected {
     pub rate_headroom: Option<f64>,
     pub cost: Arc<CostModel>,
     pub reads: HookRead,
+    /// The route-policy counters of the selected walk pool; `None` outside a pool walk.
+    pub counters: Option<Arc<RouteCounters>>,
 }
 
 /// Selection uses the same configured scope as the native egress walk, never a body field.

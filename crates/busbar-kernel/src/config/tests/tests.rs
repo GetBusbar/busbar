@@ -377,13 +377,19 @@ fn test_emit_server_timing_moved_to_advanced_response_headers() {
 fn test_response_headers_cfg_defaults_and_parses() {
     let default = ResponseHeadersCfg::default();
     assert!(!default.server_timing, "server_timing defaults OFF");
-    assert!(!default.route_policy, "route_policy defaults OFF");
 
     let cfg: ResponseHeadersCfg =
-        busbar_contract::yaml::from_str("server_timing: true\nroute_policy: true")
-            .expect("both toggles parse");
+        busbar_contract::yaml::from_str("server_timing: true").expect("the toggle parses");
     assert!(cfg.server_timing);
-    assert!(cfg.route_policy);
+
+    // `route_policy` was removed in 1.6.0 (DES-NATIVE-HOOKS-PARITY r3 §C): Busbar names no routing
+    // policy or member in a response header, so the key is an unknown field.
+    let err = busbar_contract::yaml::from_str::<ResponseHeadersCfg>("route_policy: false")
+        .expect_err("the removed key is refused");
+    assert!(
+        err.to_string().contains("unknown field") && err.to_string().contains("route_policy"),
+        "{err}"
+    );
 
     let err =
         busbar_contract::yaml::from_str::<ResponseHeadersCfg>("server_timing: true\ntypo_field: 1")
@@ -1793,7 +1799,6 @@ fn serde_default_fns_return_their_documented_constants() {
     assert_eq!(default_max_keys_per_principal(), 0);
 
     assert!(!default_response_headers_server_timing());
-    assert!(!default_response_headers_route_policy());
 }
 
 #[test]

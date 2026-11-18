@@ -53,6 +53,7 @@ impl Fixture {
                 rate_headroom: None,
                 cost: Arc::new(CostModel::resolve_parts(None, 0, &Default::default())),
                 reads: Arc::new(|_, _, _, _| Box::pin(async { Ok(()) })),
+                counters: None,
             },
         }
     }

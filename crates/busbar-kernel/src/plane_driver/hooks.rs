@@ -126,7 +126,8 @@ pub struct Constraint {
     /// An unordered preferred set; all other kept members remain fallback. Ordinary ranking,
     /// configured tiers and weighted rotation apply inside each group; affinity keeps precedence.
     pub prioritize: Option<Vec<usize>>,
-    /// The policy that ordered or restricted, when one did.
+    /// The deciding name of the installed order or preferred set: the strategy word of a bound
+    /// strategy, else the hook name.
     pub policy: Option<std::sync::Arc<str>>,
     /// Every restrict the hooks decided, re-applied to a fallback pool's members.
     pub restricts: Vec<Restrict>,

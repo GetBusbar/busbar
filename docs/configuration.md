@@ -1105,10 +1105,9 @@ with a pool's own value differently, by TYPE:
 | `signals` | list<string> | `[]` | Typed signals this hook requests from the signal catalog (names are the catalog's; an unknown name fails parse). Omission grants no additional signal. Declaring a signal here is what makes the engine compute and project it. <!-- docs-truth: owner KEEP 23:15Z; CONFIG-DELTA lists `hooks.<h>.signals` as DC-7 (kept, W2g !2688 left it). -->|
 
 The per-member `tier` and `tags` fields documented in [Members and weights](#members-and-weights)
-feed the ordering strategies and gate candidates. Gate observability: see
-[observability.md#response-headers](observability.md#response-headers) for the opt-in
-`x-busbar-route-policy` / `x-busbar-route-target` response headers, which name the deciding hook and
-chosen lane.
+feed the ordering strategies and gate candidates. The deciding policy and the answering member
+are on the unit record (`GET /api/v1/admin/records`) and in the request log's `route_policy` field;
+no response header names them.
 
 ---
 
@@ -1367,7 +1366,7 @@ a fully live deletion returns `204`. Route mounting has its separate restart req
 absent at boot remains unavailable until restart. Export definitions are not part of the single-value
 `PUT /config/settings` overlay.
 
-**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false`. See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. the first-boot migration moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
+**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) is now an `advanced.response_headers` toggle, default `false`. The 1.5.5 `x-busbar-route-policy` / `x-busbar-route-target` headers and their `route_policy` toggle are removed (see [migration-1.6.md](migration-1.6.md)). See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. the first-boot migration moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 
 ---
 
@@ -1732,12 +1731,11 @@ export:
 
 # ---------------------------------------------------------------------------
 # Response headers: every busbar-injected header is opt-in, default OFF (see
-# observability.md#response-headers). This example opts into both.
+# observability.md#response-headers). This example opts into it.
 # ---------------------------------------------------------------------------
 advanced:
   response_headers:
     server_timing: true
-    route_policy: true
 ```
 
 Then mint a key for each caller (shown once; bind it to a group):
@@ -1869,7 +1867,6 @@ advanced:
   upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
-    route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
   trusted_proxies: []               # ingresses/load balancers whose forwarded client address is believed (IPs, CIDRs)
 ```
 
@@ -1920,7 +1917,7 @@ see the [development migration limitation](#environment-variables) before upgrad
 that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
-composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
+composition at boot, so a live `PUT` stores the new value
 durably (`reload_to_apply` flags `advanced.response_headers`) but only takes effect on the next
 restart. Full catalogue, rationale for defaulting off, and exactly when each header fires:
 [observability.md#response-headers](observability.md#response-headers).

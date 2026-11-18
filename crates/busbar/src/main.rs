@@ -1013,7 +1013,6 @@ async fn run(
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
 
-    busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
     busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
 
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());

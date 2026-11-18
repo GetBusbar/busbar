@@ -343,7 +343,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .body(
             json::json!({
                 "advanced": {
-                    "response_headers": { "server_timing": true, "route_policy": true }
+                    "response_headers": { "server_timing": true }
                 }
             })
             .to_string(),
@@ -361,7 +361,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         .collect();
     assert!(
         flagged.contains(&"advanced.response_headers"),
-        "router-baked middleware state / OnceLock-seeded response-header toggles must be flagged \
+        "router-baked middleware state response-header toggles must be flagged \
          reload-to-apply: {flagged:?}"
     );
 
@@ -375,6 +375,24 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         put.status().as_u16(),
         400,
         "the DELETED observability section must be rejected, never silently ignored"
+    );
+
+    // `advanced.response_headers.route_policy` was removed in 1.6.0 (DES-NATIVE-HOOKS-PARITY r3 §C):
+    // an admin write naming it is refused as an unknown field, never stored.
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            json::json!({ "advanced": { "response_headers": { "route_policy": false } } })
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = put.status().as_u16();
+    let text = put.text().await.unwrap();
+    assert_eq!(
+        status, 400,
+        "the removed route_policy key is refused: {text}"
     );
 
     handle.abort();

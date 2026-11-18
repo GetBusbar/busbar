@@ -2099,17 +2099,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             st.facts.status = out.reply_status;
                         }
 
-                        let mut fields = bufs.fields_of(out.fields_written);
-
-                        let chosen = self.lock().route_policy.clone();
-                        if chosen.is_some() {
-                            route_policy_fields(
-                                &mut fields,
-                                route_policy_headers_enabled(),
-                                chosen.as_deref(),
-                                &bufs.member,
-                            );
-                        }
+                        let fields = bufs.fields_of(out.fields_written);
                         self.caller.head(out.reply_status, fields);
                     }
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;
@@ -2154,31 +2144,6 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             return Step::Answered(out.flags & EMIT_DONE != 0);
         }
-    }
-}
-
-pub const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
-
-pub const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
-
-static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-pub fn configure_route_policy_headers(enabled: bool) {
-    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
-}
-
-fn route_policy_headers_enabled() -> bool {
-    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
-}
-
-fn route_policy_fields(
-    fields: &mut HeadFields,
-    enabled: bool,
-    policy: Option<&str>,
-    member: &[u8],
-) {
-    if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
-        crate::cold::route_policy_fields(fields, name, member);
     }
 }
 
