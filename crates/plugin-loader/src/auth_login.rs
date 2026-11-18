@@ -125,8 +125,8 @@ pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
                 .iter()
                 .map(|f: &LoginField| {
                     Some(busbar_contract::auth::LoginField {
-                        name: text(f.name)?,
-                        label: text(f.label)?,
+                        name: text(f.name)?.into(),
+                        label: text(f.label)?.into(),
                         kind: if f.kind == FORM_PASSWORD {
                             FieldKind::Password
                         } else {

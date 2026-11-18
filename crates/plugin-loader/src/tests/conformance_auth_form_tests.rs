@@ -36,8 +36,8 @@ fn a_form_over_the_hosts_field_cap_is_malformed_in_the_transcript() {
         panic!("the actual capped reader accepts exactly64 live fields");
     };
     assert_eq!(form.fields.len(), 64);
-    assert!(form.fields.iter().all(|field| field.name == "f"
-        && field.label == "f"
+    assert!(form.fields.iter().all(|field| &*field.name == "f"
+        && &*field.label == "f"
         && field.kind == FieldKind::Text
         && !field.required));
 }

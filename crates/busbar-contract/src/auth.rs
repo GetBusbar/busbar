@@ -128,10 +128,11 @@ pub enum FieldKind {
 /// One field the core renders in a credential-login form, exactly as the plugin declared it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginField {
-    /// The key the submitted value is returned under in [`CompleteLogin::submitted`].
-    pub name: String,
-    /// The human label shown next to the field.
-    pub label: String,
+    /// The key the submitted value is returned under in [`CompleteLogin::submitted`]. Shared: a
+    /// form the host keeps per instance hands each prompt its words without copying them.
+    pub name: std::sync::Arc<str>,
+    /// The human label shown next to the field (shared, as `name`).
+    pub label: std::sync::Arc<str>,
     /// Text or Password (masking + redaction).
     pub kind: FieldKind,
     /// Whether the field must be non-empty to submit.
