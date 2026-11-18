@@ -1016,12 +1016,13 @@ impl AuthCalls for AuthInstance {
         self.facts.credential_kinds.clone()
     }
 
-    fn carriers(&self) -> Vec<String> {
+    /// The instance's carriers as it holds them: shared, never copied.
+    fn carriers(&self) -> Arc<[String]> {
         let metadata = self
             .metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cold::listed_carriers(&metadata.carriers)
+        Arc::clone(&metadata.carriers)
     }
 
     fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {

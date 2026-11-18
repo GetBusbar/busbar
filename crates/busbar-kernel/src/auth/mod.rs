@@ -668,17 +668,30 @@ enum Reach {
 /// line, the path and query as received, and the field lines as presented (lower-cased names, in
 /// order). The chain adds the candidate credential and the clock per call. Empty (`default`) where
 /// the caller holds no request head (the stdio identity bind): the candidate alone is lent.
-#[derive(Debug, Clone, Default)]
-pub struct ChainHead {
-    lines: Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)>,
-    method: String,
-    authority: String,
-    path: String,
-    query: Option<String>,
+///
+/// A VIEW of the request, never a copy of it: a chain with no plugin position (the `keys` arm
+/// alone) reads nothing from it, and each plugin position's `verify` is handed its own owned
+/// request, built from the view once ([`ChainHead::request`]): the one copy the call needs, since
+/// the call owns what the plugin is lent until it answers.
+#[derive(Clone, Copy, Default)]
+pub struct ChainHead<'a> {
+    method: &'a str,
+    /// The path and query as received (`path` or `path?query`).
+    target: &'a str,
+    headers: Option<&'a HeaderMap>,
 }
 
-impl ChainHead {
-    pub fn of(req: &Request<Body>) -> Self {
+impl fmt::Debug for ChainHead<'_> {
+    /// The method only: the field lines may carry a credential and are never printed.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChainHead")
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ChainHead<'a> {
+    pub fn of(req: &'a Request<Body>) -> Self {
         Self::of_parts(
             req.method().as_str(),
             req.uri()
@@ -688,40 +701,43 @@ impl ChainHead {
         )
     }
 
-    pub fn of_parts(method: &str, target: &str, headers: &HeaderMap) -> Self {
-        let (path, query) = match target.split_once('?') {
+    pub fn of_parts(method: &'a str, target: &'a str, headers: &'a HeaderMap) -> Self {
+        Self {
+            method,
+            target,
+            headers: Some(headers),
+        }
+    }
+
+    /// One position's own request: the head's lines, method, authority, path and query, copied
+    /// once here for the call that will own them, with the candidate credential and the clock.
+    fn request(&self, candidate: Option<&str>, now: u64) -> VerifyRequest {
+        let (path, query) = match self.target.split_once('?') {
             Some((path, query)) => (path, Some(query.to_string())),
-            None => (target, None),
+            None => (self.target, None),
         };
-        let authority = headers
-            .get(axum::http::header::HOST)
+        let authority = self
+            .headers
+            .and_then(|headers| headers.get(axum::http::header::HOST))
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
-        Self {
-            lines: headers
-                .iter()
+        VerifyRequest {
+            point: busbar_contract::abi::auth::AuthPoint::Head,
+            credential: candidate
+                .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
+            lines: self
+                .headers
+                .into_iter()
+                .flatten()
                 .map(|(n, v)| {
                     let value = busbar_contract::redacted::Secret::new(v.as_bytes().to_vec());
                     (n.as_str().to_string(), value)
                 })
                 .collect(),
-            method: method.to_string(),
+            method: self.method.to_string(),
             authority: authority.to_string(),
             path: path.to_string(),
             query,
-        }
-    }
-
-    fn request(&self, candidate: Option<&str>, now: u64) -> VerifyRequest {
-        VerifyRequest {
-            point: busbar_contract::abi::auth::AuthPoint::Head,
-            credential: candidate
-                .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
-            lines: self.lines.clone(),
-            method: self.method.clone(),
-            authority: self.authority.clone(),
-            path: self.path.clone(),
-            query: self.query.clone(),
             timestamp: now,
             conn: 0,
             unit: 0,
@@ -827,7 +843,7 @@ impl AuthMiddleware {
 
     async fn walk(
         &self,
-        head: &ChainHead,
+        head: &ChainHead<'_>,
         candidate: Option<&str>,
         gov: Option<&crate::governance::GovState>,
         now: u64,
@@ -864,7 +880,7 @@ impl AuthMiddleware {
     pub async fn run_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
-        head: ChainHead,
+        head: ChainHead<'_>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> ChainVerdict {
@@ -876,7 +892,7 @@ impl AuthMiddleware {
     pub(crate) async fn judge_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<String>,
-        head: ChainHead,
+        head: ChainHead<'_>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> Result<ChainVerdict, VerifierUnavailable> {
@@ -895,7 +911,7 @@ impl AuthMiddleware {
     pub async fn judge_chain_on_request_path_naming(
         auth: &std::sync::Arc<AuthMiddleware>,
         candidate: Option<&str>,
-        head: &ChainHead,
+        head: &ChainHead<'_>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<&str>,
     ) -> (
@@ -2947,9 +2963,7 @@ pub(crate) async fn auth_middleware(
 
                     pending = PendingClaim::of(
                         ReplayClaim::of(
-                            &busbar_contract::kept::Text::from(std::sync::Arc::clone(
-                                &reader.name,
-                            )),
+                            &busbar_contract::kept::Text::from(std::sync::Arc::clone(&reader.name)),
                             id.replay,
                             now,
                         ),
