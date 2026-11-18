@@ -10,6 +10,16 @@ use crate::plane_driver::request_admission::AdmittedRequest;
 use crate::plugin_records::RecordsDenied;
 use crate::upstreams::UpstreamDef;
 
+/// The three values that select a signal bucket for an admission: what `Hash` feeds. It is not an
+/// identity. Two admissions may share a bucket, so the table compares the whole authority (`==`)
+/// before it delivers.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct AdmissionBucket {
+    unit: u64,
+    generation: usize,
+    definition: usize,
+}
+
 /// Unit-local sharing until the host has a credential-occurrence equivalence producer. Clones retain
 /// the exact record, generation, selected table/definition and installed monetary Open.
 #[derive(Clone)]
@@ -48,6 +58,14 @@ impl ChannelAuthority {
             Err(RecordsDenied::Invalid)
         }
     }
+
+    pub(crate) fn bucket(&self) -> AdmissionBucket {
+        AdmissionBucket {
+            unit: self.admitted.context().unit(),
+            generation: Arc::as_ptr(self.admitted.context().generation()).addr(),
+            definition: Arc::as_ptr(&self.definition).addr(),
+        }
+    }
 }
 
 impl PartialEq for ChannelAuthority {
@@ -59,9 +77,7 @@ impl Eq for ChannelAuthority {}
 impl Hash for ChannelAuthority {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // These select a bucket only. Equality checks the complete opaque record/Open identity.
-        self.admitted.context().unit().hash(state);
-        Arc::as_ptr(self.admitted.context().generation()).hash(state);
-        Arc::as_ptr(&self.definition).hash(state);
+        self.bucket().hash(state);
     }
 }
 impl std::fmt::Debug for ChannelAuthority {
