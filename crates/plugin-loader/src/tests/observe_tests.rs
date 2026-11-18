@@ -19,11 +19,14 @@ fn fold_entries(
     metrics: &[serde_json::Value],
     diagnostics: &[serde_json::Value],
 ) {
-    testing::observing().fold_entries(
+    testing::observing().fold(
         &std::sync::Arc::from(plugin),
         kind,
-        metrics.to_vec(),
-        diagnostics.to_vec(),
+        Envelope {
+            result: (),
+            metrics: metrics.to_vec(),
+            diagnostics: diagnostics.to_vec(),
+        },
     );
 }
 
@@ -100,6 +103,20 @@ fn a_second_install_is_refused() {
     impl PluginObserver for Other {
         fn dropped(&self, _: u64) {}
         fn observe(&self, _: &str, _: &str, _: &[serde_json::Value], _: &[serde_json::Value]) {}
+        fn metric(
+            &self,
+            _: &str,
+            _: &str,
+            _: busbar_contract::abi::mechanism::observe::PluginMetric,
+        ) {
+        }
+        fn diagnostic(
+            &self,
+            _: &str,
+            _: &str,
+            _: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+        ) {
+        }
         fn refused(&self, _: &str, _: &str, _: crate::observe::BindRefusal<'_>) {}
     }
     let _guard = exclusive();
@@ -477,5 +494,51 @@ fn a_drop_after_the_last_handled_observation_is_still_reported() {
     assert!(
         reported >= 7,
         "a pending drop count was never reported without a further observation: {reported}"
+    );
+}
+
+/// The intake holds `INTAKE_BOUND` slots for as long as it runs, so a slot must not grow: an
+/// observation that carries one typed entry is no larger than one that carries an envelope's two
+/// lists.
+#[test]
+fn a_typed_entry_does_not_grow_the_intake_slot() {
+    assert!(
+        std::mem::size_of::<Entries>()
+            <= std::mem::size_of::<(Vec<serde_json::Value>, Vec<serde_json::Value>)>(),
+        "an entry is {} bytes",
+        std::mem::size_of::<Entries>()
+    );
+}
+
+/// A diagnostic raised on the back-channel reaches the observer as the entry it is: what the
+/// observer is told is the entry's own JSON form, with the plugin's name and kind from the sink.
+#[test]
+fn a_back_channel_diagnostic_reaches_the_observer_as_its_entry() {
+    use crate::dispatch::EnvelopeSink as _;
+    let _guard = exclusive();
+    let sink = EnvelopeObserver::with_families(
+        testing::observing(),
+        "typed-diag",
+        busbar_contract::abi::mechanism::kind::EXPORT,
+        Vec::new(),
+    );
+    sink.diag(crate::dispatch::Diagnostic {
+        id: 7,
+        severity: 2,
+        name: b"BUSBAR-9999",
+        text: b"the line",
+    });
+    let folds = testing::folds();
+    assert_eq!(folds.len(), 1, "{folds:?}");
+    assert_eq!(folds[0].0, "typed-diag");
+    assert_eq!(folds[0].1, busbar_contract::abi::mechanism::kind::EXPORT);
+    assert!(folds[0].2.is_empty());
+    assert_eq!(
+        folds[0].3,
+        vec![serde_json::json!({
+            "code": "BUSBAR-9999",
+            "level": "error",
+            "message": "the line",
+        })]
     );
 }
