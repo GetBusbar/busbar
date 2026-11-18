@@ -142,8 +142,10 @@ fn custody_answer_rules() {
         ),
         other => panic!("{other:?}"),
     }
-    // APPEND: an empty tail is the batch itself, a tail is copied, and a dest past the bindings is a FAULT.
-    match delivered_from(1, Some((1, &b""[..])), None, 2).unwrap() {
+    // APPEND: `dest` is the `{"$dest": n}` handle the binder wrote, numbered from 1 (ABI export AppendRec, IF
+    // §12.7; core resolves it with `ConfigBinder::dest(instance, handle)`, dafbb2a9b3). An empty tail is the
+    // batch itself, a tail is copied, and handle 0 or a handle past the bindings is a FAULT.
+    match delivered_from(1, Some((1, &b""[..])), None, 1).unwrap() {
         Delivered::Append {
             dest,
             bytes,
@@ -151,11 +153,12 @@ fn custody_answer_rules() {
         } => assert_eq!((dest, bytes, accepted), (1, None, 1)),
         other => panic!("{other:?}"),
     }
-    match delivered_from(1, Some((0, &b"x\n"[..])), None, 2).unwrap() {
+    match delivered_from(1, Some((2, &b"x\n"[..])), None, 2).unwrap() {
         Delivered::Append { bytes, .. } => assert_eq!(bytes.as_deref(), Some(&b"x\n"[..])),
         other => panic!("{other:?}"),
     }
-    assert!(delivered_from(1, Some((2, &b""[..])), None, 2).is_err());
+    assert!(delivered_from(1, Some((0, &b""[..])), None, 2).is_err());
+    assert!(delivered_from(1, Some((3, &b""[..])), None, 2).is_err());
 }
 
 #[test]
