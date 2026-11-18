@@ -1714,7 +1714,6 @@ impl EgressFarEnd<'_> {
                 !busbar_contract::conn::is_sealed_query_field(name)
             }
         });
-        busbar_kernel_egress::upstream::apply_upstream_encoding(&mut request.fields);
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
 
         let live = {
