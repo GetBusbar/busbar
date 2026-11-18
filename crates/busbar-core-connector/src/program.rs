@@ -87,8 +87,9 @@ struct Inbox {
     ended: Option<Option<Failure>>,
     /// The end was read once; every read after it is closed.
     end_read: bool,
-    /// The message its open carried, while the program's queue had no room for it.
-    unsent: Option<Vec<u8>>,
+    /// The message its open carried (the opener's frozen body, shared: no copy), while the
+    /// program's queue had no room for it.
+    unsent: Option<busbar_contract::conn::Bytes>,
     /// It opened part way through a frame: that frame's rest is skipped.
     mid_frame: bool,
 }
@@ -585,7 +586,11 @@ impl Member {
     }
 
     /// A LEASE on the member's program: spawned first when none runs (a new generation; one found
-    pub(crate) fn lease(&self, first: &[u8], expected: Option<Expected>) -> Result<u64, ConnError> {
+    pub(crate) fn lease(
+        &self,
+        first: busbar_contract::conn::Bytes,
+        expected: Option<Expected>,
+    ) -> Result<u64, ConnError> {
         let waker = Arc::new(self.fan_waker());
         let mut st = self.lock();
         loop {
@@ -679,7 +684,7 @@ impl Member {
                 queued: 0,
                 ended: None,
                 end_read: false,
-                unsent: (!first.is_empty()).then(|| crate::off_path::conns::owned_bytes(first)),
+                unsent: (!first.is_empty()).then_some(first),
                 mid_frame,
             },
         );
