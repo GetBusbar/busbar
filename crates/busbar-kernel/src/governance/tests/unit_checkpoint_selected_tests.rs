@@ -211,7 +211,7 @@ async fn selected_dispatch_commit_refusal_retains_predecessor_and_retry_commits_
         .commit_selected_checkpoint((*accepted).clone(), accepted.revision, || {
             panic!("duplicate committed attempt")
         });
-    assert!(matches!(duplicate, Err(SelectedCommitError::Custody(_))));
+    assert!(matches!(duplicate, Err(SelectedCommitError::Custody)));
     let current = gov
         .stage_selected_checkpoint((*accepted).clone(), Some(accepted.revision))
         .unwrap();
@@ -240,7 +240,7 @@ async fn selected_dispatch_commit_preflights_exact_transition_before_consuming_t
     for (candidate, revision) in candidates {
         let result = gov
             .commit_selected_checkpoint(candidate, revision, || Ok::<_, ()>(token.take().unwrap()));
-        assert!(matches!(result, Err(SelectedCommitError::Custody(_))));
+        assert!(matches!(result, Err(SelectedCommitError::Custody)));
         assert_eq!(token, Some("unconsumed reservation"));
     }
     assert_eq!(

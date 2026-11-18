@@ -37,8 +37,6 @@ fn rule(metric: RateMetric, threshold: u64) -> RateTerms {
         resource: "resource-a".into(),
         metric,
         threshold,
-        policy_revision: 1,
-        activated_minute: 0,
     }
 }
 
@@ -152,7 +150,6 @@ fn reservation_expiry_refunds_old_cell_and_never_current_committed_work() {
     let snapshot = inspect(&rates, rpm);
     assert_eq!(snapshot.committed_requests, 1);
     assert_eq!(snapshot.provisional_requests, 0);
-    assert_eq!(snapshot.window_start_ms, 60_000);
 }
 
 #[test]
@@ -345,7 +342,6 @@ fn stable_rule_revision_shares_and_structured_scope_keys_do_not_alias() {
     let mut held = reserve(&rates, vec![original.clone()]);
     held.commit().unwrap();
     let mut revised = original.clone();
-    revised.policy_revision = 9;
     assert_eq!(
         rates
             .reserve_terms(vec![revised.clone()], &[INPUT])
@@ -588,18 +584,9 @@ fn native_dynamic_physical_classes_survive_their_declaring_storage_and_reject_ne
         inspect(&rates, tpm).known_tokens,
         Count::from_integer(3).unwrap()
     );
-    let finished = hold.finish(TokenCoverage::Complete).unwrap();
+    hold.finish(TokenCoverage::Complete).unwrap();
     drop(input);
     drop(output);
-    assert!(finished
-        .highwater
-        .iter()
-        .any(|(class, amount)| class.as_ref() == "tokens.native_input_41"
-            && *amount == Count::from_integer(3).unwrap()));
-    assert!(finished
-        .highwater
-        .iter()
-        .any(|(class, amount)| class.as_ref() == "tokens.native_output_41" && amount.is_zero()));
 }
 
 #[tokio::test]

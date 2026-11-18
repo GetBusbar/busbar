@@ -3,8 +3,7 @@
 
 use super::*;
 use crate::governance::selected_resource::{
-    CommittedRate, EffectiveToken, EffectiveTokenView, RateFinalSnapshot, RateRejected,
-    RateReservation, TokenCoverage,
+    CommittedRate, EffectiveToken, EffectiveTokenView, RateRejected, RateReservation, TokenCoverage,
 };
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
 
@@ -106,7 +105,7 @@ impl NativeRequestMoney {
                     .map_err(Box::new)
             })
             .map_err(|error| match error {
-                SelectedCommitError::Custody(_) => CommitFailure::Before,
+                SelectedCommitError::Custody => CommitFailure::Before,
                 SelectedCommitError::Commit(error) => CommitFailure::Rate(error),
             })?;
         // Everything after irrevocable rate commitment is an infallible ownership transfer.
@@ -274,11 +273,11 @@ impl NativeAttempt {
         Ok(staged.rounded)
     }
 
-    pub(crate) fn seal(mut self) -> Result<RateFinalSnapshot, NativeAttemptError> {
+    pub(crate) fn seal(mut self) -> Result<(), NativeAttemptError> {
         self.finish()
     }
 
-    fn finish(&mut self) -> Result<RateFinalSnapshot, NativeAttemptError> {
+    fn finish(&mut self) -> Result<(), NativeAttemptError> {
         let rate = self.rate.take().ok_or(NativeAttemptError::Unavailable)?;
         let preparation = rate.prepared().selection().preparation();
         let outcome = (|| {

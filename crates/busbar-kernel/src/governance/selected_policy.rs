@@ -189,8 +189,6 @@ impl SelectedPolicy {
             instance: instance.into(),
             resource: resource.map(Arc::from),
             rows: self.applicable_rows(key, instance, resource)?,
-            policy_revision: self.revision,
-            activated_minute: self.activated_minute,
         })
     }
 
@@ -231,8 +229,6 @@ impl SelectedPolicy {
                     rule_id: Arc::clone(&rule.id),
                     metric,
                     threshold: rule.threshold,
-                    policy_revision: self.revision,
-                    activated_minute: rule.activated_minute.unwrap_or(self.activated_minute),
                 });
             }
         }
@@ -591,8 +587,6 @@ pub(crate) struct ResolvedSelectedRules {
     instance: Arc<str>,
     resource: Option<Arc<str>>,
     rows: ResolvedRows,
-    policy_revision: u64,
-    activated_minute: u64,
 }
 
 pub(crate) struct ResolvedSelectedRule {
@@ -600,8 +594,6 @@ pub(crate) struct ResolvedSelectedRule {
     rule_id: Arc<str>,
     metric: RateMetric,
     threshold: u64,
-    policy_revision: u64,
-    activated_minute: u64,
 }
 
 impl ResolvedSelectedRules {
@@ -626,12 +618,6 @@ impl ResolvedSelectedRules {
     pub(crate) fn resource_handle(&self) -> Option<&Arc<str>> {
         self.resource.as_ref()
     }
-    pub(crate) fn policy_revision(&self) -> u64 {
-        self.policy_revision
-    }
-    pub(crate) fn activated_minute(&self) -> u64 {
-        self.activated_minute
-    }
 }
 
 impl ResolvedSelectedRule {
@@ -650,12 +636,6 @@ impl ResolvedSelectedRule {
     }
     pub(crate) fn threshold(&self) -> u64 {
         self.threshold
-    }
-    pub(crate) fn policy_revision(&self) -> u64 {
-        self.policy_revision
-    }
-    pub(crate) fn activated_minute(&self) -> u64 {
-        self.activated_minute
     }
 }
 
