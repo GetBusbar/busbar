@@ -171,20 +171,23 @@ impl NativeRequestMoney {
         {
             return Err(NativeAttemptError::Binding);
         }
-        let physical_classes: Box<[Box<str>]> = prepared
+        // The declaration's physical classes, in its order, each named by the checkpoint's own
+        // shared text: the list copies no name, and the rate hold and every observation share it.
+        // The same set as the checkpoint's (as the owned set comparison judged it): each declared
+        // class is in the checkpoint's set (a class that is not ends the lookup), and each of the
+        // checkpoint's is declared.
+        let physical_classes: Option<Arc<[busbar_contract::kept::Text]>> = prepared
             .declaration()
             .physical_classes()
-            .map(Box::<str>::from)
+            .map(|class| parts.physical_classes.get(class).cloned())
             .collect();
-        // The same set as the checkpoint's (as the owned set comparison judged it): each declared
-        // class is in the checkpoint's set, and each of the checkpoint's is declared.
-        if !physical_classes
+        let Some(physical_classes) = physical_classes else {
+            return Err(NativeAttemptError::Binding);
+        };
+        if !parts
+            .physical_classes
             .iter()
-            .all(|class| parts.physical_classes.contains(&**class))
-            || !parts
-                .physical_classes
-                .iter()
-                .all(|held| physical_classes.iter().any(|class| **class == **held))
+            .all(|held| physical_classes.iter().any(|class| class == held))
         {
             return Err(NativeAttemptError::Binding);
         }
@@ -195,12 +198,16 @@ impl NativeRequestMoney {
                 TargetIdentity::Registration => TargetKind::Registration,
                 TargetIdentity::Model { .. } => TargetKind::Model,
             },
-            instance: self.request.context().instance().to_owned(),
-            selected_pool: partition_pool(&self.request, selected.pool()),
-            resource: selected.resource().map(str::to_owned),
+            // The instance's name is the caller's own and the request's pool is the checkpoint's
+            // own: both shared. The walk's names are learned with this attempt: one shared text
+            // each, made here, shared by every later copy of the checkpoint.
+            instance: self.request.context().instance_name(),
+            selected_pool: partition_pool(&self.request, &parts.request_pool, selected.pool()),
+            resource: selected.resource().map(shared_name),
             usage: UsagePartition {
-                lane: selected.qualified_member().to_owned(),
-                provider: (!selected.provider().is_empty()).then(|| selected.provider().to_owned()),
+                lane: shared_name(selected.qualified_member()),
+                provider: (!selected.provider().is_empty())
+                    .then(|| shared_name(selected.provider())),
                 classes: BTreeMap::new(),
             },
             transport: Transport::Prepared,
@@ -329,7 +336,8 @@ use busbar_ports::codec::fallback_usage::{
 pub(crate) struct PreparedRateAttempt {
     request: AdmittedRequest,
     selected: SelectedWalkAttempt,
-    physical_classes: Box<[Box<str>]>,
+    /// Shared: an observation takes the list without copying it or any name in it.
+    physical_classes: Arc<[busbar_contract::kept::Text]>,
     // Retain the whole validated preparation: its exchange cannot be paired with another
     // target/ordinal or a separately copied estimate/echo view.
     _prepared: PreparedExchange,
@@ -351,7 +359,7 @@ impl PreparedRateAttempt {
     }
 
     /// The frozen, validated physical class set; aggregates must not overlap its classes.
-    pub(crate) fn physical_classes(&self) -> &[Box<str>] {
+    pub(crate) fn physical_classes(&self) -> &Arc<[busbar_contract::kept::Text]> {
         &self.physical_classes
     }
 
@@ -401,7 +409,7 @@ struct StagedAttemptFacts {
 
 fn stage_attempt_facts(
     before: &AttemptPartition,
-    physical_classes: &BTreeSet<String>,
+    physical_classes: &BTreeSet<busbar_contract::kept::Text>,
     declaration: Declaration<'_>,
     reports: &[AttemptUsage<'_>],
     end: Option<AttemptEnd>,
@@ -433,11 +441,17 @@ fn stage_attempt_facts(
         let (count, was_rounded) =
             super::super::usage::scaled(report.amount, report.scale).ok_or(RecErr::Size)?;
         rounded |= was_rounded;
-        let facts = partition
+        // The class's name is the checkpoint's own shared text when it holds one (a class this
+        // attempt already reported, or a physical class): a repeated report copies no name. A
+        // name first seen here is made shared once.
+        let class = partition
             .usage
             .classes
-            .entry(report.class.to_owned())
-            .or_default();
+            .get_key_value(report.class)
+            .map(|(name, _)| name.clone())
+            .or_else(|| physical_classes.get(report.class).cloned())
+            .unwrap_or_else(|| shared_name(report.class));
+        let facts = partition.usage.classes.entry(class).or_default();
         match report.source {
             UsageSource::Reported => facts.reported = Some(count),
             UsageSource::Floor => facts.floor = Some(count),
@@ -479,10 +493,25 @@ mod tests;
 /// pool under a length-framed key (`provider_catalog::walk_key`). An attempt in the request's own
 /// walk records the request's own qualified pool (`instance\u{1f}domain`). Any other walk key is
 /// recorded as it is, and the partition rule judges it.
-fn partition_pool(request: &AdmittedRequest, walk_pool: &str) -> String {
+fn partition_pool(
+    request: &AdmittedRequest,
+    request_pool: &busbar_contract::kept::Text,
+    walk_pool: &str,
+) -> busbar_contract::kept::Text {
     if request.walk_key() == Some(walk_pool) {
-        request.pool().to_owned()
+        // The checkpoint holds the request's own pool name already: share it.
+        if *request_pool == request.pool() {
+            request_pool.clone()
+        } else {
+            shared_name(request.pool())
+        }
     } else {
-        walk_pool.to_owned()
+        shared_name(walk_pool)
     }
+}
+
+/// A name first learned with this attempt, as the checkpoint keeps it: one shared text, made
+/// here, that every later copy of the checkpoint shares.
+fn shared_name(name: &str) -> busbar_contract::kept::Text {
+    busbar_contract::kept::Text::from(Arc::<str>::from(name))
 }

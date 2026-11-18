@@ -221,7 +221,7 @@ impl PlaneMoney {
             parts.disposition = match native.work {
                 Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
                     Disposition::Cancel {
-                        reason: cause.as_str().to_owned(),
+                        reason: busbar_contract::kept::Text::fixed(cause.as_str()),
                     }
                 }
                 None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,

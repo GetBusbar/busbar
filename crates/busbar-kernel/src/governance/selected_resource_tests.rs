@@ -6,6 +6,22 @@ use super::*;
 const INPUT: &str = "tokens.input";
 const OUTPUT: &str = "tokens.output";
 
+impl SelectedRates {
+    /// The tests' entry: class names given as plain text are made shared here, then reserved
+    /// exactly as a prepared attempt's are (`reserve_shared`).
+    fn reserve_terms<C: AsRef<str>>(
+        self: &Arc<Self>,
+        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
+        classes: &[C],
+    ) -> Result<RateHold, RateRefusal> {
+        let shared: Vec<busbar_contract::kept::Text> = classes
+            .iter()
+            .map(|class| busbar_contract::kept::off_path::text(class.as_ref()))
+            .collect();
+        self.reserve_shared(terms, &shared)
+    }
+}
+
 fn rates(capacity: usize) -> (Arc<SelectedRates>, Arc<AtomicU64>) {
     let elapsed = Arc::new(AtomicU64::new(0));
     let rates = Arc::new(SelectedRates {
