@@ -208,7 +208,7 @@ fn an_unregistered_release_preserves_its_holder_without_retaining_the_key() {
         .unwrap();
         let weak = Arc::downgrade(&trust);
         let mut key = original.clone();
-        key.trust = Some(crate::pool::Same(trust));
+        key.trust = Some(crate::pool::Same::of(trust));
         c.pools.release(*shard, &key, &line);
         assert!(
             line.reusable(),

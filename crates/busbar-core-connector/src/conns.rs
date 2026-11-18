@@ -4215,7 +4215,7 @@ impl Connector {
             anchors: None,
         };
 
-        let trust = dial.tls.clone().map(Same);
+        let trust = dial.tls.clone().map(Same::of);
         // The head's own locate answer when it carried one; else a declared target's kept place.
         let planned = match carried {
             Some(carried) => self.plan_carried(&door, dial, Some(carried)),
@@ -4271,7 +4271,7 @@ impl Connector {
             anchors
         };
 
-        let sealed = anchors.clone().map(Same);
+        let sealed = anchors.clone().map(Same::of);
         if anchors.as_ref().is_some_and(|a| {
             (a.key_pin.is_some() || !a.extra_anchors.is_empty()) && !planned.secure()
         }) {

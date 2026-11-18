@@ -155,19 +155,45 @@ impl Eq for PoolKey {}
 
 /// One trust a dial was held to (a client config, a seal of anchors), by identity: two are the
 /// same only when they are one. The key holds it, so its address is never reused while a line
-/// keyed by it is pooled.
-#[derive(Debug)]
-pub(crate) struct Same<T>(pub(crate) Arc<T>);
+/// keyed by it is pooled. It is held erased (`dyn Any`): the key compares and hashes the address
+/// alone and never reads the value, so nothing in it that can change (a config's session store)
+/// reaches the key's `Hash` or `Eq` (clippy `mutable_key_type`, ruling 3).
+pub(crate) struct Same<T> {
+    at: usize,
+    _kept: Arc<dyn std::any::Any + Send + Sync>,
+    _of: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Send + Sync + 'static> Same<T> {
+    /// `value`, by identity, kept alive by the key.
+    pub(crate) fn of(value: Arc<T>) -> Self {
+        Self {
+            at: Arc::as_ptr(&value).cast::<()>() as usize,
+            _kept: value,
+            _of: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for Same<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Same").field(&self.at).finish()
+    }
+}
 
 impl<T> Clone for Same<T> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self {
+            at: self.at,
+            _kept: Arc::clone(&self._kept),
+            _of: std::marker::PhantomData,
+        }
     }
 }
 
 impl<T> PartialEq for Same<T> {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        self.at == other.at
     }
 }
 
@@ -175,7 +201,7 @@ impl<T> Eq for Same<T> {}
 
 impl<T> std::hash::Hash for Same<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
+        self.at.hash(state);
     }
 }
 
