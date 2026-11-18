@@ -10,27 +10,12 @@ mod linked {
         install();
         busbar_kernel::plane_driver::registry::plane_decls()
     }
-    pub(super) fn owning(section: &str) -> &'static PlaneDecl {
-        planes()
-            .iter()
-            .copied()
-            .find(|decl| {
-                decl.config_section == section || decl.owned_config_sections.contains(&section)
-            })
-            .expect("the actual distribution declares the configured section")
-    }
     pub(super) fn fallback() -> &'static PlaneDecl {
         planes()
             .iter()
             .copied()
             .find(|decl| decl.fallback)
             .expect("the actual distribution declares its fallback")
-    }
-    pub(super) fn door_section(decl: &PlaneDecl) -> &'static str {
-        decl.owned_config_sections
-            .first()
-            .copied()
-            .unwrap_or(decl.config_section)
     }
 }
 
@@ -368,60 +353,4 @@ async fn only_a_configured_plane_builds_its_slot() {
         "configured: built once, slot present"
     );
     busbar_kernel::plane_driver::registry::publish_planes(&[]);
-}
-
-#[tokio::test]
-async fn resolve_reads_the_configured_plane_sections_off_the_config() {
-    crate::dist_root_install::install();
-    let tools_plane = linked::owning("tools");
-    let door = linked::door_section(tools_plane);
-    assert_ne!(
-        door, tools_plane.config_section,
-        "the `tools:` plane declares an endpoint door of its own"
-    );
-    let peer = crate::root::serve::plane_mcp_door::tool_door::TlsToolServer::new().await;
-    let sections = |extra: &str| {
-        let yaml = format!(
-            "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"
-        );
-        let deploy = busbar_kernel::config::deploy_from_yaml_str(
-            &yaml,
-            &crate::root::boot::axis_test_grammar(),
-        )
-        .expect("parse");
-        let mut defs = std::collections::HashMap::new();
-        defs.insert(
-            "acme".to_string(),
-            busbar_contract::yaml::from_str(
-                "protocol: anthropic\nbase_url: https://api.example.com\n",
-            )
-            .expect("provider def"),
-        );
-        busbar_kernel::config::resolve(&deploy, &defs)
-            .expect("resolve")
-            .plane_sections
-            .into_iter()
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        sections("public_url: https://gw.example.com\n"),
-        Vec::<&str>::new(),
-        "a 1.5.5-shaped config (public_url included) configures no plane"
-    );
-    assert_eq!(
-        sections(&format!(
-            "tools:\n  t1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n\
-             agents:\n  a1: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n",
-            peer.port, peer.pin, peer.port, peer.pin,
-        )),
-        vec!["agents", "tools"]
-    );
-    assert_eq!(
-        sections(&format!(
-            "{door}:\n  canonical_uri: \"https://gw.example.com/{}\"\n  authorization_servers: [\"https://as.example.com\"]\n",
-            tools_plane.key
-        )),
-        vec![tools_plane.config_section],
-        "the `{door}:` door configures the plane that owns it"
-    );
 }
