@@ -99,13 +99,21 @@ impl PathBook {
     /// go.
     #[cold]
     pub(crate) fn let_go_unkept(&mut self, keep: impl Fn(SocketAddr) -> bool) {
-        let gone: Vec<SocketAddr> = self.by_addr.keys().copied().filter(|a| !keep(*a)).collect();
-        for a in gone {
-            if let Some(p) = self.by_addr.remove(&a) {
-                self.by_path.remove(&p);
-                self.untold.retain(|u| *u != p);
+        // Each unkept address goes, with its path number, as the book is walked: no list is made.
+        let Self {
+            by_addr,
+            by_path,
+            untold,
+            ..
+        } = self;
+        by_addr.retain(|addr, path| {
+            if keep(*addr) {
+                return true;
             }
-        }
+            by_path.remove(path);
+            untold.retain(|told| told != path);
+            false
+        });
     }
 }
 

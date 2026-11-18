@@ -560,7 +560,7 @@ pub struct DatagramFraming {
     judge: Option<(Arc<dyn DialJudge>, u32)>,
     refused_candidates: u64,
     /// The user name the far end's checks carry first, once the terms settled it: the key the
-    user: Option<String>,
+    user: Option<busbar_contract::kept::Text>,
     memory: Option<Arc<Memory>>,
     credit: Option<Custody>,
     continuation: Option<Continuation>,
@@ -1409,7 +1409,8 @@ impl DatagramFraming {
 #[derive(Debug, Default)]
 pub struct Associations {
     pub(crate) framings: HashMap<u64, DatagramFraming>,
-    by_user: HashMap<String, u64>,
+    /// Each carried association by its user name: the framing's own shared name, never a copy.
+    by_user: HashMap<busbar_contract::kept::Text, u64>,
     by_path: HashMap<SocketAddr, u64>,
     /// Each association's paths in `by_path` (exactly the entries that name it), so its paths are
     /// let go by key, not by a sweep of the port's map.
@@ -1550,16 +1551,16 @@ impl Associations {
     }
 
     /// Whether `framing` may be carried: the user name it is found by.
-    fn admits(&self, framing: &DatagramFraming) -> Result<String, NotAdded> {
-        let user = crate::off_path::datagram::owned_user(framing.user().ok_or(NotAdded::NoTerms)?);
-        if self.by_user.contains_key(&user) {
+    fn admits(&self, framing: &DatagramFraming) -> Result<busbar_contract::kept::Text, NotAdded> {
+        let user = framing.user.as_ref().ok_or(NotAdded::NoTerms)?;
+        if self.by_user.contains_key(user.as_str()) {
             return Err(NotAdded::UserTaken);
         }
-        Ok(user)
+        Ok(user.clone())
     }
 
     /// Carry `framing`, found by `user`; its number.
-    fn carry(&mut self, user: String, framing: DatagramFraming) -> u64 {
+    fn carry(&mut self, user: busbar_contract::kept::Text, framing: DatagramFraming) -> u64 {
         self.last += 1;
         let id = self.last;
         self.by_user.insert(user, id);
@@ -2731,50 +2732,73 @@ impl Bridge {
         // The session's pieces are compacted, in order, to the front of `pieces` itself.
         let mut kept = 0;
         for at in 0..pieces.len() {
-            let g = &mut pieces[at];
-            if leg == Leg::Caller && g.fields {
-                if let Ok(fields) = std::str::from_utf8(&g.bytes) {
-                    for (name, value) in fields.lines().filter_map(|line| line.split_once(':')) {
-                        if name.trim() == "opening-pending" {
-                            self.opening_pending = value.trim() != "0";
-                        }
-                    }
+            match self.place(leg, &mut pieces[at]) {
+                Placed::Session => {
+                    pieces.swap(kept, at);
+                    kept += 1;
                 }
+                Placed::Taken => {}
+                Placed::Across(frame) => across.push(frame),
             }
-            let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
-            if g.fields && !known {
-                match stream_head(&g.bytes) {
-                    Some(StreamHead::Line { kind }) => {
-                        match leg {
-                            Leg::Caller => self.caller.push((g.stream, kind)),
-                            Leg::Upstream => self.upstream.push((g.stream, kind)),
-                        }
-                        continue;
-                    }
-                    Some(StreamHead::Channel { label }) if leg == Leg::Caller => {
-                        self.channels.push(label);
-                    }
-                    _ => {}
-                }
-            }
-            if known {
-                if let Some(stream) = self.across(leg, g.stream) {
-                    if is_line_payload(g) {
-                        across.push(Across {
-                            stream,
-                            bytes: std::mem::take(&mut g.bytes),
-                            end_of_frame: g.end_of_frame,
-                        });
-                    }
-                }
-                continue;
-            }
-            pieces.swap(kept, at);
-            kept += 1;
         }
         pieces.truncate(kept);
         (pieces, across)
     }
+
+    /// Sort ONE piece `leg` yielded, where it lies: a line's head is recorded and a known line's
+    /// piece is taken (its frame, if it is payload with a paired line, is handed back to cross);
+    /// anything else is the session's and stays the caller's. [`Self::sort`] is this, piece by
+    /// piece; a caller that holds one piece sorts it without a list.
+    pub(crate) fn place(&mut self, leg: Leg, g: &mut crate::framer::Got) -> Placed {
+        if leg == Leg::Caller && g.fields {
+            if let Ok(fields) = std::str::from_utf8(&g.bytes) {
+                for (name, value) in fields.lines().filter_map(|line| line.split_once(':')) {
+                    if name.trim() == "opening-pending" {
+                        self.opening_pending = value.trim() != "0";
+                    }
+                }
+            }
+        }
+        let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
+        if g.fields && !known {
+            match stream_head(&g.bytes) {
+                Some(StreamHead::Line { kind }) => {
+                    match leg {
+                        Leg::Caller => self.caller.push((g.stream, kind)),
+                        Leg::Upstream => self.upstream.push((g.stream, kind)),
+                    }
+                    return Placed::Taken;
+                }
+                Some(StreamHead::Channel { label }) if leg == Leg::Caller => {
+                    self.channels.push(label);
+                }
+                _ => {}
+            }
+        }
+        if known {
+            if let Some(stream) = self.across(leg, g.stream) {
+                if is_line_payload(g) {
+                    return Placed::Across(Across {
+                        stream,
+                        bytes: std::mem::take(&mut g.bytes),
+                        end_of_frame: g.end_of_frame,
+                    });
+                }
+            }
+            return Placed::Taken;
+        }
+        Placed::Session
+    }
+}
+
+/// Where [`Bridge::place`] put one piece.
+pub(crate) enum Placed {
+    /// The session's: it stays with the caller.
+    Session,
+    /// The bridge's: a line's head, or a known line's piece that does not cross.
+    Taken,
+    /// A known line's frame, for the paired line of the other leg.
+    Across(Across),
 }
 
 /// Whether a piece on a known LINE stream is application payload that crosses to the other leg.
