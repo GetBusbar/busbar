@@ -2120,3 +2120,38 @@ fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
         )
     );
 }
+
+/// THE OWNER'S RULING ON ALLOCATION (18 Nov, "a few ns may be a good trade for memory"): a verify allocates
+/// its identity set, uses it and releases it. After a burst of verifies, the default-sized ones and a grown
+/// recall's (`wide`), the identity-set bytes alive are back where they were before the first verify; and a door
+/// opened and closed holds none. Under nextest each test is its own process, so the count is this test's.
+#[test]
+fn a_burst_of_verifies_releases_every_identity_set_it_allocated() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let live = || super::LIVE_SET_BYTES.load(Relaxed);
+    let before_open = live();
+    let a = opened("judge-release");
+    let opened_at = live();
+    assert_eq!(
+        opened_at, before_open,
+        "opening a door allocates no identity set"
+    );
+    for round in 0..200 {
+        let credential = if round % 10 == 0 { "wide" } else { "good" };
+        assert!(
+            a.verify_now(&request(Some(credential), None)).is_some(),
+            "round {round} answered"
+        );
+    }
+    assert_eq!(
+        live(),
+        opened_at,
+        "every identity set a verify allocated is released when the verify ends"
+    );
+    drop(a);
+    assert_eq!(
+        live(),
+        before_open,
+        "a door opened and closed holds no identity set"
+    );
+}

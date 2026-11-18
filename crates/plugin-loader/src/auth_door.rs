@@ -258,11 +258,22 @@ struct Buffers {
 impl Buffers {
     /// A fresh set: the text zeroed, every span absent, every strip slot unnamed.
     fn new(buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Self {
-        Self {
+        let made = Self {
             buf: vec![0u8; buf_cap],
             groups: vec![EMPTY_SPAN; groups_cap as usize],
             strip: vec![UNNAMED; strip_cap as usize],
-        }
+        };
+        #[cfg(test)]
+        LIVE_SET_BYTES.fetch_add(made.bytes(), Ordering::Relaxed);
+        made
+    }
+
+    /// The bytes this set holds.
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.buf.capacity()
+            + self.groups.capacity() * std::mem::size_of::<Span>()
+            + self.strip.capacity() * std::mem::size_of::<StripName>()
     }
 
     /// Back to a fresh set's contents in place: the text wiped (it held the plugin's identity
@@ -271,6 +282,18 @@ impl Buffers {
         zero(&mut self.buf);
         self.groups.fill(EMPTY_SPAN);
         self.strip.fill(UNNAMED);
+    }
+}
+
+/// Tests only: the bytes of identity sets alive now (counted where `Buffers::new` makes a set and where a set
+/// is freed), so a test can prove a door's verifies release what they allocated (the owner's ruling, 18 Nov).
+#[cfg(test)]
+pub(crate) static LIVE_SET_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        LIVE_SET_BYTES.fetch_sub(self.bytes(), Ordering::Relaxed);
     }
 }
 
