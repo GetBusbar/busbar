@@ -71,10 +71,10 @@ pub(crate) trait SelfGroupProvisioner: Send + Sync {
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String>;
 }
 
-pub(crate) struct DeterministicEd25519Keys {
+pub(crate) struct DeterministicEd25519Keys<'a> {
     gov: Arc<GovState>,
 
-    provider: String,
+    provider: std::borrow::Cow<'a, str>,
 
     team: String,
 
@@ -83,17 +83,17 @@ pub(crate) struct DeterministicEd25519Keys {
     provisioner: Arc<dyn SelfGroupProvisioner>,
 }
 
-impl DeterministicEd25519Keys {
+impl<'a> DeterministicEd25519Keys<'a> {
     pub(crate) fn new(
         gov: Arc<GovState>,
-        provider: String,
+        provider: impl Into<std::borrow::Cow<'a, str>>,
         team: String,
         allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         provisioner: Arc<dyn SelfGroupProvisioner>,
     ) -> Self {
         Self {
             gov,
-            provider,
+            provider: provider.into(),
             team,
             allowed_scopes,
             provisioner,
@@ -166,7 +166,7 @@ async fn mint_provisioned_self_key(
 }
 
 #[async_trait]
-impl SelfServeKeys for DeterministicEd25519Keys {
+impl SelfServeKeys for DeterministicEd25519Keys<'_> {
     async fn issue(
         &self,
         principal: &Principal,
@@ -295,6 +295,30 @@ pub(crate) fn admit_self_mint<'a>(
     default_ttl_secs: u64,
 ) -> Result<SelfMint<'a>, ExchangeError> {
     let (principal, team, scopes) = resolve_exchange(verdict, role_bindings, policy.self_mint)?;
+    admit_resolved(principal, team, scopes, policy, default_ttl_secs)
+}
+
+/// [`admit_self_mint`] for an identity the chain has just named (a browser login: identified by
+/// `module`, never a governed key), without building a verdict that owns a copy of the name.
+pub(crate) fn admit_identified_self_mint<'a>(
+    module: &str,
+    principal: &'a Principal,
+    role_bindings: &RoleBindings,
+    policy: &crate::governance::mint_policy::MintPolicy,
+    default_ttl_secs: u64,
+) -> Result<SelfMint<'a>, ExchangeError> {
+    let (principal, team, scopes) =
+        resolve_identified(module, principal, false, role_bindings, policy.self_mint)?;
+    admit_resolved(principal, team, scopes, policy, default_ttl_secs)
+}
+
+fn admit_resolved<'a>(
+    principal: &'a Principal,
+    team: String,
+    scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+    policy: &crate::governance::mint_policy::MintPolicy,
+    default_ttl_secs: u64,
+) -> Result<SelfMint<'a>, ExchangeError> {
     let (pools, other_kinds) = crate::governance::mint_policy::requested_grant(scopes.as_deref());
     let ttl_secs = policy
         .check_mint(&crate::governance::mint_policy::MintRequest {
@@ -332,34 +356,55 @@ pub(crate) fn resolve_exchange<'a>(
             principal,
             resolved,
             ..
-        } => {
-            if self_mint == Some(false) {
-                return Err(ExchangeError::SelfMintDisabled);
-            }
-
-            if resolved.is_some() {
-                return Err(ExchangeError::StaticKeyPresented);
-            }
-
-            let table = role_bindings.get(module).ok_or(ExchangeError::Unbound)?;
-
-            let granting = crate::governance::granting_bindings(principal, table);
-            if granting.is_empty() {
-                return Err(ExchangeError::Unbound);
-            }
-
-            let team = granting
-                .iter()
-                .find_map(|b| b.group.clone())
-                .ok_or(ExchangeError::Unbound)?;
-            sanitize_self_sub(&principal.id)?;
-
-            let allowed_scopes = crate::governance::grant_union(&granting);
-            Ok((principal, team, allowed_scopes))
-        }
+        } => resolve_identified(
+            module,
+            principal,
+            resolved.is_some(),
+            role_bindings,
+            self_mint,
+        ),
 
         ChainVerdict::Open | ChainVerdict::Denied => Err(ExchangeError::Unauthorized),
     }
+}
+
+fn resolve_identified<'a>(
+    module: &str,
+    principal: &'a Principal,
+    governed_key: bool,
+    role_bindings: &RoleBindings,
+    self_mint: Option<bool>,
+) -> Result<
+    (
+        &'a Principal,
+        String,
+        Option<Vec<busbar_contract::records::ScopeRef>>,
+    ),
+    ExchangeError,
+> {
+    if self_mint == Some(false) {
+        return Err(ExchangeError::SelfMintDisabled);
+    }
+
+    if governed_key {
+        return Err(ExchangeError::StaticKeyPresented);
+    }
+
+    let table = role_bindings.get(module).ok_or(ExchangeError::Unbound)?;
+
+    let granting = crate::governance::granting_bindings(principal, table);
+    if granting.is_empty() {
+        return Err(ExchangeError::Unbound);
+    }
+
+    let team = granting
+        .iter()
+        .find_map(|b| b.group.clone())
+        .ok_or(ExchangeError::Unbound)?;
+    sanitize_self_sub(&principal.id)?;
+
+    let allowed_scopes = crate::governance::grant_union(&granting);
+    Ok((principal, team, allowed_scopes))
 }
 
 pub(crate) async fn issue_key(
