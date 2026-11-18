@@ -2315,10 +2315,6 @@ impl DataRoutes {
         reply.answer_nested_bound(Box::pin(unit), reply_bound).await
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one unit's parts, moved into the drive that owns it"
-    )]
     pub(crate) async fn drive<C: SessionCaller + Stated + Send + Sync>(
         &self,
         plane: usize,

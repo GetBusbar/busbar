@@ -467,10 +467,6 @@ impl LeaseTick {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_served_checked(
     native: Option<Arc<crate::root::min3_boot::Booted>>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
@@ -801,10 +797,6 @@ pub(crate) struct DoorEgress<'a> {
     pub(crate) journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -839,10 +831,6 @@ pub(crate) async fn compose_planes(
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
@@ -1269,10 +1257,6 @@ pub(crate) fn seal_secondary_scopes(
         .insert(entry.to_string(), kind.to_string());
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) fn seal_live(
     instance: &str,
     plugin: &DoorPlane,

@@ -193,10 +193,6 @@ impl ModelServing {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the egress is composed from the door's facts and every port it is given"
-)]
 pub fn compose(
     facts: &crate::root::door_steps::DoorFacts,
     serving: &ModelServing,

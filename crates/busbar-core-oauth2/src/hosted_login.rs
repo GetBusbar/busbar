@@ -139,7 +139,6 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn begin_outcome(
     seal: &CookieSeal,
     method: &str,

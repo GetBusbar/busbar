@@ -595,10 +595,6 @@ impl std::fmt::Debug for HostTicketAdmission {
 #[async_trait::async_trait]
 pub trait TicketPress: Send + Sync {
     /// Mint with the host's exact admitted unit and caller identity. Reservation-aware presses
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "config: the press receives the admitted unit, caller and principal as one call"
-    )]
     async fn mint_for_unit(
         &self,
         unit: u64,

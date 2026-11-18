@@ -871,7 +871,6 @@ pub(crate) fn mount(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn mount_node(
     admin_router: axum::Router,
     request_body_max_bytes: usize,

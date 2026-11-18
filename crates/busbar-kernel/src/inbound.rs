@@ -2971,10 +2971,6 @@ impl Inbound {
         Ok((flow, unit))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "error: a refusal is finished with every field of the unit it refuses"
-    )]
     fn finish_refusal(
         &self,
         unit: Option<UnitRef>,

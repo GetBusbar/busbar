@@ -265,10 +265,6 @@ pub(crate) fn label_bound(
     bound
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the egress composition takes each configured part unbundled"
-)]
 pub(crate) fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,

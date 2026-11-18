@@ -776,10 +776,6 @@ impl<K: KindMarker> Services<K> {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the service's ABI fields, one argument each"
-    )]
     fn outbound_authorize(
         &self,
         handle: CompletionHandle,
@@ -1587,10 +1583,6 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `directory.create`: a new record; READY + `DIR_OK`: row 0's key is the kernel-minted id.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the service's ABI fields, one argument each"
-    )]
     pub fn directory_create<'b>(
         &self,
         handle: CompletionHandle,
@@ -2029,10 +2021,6 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the service's ABI fields, one argument each"
-    )]
     pub fn auth_call<O: OwnerSeal>(
         &self,
         handle: CompletionHandle,
@@ -2098,10 +2086,6 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `unit.hand_in`: hand the request in with the line the transport matched; the kernel's
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the service's ABI fields, one argument each"
-    )]
     pub fn unit_hand_in(
         &self,
         handle: CompletionHandle,
@@ -2139,10 +2123,6 @@ impl<K: KindMarker> Services<K> {
     }
 
     /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the service's ABI fields, one argument each"
-    )]
     pub fn unit_refuse(
         &self,
         handle: CompletionHandle,

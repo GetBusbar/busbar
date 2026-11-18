@@ -16,7 +16,6 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse};
 use std::sync::Arc;
 
-#[allow(clippy::too_many_arguments)]
 fn sign_fixture(
     secret: &str,
     region: &str,

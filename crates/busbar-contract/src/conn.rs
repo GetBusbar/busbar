@@ -740,7 +740,6 @@ pub struct LocatedTarget {
 
 impl LocatedTarget {
     /// The answer the framer gave for `caller`'s `need` at `target`.
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         caller: InstanceId,

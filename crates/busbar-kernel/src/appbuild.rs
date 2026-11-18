@@ -1590,7 +1590,6 @@ fn fetch_plugins(
 
 #[cold]
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
 pub async fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -1616,7 +1615,6 @@ pub async fn build_app_from_config(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn build_app_from_config_with_store(
     mut cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -1709,7 +1707,6 @@ async fn in_build_scope<T>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn build_app_native(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,

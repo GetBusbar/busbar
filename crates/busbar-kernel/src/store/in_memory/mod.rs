@@ -271,7 +271,6 @@ pub struct LaneData {
 
 #[cfg(any(test, feature = "test-support"))]
 impl LaneData {
-    #[allow(clippy::too_many_arguments)]
     pub fn from_test_parts(
         member: String,
         route: String,

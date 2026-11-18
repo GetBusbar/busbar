@@ -2092,7 +2092,6 @@ fn spawn_multithread_data(
 }
 
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)]
 fn serve_thread_per_core(
     n: usize,
     addr: String,
@@ -2205,7 +2204,6 @@ fn serve_thread_per_core(
     handles
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn serve_listener(
     listener: impl busbar_core_connector::listen::Admits,
     native: Arc<root::listener_native::NativeListener>,

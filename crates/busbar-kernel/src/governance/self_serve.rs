@@ -229,10 +229,6 @@ impl GovState {
         ))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is one part of the binding a self-serve mint writes"
-    )]
     async fn write_self_binding(
         &self,
         material: &SigningMaterial,

@@ -17,6 +17,9 @@ description = "Dev load tool: drives a real busbar binary (real plugins, every p
 # path; it is its own workspace, so it states the same table the root [workspace.lints.clippy] does.
 [lints.clippy]
 disallowed_macros = "allow"
+# clippy's stock too_many_arguments threshold (7) is not a fleet rule; turned off by the owner on 18 Nov 2026.
+# No replacement rule: the number of parameters is not what the lints judge.
+too_many_arguments = "allow"
 disallowed_methods = "allow"
 disallowed_types = "allow"
 

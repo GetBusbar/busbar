@@ -217,7 +217,6 @@ fn an_audit_break_says_where_it_is_and_which_tamper_it_was() {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn legacy_correction(
     amends: &str,
     subject: busbar_kernel_audit::record::Subject,

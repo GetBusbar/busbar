@@ -812,10 +812,6 @@ impl Node {
         self.next_key.mint()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
-    )]
     pub(crate) async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
         key: UnitKey,
@@ -960,10 +956,6 @@ impl Node {
         result
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
-    )]
     pub(crate) async fn open_borrowed<'n, U: Units + RouteAwait>(
         &'n self,
         key: UnitKey,
@@ -1280,10 +1272,6 @@ impl Node {
     }
 
     #[cfg(test)]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
-    )]
     async fn tail(
         &self,
         ended: Ended,
@@ -2737,10 +2725,6 @@ fn attempts_recorded_on_failover() {
 }
 
 impl Sealing {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the legacy call retains its established unit ownership"
-    )]
     fn seal(
         self,
         book: &Arc<Mutex<crate::root::durability::Durability>>,
@@ -2771,10 +2755,6 @@ impl Sealing {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the unit's parts are handed down unbundled from its one owner"
-    )]
     fn seal_billing(
         self,
         book: &Arc<Mutex<crate::root::durability::Durability>>,

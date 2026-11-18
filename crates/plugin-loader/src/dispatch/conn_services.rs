@@ -2028,10 +2028,6 @@ extern "C" fn write_request(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a connection call names its table, binding, unit and every loan apart"
-)]
 fn open_with(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
