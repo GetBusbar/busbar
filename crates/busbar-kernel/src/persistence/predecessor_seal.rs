@@ -216,8 +216,8 @@ pub enum PredecessorRetire {
 /// The seal row and the fence mark of one predecessor, as read.
 #[derive(Debug, Clone, Default)]
 pub struct SealState {
-    /// The node's seal row bytes, if present.
-    pub row: Option<Vec<u8>>,
+    /// The node's seal row bytes, if present, kept in wiping custody.
+    pub row: Option<busbar_contract::secure::SecureVec>,
     /// The writer's mark row exactly as read (the compare-and-set's predicate).
     mark_raw: Option<Secret<Vec<u8>>>,
     /// The mark, if present and it decodes.
@@ -375,7 +375,9 @@ impl PredecessorFence {
             .as_ref()
             .and_then(|v| FenceMark::parse(v.expose(&crate::seal::lend())).ok());
         Ok(SealState {
-            row: row.map(|v| v.expose(&crate::seal::lend()).to_vec()),
+            row: row.map(|v| {
+                busbar_contract::secure::SecureVec::from(v.expose(&crate::seal::lend()).as_slice())
+            }),
             mark_raw,
             mark,
         })
@@ -469,7 +471,7 @@ pub(super) fn seal_records(
 /// live node). The bytes are returned as read; [`SealRow::parse`] judges them.
 pub async fn read_seal_row(
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<busbar_contract::secure::SecureVec>, String> {
     let rows = seal_records(journal.store().clone())?;
     let row = rows
         .records
@@ -479,5 +481,7 @@ pub async fn read_seal_row(
         .into_iter()
         .next()
         .ok_or("seal row observation missing")?;
-    Ok(row.map(|value| value.expose(&crate::seal::lend()).to_vec()))
+    Ok(row.map(|value| {
+        busbar_contract::secure::SecureVec::from(value.expose(&crate::seal::lend()).as_slice())
+    }))
 }

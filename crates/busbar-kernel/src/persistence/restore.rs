@@ -255,7 +255,8 @@ pub async fn mark_pending(core: &CoreStore) -> Result<Restore, String> {
             .expose(&seal)
             .clone();
         let manifest = Manifest::decode(&manifest_before).map_err(|cause| error(&cause))?;
-        let manifest_after = if manifest.format == RECORD_FORMAT {
+        // The new manifest value is held as a Secret from the moment it is built.
+        let manifest_after = busbar_contract::Secret::new(if manifest.format == RECORD_FORMAT {
             Manifest {
                 format: RESTORED_FORMAT,
                 ..manifest
@@ -264,7 +265,7 @@ pub async fn mark_pending(core: &CoreStore) -> Result<Restore, String> {
             .to_vec()
         } else {
             manifest_before.clone()
-        };
+        });
         let next = match previous {
             None => Restore {
                 epoch: 0,
