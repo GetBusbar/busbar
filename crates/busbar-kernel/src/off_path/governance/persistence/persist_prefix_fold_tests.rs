@@ -121,8 +121,15 @@ async fn persist_prefix_missing_or_corrupt_sealed_fact_fails_before_pending_or_s
 async fn persist_prefix_binds_transient_full_candidate_seal_even_when_original_is_restored() {
     transient_pointer(2).await;
 }
+/// WHO: a persist over an own journal holding a damaged original that no selection names.
+/// DOES: (SHUTDOWN-HANG F1, 6426a6a085, ceab41b955) the live persist confirms the owner's own head
+/// in one read and does not look at that row, so it lands; the next cold recovery (a restart: no
+/// carried evidence) reads every original and refuses the journal before any recovery effect.
+/// WHY: F1 took the whole-journal read off the live path for drain speed; the restart is where the
+/// unselected tail is checked, ahead of every effect it could have.
 #[tokio::test]
-async fn persist_prefix_final_fold_checks_an_unselected_tail_before_effects() {
+async fn persist_prefix_live_skips_a_damaged_unselected_tail_and_cold_recovery_refuses_it_before_effects(
+) {
     let (backend, recovery) = fixture().await;
     let initial = intent();
     recovery.persist(&initial).await.unwrap();
@@ -139,12 +146,21 @@ async fn persist_prefix_final_fold_checks_an_unselected_tail_before_effects() {
     .await;
     let (at, _) = record_row(&backend, recovery.node, tail.sequence);
     damage(&backend, &at, false);
-    let before = effects(&backend, &recovery);
-    assert!(recovery
+    recovery
         .persist(&transition(&initial, RecoveryState::LandedUnknown))
         .await
-        .is_err());
-    assert_eq!(effects(&backend, &recovery), before);
+        .expect("the live path does not look at an unselected own row");
+    drop(recovery);
+    let sent = backend.state.lock().unwrap().sent.len();
+    assert!(matches!(
+        restarted(&backend, 1, 7).await,
+        Err(crate::persistence::journal::RuntimeError::Corrupt)
+    ));
+    assert_eq!(
+        backend.state.lock().unwrap().sent.len(),
+        sent,
+        "the cold refusal comes before any recovery effect"
+    );
 }
 #[tokio::test]
 async fn persist_prefix_preproof_cannot_replace_fresh_post_cas_origin_verification() {

@@ -415,6 +415,26 @@ async fn sink(store: Arc<CoreStore>, node: u64) -> StoreRecovery {
     StoreRecovery::new(journal, crate::teller::Kernel::new().durability_token()).unwrap()
 }
 
+/// Node `node`'s recovery after a restart of writer `writer`: a fresh store attachment and journal
+/// owner, so nothing is carried and opening the journal replays every original of it cold
+/// (SHUTDOWN-HANG F1 leaves this as the path that reads the whole own journal).
+async fn restarted(
+    backend: &Arc<Backend>,
+    writer: u8,
+    node: u64,
+) -> Result<StoreRecovery, crate::persistence::journal::RuntimeError> {
+    let journal = RuntimeJournal::open(
+        Arc::new(attach(backend.clone(), writer).await),
+        node,
+        crate::persistence::journal::runtime::BufferBudget {
+            records: 64,
+            bytes: 1024 * 1024,
+        },
+    )
+    .await?;
+    Ok(StoreRecovery::new(journal, crate::teller::Kernel::new().durability_token()).unwrap())
+}
+
 async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEvent, RecoveryEvent) {
     use crate::governance::{exact_debt::ExactUsageDelta, GovState};
     let source = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
@@ -730,8 +750,14 @@ fn attestation(event: &RecoveryEvent) -> RecoveryResolution {
     }
 }
 
-#[tokio::test]
-async fn original_frames_select_complete_ancestry_and_ignore_unselected_forks() {
+/// Node 7's journal holding the selected chain initial -> Applied -> Settled, then an unselected
+/// LandedUnknown fork of `initial` appended by a raw journal writer beside the live owner.
+async fn own_journal_with_an_outside_fork() -> (
+    Arc<Backend>,
+    StoreRecovery,
+    [RecoveryEvent; 3],
+    RecoveryEvent,
+) {
     let backend = Arc::new(Backend::default());
     let store = Arc::new(attach(backend.clone(), 1).await);
     let recovery = sink(store.clone(), 7).await;
@@ -764,18 +790,50 @@ async fn original_frames_select_complete_ancestry_and_ignore_unselected_forks() 
         )
         .unwrap();
     assert!(applied(journal.append(&proof, &[frame]).await.unwrap()).unwrap());
-    assert!(recovery.verify_checkpoint(&fork).await.is_err());
+    (backend, recovery, [initial, applied_event, settled], fork)
+}
+
+/// WHO: a node restarted over a journal that holds an unselected fork of a selected operation.
+/// DOES: cold recovery (no carried evidence: opening the journal replays every original) selects
+/// each operation's complete ancestry from its original frames, refuses the fork as a checkpoint,
+/// and replays and lists only the selected chain.
+/// WHY: SHUTDOWN-HANG F1 (6426a6a085, ceab41b955) confirms the live owner's own head in one read
+/// and no longer walks its journal; the whole-journal read is the restart's, so this is where
+/// complete ancestry and an ignored fork are owed.
+#[tokio::test]
+async fn original_frames_select_complete_ancestry_and_ignore_unselected_forks_on_cold_recovery() {
+    let (backend, recovery, [initial, applied_event, settled], fork) =
+        own_journal_with_an_outside_fork().await;
+    drop(recovery);
+    let cold = restarted(&backend, 1, 7).await.unwrap();
+    assert!(cold.verify_checkpoint(&fork).await.is_err());
     assert_eq!(
-        recovery.replay().await.unwrap(),
+        cold.replay().await.unwrap(),
         vec![initial.clone(), applied_event, settled.clone()]
     );
     assert_eq!(
-        recovery.replay_selections().await.unwrap(),
+        cold.replay_selections().await.unwrap(),
         vec![RecoverySelection {
             initial,
             selected: settled
         }]
     );
+}
+
+/// WHO: the live journal owner when something other than it appended to its own journal.
+/// DOES: (SHUTDOWN-HANG F1) the owner confirms its head against its own verified head, so the
+/// moved head is refused as `Authority` by replay and by the selection listing: never accepted
+/// and never silently ignored. The fork is still no checkpoint.
+/// WHY: the live path reads no original to tell a fork from a lost writer; only the owner appends,
+/// so any other append means its custody is no longer exclusive.
+#[tokio::test]
+async fn an_outside_append_under_the_live_owner_is_refused_as_authority() {
+    let (_backend, recovery, _, fork) = own_journal_with_an_outside_fork().await;
+    assert!(recovery.verify_checkpoint(&fork).await.is_err());
+    let replayed = recovery.replay().await.unwrap_err().to_string();
+    assert!(replayed.contains("Authority"), "replay: {replayed}");
+    let listed = recovery.replay_selections().await.unwrap_err().to_string();
+    assert!(listed.contains("Authority"), "replay_selections: {listed}");
 }
 
 #[tokio::test]
