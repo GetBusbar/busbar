@@ -47,7 +47,7 @@ use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
 use super::port_channels::{ChannelAttach, ChannelHost, Channels, Held};
-use super::port_services::{MediaHeld, ObservationIn, Services, TrustItemOwned};
+use super::port_services::{MediaHeld, ObservationIn, Services};
 use super::port_session::{Answer, Calls, Effects, SessionError, Task, Violation};
 use crate::channels::SessionSignals;
 use crate::hashing::Sha256;
@@ -279,18 +279,128 @@ pub struct Detach {
     pub key: Box<[u8]>,
 }
 
-/// One hit of a LOOKUP.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hit {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+/// A LOOKUP's result, read into the task's one read buffer: its hits in order, and for `LK_CHAIN` the
+/// chain's state (`len`, `broken_at`). The hits' keys and values lie end to end in one run of bytes: a hit
+/// read from the store is copied once and nothing is allocated per hit. The buffer is made with its task,
+/// cleared per LOOKUP, and released with the task.
+#[derive(Debug, Default)]
+pub struct Looked {
+    bytes: Vec<u8>,
+    /// Each hit's key length and value length, in order.
+    hits: Vec<(usize, usize)>,
+    pub chain: Option<(u64, u64)>,
 }
 
-/// A LOOKUP's result: its hits in order, and for `LK_CHAIN` the chain's state (`len`, `broken_at`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Looked {
-    pub hits: Vec<Hit>,
-    pub chain: Option<(u64, u64)>,
+impl Looked {
+    /// No hits and no chain state; the buffer keeps its room.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.hits.clear();
+        self.chain = None;
+    }
+
+    /// One more hit: its key, given as parts laid end to end, and its value.
+    pub fn push(&mut self, key: &[&[u8]], value: &[u8]) {
+        let before = self.bytes.len();
+        for part in key {
+            self.bytes.extend_from_slice(part);
+        }
+        let key_len = self.bytes.len() - before;
+        self.bytes.extend_from_slice(value);
+        self.hits.push((key_len, value.len()));
+    }
+
+    /// Where the buffer stands now, for [`Looked::rewind`].
+    #[must_use]
+    pub fn mark(&self) -> (usize, usize) {
+        (self.bytes.len(), self.hits.len())
+    }
+
+    /// Drop every hit pushed since `mark`.
+    pub fn rewind(&mut self, mark: (usize, usize)) {
+        self.bytes.truncate(mark.0);
+        self.hits.truncate(mark.1);
+    }
+
+    /// The hits, in order: (key, value).
+    pub fn hits(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        let mut rest = self.bytes.as_slice();
+        self.hits.iter().map(move |&(key_len, value_len)| {
+            let (key, after) = rest.split_at(key_len);
+            let (value, after) = after.split_at(value_len);
+            rest = after;
+            (key, value)
+        })
+    }
+
+    /// How many hits.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.hits.len()
+    }
+
+    /// No hit.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hits.is_empty()
+    }
+}
+
+/// A TRUST_STATE's item states, read into the task's one buffer: the names lie end to end in one run of
+/// text and nothing is allocated per item. Cleared per TRUST_STATE; released with the task.
+#[derive(Debug, Default)]
+pub struct TrustItems {
+    names: String,
+    /// Each item's name length, verdict, approved digest and sighted digest, in order.
+    items: Vec<(usize, u32, Option<[u8; 32]>, Option<[u8; 32]>)>,
+}
+
+impl TrustItems {
+    /// No items; the buffer keeps its room.
+    pub fn clear(&mut self) {
+        self.names.clear();
+        self.items.clear();
+    }
+
+    /// One more item state.
+    pub fn push(&mut self, item: &TrustItem<'_>) {
+        self.names.push_str(item.name);
+        self.items
+            .push((item.name.len(), item.verdict, item.approved, item.sighted));
+    }
+
+    /// The item states, in order.
+    pub fn iter(&self) -> impl Iterator<Item = TrustItem<'_>> {
+        let mut rest = self.names.as_str();
+        self.items
+            .iter()
+            .map(move |&(name_len, verdict, approved, sighted)| {
+                let (name, after) = rest.split_at(name_len);
+                rest = after;
+                TrustItem {
+                    name,
+                    verdict,
+                    approved,
+                    sighted,
+                }
+            })
+    }
+
+    /// No item.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// What a task's resolver reads into, intent after intent: one LOOKUP's hits, one TRUST_STATE's items and
+/// one TRUST_VERIFY's named member. The task owns it ([`Task`]'s `reads`): made empty with the task, each
+/// part cleared before the intent that fills it, released with the task.
+#[derive(Debug, Default)]
+pub struct Reads {
+    looked: Looked,
+    trust_items: TrustItems,
+    named: String,
 }
 
 /// One WORK intent, the verified principal's.
@@ -333,14 +443,16 @@ impl WorkOutcome<'_> {
 /// `spawn_blocking`, and a production host blocks on the runtime for the store.
 pub trait IntentHost: Send + Sync {
     /// LOOKUP in the scope the resolver chose. `flags` carries `LK_PREFIX` and `LK_CHAIN` (for `LK_CHAIN` the key
-    /// is the chain key followed by the 8-byte `after`).
+    /// is the chain key followed by the 8-byte `after`). The hits, and a chain's state, are read into `looked`,
+    /// which the caller hands in cleared; on an error the caller discards whatever was read.
     fn lookup(
         &self,
         scope: Scope,
         flags: u32,
         limit: u32,
         key: &[u8],
-    ) -> Result<Looked, RecordsDenied>;
+        looked: &mut Looked,
+    ) -> Result<(), RecordsDenied>;
     /// STORE. `flags & LK_CHAIN` appends `value` to the host chain `key`.
     fn store(
         &self,
@@ -399,14 +511,22 @@ pub trait IntentHost: Send + Sync {
     fn trust_serves(&self, _party: &str, _item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
         DISTRUST_UNKNOWN
     }
-    /// TRUST_STATE: the counterparty verdict and the per-item state. The default refuses as unknown.
-    fn trust_state(&self, _party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
-        (DISTRUST_UNKNOWN, None, Vec::new())
+    /// TRUST_STATE: the counterparty verdict and the listing's catalogue digest; the per-item state is read
+    /// into `items`, which the caller hands in cleared. The default refuses as unknown.
+    fn trust_state(&self, _party: &str, _items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
+        (DISTRUST_UNKNOWN, None)
     }
-    /// TRUST_VERIFY: the `SIGNED_*` verdict and, for `SIGNED_ALGORITHM` and `SIGNED_CRITICAL`, the named member.
-    /// The default has no root: `SIGNED_MALFORMED_ROOT`.
-    fn trust_verify(&self, _party: &str, _payload: &[u8], _signatures: &[u8]) -> (u32, String) {
-        (SIGNED_MALFORMED_ROOT, String::new())
+    /// TRUST_VERIFY: the `SIGNED_*` verdict; for `SIGNED_ALGORITHM` and `SIGNED_CRITICAL` the named member is
+    /// written into `named`, which the caller hands in cleared. The default has no root:
+    /// `SIGNED_MALFORMED_ROOT`.
+    fn trust_verify(
+        &self,
+        _party: &str,
+        _payload: &[u8],
+        _signatures: &[u8],
+        _named: &mut String,
+    ) -> u32 {
+        SIGNED_MALFORMED_ROOT
     }
     /// RENDEZVOUS(RV_ACCEPT) on `route`: the local session description and the bridge the session holds under the
     /// exchange. The default is unavailable.
@@ -587,13 +707,16 @@ impl<'h> Resolver<'h> {
         }
     }
 
-    /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order.
+    /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order. `reads` is the
+    /// task's read buffer: what a LOOKUP, a TRUST_STATE or a TRUST_VERIFY reads from the host lies there until
+    /// it is encoded.
     #[must_use]
     pub fn resolve<'i>(
         &self,
         intents: &[Intent],
         lent: &'i Lent,
         held: &mut Channels,
+        reads: &mut Reads,
     ) -> Pieces<'i> {
         // STORE, DELETE, COMMIT, PUSH and SIGNAL first, in answer order; LOOKUP and WORK read what they wrote.
         // A failed write's key is the first kind of piece, so it is delivered from here as it fails.
@@ -720,13 +843,16 @@ impl<'h> Resolver<'h> {
             }
         }
         let kinds = [
-            records_piece(P_LOOKUP, self.lookups(intents, lent)),
+            records_piece(P_LOOKUP, self.lookups(intents, lent, &mut reads.looked)),
             records_piece(P_COMMITTED, committed),
             records_piece(P_OBSERVED, self.observeds(intents, lent)),
             records_piece(P_WORK, self.works(intents, lent)),
             records_piece(P_ENTITLE, self.entitles(intents, lent)),
             records_piece(P_JUDGED, self.judges(intents, lent)),
-            records_piece(P_TRUST, self.trusts(intents, lent)),
+            records_piece(
+                P_TRUST,
+                self.trusts(intents, lent, &mut reads.trust_items, &mut reads.named),
+            ),
             records_piece(P_MINTED, self.mints(intents, lent)),
             records_piece(P_SIGNED, self.signs(intents, lent)),
             records_piece(P_CONNECT, self.connects(intents, lent)),
@@ -848,8 +974,10 @@ impl<'h> Resolver<'h> {
     }
 
     /// The LOOKUP_HIT* (and CHAIN_STATE) of every LOOKUP of the answer, by index; `None` when it has none. Each
-    /// record is encoded as its hit is read (the encoders write one record per element, in order).
-    fn lookups(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    /// record is encoded as its hit is read (the encoders write one record per element, in order). Each LOOKUP
+    /// is read whole into `looked` (the task's read buffer) first: a read that fails part way is a miss, with
+    /// none of its hits.
+    fn lookups(&self, intents: &[Intent], lent: &Lent, looked: &mut Looked) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         let mut index = 0u32;
         for intent in intents {
@@ -859,19 +987,19 @@ impl<'h> Resolver<'h> {
             let reply = reply.get_or_insert_with(Reply::new);
             let at = index;
             index += 1;
-            let looked = match self.scope(flags & LK_CALLER != 0) {
-                Some(scope) => match self.host.lookup(scope, *flags, *limit, lent.bytes(*key)) {
-                    Ok(looked) => looked,
-                    Err(denied) => {
-                        tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
-                        Looked::default()
-                    }
-                },
-                None => Looked::default(),
-            };
-            for h in looked.hits.iter().take(*limit as usize) {
+            looked.clear();
+            if let Some(scope) = self.scope(flags & LK_CALLER != 0) {
+                if let Err(denied) =
+                    self.host
+                        .lookup(scope, *flags, *limit, lent.bytes(*key), looked)
+                {
+                    tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
+                    looked.clear();
+                }
+            }
+            for (key, value) in looked.hits().take(*limit as usize) {
                 // The reply refuses only past its cap; the host bounds a hit by MAX_VALUE.
-                let put = encode_lookup_hits(reply, &[(at, &h.key[..], &h.value[..])]);
+                let put = encode_lookup_hits(reply, &[(at, key, value)]);
                 debug_assert!(put.is_ok(), "LOOKUP_HITs fit a Reply");
             }
             if let (Some((len, broken_at)), true) = (looked.chain, flags & LK_CHAIN != 0) {
@@ -1030,16 +1158,26 @@ impl<'h> Resolver<'h> {
     }
 
     /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
-    fn trusts(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    /// A STATE's item states are read into `items` and a VERIFY's named member into `named` (the task's read
+    /// buffers), both empty for every other intent.
+    fn trusts(
+        &self,
+        intents: &[Intent],
+        lent: &Lent,
+        items: &mut TrustItems,
+        named: &mut String,
+    ) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
-            // (verdict, item states of a STATE, the named member of a VERIFY, the listing's catalog hash)
-            let (check, verdict, items, named, catalog) = match intent {
+            items.clear();
+            named.clear();
+            // (verdict, the listing's catalog hash)
+            let (check, verdict, catalog) = match intent {
                 Intent::Trust {
                     check, op, party, ..
                 } if *op == TRUST_STATE => {
-                    let (verdict, catalog, items) = self.host.trust_state(lent.text(*party));
-                    (*check, verdict, items, String::new(), catalog)
+                    let (verdict, catalog) = self.host.trust_state(lent.text(*party), items);
+                    (*check, verdict, catalog)
                 }
                 Intent::Trust {
                     check,
@@ -1049,11 +1187,11 @@ impl<'h> Resolver<'h> {
                 } if *op == TRUST_SERVES => {
                     let item = item.map(|(name, digest)| (lent.text(name), digest));
                     let verdict = self.host.trust_serves(lent.text(*party), item);
-                    (*check, verdict, Vec::new(), String::new(), None)
+                    (*check, verdict, None)
                 }
                 Intent::Trust { check, .. } => {
                     // The adapter admits only SERVES and STATE; anything else does not serve.
-                    (*check, DISTRUST_UNKNOWN, Vec::new(), String::new(), None)
+                    (*check, DISTRUST_UNKNOWN, None)
                 }
                 Intent::TrustVerify {
                     check,
@@ -1061,28 +1199,24 @@ impl<'h> Resolver<'h> {
                     payload,
                     signatures,
                 } => {
-                    let (verdict, named) = self.host.trust_verify(
+                    let verdict = self.host.trust_verify(
                         lent.text(*party),
                         lent.bytes(*payload),
                         lent.bytes(*signatures),
+                        named,
                     );
-                    (*check, verdict, Vec::new(), named, None)
+                    (*check, verdict, None)
                 }
                 _ => continue,
             };
             let mut views: smallvec::SmallVec<[TrustItem<'_>; 16]> = smallvec::SmallVec::new();
-            views.extend(items.iter().map(|i| TrustItem {
-                name: &i.name,
-                verdict: i.verdict,
-                approved: i.approved,
-                sighted: i.sighted,
-            }));
+            views.extend(items.iter());
             let answer = TrustAnswer {
                 check,
                 verdict,
                 catalog,
                 items: &views,
-                named: &named,
+                named: named.as_str(),
             };
             let put = encode_trust_answers(reply.get_or_insert_with(Reply::new), &[answer]);
             debug_assert!(put.is_ok(), "TRUST_ANS records fit a Reply");
@@ -1365,7 +1499,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if rounds > MAX_ROUNDS {
                 return Err(SessionError::Violation(Violation::IntentStorm));
             }
-            for piece in resolver.resolve(&intents, &lent, &mut self.held) {
+            for piece in resolver.resolve(&intents, &lent, &mut self.held, &mut self.reads) {
                 let next = self.piece(
                     FROM_CORE,
                     piece.exchange,
@@ -1609,56 +1743,42 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         flags: u32,
         limit: u32,
         key: &[u8],
-    ) -> Result<Looked, RecordsDenied> {
+        looked: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
         let who = self.who.caller();
-        let mut looked = Looked::default();
         if flags & LK_CHAIN != 0 {
             let split = key.len().checked_sub(8).ok_or(RecordsDenied::Invalid)?;
             let (chain, after) = key.split_at(split);
             let after = u64::from_le_bytes(after.try_into().map_err(|_| RecordsDenied::Invalid)?);
-            let mut hits = Vec::new();
+            // A chain hit's key is the chain key then the entry's sequence number, big-endian.
             let read = self.rt.block_on(self.records.chain(
                 &who,
                 scope,
                 chain,
                 after,
                 limit,
-                &mut |seq, entry| {
-                    let mut hit = chain.to_vec();
-                    hit.extend_from_slice(&seq.to_be_bytes());
-                    hits.push(Hit {
-                        key: hit,
-                        value: entry.to_vec(),
-                    });
-                },
+                &mut |seq, entry| looked.push(&[chain, &seq.to_be_bytes()], entry),
             ))?;
-            looked.hits = hits;
             looked.chain = Some((read.len, read.broken_at));
         } else if flags & LK_PREFIX != 0 {
-            let mut hits = Vec::new();
             self.rt
                 .block_on(self.records.list(&who, scope, key, limit, &mut |k, v| {
-                    hits.push(Hit {
-                        key: k.to_vec(),
-                        value: v.to_vec(),
-                    });
+                    looked.push(&[k], v);
                 }))?;
-            looked.hits = hits;
         } else {
-            let mut value = None;
+            // One hit, and only when the store says found: the value the store handed last.
+            let mark = looked.mark();
             let found = self
                 .rt
                 .block_on(self.records.get(&who, scope, key, &mut |v| {
-                    value = Some(v.to_vec());
+                    looked.rewind(mark);
+                    looked.push(&[key], v);
                 }))?;
-            if let (true, Some(value)) = (found, value) {
-                looked.hits.push(Hit {
-                    key: key.to_vec(),
-                    value,
-                });
+            if !found {
+                looked.rewind(mark);
             }
         }
-        Ok(looked)
+        Ok(())
     }
 
     fn store(
@@ -1771,29 +1891,24 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         }
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str, items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
         let Some(book) = &self.services.trust else {
-            return (DISTRUST_UNKNOWN, None, Vec::new());
+            return (DISTRUST_UNKNOWN, None);
         };
-        let mut items = Vec::new();
-        let (verdict, catalog) = book.state(&self.who.caller(), party, &mut |item| {
-            items.push(TrustItemOwned {
-                name: item.name.to_owned(),
-                verdict: item.verdict,
-                approved: item.approved,
-                sighted: item.sighted,
-            });
-        });
-        (verdict, catalog, items)
+        book.state(&self.who.caller(), party, &mut |item| items.push(&item))
     }
 
-    fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
+    fn trust_verify(
+        &self,
+        party: &str,
+        payload: &[u8],
+        signatures: &[u8],
+        named: &mut String,
+    ) -> u32 {
         let Some(book) = &self.services.trust else {
-            return (SIGNED_MALFORMED_ROOT, String::new());
+            return SIGNED_MALFORMED_ROOT;
         };
-        let mut named = String::new();
-        let verdict = book.verify(&self.who.caller(), party, payload, signatures, &mut named);
-        (verdict, named)
+        book.verify(&self.who.caller(), party, payload, signatures, named)
     }
 
     fn rendezvous_accept(

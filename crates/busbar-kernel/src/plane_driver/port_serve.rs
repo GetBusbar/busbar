@@ -484,7 +484,7 @@ fn drive_answers<K: Calls + ?Sized>(
     if !end_intents.is_empty() {
         let _ = drive
             .resolver
-            .resolve(&end_intents, &last.lent, &mut task.held);
+            .resolve(&end_intents, &last.lent, &mut task.held, &mut task.reads);
     }
     absorb(&mut ran, &mut None, [last], drive.books);
     ran.usage = task.usage().clone();

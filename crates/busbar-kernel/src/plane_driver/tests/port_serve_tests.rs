@@ -21,9 +21,7 @@ use busbar_ports::{FactRef, PortError};
 use super::{run_session, Books, Drive, TicketGate, UnitBooks};
 use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::plane_driver::port_auth::TicketDoor;
-use crate::plane_driver::port_intents::{
-    Hit, IntentHost, Looked, Namespace, Resolver, WorkOutcome,
-};
+use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver, WorkOutcome};
 use crate::plane_driver::port_money::{AuditRow, PortMoney};
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, ToClient};
 use crate::plane_driver::port_upstream::{
@@ -253,14 +251,16 @@ impl Books for Log {
 struct Store;
 
 impl IntentHost for Store {
-    fn lookup(&self, _: Scope, _: u32, _: u32, key: &[u8]) -> Result<Looked, RecordsDenied> {
-        Ok(Looked {
-            hits: vec![Hit {
-                key: key.to_vec(),
-                value: b"v".to_vec(),
-            }],
-            chain: None,
-        })
+    fn lookup(
+        &self,
+        _: Scope,
+        _: u32,
+        _: u32,
+        key: &[u8],
+        looked: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
+        looked.push(&[key], b"v");
+        Ok(())
     }
     fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
         Ok(())

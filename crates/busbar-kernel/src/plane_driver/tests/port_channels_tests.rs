@@ -151,7 +151,8 @@ impl crate::plane_driver::port_intents::IntentHost for NoStore {
         _: u32,
         _: u32,
         _: &[u8],
-    ) -> Result<crate::plane_driver::port_intents::Looked, RecordsDenied> {
+        _: &mut crate::plane_driver::port_intents::Looked,
+    ) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn store(
