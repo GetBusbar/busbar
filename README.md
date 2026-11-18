@@ -229,7 +229,7 @@ curl -s localhost:8080/v1/chat/completions -H 'content-type: application/json' \
 Or the container, which ships a bootable default config, so one line is the whole thing:
 
 ```bash
-docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar
+docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN_SHA256 getbusbar/busbar   # the SHA-256 (hex) of your admin token
 ```
 
 `busbar --validate` checks the selected config and provider catalog, plugin declarations and local artifacts, and built-in `env:` / `file:` secret references without starting the server or opening a Store. It makes no network calls and does not read the Store-backed admin overlay. A pass checks those operator inputs; boot separately recovers and validates the effective configuration and opens its runtime dependencies. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).

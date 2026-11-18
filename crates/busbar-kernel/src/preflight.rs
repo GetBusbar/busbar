@@ -336,6 +336,15 @@ pub(crate) fn linked_hook_answers(module: &str) -> bool {
     hook_facts().is_some_and(|facts| facts.linked(module))
 }
 
+/// Whether a linked native (MIN-3) image of `kind` (its kind word) answers `module`: its identity or its linked alias.
+/// A linked image needs no plugins directory: it is compiled in and admitted at process start.
+pub fn linked_image_answers(kind: &str, module: &str) -> bool {
+    root_rows()
+        .linked_images
+        .iter()
+        .any(|image| image.kind == kind && (image.identity == module || image.alias == module))
+}
+
 /// Operator remedy shared by the store refusals.
 const STORE_REMEDY: &str =
     "install a signed plugin of kind store and select it with store.module set to its name";
@@ -455,7 +464,9 @@ pub fn plugins_preflight(
 ) -> Result<Arc<dyn PluginRows>, String> {
     let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
 
-    let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
+    let store_is_plugin = store_cfg.is_some()
+        && linked()?.resolve(&store_ref).is_none()
+        && !linked_image_answers(busbar_contract::abi::mechanism::kind::STORE, &store_ref);
 
     let in_process = root_rows().in_process_auth.unwrap_or(|_| false);
     let auth_plugin_refs: Vec<&str> = auth_cfg

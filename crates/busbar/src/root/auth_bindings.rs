@@ -83,15 +83,17 @@ pub(crate) fn operator_binding(
     busbar_kernel::preflight::OperatorBinding::Bound(judged_operator(dropped))
 }
 
-/// The operator judged from the linked rows and the rows of `dropped`.
+/// The operator judged from the linked rows, the rows of `dropped`, and the native (MIN-3) auth images the start
+/// stage published ([`crate::root::native_operator`]).
 #[must_use]
 pub(crate) fn judged_operator(
     dropped: Option<&crate::root::loader::PluginRegistry>,
 ) -> busbar_kernel::preflight::Judged {
     let linked = crate::root::boot::linked_registry();
     let dropped = dropped.map_or(&[][..], crate::root::loader::PluginRegistry::loadable);
-    let claims =
-        crate::root::loader::auth_axis::operator_claims(linked.linked().iter().chain(dropped));
+    let claims = crate::root::native_operator::NATIVE.merged(
+        crate::root::loader::auth_axis::operator_claims(linked.linked().iter().chain(dropped)),
+    );
     busbar_kernel::preflight::choose_operator(&claims)
 }
 

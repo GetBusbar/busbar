@@ -121,7 +121,8 @@ admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback-only a
 # NAME. The built-ins `keys` (signed-key verifier) and `admin-tokens` (operator credential) are
 # referenced bare and need a definition only when they carry config.
 identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  # The operator credential (1.6): the SHA-256 of your admin token, 64 lower-case hex (docs/migration-1.6.md#operator-credential).
+  admin-tokens: { module: admin-tokens, settings: { sha256: "${BUSBAR_ADMIN_TOKEN_SHA256}" } }
   # corp-ad:
   #   module: ad
   #   settings: { server: "ldaps://corp", base_dn: "dc=corp" }

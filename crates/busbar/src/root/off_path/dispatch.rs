@@ -36,7 +36,7 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
     }
 
     fn operator_claims(&self) -> busbar_contract::auth_calls::OperatorClaims {
-        self.0.operator_claims()
+        crate::root::native_operator::NATIVE.merged(self.0.operator_claims())
     }
 
     fn open(

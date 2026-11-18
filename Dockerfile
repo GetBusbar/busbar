@@ -25,7 +25,7 @@
 #
 # Run (one provider, no plugins):
 #   docker run -d -p 8080:8080 \
-#     -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
+#     -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN_SHA256 \
 #     getbusbar/busbar
 #
 # Run (your own config — see config.yaml at the repo root for the full annotated walkthrough):

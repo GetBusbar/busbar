@@ -123,6 +123,15 @@ impl FileImages {
         );
     }
 
+    /// Publish the operator claims of these images' auth images (D-OPERATOR): the start judgement, `--validate`
+    /// and the restart check read them beside the door rows' claims. Called by the start stage only.
+    pub(crate) fn publish_operator(&self) {
+        crate::root::native_operator::NATIVE.publish(crate::root::native_operator::claims_of(
+            &self.images,
+            &self.aliases,
+        ));
+    }
+
     pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {
         self.proofs
             .iter()
@@ -349,6 +358,7 @@ pub(crate) fn publish_start() -> Result<(), String> {
     let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
     prepared.publish_secrets();
     prepared.publish_hooks();
+    prepared.publish_operator();
     Ok(())
 }
 
