@@ -463,13 +463,11 @@ plane-llm-door = "busbar-plane-llm"
 # repricer and book binding run in every build (ARCHITECT Q1).
 node = "plane_node"
 
-# THE TEST-LINKED PLANES of this crate's cross-plane integration tests (`tests/linked/mod.rs`). Those
-# tests prove the kernel's behaviour against the planes a build links, so they live where a plane may
-# be linked: here, in the composition root, never in the kernel or a cleanliness crate (core names
-# zero plane types, its tests included). Which planes is DATA: `build.rs` turns this list into
-# `$OUT_DIR/test_linked.rs` (each crate a plane served through its memory-ABI door, its registry row
-# folded from its Statement as the root folds it), so the tests' sources name no plane. The list is
-# the install order (the planes' layering order).
+# THE TEST-LINKED PLANES of this crate's cross-plane integration tests (`tests/linked/mod.rs`): the
+# `planes` list of `[package.metadata.busbar.test-linked]` named each plane's memory-ABI `door`. Every
+# plane is a MIN-3 image since b545082061 and its crate exports no `door`, so the list is gone and
+# `$OUT_DIR/test_linked.rs` folds no plane (as `LINKED.plane_doors` is empty in the product). The
+# tests that read a test-linked plane wait for their port to the linked MIN-3 plane images.
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
 file_export = "busbar-export-file"
@@ -500,9 +498,8 @@ linked_auth = "busbar-auth-webhook-signature"
 migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
-planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
-# The secret sources those tests read references through: the native secret images the root links,
-# published beside the planes so a test reads the source shorthand those sources declare.
+# The secret sources the cross-plane tests read references through: the native secret images the
+# root links, so a test reads the source shorthand those sources declare.
 secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
 # through: the one the root links for it (`auth-admin-tokens`).
@@ -544,13 +541,8 @@ http = { workspace = true }
 # The hook-seat tests (`root/tests/serve_hook_seats.rs`) implement the kernel's `#[async_trait]`
 # hook policy trait, so their test impls need the macro.
 async-trait = { workspace = true }
-# The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
-# whatever plane features the build enables.
+# The planes, linked in every build's tests whatever plane features the build enables.
 busbar-plane-llm = { workspace = true }
-# The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
-# The MCP and A2A planes' doors, `door:` rows of `test-linked` above: linked in every build's tests,
-# whatever plane features the build enables (a single-plane build's tests still install the whole
-# roster).
 busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
