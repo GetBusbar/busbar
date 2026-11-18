@@ -11,13 +11,14 @@
 //! ```ignore
 //! #[tokio::test(flavor = "multi_thread")]
 //! async fn kernel_startup_kit() {
-//!     busbar_kernel::persistence::store_kit::run(&MyFixture).await
+//!     busbar_kernel::persistence::store_kit::run(&my_fixture()).await
 //! }
 //! ```
 //!
 //! Real time, no `tokio::time::pause`: a store's I/O completes on other threads, so auto-advance
 //! would fire timers while a commit is in flight. Every bound here is far below any startup window.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,16 +42,89 @@ const STEPS: usize = 32;
 /// Real time between advances that answered `Pending`.
 const WAIT: Duration = Duration::from_millis(50);
 
+/// Where a store's dataset lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Every opened instance over one dataset name reaches the same data, as a database, file or
+    /// key prefix does.
+    Shared,
+    /// The data lives inside one opened instance, as the memory store's does: every handle on a
+    /// dataset is that dataset's first instance.
+    Instance,
+}
+
+/// Opens one handle: (dataset name, instance name). Runs inside the kit's tokio runtime: open
+/// through the async `Registry::open_store` directly, never through a helper that builds its own
+/// runtime or blocks a worker thread.
+pub type Open = Box<
+    dyn Fn(
+            String,
+            String,
+        )
+            -> busbar_plugin_abi::host_side::caller::BoxFut<'static, Arc<dyn PersistenceBackend>>
+        + Send
+        + Sync,
+>;
+
+/// Seeds one raw record on a dataset with the store's own driver, as its `migrate` does before
+/// admission. Only a store that holds its data across processes supplies one; `run_durable` runs
+/// the cases that need it.
+pub type Seed = dyn Fn(&Dataset, NamespaceId, &[u8], &[u8]) + Send + Sync;
+
+/// One case's dataset: its name (`kit-<n>`) and its first handle, kept open for the case.
+pub struct Dataset {
+    name: String,
+    first: Arc<dyn PersistenceBackend>,
+}
+
+impl Dataset {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// One store under test. `fresh` makes a new, empty dataset owned by one case; `open` returns a
 /// handle on it as a second process sharing that dataset would hold one. A store whose dataset
-/// lives inside one opened instance returns the same `Arc` each time. Both run inside the kit's
-/// tokio runtime: open through the async `Registry::open_store` directly, never through a helper
-/// that builds its own runtime or blocks a worker thread.
-#[async_trait::async_trait]
-pub trait Fixture: Send + Sync {
-    type Dataset: Send + Sync;
-    async fn fresh(&self) -> Self::Dataset;
-    async fn open(&self, dataset: &Self::Dataset) -> Arc<dyn PersistenceBackend>;
+/// lives inside one opened instance returns the same `Arc` each time. One counter feeds both the
+/// dataset names and the instance names.
+pub struct Fixture {
+    scope: Scope,
+    open: Open,
+    next: AtomicU64,
+}
+
+impl Fixture {
+    #[must_use]
+    pub fn new(scope: Scope, open: Open) -> Self {
+        Self {
+            scope,
+            open,
+            next: AtomicU64::new(1),
+        }
+    }
+
+    fn next(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed)
+    }
+
+    async fn instance(&self, dataset: &str) -> Arc<dyn PersistenceBackend> {
+        let name = format!("store-kit-{}", self.next());
+        (self.open)(dataset.to_owned(), name).await
+    }
+
+    pub async fn fresh(&self) -> Dataset {
+        let name = format!("kit-{}", self.next());
+        let first = self.instance(&name).await;
+        Dataset { name, first }
+    }
+
+    pub async fn open(&self, dataset: &Dataset) -> Arc<dyn PersistenceBackend> {
+        match self.scope {
+            Scope::Instance => Arc::clone(&dataset.first),
+            Scope::Shared => self.instance(&dataset.name).await,
+        }
+    }
 }
 
 /// Every case `run` executes, in order.
@@ -70,17 +144,17 @@ pub const CASES: &[&str] = &[
 pub const MARK: &str = "busbar-store-kit:";
 
 /// Every case, each on its own fresh dataset. Panics naming the case and step.
-pub async fn run<F: Fixture>(fixture: &F) {
+pub async fn run(fixture: &Fixture) {
     run_cases(fixture, None).await;
 }
 
 /// [`run`] with a deadline per case (DES-STOREKIT r2 §2.3): a case still running at `deadline`
 /// panics as `TIMEOUT <case>`, so a hang is a red case, never a stuck job.
-pub async fn run_within<F: Fixture>(fixture: &F, deadline: Duration) {
+pub async fn run_within(fixture: &Fixture, deadline: Duration) {
     run_cases(fixture, Some(deadline)).await;
 }
 
-async fn run_cases<F: Fixture>(fixture: &F, deadline: Option<Duration>) {
+async fn run_cases(fixture: &Fixture, deadline: Option<Duration>) {
     println!("{MARK} cases {}", CASES.len());
     within(deadline, CASES[0], k1_first_start_publication(fixture)).await;
     within(
@@ -124,43 +198,31 @@ async fn within(
     }
 }
 
-/// A store that holds its data across processes can also seed a raw record with its own driver,
-/// as its `migrate` does before admission. Only durable stores implement it; `run_durable` runs
-/// the cases that need it.
-#[async_trait::async_trait]
-pub trait DurableFixture: Fixture {
-    async fn seed(&self, dataset: &Self::Dataset, namespace: NamespaceId, key: &[u8], value: &[u8]);
-}
-
 /// Every case `run_durable` executes, in order.
 const DURABLE_CASES: &[&str] = &["t17_import_rows_do_not_block_initialize"];
 
 /// The durable-only cases, each on its own fresh dataset. Run beside `run`.
-pub async fn run_durable<F: DurableFixture>(fixture: &F) {
+pub async fn run_durable(fixture: &Fixture, seed: &Seed) {
     println!("{MARK} durable cases {}", DURABLE_CASES.len());
-    t17_import_rows_do_not_block_initialize(fixture).await;
+    t17_import_rows_do_not_block_initialize(fixture, seed).await;
 }
 
 /// T17 (FIRST-START-TAKEOVER §2.9 (b)): Initialize's emptiness proof ignores records in the
 /// import namespace, which survive it untouched; a record in any other namespace still refuses it.
-pub(crate) async fn t17_import_rows_do_not_block_initialize<F: DurableFixture>(fixture: &F) {
+pub(crate) async fn t17_import_rows_do_not_block_initialize(fixture: &Fixture, seed: &Seed) {
     const CASE: &str = "t17_import_rows_do_not_block_initialize";
     let import = |key: &[u8]| Address {
         namespace: control::IMPORT_NAMESPACE.0,
         key: key.to_vec(),
     };
     let dataset = fixture.fresh().await;
-    fixture
-        .seed(&dataset, control::IMPORT_NAMESPACE, &[0], b"kit-summary")
-        .await;
-    fixture
-        .seed(
-            &dataset,
-            control::IMPORT_NAMESPACE,
-            b"kit-row",
-            b"kit-value",
-        )
-        .await;
+    seed(&dataset, control::IMPORT_NAMESPACE, &[0], b"kit-summary");
+    seed(
+        &dataset,
+        control::IMPORT_NAMESPACE,
+        b"kit-row",
+        b"kit-value",
+    );
     let h = fixture.open(&dataset).await;
     let started = std::time::Instant::now();
     let store = admitted(
@@ -181,9 +243,7 @@ pub(crate) async fn t17_import_rows_do_not_block_initialize<F: DurableFixture>(f
     );
 
     let dataset = fixture.fresh().await;
-    fixture
-        .seed(&dataset, NamespaceId(*b"busbar.kit.other"), b"k", b"v")
-        .await;
+    seed(&dataset, NamespaceId(*b"busbar.kit.other"), b"k", b"v");
     let h = fixture.open(&dataset).await;
     let mut refused = startup(CASE, &h, true);
     for step in 0..=STEPS {
@@ -211,7 +271,7 @@ pub(crate) async fn t17_import_rows_do_not_block_initialize<F: DurableFixture>(f
 
 /// K1: first start over an empty dataset publishes; a second writer is admitted with no first
 /// start and retires nobody; the first writer then retires cleanly; a third is admitted.
-pub async fn k1_first_start_publication<F: Fixture>(fixture: &F) {
+pub async fn k1_first_start_publication(fixture: &Fixture) {
     const CASE: &str = "k1_first_start_publication";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;
@@ -247,7 +307,7 @@ pub async fn k1_first_start_publication<F: Fixture>(fixture: &F) {
 }
 
 /// K2: an empty dataset refuses a Startup that may not initialize, and stays empty.
-pub(crate) async fn k2_empty_refuses_without_initialize<F: Fixture>(fixture: &F) {
+pub(crate) async fn k2_empty_refuses_without_initialize(fixture: &Fixture) {
     const CASE: &str = "k2_empty_refuses_without_initialize";
     let dataset = fixture.fresh().await;
     let h = fixture.open(&dataset).await;
@@ -270,7 +330,7 @@ pub(crate) async fn k2_empty_refuses_without_initialize<F: Fixture>(fixture: &F)
 /// K3: two writers race Initialize; the loser writes nothing and exactly one owns the first start.
 /// The loser's answer differs by store and kernel revision (`Reconcile`, an `Err`, or a re-inspect
 /// that waits until publication); the kit pins only the invariant.
-pub async fn k3_racing_initialize<F: Fixture>(fixture: &F) {
+pub async fn k3_racing_initialize(fixture: &Fixture) {
     const CASE: &str = "k3_racing_initialize";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;
@@ -383,7 +443,7 @@ pub async fn k3_racing_initialize<F: Fixture>(fixture: &F) {
 
 /// T1 (FIRST-START-TAKEOVER §8): a writer that boots while another's first start is live waits,
 /// writes nothing and retires nobody; it is admitted, with no first start, after publication.
-async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
+async fn t1_staggered_boot(fixture: &Fixture) {
     const CASE: &str = "t1_staggered_boot";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;
@@ -420,7 +480,7 @@ async fn t1_staggered_boot<F: Fixture>(fixture: &F) {
 
 /// T2 (FIRST-START-TAKEOVER §8): a waiter that restarts during a long first start starts waiting
 /// again; the owner is never retired, and the restarted waiter is admitted after publication.
-async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
+async fn t2_waiter_restart(fixture: &Fixture) {
     const CASE: &str = "t2_waiter_restart";
     let dataset = fixture.fresh().await;
     let h1 = fixture.open(&dataset).await;
@@ -471,7 +531,7 @@ async fn t2_waiter_restart<F: Fixture>(fixture: &F) {
 /// own writer row is retired and the birth record is left exactly as it was, so the next writer
 /// takes over at once, with no `Pending`, and the abandoned owner makes no further step. Run with
 /// no plane done and with one plane done; after publication `abandon` writes nothing.
-pub(crate) async fn t11_abandon_hands_over<F: Fixture>(fixture: &F) {
+pub(crate) async fn t11_abandon_hands_over(fixture: &Fixture) {
     const CASE: &str = "t11_abandon_hands_over";
     for done in [0usize, 1] {
         let dataset = fixture.fresh().await;
@@ -613,7 +673,7 @@ fn business_row() -> Commit {
 
 /// A dataset whose first start published and whose manifest its own writer then rewrote to the
 /// synthetic older format 0. That writer stays open: a process of the old epoch.
-async fn older_dataset<F: Fixture>(fixture: &F, case: &str) -> (F::Dataset, Arc<CoreStore>) {
+async fn older_dataset(fixture: &Fixture, case: &str) -> (Dataset, Arc<CoreStore>) {
     let dataset = fixture.fresh().await;
     let h = fixture.open(&dataset).await;
     let old = admitted(case, "the old writer", &mut startup(case, &h, true)).await;
@@ -673,7 +733,7 @@ async fn opened_or_waiting(case: &str, startup: &mut Startup) -> Progress {
 /// F1 (#319 r4 §6, §10): the opening advances the dataset epoch, names a fresh owner with the
 /// tail and writes the cursor at one serialization point; a writer of the old epoch is fenced by
 /// the store at its next commit and its row never lands.
-pub async fn f1_format_opening_fences_the_old_epoch<F: Fixture>(fixture: &F) {
+pub async fn f1_format_opening_fences_the_old_epoch(fixture: &Fixture) {
     const CASE: &str = "f1_format_opening_fences_the_old_epoch";
     let (dataset, old) = older_dataset(fixture, CASE).await;
     let h = fixture.open(&dataset).await;
@@ -714,7 +774,7 @@ pub async fn f1_format_opening_fences_the_old_epoch<F: Fixture>(fixture: &F) {
 
 /// F2 (#319 r4 §6, §8): two processes open the same older dataset at once. Exactly one opening
 /// applies (the epoch advances once); the other loses and waits on that owner, never adopting it.
-pub async fn f2_racing_openings_have_one_owner<F: Fixture>(fixture: &F) {
+pub async fn f2_racing_openings_have_one_owner(fixture: &Fixture) {
     const CASE: &str = "f2_racing_openings_have_one_owner";
     let (dataset, _old) = older_dataset(fixture, CASE).await;
     let (ha, hb) = (fixture.open(&dataset).await, fixture.open(&dataset).await);
@@ -763,7 +823,7 @@ pub async fn f2_racing_openings_have_one_owner<F: Fixture>(fixture: &F) {
 /// advances the epoch past it, names a fresh registrar and the Current manifest and deletes the
 /// cursor in one transaction; reinspection then admits ordinarily at the new epoch, and both the
 /// finished owner and the old-epoch writer are fenced.
-pub async fn f3_pages_and_final_publication<F: Fixture>(fixture: &F) {
+pub async fn f3_pages_and_final_publication(fixture: &Fixture) {
     const CASE: &str = "f3_pages_and_final_publication";
     let (dataset, old) = older_dataset(fixture, CASE).await;
     let h = fixture.open(&dataset).await;

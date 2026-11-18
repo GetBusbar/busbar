@@ -101,7 +101,7 @@ impl Opener for SecondOpenHangs {
 #[test]
 fn a_correct_store_passes_every_case_through_the_runner_fixture() {
     let rt = runtime();
-    let fixture = KitFixture::new(
+    let fixture = kit_fixture(
         PerDataset::default(),
         Template::parse(SHARED.as_bytes()).unwrap(),
     );
@@ -111,7 +111,7 @@ fn a_correct_store_passes_every_case_through_the_runner_fixture() {
 #[test]
 fn a_store_whose_every_open_is_a_fresh_dataset_fails_the_runner() {
     let rt = runtime();
-    let fixture = KitFixture::new(EveryOpenFresh, Template::parse(SHARED.as_bytes()).unwrap());
+    let fixture = kit_fixture(EveryOpenFresh, Template::parse(SHARED.as_bytes()).unwrap());
     let failure = run_kit(&rt, &fixture, CASE_DEADLINE, RUN_DEADLINE).unwrap_err();
     assert!(failure.contains("k1_first_start_publication"), "{failure}");
 }
@@ -124,14 +124,14 @@ fn the_instance_scope_hands_every_open_the_first_instance() {
     )
     .unwrap();
     // Every opened instance is a fresh store, as memory's is: only the scope keeps a dataset whole.
-    let fixture = KitFixture::new(EveryOpenFresh, template);
+    let fixture = kit_fixture(EveryOpenFresh, template);
     assert_eq!(run_kit(&rt, &fixture, CASE_DEADLINE, RUN_DEADLINE), Ok(()));
 }
 
 #[test]
 fn a_hanging_open_fails_at_the_case_deadline_naming_the_case() {
     let rt = runtime();
-    let fixture = KitFixture::new(
+    let fixture = kit_fixture(
         SecondOpenHangs::default(),
         Template::parse(SHARED.as_bytes()).unwrap(),
     );
@@ -145,7 +145,7 @@ fn a_hanging_open_fails_at_the_case_deadline_naming_the_case() {
 #[test]
 fn the_run_deadline_bounds_the_whole_kit() {
     let rt = runtime();
-    let fixture = KitFixture::new(
+    let fixture = kit_fixture(
         SecondOpenHangs::default(),
         Template::parse(SHARED.as_bytes()).unwrap(),
     );

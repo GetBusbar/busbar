@@ -20,17 +20,11 @@ use std::sync::Mutex;
 
 /// The memory product store through its actual ABI: each opened instance is one dataset, so a
 /// second "process" on it shares the instance.
-struct Memory;
-
-#[async_trait::async_trait]
-impl Fixture for Memory {
-    type Dataset = Arc<dyn PersistenceBackend>;
-    async fn fresh(&self) -> Self::Dataset {
-        crate::real_store::native_backend().await
-    }
-    async fn open(&self, dataset: &Self::Dataset) -> Arc<dyn PersistenceBackend> {
-        dataset.clone()
-    }
+fn memory() -> Fixture {
+    Fixture::new(
+        Scope::Instance,
+        Box::new(|_, _| Box::pin(crate::real_store::native_backend())),
+    )
 }
 
 #[derive(Default)]
@@ -193,44 +187,38 @@ impl PersistenceBackend for Mock {
     }
 }
 
-#[derive(Default)]
-struct Mocks {
-    blind_initialize: bool,
-    ignore_epoch: bool,
-}
+/// The mocks a fixture opened, by dataset name, so the seeder reaches the one a case holds.
+type Opened = Arc<Mutex<BTreeMap<String, Arc<Mock>>>>;
 
-#[async_trait::async_trait]
-impl Fixture for Mocks {
-    type Dataset = Arc<Mock>;
-    async fn fresh(&self) -> Self::Dataset {
-        Arc::new(Mock {
-            state: Mutex::default(),
-            blind_initialize: self.blind_initialize,
-            ignore_epoch: self.ignore_epoch,
-        })
-    }
-    async fn open(&self, dataset: &Self::Dataset) -> Arc<dyn PersistenceBackend> {
-        dataset.clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl DurableFixture for Mocks {
-    async fn seed(
-        &self,
-        dataset: &Self::Dataset,
-        namespace: NamespaceId,
-        key: &[u8],
-        value: &[u8],
-    ) {
-        dataset.state.lock().unwrap().rows.insert(
-            Address {
-                namespace: namespace.0,
-                key: key.to_vec(),
-            },
-            Secret::new(value.to_vec()),
-        );
-    }
+/// A fixture over fresh mocks, and the seeder that writes a raw record into the mock of a dataset.
+fn mocks(blind_initialize: bool, ignore_epoch: bool) -> (Fixture, Box<Seed>) {
+    let opened = Opened::default();
+    let held = Arc::clone(&opened);
+    let fixture = Fixture::new(
+        Scope::Instance,
+        Box::new(move |dataset, _| {
+            let mock = Arc::new(Mock {
+                state: Mutex::default(),
+                blind_initialize,
+                ignore_epoch,
+            });
+            opened.lock().unwrap().insert(dataset, Arc::clone(&mock));
+            Box::pin(async move { mock as Arc<dyn PersistenceBackend> })
+        }),
+    );
+    let seed: Box<Seed> = Box::new(
+        move |dataset: &Dataset, namespace: NamespaceId, key: &[u8], value: &[u8]| {
+            let held = held.lock().unwrap();
+            held[dataset.name()].state.lock().unwrap().rows.insert(
+                Address {
+                    namespace: namespace.0,
+                    key: key.to_vec(),
+                },
+                Secret::new(value.to_vec()),
+            );
+        },
+    );
+    (fixture, seed)
 }
 
 /// The memory product store, but every read answers "absent": a store that misreports reads.
@@ -265,17 +253,16 @@ impl PersistenceBackend for EmptyReads {
     }
 }
 
-struct MisreportingMemory;
-
-#[async_trait::async_trait]
-impl Fixture for MisreportingMemory {
-    type Dataset = Arc<dyn PersistenceBackend>;
-    async fn fresh(&self) -> Self::Dataset {
-        Arc::new(EmptyReads(crate::real_store::native_backend().await))
-    }
-    async fn open(&self, dataset: &Self::Dataset) -> Arc<dyn PersistenceBackend> {
-        dataset.clone()
-    }
+fn misreporting_memory() -> Fixture {
+    Fixture::new(
+        Scope::Instance,
+        Box::new(|_, _| {
+            Box::pin(async {
+                Arc::new(EmptyReads(crate::real_store::native_backend().await))
+                    as Arc<dyn PersistenceBackend>
+            })
+        }),
+    )
 }
 
 async fn fails<T>(case: impl std::future::Future<Output = T>) -> bool {
@@ -284,27 +271,25 @@ async fn fails<T>(case: impl std::future::Future<Output = T>) -> bool {
 
 #[tokio::test]
 async fn the_memory_product_store_passes_the_kit() {
-    run(&Memory).await;
+    run(&memory()).await;
 }
 
 #[tokio::test]
 async fn a_correct_store_passes_the_kit() {
-    run(&Mocks::default()).await;
-    run_durable(&Mocks::default()).await;
+    let (fixture, seed) = mocks(false, false);
+    run(&fixture).await;
+    run_durable(&fixture, &*seed).await;
 }
 
 /// T11 alone over the correct mock store, so its red-before-green proof names one test.
 #[tokio::test]
 async fn a_correct_store_hands_over_at_once_after_abandon() {
-    t11_abandon_hands_over(&Mocks::default()).await;
+    t11_abandon_hands_over(&mocks(false, false).0).await;
 }
 
 #[tokio::test]
 async fn the_kit_fails_a_store_that_applies_initialize_blindly() {
-    let blind = Mocks {
-        blind_initialize: true,
-        ..Mocks::default()
-    };
+    let (blind, _) = mocks(true, false);
     assert!(
         fails(k3_racing_initialize(&blind)).await,
         "K3 must fail a store whose second Initialize overwrites the first"
@@ -314,7 +299,7 @@ async fn the_kit_fails_a_store_that_applies_initialize_blindly() {
 #[tokio::test]
 async fn the_kit_fails_a_store_that_misreports_reads() {
     assert!(
-        fails(k1_first_start_publication(&MisreportingMemory)).await,
+        fails(k1_first_start_publication(&misreporting_memory())).await,
         "K1 must fail a store that answers every read with absent values"
     );
 }
@@ -323,10 +308,7 @@ async fn the_kit_fails_a_store_that_misreports_reads() {
 /// retired epoch commit after the record-format opening, and F1 fails it.
 #[tokio::test]
 async fn the_kit_fails_a_store_that_ignores_the_dataset_epoch() {
-    let stale = Mocks {
-        ignore_epoch: true,
-        ..Mocks::default()
-    };
+    let (stale, _) = mocks(false, true);
     assert!(
         fails(f1_format_opening_fences_the_old_epoch(&stale)).await,
         "F1 must fail a store that lets an old-epoch writer commit after the opening"
@@ -336,7 +318,7 @@ async fn the_kit_fails_a_store_that_ignores_the_dataset_epoch() {
 /// F1-F3 alone over the correct mock store, so a red-before-green proof can name one test.
 #[tokio::test]
 async fn a_correct_store_serializes_record_format_migration() {
-    let store = Mocks::default();
+    let (store, _) = mocks(false, false);
     f1_format_opening_fences_the_old_epoch(&store).await;
     f2_racing_openings_have_one_owner(&store).await;
     f3_pages_and_final_publication(&store).await;
