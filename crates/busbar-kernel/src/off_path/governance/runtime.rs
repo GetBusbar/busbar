@@ -841,11 +841,6 @@ pub(crate) fn self_serve_key_id(prefix: &str, tag: &[u8]) -> String {
     format!("{prefix}{}", hex::encode(tag))
 }
 
-/// `self_serve`: a self-serve binding's generation text, once per binding write.
-pub(crate) fn self_serve_generation(epoch: u64) -> String {
-    epoch.to_string()
-}
-
 /// `self_serve`: a self-serve binding's display name, once per binding write.
 pub(crate) fn self_serve_binding_name(user_sub: &str) -> String {
     format!("self-serve key ({user_sub})")

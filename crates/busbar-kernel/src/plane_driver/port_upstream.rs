@@ -36,7 +36,7 @@ use super::HeadFields;
 use crate::retry::{Retry, RetryPolicy, RetrySite};
 
 /// The longest W_AFFINITY text (§8.6 round 13).
-pub const AFFINITY_MAX: usize = 256;
+const AFFINITY_MAX: usize = 256;
 
 /// What a FORWARD asked core to choose candidates by (§8.6 wants). A key stated with the wrong shape, and any
 /// key core does not read, is ignored.

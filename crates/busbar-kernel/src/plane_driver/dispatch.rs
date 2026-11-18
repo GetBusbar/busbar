@@ -259,10 +259,6 @@ pub(crate) struct Mount {
 }
 
 impl PlaneDispatch {
-    pub fn admission_of(&self, key: &str) -> Option<&PlaneAdmission> {
-        self.admissions.get(key)
-    }
-
     pub fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         if is_fallback(key) {
             return self;

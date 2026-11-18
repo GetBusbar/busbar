@@ -34,13 +34,6 @@ pub(crate) fn at_rest_kid_resource(kid: &str) -> String {
     format!("kid:{kid}")
 }
 
-/// `recovery`: the monotonic clock an operation's first recovery send is stamped with, read once
-/// per operation (revision 0).
-#[cold]
-pub(crate) fn recovery_first_send_clock() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 /// `unit_checkpoint`: a running-unit checkpoint refusal, rendered once on the error path.
 #[cold]
 pub(crate) fn unit_checkpoint_refusal(message: &str) -> busbar_contract::records::RecordStoreError {
