@@ -51,11 +51,8 @@ absence.
 
 ## Adding a maintainer
 
-A second maintainer is added by the maintainer's nomination after sustained merged contributions
-over at least 6 months. The appointment is announced publicly with the actions the new maintainer
-may take. Their access is granted separately, and continuity is only claimed once they have
-received a security report and rehearsed a release. This page changes when that happens; nothing
-here appoints anyone.
+A second maintainer is added on the maintainer's nomination, after sustained merged contributions
+over at least 6 months. Nothing on this page appoints anyone.
 
 See also [contributing](CONTRIBUTING.md), [releasing](RELEASE.md) and the
 [security policy](SECURITY.md).

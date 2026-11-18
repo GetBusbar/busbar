@@ -40,7 +40,7 @@ credited once a fix is released.
   that and the 48-hour acknowledgement above, the project makes no numeric response commitment.
 - **End-of-life lines.** A vulnerability in a line past its support date (see
   [supported versions](#supported-versions)) gets a CVE only when it is confirmed on that line, and
-  the record is tagged "unsupported when assigned". No fix is released for that line.
+  the record is tagged "unsupported when assigned".
 - **Disputes.** To contest a severity or an assignment decision, write to
   **security@getbusbar.com**. A dispute that stays unresolved can be taken to the CNA (GitHub) or to
   the CVE Program.
