@@ -109,7 +109,7 @@ pub fn unit_counts(usage: &SessionUsage, classes: &[String]) -> Counted {
 
 /// [`unit_counts`] over any selection of the kept values (the cancel table's).
 #[must_use]
-pub fn counts_of<'r>(values: impl Iterator<Item = &'r Reported>, classes: &[String]) -> Counted {
+fn counts_of<'r>(values: impl Iterator<Item = &'r Reported>, classes: &[String]) -> Counted {
     let mut counted = Counted::default();
     for r in values {
         let Some(index) = classes.iter().position(|c| **c == *r.class) else {
