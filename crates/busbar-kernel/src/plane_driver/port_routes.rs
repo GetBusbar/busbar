@@ -208,7 +208,7 @@ pub fn recovery_request<'a>(
 
 /// A WORK target's path and query (no fragment): `/jobs/1?cursor=2` is (`/jobs/1`, `cursor=2`).
 #[must_use]
-pub fn target_parts(target: &str) -> (&str, &str) {
+fn target_parts(target: &str) -> (&str, &str) {
     let target = target.split('#').next().unwrap_or_default();
     target.split_once('?').unwrap_or((target, ""))
 }
