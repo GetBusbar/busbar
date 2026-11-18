@@ -283,7 +283,7 @@ fn streams_0_1_2_reach_the_port_with_minted_deliveries() {
         assert_eq!(call.lines, vec![format!("{{\"s\":{stream}}}").into_bytes()]);
         seen.push(call.delivery);
     }
-    seen.sort_unstable();
+    seen.sort();
     seen.dedup();
     assert_eq!(seen.len(), 3, "each line set gets its own delivery id");
     assert_eq!(door.custody_total(x::STREAM_LOGS, x::CUSTODY_ACCEPTED), 1);

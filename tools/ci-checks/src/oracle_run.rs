@@ -797,7 +797,7 @@ fn bound_band_holders() -> String {
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
             .unwrap_or_default();
         let mut pids: Vec<&str> = listeners.lines().filter(|line| !line.is_empty()).collect();
-        pids.sort_unstable();
+        pids.sort();
         pids.dedup();
         for pid in pids {
             let command = Command::new("ps")

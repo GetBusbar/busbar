@@ -190,9 +190,9 @@ pub(crate) fn fleet_findings(deps_toml: &str, plugins_yaml: &str) -> Vec<String>
         }
     }
     let mut archived: Vec<&str> = registry.archived.iter().map(String::as_str).collect();
-    archived.sort_unstable();
+    archived.sort();
     let mut want = ARCHIVED.to_vec();
-    want.sort_unstable();
+    want.sort();
     if archived != want {
         findings.push(format!(
             "plugins.yaml: archived_repos is {archived:?}, must be exactly {want:?} (no MIN-3 release, no render, no re-pin)"
