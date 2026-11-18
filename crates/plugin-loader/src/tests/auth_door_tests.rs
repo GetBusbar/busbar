@@ -2063,3 +2063,60 @@ fn an_auth_plugin_diagnostic_is_a_text_field_never_the_message() {
         "plugin text never reaches the message: {events:?}"
     );
 }
+
+/// A pooled identity buffer set goes back to its door wiped: the next verify that takes it is lent
+/// the same allocation, holding no byte, span or strip name of the last one.
+#[test]
+fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
+    let pool = Arc::new(super::BufferPool::new());
+    let mut dirty = super::Buffers::new(
+        busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
+        busbar_contract::abi::auth::IDENTITY_GROUPS,
+        busbar_contract::abi::auth::FIELDS_MAX,
+    );
+    dirty.buf.fill(0xA5);
+    let used = busbar_contract::abi::mechanism::call::Span { offset: 3, len: 9 };
+    dirty.groups.fill(used);
+    dirty.strip.fill(busbar_contract::abi::auth::StripName {
+        name: used,
+        place: 1,
+        _reserved: 0,
+    });
+    let at = dirty.buf.as_ptr();
+    let held = super::Held::over(
+        super::VerifyInput::empty(),
+        dirty,
+        (
+            busbar_contract::abi::auth::IDENTITY_GROUPS,
+            busbar_contract::abi::auth::FIELDS_MAX,
+        ),
+        Some(Arc::clone(&pool)),
+    );
+    drop(held);
+    let next = pool.take();
+    assert_eq!(
+        next.buf.as_ptr(),
+        at,
+        "the door lends the set it was given back"
+    );
+    assert!(
+        next.buf.iter().all(|b| *b == 0),
+        "the identity text is wiped"
+    );
+    assert!(
+        next.groups.iter().all(|s| *s == super::EMPTY_SPAN),
+        "every group span is absent"
+    );
+    assert!(
+        next.strip.iter().all(|s| *s == super::UNNAMED),
+        "every strip slot is unnamed"
+    );
+    assert_eq!(
+        (next.buf.len(), next.groups.len(), next.strip.len()),
+        (
+            busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
+            busbar_contract::abi::auth::IDENTITY_GROUPS as usize,
+            busbar_contract::abi::auth::FIELDS_MAX as usize,
+        )
+    );
+}
