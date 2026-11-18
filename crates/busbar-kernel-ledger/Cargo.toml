@@ -11,6 +11,12 @@ license = "Apache-2.0"
 name = "busbar_kernel_ledger"
 path = "src/lib.rs"
 
+# B-LEDGER: one pricing lookup in the rate-card history (median, p99).
+[[bench]]
+name = "b_ledger"
+path = "benches/b_ledger.rs"
+harness = false
+
 [features]
 # Dev-dependencies only; never a shipped build.
 test-support = []
