@@ -153,6 +153,86 @@ impl PreparedRows {
     }
 }
 
+/// What a lent predicate expects at its address: the bytes stay with the caller.
+#[derive(Clone, Copy)]
+pub enum ExpectedRow<'a> {
+    Absent,
+    Exact(&'a [u8]),
+}
+
+/// One predicate of a conditional request, lent: the caller keeps the schema, the key and the
+/// expected bytes, and the scope reads them once, as it forms the store's row. A caller that
+/// holds its request as facts (a ticket, its expiry) lends rows over them and copies nothing.
+/// No `Debug`: the expected bytes are record bytes.
+#[derive(Clone, Copy)]
+pub struct PredicateRow<'a> {
+    pub schema: &'a str,
+    pub key: &'a [u8],
+    pub expected: ExpectedRow<'a>,
+}
+
+/// One mutation of a conditional request, lent as [`PredicateRow`] is.
+#[derive(Clone, Copy)]
+pub enum MutationRow<'a> {
+    Put {
+        schema: &'a str,
+        key: &'a [u8],
+        value: &'a [u8],
+    },
+    Delete {
+        schema: &'a str,
+        key: &'a [u8],
+    },
+    DeleteRange {
+        schema: &'a str,
+        prefix: &'a [u8],
+        exact_key_length: u64,
+    },
+}
+
+impl Predicate {
+    /// This predicate, lent: its expected bytes are read under `seal`.
+    fn row<'a>(
+        &'a self,
+        seal: &busbar_contract::caps::Grant<busbar_contract::caps::Sign>,
+    ) -> PredicateRow<'a> {
+        PredicateRow {
+            schema: &self.schema,
+            key: &self.key,
+            expected: match &self.expected {
+                Expected::Absent => ExpectedRow::Absent,
+                Expected::Exact(value) => ExpectedRow::Exact(value.expose(seal)),
+            },
+        }
+    }
+}
+
+impl Mutation {
+    /// This mutation, lent: a put's value is read under `seal`.
+    fn row<'a>(
+        &'a self,
+        seal: &busbar_contract::caps::Grant<busbar_contract::caps::Sign>,
+    ) -> MutationRow<'a> {
+        match self {
+            Mutation::Put { schema, key, value } => MutationRow::Put {
+                schema,
+                key,
+                value: value.expose(seal),
+            },
+            Mutation::Delete { schema, key } => MutationRow::Delete { schema, key },
+            Mutation::DeleteRange {
+                schema,
+                prefix,
+                exact_key_length,
+            } => MutationRow::DeleteRange {
+                schema,
+                prefix,
+                exact_key_length: *exact_key_length,
+            },
+        }
+    }
+}
+
 /// Continuations are bound to their original schema, prefix and generation.
 #[derive(Debug, Clone)]
 pub struct Cursor {
@@ -349,10 +429,33 @@ impl ScopedStore {
         request: &Request,
         time: Option<busbar_contract::persistence::TimeGuard>,
     ) -> Result<Outcome, Error> {
-        let (predicates, mutations) =
-            self.native_rows(&request.predicates, &request.mutations, None)?;
+        let (predicates, mutations) = {
+            let seal = crate::seal::lend();
+            self.native_rows(
+                request.predicates.iter().map(|p| p.row(&seal)),
+                request.mutations.iter().map(|m| m.row(&seal)),
+                None,
+            )?
+        };
         self.owner()?
             .conditional_native_timed(&request.op, predicates, mutations, time)
+            .await
+    }
+    /// [`Self::conditional_native_timed`] for a caller that keeps its request as facts and lends
+    /// the rows over them: the same submit under the same receipt identity `op`. The rows are
+    /// read once, before the first wait; the store's own rows are formed from them as they are
+    /// from an owned [`Request`].
+    pub async fn conditional_rows_timed(
+        &self,
+        op: &Op,
+        predicates: &[PredicateRow<'_>],
+        mutations: &[MutationRow<'_>],
+        time: Option<busbar_contract::persistence::TimeGuard>,
+    ) -> Result<Outcome, Error> {
+        let (predicates, mutations) =
+            self.native_rows(predicates.iter().copied(), mutations.iter().copied(), None)?;
+        self.owner()?
+            .conditional_native_timed(op, predicates, mutations, time)
             .await
     }
 
@@ -371,7 +474,12 @@ impl ScopedStore {
             return Err(Error::Unauthorized);
         }
         let authority = self.store.authority()?;
-        let (predicates, mutations) = self.native_rows(predicates, mutations, Some(max_bytes))?;
+        let seal = crate::seal::lend();
+        let (predicates, mutations) = self.native_rows(
+            predicates.iter().map(|p| p.row(&seal)),
+            mutations.iter().map(|m| m.row(&seal)),
+            Some(max_bytes),
+        )?;
         Ok(PreparedRows {
             store: self.store.clone(),
             authority,
@@ -380,10 +488,12 @@ impl ScopedStore {
         })
     }
 
-    fn native_rows(
+    /// The store's own rows for the lent rows, in their order: each address is formed under
+    /// this scope, and each expected or put value is copied once, into the row the store keeps.
+    fn native_rows<'r>(
         &self,
-        predicates: &[Predicate],
-        mutations: &[Mutation],
+        predicates: impl Iterator<Item = PredicateRow<'r>>,
+        mutations: impl Iterator<Item = MutationRow<'r>>,
         max_bytes: Option<usize>,
     ) -> Result<(Vec<NativePredicate>, Vec<NativeMutation>), Error> {
         let owner = self.owner()?;
@@ -394,16 +504,14 @@ impl ScopedStore {
                 .ok_or(Error::Access(super::facade::AccessError::Overloaded))?;
             Ok::<(), Error>(())
         };
-        let seal = crate::seal::lend();
         let predicates = predicates
-            .iter()
             .map(|p| {
                 charge(std::mem::size_of::<NativePredicate>())?;
                 charge(p.key.len())?;
-                if let Expected::Exact(value) = &p.expected {
-                    charge(value.expose(&seal).len())?;
+                if let ExpectedRow::Exact(value) = p.expected {
+                    charge(value.len())?;
                 }
-                let address = owner.address(&p.schema, &self.key(&p.key))?;
+                let address = owner.address(p.schema, &self.key(p.key))?;
                 charge(
                     address
                         .key
@@ -413,21 +521,22 @@ impl ScopedStore {
                 )?;
                 Ok(NativePredicate {
                     address,
-                    expected: match &p.expected {
-                        Expected::Absent => ExpectedValue::Absent,
-                        Expected::Exact(v) => ExpectedValue::Exact(v.clone()),
+                    expected: match p.expected {
+                        ExpectedRow::Absent => ExpectedValue::Absent,
+                        ExpectedRow::Exact(value) => {
+                            ExpectedValue::Exact(Secret::new(value.to_vec()))
+                        }
                     },
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let mutations = mutations
-            .iter()
             .map(|m| {
                 charge(std::mem::size_of::<NativeMutation>())?;
                 Ok(match m {
-                    Mutation::Put { schema, key, value } => {
+                    MutationRow::Put { schema, key, value } => {
                         charge(key.len())?;
-                        charge(value.expose(&seal).len())?;
+                        charge(value.len())?;
                         let address = owner.address(schema, &self.key(key))?;
                         charge(
                             address
@@ -438,10 +547,10 @@ impl ScopedStore {
                         )?;
                         NativeMutation::Put {
                             address,
-                            value: value.clone(),
+                            value: Secret::new(value.to_vec()),
                         }
                     }
-                    Mutation::Delete { schema, key } => {
+                    MutationRow::Delete { schema, key } => {
                         charge(key.len())?;
                         let address = owner.address(schema, &self.key(key))?;
                         charge(
@@ -453,7 +562,7 @@ impl ScopedStore {
                         )?;
                         NativeMutation::Delete(address)
                     }
-                    Mutation::DeleteRange {
+                    MutationRow::DeleteRange {
                         schema,
                         prefix,
                         exact_key_length,

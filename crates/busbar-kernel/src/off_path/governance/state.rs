@@ -536,18 +536,15 @@ pub(crate) fn money_view_keep_first<V>(
 }
 
 /// `tickets`: maintenance's snapshot of the retained ticket operations, taken under the lock.
-pub(crate) fn tickets_pending_snapshot<T>(
-    pending: &BTreeMap<String, Arc<T>>,
-) -> Vec<(String, Arc<T>)> {
-    pending
-        .iter()
-        .map(|(id, op)| (id.clone(), op.clone()))
-        .collect()
+pub(crate) fn tickets_pending_snapshot<K: Copy, T>(
+    pending: &BTreeMap<K, Arc<T>>,
+) -> Vec<(K, Arc<T>)> {
+    pending.iter().map(|(key, op)| (*key, op.clone())).collect()
 }
 
 /// `tickets`: shutdown custody inspection: whether any retained ticket operation is unsettled.
-pub(crate) fn tickets_any_unsettled<T>(
-    pending: &BTreeMap<String, Arc<T>>,
+pub(crate) fn tickets_any_unsettled<K, T>(
+    pending: &BTreeMap<K, Arc<T>>,
     unsettled: impl Fn(&T) -> bool,
 ) -> bool {
     pending.values().any(|operation| unsettled(operation))
