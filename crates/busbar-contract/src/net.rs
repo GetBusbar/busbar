@@ -45,7 +45,9 @@ pub fn canonical_network_authority(raw: &str, default_port: Option<u16>) -> Opti
     if port == 0 || is_alternate_ipv4_encoding(host.trim_end_matches('.')) {
         return None;
     }
-    let host = extract_normalized_authority_host(host)?;
+    // A canonical authority compares as DNS does: the host's ASCII letters fold to lower case
+    // (`DB.internal:5432` is `db.internal:5432`), so one authority never has two spellings.
+    let host = extract_normalized_authority_host(host)?.to_ascii_lowercase();
     let canonical = if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
