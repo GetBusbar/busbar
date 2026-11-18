@@ -15,7 +15,7 @@ use std::sync::Arc;
 use busbar_contract::crypto::ed25519::SigningKey;
 use busbar_kernel::plugin_records::StoreRecords;
 use busbar_kernel::trust::book::TrustBook as Judge;
-use busbar_kernel::trust::plane_book::{CoreTrustBook, TrustAudit, TrustBook as _};
+use busbar_kernel::trust::plane_book::{CoreTrustBook, TrustAudit};
 use busbar_kernel::trust::reverify::Policy;
 use busbar_kernel::trust::section::{DeclaredPin, TrustEntry};
 use busbar_plugin_abi::plane::{

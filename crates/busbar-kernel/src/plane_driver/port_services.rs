@@ -15,11 +15,9 @@ use tokio::runtime::Handle;
 use super::plane_judge::PlaneJudge;
 use super::port_channels::Held;
 use crate::channels::ChannelMsg;
-use crate::connections::CallerConnections;
 use crate::media::{MediaBridge, MediaRendezvous};
 use crate::plane_grants::{Entitlements, HostSigner, Tickets};
 use crate::plugin_records::RecordsDenied;
-use crate::trust::plane_book::TrustBook;
 
 /// The services behind the intents. `Default` installs none.
 #[derive(Clone, Default)]
@@ -33,9 +31,11 @@ pub struct Services {
     /// SIGN (§12.11).
     pub signer: Option<Arc<dyn HostSigner>>,
     /// CONNECT (§12.12).
-    pub connections: Option<Arc<dyn CallerConnections>>,
+    pub connections:
+        Option<Arc<crate::connections::StoreConnections<crate::plugin_records::StoreRecords>>>,
     /// SIGHT and TRUST (§12.14).
-    pub trust: Option<Arc<dyn TrustBook>>,
+    pub trust:
+        Option<Arc<crate::trust::plane_book::CoreTrustBook<crate::plugin_records::StoreRecords>>>,
     /// RENDEZVOUS (§12.13).
     pub media: Option<Arc<dyn MediaRendezvous>>,
     /// OBS_SCOPE and OBSERVE (§12.4).

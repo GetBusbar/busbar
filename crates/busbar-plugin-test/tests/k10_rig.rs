@@ -470,7 +470,6 @@ pub fn connect(
     connections: &StoreConnections<StoreRecords>,
     query_extra: &str,
 ) -> busbar_kernel::connections::CallbackAnswer {
-    use busbar_kernel::connections::CallerConnections as _;
     let who = plane();
     rt.block_on(connections.begin(&who, SUBJECT, CONNECTED, None))
         .expect("BEGIN answers the authorization URL");
