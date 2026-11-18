@@ -5933,9 +5933,6 @@ fn door_step_each_call_resolves_fresh() {
     let _ = std::fs::remove_file(&key_file);
 }
 
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(door_steps);
-
 #[path = "door_steps_lease.rs"]
 mod lease;
 

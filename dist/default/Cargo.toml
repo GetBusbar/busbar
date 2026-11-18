@@ -478,7 +478,6 @@ boot_carrier_locate = "busbar-transport-tcp"
 listener_session = "busbar-transport-ws"
 listener_carrier = "busbar-transport-tcp"
 boot_session_locate = "busbar-transport-ws"
-door_steps = "busbar-auth-oauth"
 admin_application = "busbar-hook-webrequest"
 sqlite_application = "busbar-store-sqlite"
 linked_auth = "busbar-auth-webhook-signature"
@@ -540,9 +539,6 @@ busbar-plane-llm = { workspace = true }
 # roster).
 busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
-# `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
-# token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
-busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support"] }
