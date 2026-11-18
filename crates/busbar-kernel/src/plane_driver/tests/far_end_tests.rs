@@ -4390,7 +4390,8 @@ async fn native_credential_hashes_exact_body_bytes() {
     ] {
         let mut request = request();
         request.body = body.to_vec();
-        far.native_credential(&binding, &request, "https://a.test/chat", None, &[])
+        let now = super::dialing(&*far.egress.clock);
+        far.native_credential(&binding, &request, "https://a.test/chat", None, &[], now)
             .await
             .unwrap();
         let recorded = port.body_hashes.lock().unwrap();

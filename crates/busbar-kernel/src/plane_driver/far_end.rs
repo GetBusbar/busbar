@@ -305,6 +305,38 @@ fn walk_now(clock: &dyn Clock) -> WalkNow {
     }
 }
 
+/// One reading of the egress clock's epoch seconds and monotonic microseconds, taken once where a step of the op
+/// resumes (after its read or its open) and handed to what that step records.
+#[derive(Clone, Copy)]
+struct Clocked {
+    secs: u64,
+    micros: u128,
+}
+
+fn clocked(clock: &dyn Clock) -> Clocked {
+    Clocked {
+        secs: clock.now_secs(),
+        micros: clock.now_micros(),
+    }
+}
+
+/// The dial step's one reading: epoch seconds, the egress clock's milliseconds, and the node's monotonic instant a
+/// port call's deadline is set from.
+#[derive(Clone, Copy)]
+struct Dialing {
+    secs: u64,
+    millis: u128,
+    at: std::time::Instant,
+}
+
+fn dialing(clock: &dyn Clock) -> Dialing {
+    Dialing {
+        secs: clock.now_secs(),
+        millis: clock.now_millis(),
+        at: busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns()),
+    }
+}
+
 /// Whether `url` names TLS from its first byte (`https://`, `wss://`); every other scheme does not.
 fn url_is_tls(url: &str) -> bool {
     let named = |prefix: &str| {
@@ -1403,14 +1435,14 @@ impl EgressFarEnd<'_> {
         }
     }
 
-    fn no_answer(&self, token: &Pass<Route>, cause: NoAnswer) -> FarPiece {
+    fn no_answer(&self, token: &Pass<Route>, cause: NoAnswer, at: Clocked) -> FarPiece {
         let e = self.egress;
         let _retirement = self.retiring();
         let live = self.lock().live.take();
         if let Some(live) = live {
             let mut retirement = Retirement { owner: self, live };
             let live = &mut retirement.live;
-            let now = e.clock.now_secs();
+            let now = at.secs;
             let (failure, failover) = match cause {
                 NoAnswer::Connect => (disposition::TRANSIENT, net::CONNECT),
                 NoAnswer::Timeout if live.member.attempt_timeout_ms.is_some() => {
@@ -1479,8 +1511,8 @@ impl EgressFarEnd<'_> {
         fail_over()
     }
 
-    fn attempt_cap(&self) -> u64 {
-        let now = self.egress.clock.now_millis();
+    /// The attempt's cap at `now` (the egress clock's milliseconds, the op step's one reading).
+    fn attempt_cap(&self, now: u128) -> u64 {
         let w = self.lock();
         let remaining = w.walk.ctx().remaining_ms(now);
         match w.live.as_ref().and_then(|l| l.member.attempt_timeout_ms) {
@@ -1503,6 +1535,7 @@ impl EgressFarEnd<'_> {
         url: &str,
         scope: Option<&[u8]>,
         defaults: &[(Vec<u8>, Vec<u8>)],
+        now: Dialing,
     ) -> Result<crate::auth_bindings::native::NativeCredential, busbar_ports::PortError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
         fn pairs(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<Pair<'_>> {
@@ -1547,7 +1580,7 @@ impl EgressFarEnd<'_> {
         binding
             .credential(
                 busbar_ports::CallCx {
-                    deadline: std::time::Instant::now() + Duration::from_millis(self.attempt_cap()),
+                    deadline: now.at + Duration::from_millis(self.attempt_cap(now.millis)),
                     request_id: self.route.unit.get(),
                     stack: Default::default(),
                 },
@@ -1564,6 +1597,7 @@ impl EgressFarEnd<'_> {
         url: &str,
         extensions: Vec<u8>,
         defaults: &[(Vec<u8>, Vec<u8>)],
+        now: Dialing,
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -1584,7 +1618,7 @@ impl EgressFarEnd<'_> {
             authority: authority.to_string(),
             path: path.as_bytes().to_vec(),
             query,
-            timestamp: self.egress.clock.now_secs(),
+            timestamp: now.secs,
 
             headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
                 request.fields.iter().chain(defaults).cloned().collect()
@@ -1608,7 +1642,7 @@ impl EgressFarEnd<'_> {
             Some(answer) => answer,
 
             None => tokio::time::timeout(
-                Duration::from_millis(self.attempt_cap()),
+                Duration::from_millis(self.attempt_cap(now.millis)),
                 binding.auth.fields(handle, facts, 0),
             )
             .await
@@ -1760,15 +1794,20 @@ impl EgressFarEnd<'_> {
             return false;
         }
 
-        let (located, carried) = match e.conns.locate_head(e.caller, need, url, self.attempt_cap())
-        {
-            Ok(located) => located,
-            Err(_) => {
-                self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
-                self.settle_attempt(&record);
-                return false;
-            }
-        };
+        // The dial step's one reading: its cap, its credential's time and the auth calls' deadlines.
+        let now = dialing(&*e.clock);
+        let (located, carried) =
+            match e
+                .conns
+                .locate_head(e.caller, need, url, self.attempt_cap(now.millis))
+            {
+                Ok(located) => located,
+                Err(_) => {
+                    self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
+                    self.settle_attempt(&record);
+                    return false;
+                }
+            };
         let pending = self
             .route
             .authorization
@@ -1785,10 +1824,10 @@ impl EgressFarEnd<'_> {
             || self.route.connection_required;
         let presented = if let Some(pending) = pending {
             pending
-                .take(need.0, &member, url, e.clock.now_secs())
+                .take(need.0, &member, url, now.secs)
                 .map(crate::host_outbound::Presentation::Body)
         } else {
-            delegated.and_then(|bound| bound.present(need.0, &member, url, e.clock.now_secs()))
+            delegated.and_then(|bound| bound.present(need.0, &member, url, now.secs))
         };
         if bound && presented.is_none() {
             self.lock().refused = Some(ReasonCode::CredentialUnavailable);
@@ -1841,7 +1880,7 @@ impl EgressFarEnd<'_> {
                 return false;
             };
             match self
-                .auth_fields(binding, handle, &request, url, extensions, &defaults)
+                .auth_fields(binding, handle, &request, url, extensions, &defaults, now)
                 .await
             {
                 Some(fields) => auth = fields,
@@ -1866,7 +1905,7 @@ impl EgressFarEnd<'_> {
             let result = match bindings.select(&selected_pool, &qualified_member, destination) {
                 Ok(crate::auth_bindings::native::SelectedCredential::None) => Ok(None),
                 Ok(crate::auth_bindings::native::SelectedCredential::Required(binding)) => self
-                    .native_credential(binding, &request, url, scope.as_deref(), &defaults)
+                    .native_credential(binding, &request, url, scope.as_deref(), &defaults, now)
                     .await
                     .map(Some),
                 Err(error) => Err(error),
@@ -1974,7 +2013,9 @@ impl EgressFarEnd<'_> {
         let require_secure =
             protected || auth.iter().any(|f| f.require_secure) || native_requires_secure;
         drop(auth);
-        let cap_ms = self.attempt_cap();
+        // The send step resumes here, after the auth calls: one fresh reading for its cap and its anchors.
+        let at = clocked(&*e.clock);
+        let cap_ms = self.attempt_cap(at.micros / 1000);
         let (pool, stated, degraded) = {
             let w = self.lock();
             w.live.as_ref().map_or_else(Default::default, |l| {
@@ -2031,7 +2072,7 @@ impl EgressFarEnd<'_> {
             require_secure,
             carried.as_deref(),
         );
-        let now_us = e.clock.now_micros();
+        let now_us = at.micros;
         let now_ms = now_us / 1000;
         match opened {
             Ok(conn) => {
@@ -2074,7 +2115,7 @@ impl EgressFarEnd<'_> {
                 if !self.owns_attempt(record.attempt, destination) {
                     return false;
                 }
-                let _ = self.no_answer(token, NoAnswer::of(err));
+                let _ = self.no_answer(token, NoAnswer::of(err), at);
                 self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
                 false
             }
@@ -2158,9 +2199,11 @@ impl EgressFarEnd<'_> {
         if !self.owns_attempt(target.0, target.1) {
             return None;
         }
+        // The step resumes here, after its read: one reading for what it records.
+        let at = clocked(&*e.clock);
         let piece = match read {
             Err(_elapsed) if !answered => {
-                return Some(self.no_answer(token, NoAnswer::Timeout));
+                return Some(self.no_answer(token, NoAnswer::Timeout, at));
             }
 
             Ok(Err(err)) if !answered && err.is_auth() => {
@@ -2177,21 +2220,21 @@ impl EgressFarEnd<'_> {
                     Some(cause) if cause.stage == CAUSE_FRAMER && cause.outbound => {
                         self.local_fault(token, &cause)
                     }
-                    _ => self.no_answer(token, NoAnswer::of(ConnError::Fault)),
+                    _ => self.no_answer(token, NoAnswer::of(ConnError::Fault), at),
                 });
             }
             Ok(Err(err)) if !answered => {
-                return Some(self.no_answer(token, NoAnswer::of(err)));
+                return Some(self.no_answer(token, NoAnswer::of(err), at));
             }
 
-            Err(_) | Ok(Err(_)) => return Some(self.cut(token)),
+            Err(_) | Ok(Err(_)) => return Some(self.cut(token, at)),
             Ok(Ok(piece)) => piece,
         };
         let buf = &scratch.buf;
         let out = match piece.kind {
             PieceKind::Completion => self.end(true),
 
-            PieceKind::Fields if !answered => self.head(token, &piece, &buf[..piece.len]),
+            PieceKind::Fields if !answered => self.head(token, &piece, &buf[..piece.len], at),
 
             PieceKind::Fields | PieceKind::HookReply => {
                 self.trailers(&piece, buf[..piece.len].to_vec())
@@ -2200,7 +2243,7 @@ impl EgressFarEnd<'_> {
                 bytes: buf[..piece.len].to_vec(),
                 ..FarPiece::default()
             }),
-            PieceKind::Body => self.first_piece(token, &piece, buf[..piece.len].to_vec()),
+            PieceKind::Body => self.first_piece(token, &piece, buf[..piece.len].to_vec(), at),
         };
 
         drop(scratch);
@@ -2221,6 +2264,7 @@ impl EgressFarEnd<'_> {
         token: &Pass<Route>,
         piece: &busbar_contract::conn::Piece,
         block: &[u8],
+        at: Clocked,
     ) -> FarPiece {
         use busbar_contract::abi::transport::fields::lines;
         let ride = {
@@ -2244,7 +2288,7 @@ impl EgressFarEnd<'_> {
                     .then(|| (name.into_bytes(), v.to_vec()))
             })
             .collect();
-        let mut answer = self.first_piece(token, piece, Vec::new());
+        let mut answer = self.first_piece(token, piece, Vec::new(), at);
         if !answer.fail_over {
             answer.head = head;
         }
@@ -2322,7 +2366,7 @@ impl EgressFarEnd<'_> {
         piece
     }
 
-    fn cut(&self, token: &Pass<Route>) -> FarPiece {
+    fn cut(&self, token: &Pass<Route>, at: Clocked) -> FarPiece {
         let e = self.egress;
         let target = {
             let w = self.lock();
@@ -2343,7 +2387,7 @@ impl EgressFarEnd<'_> {
                 &pool,
                 destination,
                 Outcome::Transient { retry_after: None },
-                e.clock.now_secs(),
+                at.secs,
                 token,
             ) {
                 e.telemetry.breaker_trip(&metric_pool, destination);
@@ -2411,6 +2455,7 @@ impl EgressFarEnd<'_> {
         token: &Pass<Route>,
         piece: &busbar_contract::conn::Piece,
         bytes: Vec<u8>,
+        at: Clocked,
     ) -> FarPiece {
         let e = self.egress;
         let status = UpstreamStatus {
@@ -2429,7 +2474,7 @@ impl EgressFarEnd<'_> {
             live.answered = true;
             (live.record.attempt, live.member.destination)
         };
-        let now = e.clock.now_secs();
+        let now = at.secs;
         if let Some(destination) = self.probe_of {
             if success {
                 let _retirement = self.retiring();
@@ -2516,7 +2561,7 @@ impl EgressFarEnd<'_> {
                 }
                 return fail_over();
             }
-            let head_us = e.clock.now_micros().saturating_sub(anchor_us);
+            let head_us = at.micros.saturating_sub(anchor_us);
             e.telemetry.upstream_latency(
                 target.1,
                 micros_f64(u64::try_from(head_us).unwrap_or(u64::MAX)) / 1000.0,
