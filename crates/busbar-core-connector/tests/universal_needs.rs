@@ -146,7 +146,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                 plaintext_accepted: false,
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((
                     vec![
@@ -211,7 +211,7 @@ fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() 
                 plaintext_accepted: false,
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((
                     vec![
@@ -284,7 +284,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 plaintext_accepted: false,
                 target: far,
                 tls: None,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec().into())),
                 head_words: Default::default(),
@@ -345,11 +345,11 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         Transports::new(vec![
             Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
             },
             Entry {
                 door: layer,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
             },
         ])
         .unwrap(),
@@ -573,7 +573,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
                 tls: Some(Arc::new(
                     busbar_core_connector::tls::client::build_client_config(&trust).unwrap(),
                 )),
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
                 open_timeout: Duration::from_secs(5),
                 opening: Some((
                     vec![
@@ -760,11 +760,11 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         Transports::new(vec![
             Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
             },
             Entry {
                 door: layer,
-                alpn: Vec::new(),
+                alpn: std::sync::Arc::default(),
             },
         ])
         .unwrap(),
@@ -858,11 +858,11 @@ fn fetch_table_judged(
             Transports::new(vec![
                 Entry {
                     door,
-                    alpn: Vec::new(),
+                    alpn: std::sync::Arc::default(),
                 },
                 Entry {
                     door: layer,
-                    alpn: Vec::new(),
+                    alpn: std::sync::Arc::default(),
                 },
             ])
             .unwrap(),

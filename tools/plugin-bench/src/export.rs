@@ -44,8 +44,8 @@ use crate::host::SinkConns;
 use crate::stats::Recorder;
 use crate::{Config, Scenario, Spec, Target};
 
-/// The flusher's largest batch (`export_door::MAX_BATCH_LINES`).
-const MAX_BATCH: usize = busbar_plugin_loader::export_door::MAX_BATCH_LINES;
+/// The flusher's largest batch (`export_pump::MAX_BATCH_LINES`).
+const MAX_BATCH: usize = busbar_plugin_loader::export_pump::MAX_BATCH_LINES;
 
 struct Opened {
     instance: ExportInstance,

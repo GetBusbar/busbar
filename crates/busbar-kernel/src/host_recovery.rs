@@ -210,12 +210,9 @@ impl KernelServices {
         let Some(store) = self.persistence.as_ref() else {
             return Ok(Vec::new());
         };
-        let rows = ScopedStore::host_private(
-            store.clone(),
-            caller.namespace(),
-            [WORK_SCHEMA.as_str().into()],
-        )
-        .map_err(|_| "recovery namespace unavailable")?;
+        let rows =
+            ScopedStore::host_private(store.clone(), caller.namespace(), [WORK_SCHEMA.as_str()])
+                .map_err(|_| "recovery namespace unavailable")?;
         let mut scans = self.recovery.scan.lock().await;
         let scan = scans.entry(caller.namespace().clone()).or_default();
         if scan.pending.is_empty() {
@@ -270,9 +267,9 @@ impl KernelServices {
         if let Some(rows) = callers.get(caller.namespace()) {
             return Ok(Arc::clone(rows));
         }
-        let rows =
-            crate::cold::host::services_caller_rows(Arc::clone(store), caller.namespace(), CALLERS)
-                .map_err(|_| "caller binding unavailable")?;
+        // Bound once per opened instance, at its first session, and kept in `callers`.
+        let rows = ScopedStore::host_private(Arc::clone(store), caller.namespace(), [CALLERS])
+            .map_err(|_| "caller binding unavailable")?;
         let rows = Arc::new(rows);
         callers.insert(caller.namespace().clone(), Arc::clone(&rows));
         Ok(rows)

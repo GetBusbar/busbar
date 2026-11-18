@@ -5,15 +5,22 @@
 //! reads only the cached set. One Tokio task refreshes coherent canonical identity
 //! state when stale; failures retain the previous confirmed cache and success stamp.
 //! Attempt and success clocks remain separate, including during wall-clock rewind.
+//! A stale set is noticed at a revoked check and, once a window, by the host's refresher
+//! ([`crate::refresh`]), so a node that serves no request still re-reads a peer's revokes.
 
 use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
 use foldhash::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::{Duration, Instant};
 
 use super::REVOCATION_SYNC_TTL_SECS;
 
 pub(crate) struct RevocationSync {
+    /// This sync itself, for the refresher's call (it hands `&self`; a refresh needs the `Arc`).
+    me: Weak<RevocationSync>,
+    /// The runtime this sync was built on: the refresher's threads run outside it.
+    runtime: Option<tokio::runtime::Handle>,
     native: NativeRefresh,
 
     set: RwLock<HashSet<String>>,
@@ -60,7 +67,9 @@ impl RevocationSync {
         caches: Arc<RwLock<super::GovCaches>>,
         order: Arc<super::CacheOrder>,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
+            me: me.clone(),
+            runtime: tokio::runtime::Handle::try_current().ok(),
             native: NativeRefresh {
                 core,
                 caches,
@@ -137,7 +146,10 @@ impl RevocationSync {
         }
 
         let flight = RefreshFlight(self.clone());
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if let Some(handle) = tokio::runtime::Handle::try_current()
+            .ok()
+            .or_else(|| self.runtime.clone())
+        {
             handle.spawn(async move {
                 let source = &flight.0.native;
                 let result = super::state::identity_runtime::reload_native(
@@ -159,6 +171,18 @@ impl RevocationSync {
                 }
             });
         }
+    }
+}
+
+/// THE IDLE NODE'S REFRESH: once a window the refresher makes the same stale check a revoked
+/// check makes, at its own reading. Without it a node that serves no request never re-reads the
+/// store, and its first request after a quiet spell is judged against the set it held before it.
+impl crate::refresh::Refreshable for RevocationSync {
+    fn refresh(&self, now: Instant) -> Instant {
+        if let Some(sync) = self.me.upgrade() {
+            sync.refresh_if_stale(crate::store::now());
+        }
+        now + Duration::from_secs(REVOCATION_SYNC_TTL_SECS)
     }
 }
 

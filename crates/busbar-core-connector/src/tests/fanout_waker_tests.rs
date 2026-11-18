@@ -83,11 +83,11 @@ fn fan_waker_retirement(removal: bool) {
                                 ..Default::default()
                             },
                         )),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                     Entry {
                         door: carrier.clone(),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                 ])
                 .unwrap(),

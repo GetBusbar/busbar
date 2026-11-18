@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use busbar_contract::abi::sdk::store::v4::conformance::{self as cases, Subject};
+use busbar_contract::persistence::conformance::{self as cases, Subject};
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, CommitKey, DatasetId, Decision, Durability, Page,
     PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,

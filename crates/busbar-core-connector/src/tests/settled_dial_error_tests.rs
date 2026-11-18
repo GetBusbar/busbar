@@ -145,11 +145,11 @@ impl Rig {
             Transports::new(vec![
                 Entry {
                     door: framing.clone(),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: carrier.clone(),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap(),

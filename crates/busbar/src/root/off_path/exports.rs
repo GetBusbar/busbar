@@ -20,10 +20,7 @@ pub(crate) fn linked_modules(rows: Option<ExportRows<'_>>) -> Vec<String> {
 /// [`Exports::stop_until`] once at shutdown. The per-event append stays in `exports::ports`.
 impl Exports {
     pub(crate) fn new(
-        doors: Vec<(
-            String,
-            Arc<busbar_plugin_loader::export_door::port::PortDoor>,
-        )>,
+        doors: Vec<(String, Arc<busbar_plugin_loader::export_pump::PortDoor>)>,
     ) -> Result<Self, String> {
         let mut owned = std::collections::BTreeMap::new();
         for (name, door) in doors {
@@ -59,7 +56,7 @@ impl Exports {
     pub(crate) fn stop_until(
         self,
         deadline: std::time::Instant,
-    ) -> Vec<(String, busbar_plugin_loader::export_door::port::StopReport)> {
+    ) -> Vec<(String, busbar_plugin_loader::export_pump::StopReport)> {
         for door in self.doors.values() {
             door.begin_drain(deadline);
         }

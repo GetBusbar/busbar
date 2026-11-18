@@ -9,8 +9,6 @@
 
 pub mod backend;
 pub mod bootstrap;
-#[cfg(feature = "test-seal")]
-pub mod conformance;
 pub mod decode;
 pub mod door;
 pub mod encode;

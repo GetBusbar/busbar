@@ -6,7 +6,8 @@
 use serde_json::Value;
 use zeroize::Zeroize;
 
-pub use crate::abi::sdk::cred::SECRET_MARKER;
+/// The key of the marker a host writes where it took a value at a declared wildcard secret path
+pub const SECRET_MARKER: &str = "$secret";
 
 /// The segment that matches any object key or any array index.
 pub const WILDCARD: &str = "*";

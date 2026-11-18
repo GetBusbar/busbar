@@ -20,16 +20,6 @@ pub(crate) fn services_demotion_key(instance: &str, counterparty: &str) -> Strin
     )
 }
 
-/// An opened instance's caller-binding store handle, bound once, at its first session.
-#[cold]
-pub(crate) fn services_caller_rows(
-    store: std::sync::Arc<crate::persistence::facade::CoreStore>,
-    instance: &str,
-    schema: &str,
-) -> Result<crate::persistence::scoped::ScopedStore, crate::persistence::scoped::Error> {
-    crate::persistence::scoped::ScopedStore::host_private(store, instance, [schema.to_owned()])
-}
-
 /// The one-time durable binding row of a principal seen for the first time: absent, then put.
 #[cold]
 pub(crate) fn services_caller_binding(
@@ -311,18 +301,6 @@ pub(crate) fn router_panic_backtrace(captured: &std::backtrace::Backtrace) -> St
     } else {
         String::new()
     }
-}
-
-/// The overlay's row for an instance, made at its first queued write; acks keep it.
-#[cold]
-pub(crate) fn records_instance_row(instance: &str) -> std::sync::Arc<str> {
-    std::sync::Arc::from(instance)
-}
-
-/// The overlay's row for a record kind, made at its first queued write; acks keep it.
-#[cold]
-pub(crate) fn records_kind_row(kind: &str) -> String {
-    kind.to_owned()
 }
 
 /// The client-facing text of a limit refusal (a refused request), as the owned message its callers

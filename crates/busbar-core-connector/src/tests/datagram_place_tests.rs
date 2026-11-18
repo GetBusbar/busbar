@@ -37,15 +37,15 @@ fn view(dg: &Arc<Scripted>, exchange: &Arc<TestDoor>) -> Transports {
     Transports::new(vec![
         Entry {
             door: Arc::clone(dg) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::clone(exchange) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap()

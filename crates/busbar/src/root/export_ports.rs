@@ -5,7 +5,7 @@
 
 use busbar_contract::services::{DiskDest, DiskReport, DiskRotate};
 use busbar_kernel::host_disk::DiskLane;
-use busbar_plugin_loader::export_door::port::{AppendBytes, AppendDenied, DestAppend};
+use busbar_plugin_loader::export_pump::{AppendBytes, AppendDenied, DestAppend};
 use busbar_ports::binder::ConfigBinder;
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// retains these concrete owners to observe worker quiescence before Store retirement.
 pub(crate) struct Exports {
     pub(crate) doors:
-        std::collections::BTreeMap<String, Arc<busbar_plugin_loader::export_door::port::PortDoor>>,
+        std::collections::BTreeMap<String, Arc<busbar_plugin_loader::export_pump::PortDoor>>,
 }
 
 pub(crate) struct BoundDisk {
@@ -92,7 +92,7 @@ impl DestAppend for BoundDisk {
 
 #[cfg(test)]
 mod tests {
-    use busbar_plugin_loader::export_door::port::{AppendBytes, AppendDenied, DestAppend};
+    use busbar_plugin_loader::export_pump::{AppendBytes, AppendDenied, DestAppend};
     use busbar_ports::binder::ConfigBinder;
     use std::sync::Arc;
 

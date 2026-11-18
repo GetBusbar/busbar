@@ -233,7 +233,7 @@ fn program_constraint_fields_never_reach_a_network_open() {
         let c = Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::new(door),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             crate::tests::loopback_literals(),

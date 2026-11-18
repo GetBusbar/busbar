@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Core's in-memory store keeps the contract every store keeps: the shared Store v4 conformance
-//! cases (`abi::sdk::store::v4::conformance`) run against it here, each over a fresh dataset, as
+//! cases (`persistence::conformance`) run against it here, each over a fresh dataset, as
 //! every store's suite runs them against its real backend. Two cases are core's own: the
 //! long-horizon no-growth run (a million commits, which take seconds in memory and hours against
 //! a database) and the counter-wrap case at every width boundary.
 
-use busbar_contract::abi::sdk::store::v4::conformance as cases;
+use busbar_contract::persistence::conformance as cases;
 
 use crate::real_store::memory_backend::MemoryBackend;
 

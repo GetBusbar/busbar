@@ -80,7 +80,7 @@ pub fn entries(
             busbar_core_connector::wire::unlayered(door.as_ref())?;
             Ok(Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             })
         })
         .collect()
@@ -106,7 +106,7 @@ pub(crate) fn entries_on(
             busbar_core_connector::wire::unlayered(door.as_ref())?;
             Ok(Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             })
         })
         .collect()
@@ -118,7 +118,7 @@ pub fn declared(
 ) -> Result<Vec<Entry>, String> {
     linked.extend(dropped.iter().map(|d| Entry {
         door: Arc::clone(&d.door),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }));
     Ok(linked)
 }

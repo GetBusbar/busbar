@@ -179,6 +179,23 @@ fn demotions(store: &Arc<CoreStore>) -> Arc<DemotionRecord> {
     Arc::new(demotions)
 }
 
+/// One write laid on the host's overlay as a caller lays it: its instance label and its bytes
+/// shared.
+fn queue(
+    pending: &PendingRecords,
+    instance: &str,
+    kind: &'static str,
+    key: &[u8],
+    value: Vec<u8>,
+) -> u64 {
+    pending.enqueue(
+        &Arc::from(instance),
+        kind,
+        key,
+        &Arc::new(RecordBytes::new(value).unwrap()),
+    )
+}
+
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     let (slot, later) = recorder();
     match f(later) {
@@ -273,9 +290,7 @@ fn records_get_reads_the_store_and_the_instances_own_queued_writes_first() {
     put(&r.store, "k", "stored");
     let s = run(|l| r.s.records_get(&me, "approval", b"k", l));
     assert_eq!((s.value, s.bytes.as_slice()), (svc::FOUND, &b"stored"[..]));
-    let seq =
-        r.s.pending()
-            .enqueue("inst", "approval", b"k", b"mine".to_vec());
+    let seq = queue(r.s.pending(), "inst", "approval", b"k", b"mine".to_vec());
     let s = run(|l| r.s.records_get(&me, "approval", b"k", l));
     assert_eq!(s.bytes, b"mine");
     r.s.pending().acked("inst", "approval", b"k", seq);
@@ -296,10 +311,8 @@ fn records_list_merges_queued_writes_in_key_order_after_the_cursor() {
     put(&r.store, "a1", "s");
     put(&r.store, "a2", "s");
     put(&r.store, "b1", "s");
-    r.s.pending()
-        .enqueue("inst", "approval", b"a2", b"r".to_vec());
-    r.s.pending()
-        .enqueue("inst", "approval", b"a3", b"q".to_vec());
+    queue(r.s.pending(), "inst", "approval", b"a2", b"r".to_vec());
+    queue(r.s.pending(), "inst", "approval", b"a3", b"q".to_vec());
     let list = |after: Option<&str>, limit| {
         run(|l| {
             r.s.records_list(
@@ -328,7 +341,7 @@ fn a_queued_tombstone_hides_the_stored_record_from_get_and_list() {
     let me = caller("inst");
     put(&r.store, "a", "stored");
     put(&r.store, "b", "");
-    r.s.pending().enqueue("inst", "approval", b"a", Vec::new());
+    queue(r.s.pending(), "inst", "approval", b"a", Vec::new());
     let all = RecordsList {
         kind: "approval".into(),
         prefix: Vec::new(),
@@ -840,8 +853,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
         },
     )
     .unwrap();
-    r.s.pending()
-        .enqueue("inst", "approval", b"k", b"mine".to_vec());
+    queue(r.s.pending(), "inst", "approval", b"k", b"mine".to_vec());
     let s = run(|l| r.s.records_get(&caller("third"), "approval", b"k", l));
     assert_eq!(s.value, svc::ABSENT);
 }

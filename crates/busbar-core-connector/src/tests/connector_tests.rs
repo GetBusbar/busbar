@@ -183,7 +183,7 @@ fn outbound_need_requires_dialing_capability_while_inbound_registration_remains_
     );
     let view = Transports::new(vec![Entry {
         door: door.clone(),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     let connector = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
@@ -305,7 +305,7 @@ use crate::support::{worker, TestDoor};
 fn serving(wakes: Arc<AtomicU64>) -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     Connector::serving(
@@ -387,7 +387,7 @@ fn a_parked_reads_wake_names_the_caller_it_parked_for() {
         let seen = woke.clone();
         let view = Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let c = Connector::serving(
@@ -440,11 +440,11 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
         let view = Transports::new(vec![
             Entry {
                 door: door.clone(),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -497,11 +497,11 @@ fn head_through_the_table_with(knobs: crate::support::Knobs) -> Piece {
         let view = Transports::new(vec![
             Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -604,7 +604,7 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
         let (_listening, far) = far_end().await;
         let view = Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let judge = |dest: &str, class: u32, _: crate::Judged| {
@@ -643,7 +643,7 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
 fn writes_held_for_a_pending_judgement_are_capped() {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
 
@@ -733,11 +733,11 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
             let view = Transports::new(vec![
                 Entry {
                     door: door.clone(),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: Arc::new(TestDoor::identity("bytes")),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap();
@@ -825,7 +825,7 @@ fn a_pending_empty_write_wakes_on_refusal_and_closes() {
     let waking = Arc::clone(&wakes);
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     let c = Connector::serving(
@@ -873,7 +873,7 @@ mod name_dial;
 fn literal_connector() -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
@@ -1573,7 +1573,7 @@ fn scheme_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
             door: Arc::new(TestDoor::identity("plain")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::new(
@@ -1585,7 +1585,7 @@ fn scheme_connector() -> Connector {
                     ..crate::support::Knobs::default()
                 },
             )),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -1750,11 +1750,11 @@ fn userinfo_connector() -> Connector {
                 )
                 .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
             ),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -2072,11 +2072,11 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -2333,7 +2333,7 @@ mod transport_pin {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::new(
@@ -2345,7 +2345,7 @@ mod transport_pin {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -2622,7 +2622,7 @@ mod transport_pin {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::new(
@@ -2635,7 +2635,7 @@ mod transport_pin {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -2731,7 +2731,7 @@ mod transport_pin {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::new(
@@ -2744,7 +2744,7 @@ mod transport_pin {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -3217,7 +3217,7 @@ mod transport_pin {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::new(
@@ -3229,7 +3229,7 @@ mod transport_pin {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -3541,7 +3541,7 @@ mod transport_pin {
         let view = Transports::new(vec![
             Entry {
                 door: Arc::new(TestDoor::identity("plain")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::new(
@@ -3553,7 +3553,7 @@ mod transport_pin {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -3775,7 +3775,7 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
         let (_listening, far) = far_end().await;
         let view = Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let strict = Arc::new(crate::LiteralsOnly(crate::guard::Guard::default()));
@@ -3914,7 +3914,7 @@ fn plain_and_secure_connector() -> Connector {
     let view = Transports::new(vec![
         Entry {
             door: Arc::new(TestDoor::identity("plain")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::new(
@@ -3926,7 +3926,7 @@ fn plain_and_secure_connector() -> Connector {
                     ..crate::support::Knobs::default()
                 },
             )),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -3985,7 +3985,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
         assert!(crate::framer::locate(door.as_ref(), &far).is_err());
         let view = Transports::new(vec![Entry {
             door,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
@@ -4256,11 +4256,11 @@ fn pooled_messages(idle: std::time::Duration) -> Connector {
                     ..crate::support::Knobs::default()
                 },
             )),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -4517,7 +4517,7 @@ fn a_write_and_a_wait_beside_a_hung_carrier_dial_never_wait() {
         let c = Arc::new(Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::clone(&door) as Arc<dyn FramerDoor>,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             Arc::new(judge),
@@ -4645,7 +4645,7 @@ fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() 
         let c = Arc::new(Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::clone(&door) as Arc<dyn FramerDoor>,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             loopback_literals(),
@@ -4797,11 +4797,11 @@ fn datagram_head_defaults_use_rendezvous_exchange_without_locate() {
     let view = Transports::new(vec![
         Entry {
             door: media.clone(),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: exchange.clone(),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -4882,11 +4882,11 @@ fn failed_through_the_table(
         let view = Transports::new(vec![
             Entry {
                 door,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();

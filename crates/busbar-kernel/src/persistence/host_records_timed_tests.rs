@@ -140,8 +140,7 @@ fn request(op: crate::persistence::scoped::Op) -> Request {
 async fn timed_logical_receipt_replays_after_expiry_and_changed_interval_conflicts() {
     let backend = Arc::new(Backend::default());
     let store =
-        ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket".into()])
-            .unwrap();
+        ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket"]).unwrap();
     let request = request(store.record_op().await.unwrap());
     let time = Some(TimeGuard {
         not_before: None,
@@ -190,8 +189,7 @@ async fn timed_logical_receipt_replays_after_expiry_and_changed_interval_conflic
 async fn expired_native_guard_applies_no_record_or_logical_receipt() {
     let backend = Arc::new(Backend::default());
     let store =
-        ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket".into()])
-            .unwrap();
+        ScopedStore::host_private(attach(backend.clone(), 4).await, "timed", ["ticket"]).unwrap();
     let request = request(store.record_op().await.unwrap());
     assert_eq!(
         store

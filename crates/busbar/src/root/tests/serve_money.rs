@@ -121,7 +121,7 @@ async fn governed_full(
                 .expect("the actual transport opens");
                 transports.push(busbar_core_connector::registry::Entry {
                     door: Arc::new(door),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 });
             }
             let connector = busbar_core_connector::process::build_with_secrets(

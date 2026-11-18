@@ -15,7 +15,7 @@ use busbar_contract::{
     },
     Secret,
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{borrow::Cow, collections::BTreeSet, sync::Arc};
 
 pub use super::claims::{Error as ClaimError, Outcome as ClaimOutcome, PendingClaim};
 pub use super::host_records::{Error, Outcome};
@@ -254,37 +254,39 @@ pub struct Page {
 pub struct ScopedStore {
     store: Arc<CoreStore>,
     instance: String,
-    schemas: BTreeSet<String>,
+    /// The authorized schema names. A schema's own fixed name (`RecordSchemaId::as_str()`, a
+    /// constant) is held as it is, never copied; a name made at run time is held owned.
+    schemas: BTreeSet<Cow<'static, str>>,
     private: bool,
     domain: Option<DomainCall>,
 }
 impl ScopedStore {
     /// The host has already authenticated this instance and authorized its schemas.
-    pub fn host_private(
+    pub fn host_private<S: Into<Cow<'static, str>>>(
         store: Arc<CoreStore>,
         instance: &str,
-        schemas: impl IntoIterator<Item = String>,
+        schemas: impl IntoIterator<Item = S>,
     ) -> Result<Self, Error> {
         Self::new(store, instance, schemas, true)
     }
     /// Bind the normal instance record namespace after host authorization.
-    pub fn authorized(
+    pub fn authorized<S: Into<Cow<'static, str>>>(
         store: Arc<CoreStore>,
         instance: &str,
-        schemas: impl IntoIterator<Item = String>,
+        schemas: impl IntoIterator<Item = S>,
     ) -> Result<Self, Error> {
         Self::new(store, instance, schemas, false)
     }
-    fn new(
+    fn new<S: Into<Cow<'static, str>>>(
         store: Arc<CoreStore>,
         instance: &str,
-        schemas: impl IntoIterator<Item = String>,
+        schemas: impl IntoIterator<Item = S>,
         private: bool,
     ) -> Result<Self, Error> {
         let result = Self {
             store,
             instance: instance.into(),
-            schemas: schemas.into_iter().collect(),
+            schemas: schemas.into_iter().map(Into::into).collect(),
             private,
             domain: None,
         };
@@ -296,13 +298,13 @@ impl ScopedStore {
             HostRecords::host_private(
                 &self.store,
                 &self.instance,
-                self.schemas.iter().map(String::as_str),
+                self.schemas.iter().map(|schema| &**schema),
             )
         } else {
             HostRecords::authorized(
                 &self.store,
                 &self.instance,
-                self.schemas.iter().map(String::as_str),
+                self.schemas.iter().map(|schema| &**schema),
             )
         }?;
         owner.in_domain(self.domain.as_ref())

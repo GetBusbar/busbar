@@ -1424,11 +1424,11 @@ fn book_begin(begin: VecDeque<(u64, Vec<u8>, u16)>) -> crate::Connector {
     let view = crate::registry::Transports::new(vec![
         crate::registry::Entry {
             door: dg,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         crate::registry::Entry {
             door: Arc::new(crate::support::TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
