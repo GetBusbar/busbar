@@ -547,14 +547,6 @@ pub(crate) fn unit_checkpoint_counts_shards(indices: impl Iterator<Item = usize>
     shards
 }
 
-/// `unit_checkpoint_counts`: one guard per shard, taken in shard order (recovered-unit reload).
-pub(crate) fn unit_checkpoint_counts_guards<T>(
-    shards: &[usize],
-    lock: impl FnMut(usize) -> T,
-) -> Vec<T> {
-    shards.iter().copied().map(lock).collect()
-}
-
 /// `unit_checkpoint_counts`: every captured target, or the first refusal (recovered-unit reload).
 pub(crate) fn unit_checkpoint_counts_try_collect<T>(
     items: impl Iterator<Item = RecordStoreResult<T>>,
@@ -569,11 +561,6 @@ pub(crate) fn unit_checkpoint_counts_in_flight(
     bucket: &str,
 ) -> bool {
     flights.keys().any(|(held, _)| held == bucket)
-}
-
-/// `unit_checkpoint_counts`: the bucket a reloaded durable cell is published under.
-pub(crate) fn unit_checkpoint_counts_bucket(bucket: &str) -> String {
-    bucket.to_owned()
 }
 
 /// `unit_checkpoint_store`: a recovered unit's original audit line, found by one historical
