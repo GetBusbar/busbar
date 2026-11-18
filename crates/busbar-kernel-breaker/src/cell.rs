@@ -22,12 +22,20 @@ fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// A bounded sliding window of recent outcomes (success/error), used to compute the error-rate trip
-/// signal. Backed by a `VecDeque` so dropping the oldest entry at capacity is O(1).
+/// signal. Backed by a `VecDeque` so dropping the oldest entry at capacity is O(1). Each entry
+/// carries the errors recorded up to and including itself, so the counts inside any window are two
+/// subtractions after one binary search.
 #[derive(Debug, Clone)]
 struct OutcomeWindow {
-    /// `(timestamp_secs, is_error)` per outcome, oldest at the front.
-    entries: std::collections::VecDeque<(u64, bool)>,
+    /// `(timestamp_secs, errors recorded up to and including this outcome)`, oldest at the front.
+    /// Timestamps never decrease from front to back (`push` holds a late outcome at the newest
+    /// second).
+    entries: std::collections::VecDeque<(u64, u64)>,
     capacity: usize,
+    /// Errors recorded in all outcomes ever pushed.
+    errors_pushed: u64,
+    /// The error count of the last outcome dropped at the front (0 when none was).
+    errors_dropped: u64,
 }
 
 impl OutcomeWindow {
@@ -35,32 +43,42 @@ impl OutcomeWindow {
         Self {
             entries: std::collections::VecDeque::new(),
             capacity,
+            errors_pushed: 0,
+            errors_dropped: 0,
         }
     }
 
     fn push(&mut self, ts: u64, is_error: bool) {
         if self.entries.len() >= self.capacity {
-            self.entries.pop_front();
-        }
-        self.entries.push_back((ts, is_error));
-    }
-
-    /// How many outcomes fall inside the window, and how many of those were errors — in ONE pass.
-    fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
-        let start = now.saturating_sub(window_s);
-        let mut total = 0;
-        let mut errors = 0;
-        for (ts, is_error) in self.entries.iter() {
-            if *ts >= start {
-                total += 1;
-                errors += usize::from(*is_error);
+            if let Some((_, through)) = self.entries.pop_front() {
+                self.errors_dropped = through;
             }
         }
+        // An outcome stamped earlier than the newest one is held at the newest one's second.
+        let ts = self
+            .entries
+            .back()
+            .map_or(ts, |(newest, _)| ts.max(*newest));
+        self.errors_pushed = self.errors_pushed.saturating_add(u64::from(is_error));
+        self.entries.push_back((ts, self.errors_pushed));
+    }
+
+    /// How many outcomes fall inside the window, and how many of those were errors, in one lookup.
+    fn outcomes_in_window(&self, now: u64, window_s: u64) -> (usize, usize) {
+        let start = now.saturating_sub(window_s);
+        let first = self.entries.partition_point(|(ts, _)| *ts < start);
+        let total = self.entries.len() - first;
+        let before = match first.checked_sub(1).and_then(|at| self.entries.get(at)) {
+            Some((_, through)) => *through,
+            None => self.errors_dropped,
+        };
+        let errors = usize::try_from(self.errors_pushed - before).unwrap_or(usize::MAX);
         (total, errors)
     }
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.errors_dropped = self.errors_pushed;
     }
 }
 
