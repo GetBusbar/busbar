@@ -80,6 +80,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
         limits: Default::default(),
         public_url: None,
         caller_upstreams: &[],
+        store_migration: None,
     };
     let seal: busbar_plugin_loader::instance::StoreSeal =
         Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal));
