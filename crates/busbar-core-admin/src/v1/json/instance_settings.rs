@@ -387,9 +387,13 @@ mod tests {
         assert!(!request.is_valid(&json!({"instance_edit":{
             "kind":"hook","id":"h","target_revision":"r","edit":{"settings":{}}
         }})));
+        // The generator's response post-pass marks every unmarked response enum extensible
+        // (52583cf032, #308): the served `reason` enum is the source schema plus that mark.
+        let mut management = management_schema();
+        management["properties"]["reason"]["x-busbar-extensible-enum"] = json!(true);
         assert_eq!(
             doc["components"]["schemas"]["Describe"]["properties"]["management"],
-            management_schema()
+            management
         );
         assert_eq!(
             doc["components"]["schemas"]["Describe"]["properties"]["actions"]["items"],
