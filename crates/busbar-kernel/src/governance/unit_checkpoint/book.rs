@@ -5,7 +5,6 @@
 //! admission reads without the book's lock, and the `unit -> checkpoint id` index. Both are exact
 //! functions of the map, kept in step by the only methods that change it.
 
-use busbar_contract::kept::Text;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -92,8 +91,8 @@ pub(crate) struct UnitCustody {
     pub(crate) ended: bool,
     pub(crate) persisted: Option<u64>,
     pub(crate) revision: u64,
-    pub(crate) principal: Text,
-    pub(crate) group: Text,
+    pub(crate) principal: String,
+    pub(crate) group: String,
 }
 
 /// `note_unit_audit` matched zero or several live entries for the unit; the caller falls back to

@@ -63,9 +63,9 @@ fn targets(cm: &CostModel, key: &VirtualKey, now: u64) -> Vec<UnitTarget> {
         .expect("the key's chain resolves")
         .iter()
         .map(|bucket| UnitTarget {
-            bucket: bucket.bucket_id.into(),
+            bucket: bucket.bucket_id.to_string(),
             window: budget_window(bucket.window, now),
-            group: bucket.group_name.map(Into::into),
+            group: bucket.group_name.map(str::to_string),
         })
         .collect()
 }
@@ -76,10 +76,10 @@ fn laneless_unit(cm: &CostModel, key: &VirtualKey, now: u64, id: u8) -> UnitChec
         id: [id; 16],
         revision: 0,
         unit: u64::from(id),
-        principal: key.id.as_str().into(),
-        group: key.group.as_deref().unwrap_or_default().into(),
+        principal: key.id.clone(),
+        group: key.group.clone().unwrap_or_default(),
         arrived: now,
-        lane: Default::default(),
+        lane: String::new(),
         provider: None,
         era_at: era_now(),
         era_entry: None,
@@ -99,7 +99,7 @@ fn laneless_unit(cm: &CostModel, key: &VirtualKey, now: u64, id: u8) -> UnitChec
 fn assert_no_laneless_rows(gov: &GovState, targets: &[UnitTarget], when: &str) {
     for target in targets {
         let map = gov.budget.read(&target.bucket);
-        if let Some(cell) = map.get(target.bucket.as_str()) {
+        if let Some(cell) = map.get(&target.bucket) {
             assert_eq!(
                 laneless_rows(cell),
                 0,
@@ -162,7 +162,7 @@ async fn a_laneless_failed_unit_leaves_no_unnamed_lane_row_and_the_group_keeps_s
     for target in &targets {
         let map = gov.budget.read(&target.bucket);
         let cell = map
-            .get(target.bucket.as_str())
+            .get(&target.bucket)
             .expect("the admission opened the cell");
         assert_eq!(cell.requests, 1, "the failed request is still counted");
     }
@@ -351,7 +351,7 @@ async fn laneless_trip_then_refusal_then_serve_keeps_bucket_admissible() {
     for target in &targets {
         let map = gov.budget.read(&target.bucket);
         let cell = map
-            .get(target.bucket.as_str())
+            .get(&target.bucket)
             .expect("the admissions opened the cell");
         assert_eq!(
             cell.requests, 3,

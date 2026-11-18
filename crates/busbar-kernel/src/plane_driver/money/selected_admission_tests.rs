@@ -232,7 +232,7 @@ async fn same_task_declaration_is_installed_before_effects_open() {
     let parts = snapshot.partitions.as_ref().unwrap();
     assert_eq!(
         parts.attempt_classes,
-        crate::governance::unit_checkpoint::partitions::ClassSet::from(["tokens.custom"])
+        std::collections::BTreeSet::from(["tokens.custom".to_owned()])
     );
     assert_eq!(parts.physical_classes, parts.attempt_classes);
     assert!(parts.attempts.is_empty());

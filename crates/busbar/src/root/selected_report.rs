@@ -29,9 +29,7 @@ pub(crate) fn selected_billing(
         }
         raw::Disposition::End => audit::BillingDisposition::End,
         raw::Disposition::Failed => audit::BillingDisposition::Failed,
-        raw::Disposition::Cancel { reason } => {
-            audit::BillingDisposition::Cancel(reason.to_string())
-        }
+        raw::Disposition::Cancel { reason } => audit::BillingDisposition::Cancel(reason),
         raw::Disposition::RecoveredRunning => audit::BillingDisposition::RecoveredRunning,
     };
     let mut partitions = Vec::with_capacity(projection.partitions.len());
@@ -88,7 +86,7 @@ pub(crate) fn selected_billing(
             let unknown = raw::ClassFacts::default();
             let original = original.classes.get(name).unwrap_or(&unknown);
             classes.insert(
-                name.to_string(),
+                name.clone(),
                 audit::BillingClass {
                     reported: original.reported,
                     floor: original.floor,
@@ -102,11 +100,11 @@ pub(crate) fn selected_billing(
         partitions.push(audit::BillingPartition {
             scope,
             kind,
-            instance: part.identity.instance.to_string(),
-            lane: part.identity.lane.to_string(),
-            provider: part.identity.provider.as_deref().map(str::to_owned),
-            selected_pool: part.identity.selected_pool.as_deref().map(str::to_owned),
-            resource: part.identity.resource.as_deref().map(str::to_owned),
+            instance: part.identity.instance.clone(),
+            lane: part.identity.lane.clone(),
+            provider: part.identity.provider.clone(),
+            selected_pool: part.identity.selected_pool.clone(),
+            resource: part.identity.resource.clone(),
             transport: part.transport.map(|t| match t {
                 raw::Transport::Prepared => audit::Transport::Prepared,
                 raw::Transport::Committed => audit::Transport::Committed,
@@ -124,17 +122,13 @@ pub(crate) fn selected_billing(
     let basis = projection.fee.basis();
     audit::PartitionedBillingV1::new(audit::BillingFacts {
         revision: projection.common.revision,
-        request_pool: projection.common.request_pool.to_string(),
+        request_pool: projection.common.request_pool,
         routing_generation: projection.common.routing_generation,
         era: era(projection.common.era),
         session_origin: audit::SessionOrigin {
-            instance: projection.session_origin.instance.to_string(),
-            lane: projection.session_origin.lane.to_string(),
-            provider: projection
-                .session_origin
-                .provider
-                .as_deref()
-                .map(str::to_owned),
+            instance: projection.session_origin.instance,
+            lane: projection.session_origin.lane,
+            provider: projection.session_origin.provider,
         },
         logical_request: match projection.logical_request.map(|m| m.identity) {
             None => audit::LogicalRequest::None,
@@ -145,7 +139,7 @@ pub(crate) fn selected_billing(
         },
         fee: audit::LogicalFee {
             state: fee_state,
-            lane: basis.lane.as_deref().map(str::to_owned),
+            lane: basis.lane.clone(),
             era: era(basis.era),
         },
         disposition,

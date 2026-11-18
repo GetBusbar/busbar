@@ -149,7 +149,7 @@ impl MeasurementEvidence {
             || snapshot.audit.is_some()
             || snapshot.metered
             || snapshot.provider.is_some()
-            || snapshot.lane.as_str() != measurement_lane(&self.plugin_kind, &self.namespace)
+            || snapshot.lane != measurement_lane(&self.plugin_kind, &self.namespace)
             || snapshot
                 .units
                 .keys()
@@ -311,13 +311,10 @@ impl MeasurementRuntime {
             id,
             revision: 0,
             unit,
-            principal: busbar_contract::kept::off_path::text(&principal),
-            group: busbar_contract::kept::off_path::text(&group),
+            principal,
+            group,
             arrived: context.arrived,
-            lane: busbar_contract::kept::off_path::text(&measurement_lane(
-                &plugin_kind,
-                &namespace,
-            )),
+            lane: measurement_lane(&plugin_kind, &namespace),
             provider: None,
             era_at: context.era.effective_from,
             era_entry: context.era.entry_id.map(|id| id.0),

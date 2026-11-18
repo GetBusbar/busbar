@@ -13,8 +13,8 @@ fn checkpoint() -> UnitCheckpoint {
         selected_pool: "plane\u{1f}route".into(),
         resource: Some(subject.into()),
         usage: UsagePartition {
-            lane: format!("plane\u{1f}{subject}").as_str().into(),
-            provider: Some(format!("provider-{subject}").as_str().into()),
+            lane: format!("plane\u{1f}{subject}"),
+            provider: Some(format!("provider-{subject}")),
             classes: BTreeMap::from([(
                 "input".into(),
                 ClassFacts {
@@ -34,7 +34,7 @@ fn checkpoint() -> UnitCheckpoint {
         principal: "k".into(),
         group: "g".into(),
         arrived: NOW,
-        lane: Default::default(),
+        lane: String::new(),
         provider: None,
         era_at: 42,
         era_entry: None,
@@ -51,9 +51,9 @@ fn checkpoint() -> UnitCheckpoint {
             request_pool: "plane\u{1f}original".into(),
             routing_generation: 0,
             attempt_limit: 2,
-            declared_classes: ClassSet::from(["input"]),
-            attempt_classes: ClassSet::from(["input"]),
-            physical_classes: ClassSet::from(["input"]),
+            declared_classes: ["input".into()].into(),
+            attempt_classes: ["input".into()].into(),
+            physical_classes: ["input".into()].into(),
             session_origin: SessionOrigin {
                 instance: "plane".into(),
                 lane: "plane\u{1f}".into(),
