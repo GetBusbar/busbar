@@ -16,7 +16,6 @@
 //!   as every admin write; the release is audited `directory_guard_released` with the admin principal.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 
 use axum::body::{Body, Bytes};
 use axum::http::header::{AUTHORIZATION, COOKIE, WWW_AUTHENTICATE};
@@ -65,30 +64,6 @@ pub enum Verified {
     Principal(Box<str>),
 }
 
-/// One mounted provisioning instance, as the mount sees it. The kernel's auth port (the instance's verify and
-/// `serve`, L5) implements it; tests use a fake.
-pub trait ProvisionInstance: Send + Sync {
-    /// The configured instance name.
-    fn name(&self) -> &str;
-    /// The instance's `limits` body cap, bytes.
-    fn body_cap(&self) -> usize;
-    /// The instance's D_CRED_HEADER headers (stripped with `Authorization` and `Cookie`).
-    fn cred_headers(&self) -> &[HeaderName];
-    /// This instance's own verify over the request head, exactly as an inbound request.
-    fn verify(&self, request: &Request<Bytes>) -> impl Future<Output = Verified> + Send;
-    /// `serve` with Q_CLIENT = `client` (an entry of `provisioning.clients`), the stripped head and the body.
-    fn serve(&self, client: &str, req: Request<Bytes>) -> impl Future<Output = Response> + Send;
-    /// A refusal of the mount, audited `provision_refused{instance, status}` (no credential text).
-    fn refused(&self, status: StatusCode) {
-        busbar_kernel::audit::auditlog::emit_admin_hostless_now(
-            "provision_refused",
-            &format!("provisioning:{}#{}", self.name(), status.as_u16()),
-            busbar_contract::vocab::OUTCOME_REFUSED,
-            busbar_kernel::audit::auditlog::PLUGIN_REFUSAL_PRINCIPAL,
-        );
-    }
-}
-
 /// The `provisioning.clients` entry equal to `principal` (exact bytes), if any.
 pub fn client_entry<'a>(clients: &'a [Box<str>], principal: &str) -> Option<&'a str> {
     clients.iter().map(|c| &**c).find(|c| *c == principal)
@@ -103,8 +78,56 @@ pub fn strip_credentials(headers: &mut HeaderMap, extra: &[HeaderName]) {
     }
 }
 
-fn refuse<I: ProvisionInstance>(inst: &I, status: StatusCode) -> Response {
-    inst.refused(status);
+/// A request whose body passed the instance's cap. Only [`capped`] makes one.
+pub struct Capped(Request<Bytes>);
+
+impl Capped {
+    /// The complete original request, as this instance's own verify reads it.
+    pub fn request(&self) -> &Request<Bytes> {
+        &self.0
+    }
+}
+
+/// Step 1: cap the body by the instance's `limits`. `Err` is `StatusCode::PAYLOAD_TOO_LARGE`; no
+/// plugin has been called.
+pub async fn capped(req: Request<Body>, cap: usize) -> Result<Capped, StatusCode> {
+    let (head, body) = req.into_parts();
+    match axum::body::to_bytes(body, cap).await {
+        Ok(body) => Ok(Capped(Request::from_parts(head, body))),
+        Err(_) => Err(StatusCode::PAYLOAD_TOO_LARGE),
+    }
+}
+
+/// A request the CA-2 client check passed: the matched client and the head with credentials stripped.
+pub struct Admitted<'a> {
+    pub client: &'a str,
+    pub request: Request<Bytes>,
+}
+
+/// Step 2, after this instance's own verify: NoCredential and Refused are 401, Failed(s) is `s`, a
+/// principal that is no entry of `clients` is 403; else `Authorization`, `Cookie` and `cred_headers` are
+/// stripped from the head.
+pub fn admitted<'a>(
+    capped: Capped,
+    verified: Verified,
+    clients: &'a [Box<str>],
+    cred_headers: &[HeaderName],
+) -> Result<Admitted<'a>, StatusCode> {
+    let client = match verified {
+        Verified::NoCredential | Verified::Refused => return Err(StatusCode::UNAUTHORIZED),
+        Verified::Failed(status) => return Err(status),
+        Verified::Principal(p) => match client_entry(clients, &p) {
+            Some(c) => c,
+            None => return Err(StatusCode::FORBIDDEN),
+        },
+    };
+    let mut request = capped.0;
+    strip_credentials(request.headers_mut(), cred_headers);
+    Ok(Admitted { client, request })
+}
+
+/// The refusal response; 401 carries `WWW-Authenticate: Bearer`.
+pub fn refusal(status: StatusCode) -> Response {
     let mut resp = status.into_response();
     if status == StatusCode::UNAUTHORIZED {
         resp.headers_mut()
@@ -113,31 +136,14 @@ fn refuse<I: ProvisionInstance>(inst: &I, status: StatusCode) -> Response {
     resp
 }
 
-/// One request on `/provision/<instance>/*`: the CA-2 client check, then `serve`. No plugin is called before the
-/// check passes.
-pub async fn mount<I: ProvisionInstance>(
-    inst: &I,
-    clients: &[Box<str>],
-    req: Request<Body>,
-) -> Response {
-    let (head, body) = req.into_parts();
-    let body = match axum::body::to_bytes(body, inst.body_cap()).await {
-        Ok(b) => b,
-        Err(_) => return refuse(inst, StatusCode::PAYLOAD_TOO_LARGE),
-    };
-    let mut request = Request::from_parts(head, body);
-    let client = match inst.verify(&request).await {
-        Verified::NoCredential | Verified::Refused => {
-            return refuse(inst, StatusCode::UNAUTHORIZED)
-        }
-        Verified::Failed(status) => return refuse(inst, status),
-        Verified::Principal(p) => match client_entry(clients, &p) {
-            Some(c) => c,
-            None => return refuse(inst, StatusCode::FORBIDDEN),
-        },
-    };
-    strip_credentials(request.headers_mut(), inst.cred_headers());
-    inst.serve(client, request).await
+/// Audits `provision_refused{instance, status}` (no credential text).
+pub fn audit_refusal(instance: &str, status: StatusCode) {
+    busbar_kernel::audit::auditlog::emit_admin_hostless_now(
+        "provision_refused",
+        &format!("provisioning:{instance}#{}", status.as_u16()),
+        busbar_contract::vocab::OUTCOME_REFUSED,
+        busbar_kernel::audit::auditlog::PLUGIN_REFUSAL_PRINCIPAL,
+    );
 }
 
 /// `GET /admin/provisioning/{instance}/guard`, the body.
