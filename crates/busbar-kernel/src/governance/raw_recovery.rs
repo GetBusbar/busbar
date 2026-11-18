@@ -684,7 +684,9 @@ impl GovState {
         let mut unsent = SegmentedUsage::of(&unsent_plain, &unsent_dated)?;
         let mut absorbed = SegmentedUsage::of(&custody.absorbed_plain, &custody.absorbed_dated)?;
 
-        let netted = absorbed.take_negatives(Some(&unsent.positive()));
+        // `take_negatives` reads a capacity segment as zero unless it is positive, so the unsent
+        // usage itself is the capacity: no positive-only copy of it is made.
+        let netted = absorbed.take_negatives(Some(&unsent));
         unsent.merge(&netted);
         let (unsent_plain, unsent_dated) = unsent.deltas();
         custody.handoffs.extend(Self::usage_recovery_child(

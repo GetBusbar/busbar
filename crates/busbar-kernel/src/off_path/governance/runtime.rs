@@ -277,6 +277,22 @@ pub(crate) fn exact_debt_model_index(models: &[ExactModelDelta], model: &str) ->
     models.iter().position(|row| row.model == model)
 }
 
+/// `exact_debt`: the row of a flush debt named `era SEP model`, found by comparing the three
+/// parts where they lie: the dated name is not built to look a row up.
+pub(crate) fn exact_debt_era_model_index(
+    models: &[ExactModelDelta],
+    era: &str,
+    separator: char,
+    model: &str,
+) -> Option<usize> {
+    models.iter().position(|row| {
+        row.model
+            .strip_prefix(era)
+            .and_then(|rest| rest.strip_prefix(separator))
+            == Some(model)
+    })
+}
+
 /// `exact_debt`: an acknowledged or parked signed delta as exact flush debt.
 pub(crate) fn exact_debt_from_signed(delta: &UsageDelta) -> Result<ExactUsageDelta, CountError> {
     Ok(ExactUsageDelta {
@@ -304,25 +320,27 @@ pub(crate) fn exact_debt_from_signed(delta: &UsageDelta) -> Result<ExactUsageDel
 }
 
 /// `exact_debt`: exact flush debt as the signed wire delta a flush chunk sends, when it fits.
-pub(crate) fn exact_debt_signed(debt: &ExactUsageDelta) -> Option<UsageDelta> {
+/// The debt is handed over: each model and unit name moves into the chunk's own rows.
+pub(crate) fn exact_debt_signed(debt: ExactUsageDelta) -> Option<UsageDelta> {
     Some(UsageDelta {
         requests: i64::try_from(debt.requests).ok()?,
         billable_requests: i64::try_from(debt.billable_requests).ok()?,
         models: debt
             .models
-            .iter()
+            .into_iter()
             .map(|model| {
+                let scale = model.scale;
                 Some(busbar_contract::records::ModelTokensDelta {
-                    model: model.model.clone(),
+                    model: model.model,
                     scale: COUNT_SCALE,
                     usage_units: model
                         .usage_units
-                        .iter()
-                        .filter(|(_, count)| **count != 0)
+                        .into_iter()
+                        .filter(|(_, count)| *count != 0)
                         .map(|(unit, count)| {
-                            Count::from_stored(*count, model.scale)
+                            Count::from_stored(count, scale)
                                 .ok()
-                                .map(|count| (unit.clone(), count.micros()))
+                                .map(|count| (unit, count.micros()))
                         })
                         .collect::<Option<_>>()?,
                 })
@@ -336,15 +354,10 @@ pub(crate) fn exact_debt_era_model(era: &str, separator: char, model: &str) -> S
     format!("{era}{separator}{model}")
 }
 
-/// `exact_debt`: the positive segments of a custody's raw usage (custody capture).
-pub(crate) fn exact_debt_positive<K: Clone + Ord>(
-    segments: &std::collections::BTreeMap<K, i128>,
-) -> std::collections::BTreeMap<K, i128> {
-    segments
-        .iter()
-        .filter(|(_, count)| **count > 0)
-        .map(|(segment, count)| (segment.clone(), *count))
-        .collect()
+/// `exact_debt`: keep only the positive segments of a custody's raw usage, in place (custody
+/// capture): the map the caller owns is narrowed; nothing is copied.
+pub(crate) fn exact_debt_keep_positive<K: Ord>(segments: &mut std::collections::BTreeMap<K, i128>) {
+    segments.retain(|_, count| *count > 0);
 }
 
 /// `exact_debt`: whether every segment of a custody's raw usage is zero (custody capture).

@@ -4116,8 +4116,8 @@ async fn mint_self_offloaded_issues_and_refreshes_through_native_async_identity(
     let (issued, issued_token) = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
-        sub.to_string(),
-        "corp".to_string(),
+        sub,
+        "corp",
         None,
         now + 3600,
         now,
@@ -4133,8 +4133,8 @@ async fn mint_self_offloaded_issues_and_refreshes_through_native_async_identity(
     let (refreshed, refreshed_token) = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Refresh,
-        sub.to_string(),
-        "corp".to_string(),
+        sub,
+        "corp",
         None,
         now + 7200,
         now,
@@ -4164,8 +4164,8 @@ async fn mint_self_async_preserves_a_native_commit_failure() {
     let result = crate::governance::mint_self_offloaded(
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
-        "refused".into(),
-        "corp".into(),
+        "refused",
+        "corp",
         None,
         2000,
         1000,
@@ -4174,6 +4174,27 @@ async fn mint_self_async_preserves_a_native_commit_failure() {
     assert!(matches!(result, Err(SelfMintError::Store(_))));
     assert!(store.identity().list_keys().await.unwrap().is_empty());
     assert!(gov.all_keys_async().await.unwrap().is_empty());
+}
+
+/// A hold's message is fixed text. It must stay exactly what the coded form renders over the
+/// hold's reason: the code, the reason and the docs link.
+#[test]
+fn a_self_mint_refusal_message_is_the_coded_form_of_its_reason() {
+    use crate::governance::SelfMintRefusal;
+    for refusal in [
+        SelfMintRefusal::Disabled,
+        SelfMintRefusal::OtherProvider,
+        SelfMintRefusal::Revoked,
+        SelfMintRefusal::Held,
+    ] {
+        assert_eq!(
+            refusal.message(),
+            crate::diagnostics::coded(
+                &crate::diagnostics::SELF_MINT_HELD,
+                format_args!("your self-serve key is on hold: {}", refusal.reason()),
+            )
+        );
+    }
 }
 
 // Fault injection decorates the real primitive backend, never domain methods.

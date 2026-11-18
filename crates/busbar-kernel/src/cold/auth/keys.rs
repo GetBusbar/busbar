@@ -62,22 +62,13 @@ pub(crate) fn self_group(principal_id: &str) -> String {
     )
 }
 
-/// What one self-serve mint owns: the subject, the provider and the key's allowed scopes.
+/// What one self-serve mint owns: the minted key's allowed scopes, kept by the key record. The
+/// subject and the provider are lent, not copied.
 #[cold]
-pub(crate) fn self_mint_parts(
-    principal_id: &str,
-    provider: &str,
+pub(crate) fn self_mint_scopes(
     allowed_scopes: Option<&[busbar_contract::records::ScopeRef]>,
-) -> (
-    String,
-    String,
-    Option<Vec<busbar_contract::records::ScopeRef>>,
-) {
-    (
-        principal_id.to_owned(),
-        provider.to_owned(),
-        allowed_scopes.map(<[busbar_contract::records::ScopeRef]>::to_vec),
-    )
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    allowed_scopes.map(<[busbar_contract::records::ScopeRef]>::to_vec)
 }
 
 /// A self-serve mint's store failure, as its `MintFailed` detail.

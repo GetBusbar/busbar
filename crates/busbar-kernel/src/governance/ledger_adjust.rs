@@ -31,6 +31,24 @@ pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a,
     }
 }
 
+/// Whether a metering row of `model` served by `provider` is on `lane`, as [`metering_lane`]
+/// names a row's lane. Compared where the parts lie: a named plane's lane (`plane SEP model`) is
+/// not built for each row a correction checks.
+fn on_lane(model: &str, provider: &str, lane: &str) -> bool {
+    if model.contains(PLANE_LANE_SEP) {
+        return model == lane;
+    }
+    match crate::plane_driver::registry::plane_decl_for(provider) {
+        Some(decl) if !decl.fallback => {
+            let plane: &str = decl.key;
+            lane.strip_prefix(plane)
+                .and_then(|rest| rest.strip_prefix(PLANE_LANE_SEP))
+                == Some(model)
+        }
+        _ => model == lane,
+    }
+}
+
 /// One day's net adjustment of one (key, lane, era): what the usage read folds into the day's
 /// metering rows of that key, lane and era.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,8 +310,7 @@ impl GovState {
         if let Err(refused) = check_epoch(adj.card_epoch_ms, crate::store::now_ms()) {
             return Ok(Err(refused));
         }
-        let delta = ledger_off_path::ledger_adjust_nonzero_delta(adj.delta);
-        if delta.is_empty() {
+        if nonzero(adj.delta).next().is_none() {
             return Ok(Err(AdjustRefused::Empty));
         }
         match self.core_store()?.identity().get_key(adj.key_id).await {
@@ -323,7 +340,7 @@ impl GovState {
         let epoch = at / 1_000;
 
         let day = crate::governance::metering_bucket(epoch);
-        self.correct_usage(cost, adj, &delta, day, action_id).await
+        self.correct_usage(cost, adj, day, action_id).await
     }
 
     pub async fn usage_adjustments_async(
@@ -355,6 +372,15 @@ impl GovState {
             .await?;
         ledger_off_path::ledger_adjust_net_adjustments(up, down, parse_era_tag)
     }
+}
+
+/// The classes a correction actually moves: its non-zero deltas, in class order. Read off the
+/// correction's own map each time it is walked; nothing is collected.
+fn nonzero(delta: &BTreeMap<String, Count>) -> impl Iterator<Item = (&str, Count)> + Clone + '_ {
+    delta
+        .iter()
+        .filter(|(_, count)| **count != Count::ZERO)
+        .map(|(class, count)| (class.as_str(), *count))
 }
 
 fn check_epoch(at: u64, now: u64) -> Result<(), AdjustRefused> {
