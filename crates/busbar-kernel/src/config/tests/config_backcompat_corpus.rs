@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{resolve, DeployCfg, ProviderDef};
+use super::{DeployCfg, ProviderDef};
 
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/tests/backcompat-corpus")
@@ -53,6 +53,16 @@ fn corpus_configs() -> Vec<PathBuf> {
         .collect();
     v.sort();
     v
+}
+
+/// The admitted provider plane serving `proto-a`, the dialect every corpus provider resolves to here.
+fn corpus_plane() -> crate::plane_driver::provider_catalog::ProviderPlane {
+    crate::plane_driver::provider_catalog::ProviderPlane {
+        instance: "llm".into(),
+        image: "busbar-plane-llm".into(),
+        dialects: ["proto-a".into()].into(),
+        schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
+    }
 }
 
 fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
@@ -198,13 +208,17 @@ fn snapshot_for(config_path: &Path) -> String {
     })
     .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
-    let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {
-        panic!(
-            "resolve refused corpus config {}:\n  - {}",
-            config_path.display(),
-            errs.join("\n  - ")
-        )
-    });
+    // A real boot resolves against the admitted provider planes (41ba31d8d2): admit the one plane that
+    // serves the corpus's provider dialect, as production admits the LLM plane.
+    let cfg = super::resolve_with_provider_planes(&deploy, &defs, &[corpus_plane()])
+        .map(|resolved| resolved.config)
+        .unwrap_or_else(|errs| {
+            panic!(
+                "resolve refused corpus config {}:\n  - {}",
+                config_path.display(),
+                errs.join("\n  - ")
+            )
+        });
     snapshot(&cfg)
 }
 

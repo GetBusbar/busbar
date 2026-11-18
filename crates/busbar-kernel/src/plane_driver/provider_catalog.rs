@@ -350,11 +350,13 @@ pub fn resolve(
             .is_some_and(|d| schema.plane.dialects.contains(d))
     };
     for (name, pool) in pools {
+        // An empty pool serves nothing and needs no plane: neither 41ba31d8d2 nor d3dc7a93fd states
+        // that it is refused (PM ruling), so it is accepted as before.
         if !name_ok(name)
-            || pool.members.is_empty()
-            || !schemas
-                .iter()
-                .any(|s| pool.members.iter().all(|m| compatible(s, m.name())))
+            || (!pool.members.is_empty()
+                && !schemas
+                    .iter()
+                    .any(|s| pool.members.iter().all(|m| compatible(s, m.name()))))
         {
             errors.push(format!(
                 "pools.{name}: no configured provider plane serves every member"
