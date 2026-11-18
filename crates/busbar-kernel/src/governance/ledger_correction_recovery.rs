@@ -483,6 +483,8 @@ impl Custody {
             return Ok(false);
         }
         let mut changed = false;
+        // One release: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let mut before = target.before.clone_raw(&target.bucket)?;
             before.correction = Some(Box::new(CorrectionBranch {
@@ -496,8 +498,13 @@ impl Custody {
                     "stored common positive has no exact branch custody",
                 ));
             };
-            let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
+            let Some(child) = GovState::usage_recovery_child(
+                &target.bucket,
+                target.window,
+                plain,
+                dated,
+                sent_at_ms,
+            )?
             else {
                 continue;
             };
@@ -537,6 +544,8 @@ impl Custody {
         if self.terminal {
             return Ok(());
         }
+        // One transfer: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let selected = if decision == Decision::Applied {
                 &target.accepted
@@ -560,7 +569,7 @@ impl Custody {
                 }
             }
             if let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, window, plain, dated)?
+                GovState::usage_recovery_child(&target.bucket, window, plain, dated, sent_at_ms)?
             {
                 self.handoffs.push(child);
             }
@@ -615,6 +624,8 @@ impl Custody {
                 "no conditional successor owns the revalidated correction",
             ));
         }
+        // One repost: every child it hands off is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         for target in &mut self.targets {
             let plain = target
                 .absorbed_plain
@@ -628,9 +639,13 @@ impl Custody {
                 .map(RawDebt::restore)
                 .transpose()?
                 .unwrap_or_default();
-            if let Some(child) =
-                GovState::usage_recovery_child(&target.bucket, target.window, plain, dated)?
-            {
+            if let Some(child) = GovState::usage_recovery_child(
+                &target.bucket,
+                target.window,
+                plain,
+                dated,
+                sent_at_ms,
+            )? {
                 self.handoffs.push(child);
             }
         }
