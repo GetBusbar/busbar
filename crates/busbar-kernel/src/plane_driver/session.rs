@@ -227,16 +227,15 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             return Err(ReasonCode::InFlightCap);
         };
         let none = bytes::Bytes::new();
-        let mut near_run = Pumping::new(
-            d,
-            token,
-            &self.state,
-            ctx,
-            near,
-            self.deadline_ns,
-            none.clone(),
-        );
-        let mut far_run = Pumping::new(d, token, &self.state, ctx, far, self.deadline_ns, none);
+        // One plane-clock reading serves both legs' deadlines.
+        let now_ns = if self.deadline_ns == 0 {
+            0
+        } else {
+            d.calls.now_ns()
+        };
+        let deadline = (self.deadline_ns, now_ns);
+        let mut near_run = Pumping::at(d, token, &self.state, ctx, near, deadline, none.clone());
+        let mut far_run = Pumping::at(d, token, &self.state, ctx, far, deadline, none);
         {
             // Lent under the unit's lock, straight from its state: no copy of the reference.
             let st = self.lock();
