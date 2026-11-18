@@ -24,5 +24,14 @@ foldhash = { workspace = true }
 # select() races work against a deadline (race.rs), deadline polled first.
 futures = { workspace = true }
 
+[dev-dependencies]
+# The bench mints the route pass the walk asks for.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+
 [lints]
 workspace = true
+
+# WALK-NEXT (GROUP-time step 3): one Walk::start and one next over a four-member pool.
+[[bench]]
+name = "walk_next"
+harness = false
