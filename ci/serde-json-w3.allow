@@ -222,7 +222,6 @@ crates/busbar/src/test_source_gen.rs                                            
 crates/busbar/src/tests/admin_application/admin_custody_outcomes.rs                        # D
 crates/busbar/src/tests/admin_application/admin_delegated_authority.rs                     # D
 crates/busbar/src/tests/admin_application/admin_effect_authority.rs                        # D
-crates/busbar/src/tests/admin_application/admin_info_and_validation.rs                     # D
 crates/busbar/src/tests/admin_application/admin_openapi_route_parity.rs                    # D
 crates/busbar/src/tests/admin_application/admin_restart_idempotency.rs                     # D
 crates/busbar/src/tests/admin_application/admin_stuck_key_sentinel.rs                      # D
@@ -292,7 +291,6 @@ crates/busbar/src/tests/oauth2_application/hosted_provider_tests.rs             
 crates/busbar/src/tests/oauth2_application/hosted_routes_tests.rs                          # D
 crates/busbar/src/tests/oauth2_application/issuer.rs                                       # D
 crates/busbar/src/tests/oauth2_application/mod.rs                                          # D
-crates/busbar/src/tests/rig.rs                                                             # D
 crates/busbar/src/tests/tests.rs                                                           # D
 crates/plugin-loader/Cargo.toml                                                            # D
 crates/plugin-loader/src/cold/auth_axis.rs                                                 # D

@@ -115,11 +115,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
                     let mut later = (*handle.load()).clone();
                     later.config_version += 1;
                     if replace_pending.swap(false, Ordering::SeqCst) {
-                        busbar_kernel::config::overlay::persist_named_map_async(
+                        busbar_kernel::config::overlay::persist_named_map_text_async(
                             later.overlay_path.as_deref(),
                             busbar_kernel::config::named_map::NamedMapSection::Export,
                             "pending-entry",
-                            Some(&serde_json::json!({"module":"pending-after", "settings":[]})),
+                            Some(r#"{"module":"pending-after", "settings":[]}"#),
                         )
                         .await
                         .unwrap();
@@ -321,11 +321,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let section = busbar_kernel::config::named_map::NamedMapSection::Export;
     for item in [false, true] {
         let current = handle.load();
-        busbar_kernel::config::overlay::persist_named_map_async(
+        busbar_kernel::config::overlay::persist_named_map_text_async(
             current.overlay_path.as_deref(),
             section,
             "pending-entry",
-            Some(&serde_json::json!({"module":"pending-before", "settings":[]})),
+            Some(r#"{"module":"pending-before", "settings":[]}"#),
         )
         .await
         .unwrap();

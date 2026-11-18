@@ -14,6 +14,21 @@ const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
 const TOKENS: u64 = 1_000;
 
+/// [`complete_usage_fixture`] over a JSON-facade document (#162): the round trip through this file's value type
+/// stays here, so a caller on the facade never names it.
+pub(super) fn complete_usage_fixture_facade(
+    document: &mut busbar_contract::json::Value,
+    directory: &std::path::Path,
+    model_providers: &[(&str, &str)],
+) -> std::collections::HashMap<String, busbar_kernel::config::ProviderDef> {
+    let mut shared: serde_json::Value =
+        serde_json::from_str(&document.to_string()).expect("the facade document is JSON");
+    let defs = complete_usage_fixture(&mut shared, directory, model_providers);
+    *document = busbar_contract::json::parse_value(shared.to_string().as_bytes())
+        .expect("the completed document is JSON");
+    defs
+}
+
 pub(super) fn complete_usage_fixture(
     document: &mut serde_json::Value,
     directory: &std::path::Path,

@@ -100,17 +100,13 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     });
     document["rate_card"] = json::to_value(&rate_card).expect("serialize the original token rates");
     document["per_request_fee"] = json::json!(1);
-    // The shared usage fixture still edits a serde_json document; this file's document is the
-    // JSON facade's since 0327903243 (#162), so it crosses as text both ways.
-    let mut shared: serde_json::Value =
-        serde_json::from_str(&document.to_string()).expect("the facade document is JSON");
-    let provider_defs = super::admin_usage_history::complete_usage_fixture(
-        &mut shared,
+    // The shared usage fixture edits its own document type; this file's document is the JSON facade's
+    // since 0327903243 (#162), so it goes through the fixture's facade entry.
+    let provider_defs = super::admin_usage_history::complete_usage_fixture_facade(
+        &mut document,
         &directory,
         &[("model-1", "vendor-a"), ("model-2", "acme")],
     );
-    document =
-        json::parse_value(shared.to_string().as_bytes()).expect("the completed document is JSON");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         &document,
         &crate::root::boot::axis_test_grammar(),
