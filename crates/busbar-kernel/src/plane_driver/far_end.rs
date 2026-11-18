@@ -2903,14 +2903,10 @@ impl FarEnd for EgressFarEnd<'_> {
         let mut walking = Walking { owner: self, walk };
         let ports = self.egress.ports(self.breaker());
         let at = self.egress.clock.now(); // time: threaded by step 7
-        let Some(taken) = walking.walk.continue_member(
-            &ports,
-            &pool,
-            destination,
-            self,
-            token,
-            at,
-        ) else {
+        let Some(taken) = walking
+            .walk
+            .continue_member(&ports, &pool, destination, self, token, at)
+        else {
             return false;
         };
         request.attempt_no = taken.attempt;
