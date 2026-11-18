@@ -382,6 +382,47 @@ async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
     assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
 
+/// An output line is one line: a line feed or a carriage return inside a plane's bytes is refused (nothing is
+/// written and the session goes on), one trailing line feed is the line's own end, and the next good line goes out
+/// alone.
+#[tokio::test(start_paused = true)]
+async fn an_output_line_holding_a_line_break_is_refused_and_the_next_goes_out_alone() {
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Ready, IoOutcome::Ready);
+    let code = shutdown_result(run_io(
+        TEST_CARRIER,
+        &b"go\n"[..],
+        writer,
+        ProcessAdmission::new(0),
+        std::future::pending::<()>(),
+        |caller| {
+            (
+                move |_line: OwnedInput| {
+                    let caller = Arc::clone(&caller);
+                    async move {
+                        for refused in [
+                            b"two\nlines".as_slice(),
+                            b"two\n\n",
+                            b"a\rreturn",
+                            b"a return\r",
+                            b"a return\r\n",
+                        ] {
+                            assert!(!caller.write(refused).await, "{refused:?} is not one line");
+                            assert!(!caller.emit(refused), "{refused:?} is not one line");
+                        }
+                        assert!(caller.write(b"{\"id\":1}").await);
+                        assert!(caller.emit(b"ends\n"));
+                    }
+                },
+                || {},
+            )
+        },
+    ))
+    .await;
+    assert_eq!(code, 0, "a refused line does not end the session");
+    assert_eq!(*probe.bytes.lock().unwrap(), b"{\"id\":1}\nends\n");
+}
+
 #[tokio::test(start_paused = true)]
 async fn units_and_output_share_one_shutdown_deadline() {
     let probe = Arc::new(OutputProbe::default());

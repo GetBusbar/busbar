@@ -177,21 +177,154 @@ fn ordinary_data_cannot_bypass_its_saturated_unit() {
     assert_eq!(process.used(), Claim::default());
 }
 
+/// What `message` puts on the wire under `framing`, written by the production writer.
+async fn written(framing: Framing, message: &[u8]) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let instance = ChannelBudget::new().instance();
+    let message =
+        GuardedWrite::new(&instance.unit(), &instance.link(), framing, message, false).unwrap();
+    let (mut writer, mut reader) = tokio::io::duplex(128);
+    message.write(&mut writer).await.unwrap();
+    drop(writer);
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual).await.unwrap();
+    actual
+}
+
 #[tokio::test]
 async fn every_framing_writes_directly_with_the_existing_wire_encoding() {
-    use tokio::io::AsyncReadExt;
-    for framing in [Framing::None, Framing::Ndjson, Framing::Sse] {
-        let instance = ChannelBudget::new().instance();
-        let bytes = b"one\ntwo\n";
-        let message =
-            GuardedWrite::new(&instance.unit(), &instance.link(), framing, bytes, false).unwrap();
-        let (mut writer, mut reader) = tokio::io::duplex(128);
-        message.write(&mut writer).await.unwrap();
-        drop(writer);
-        let mut actual = Vec::new();
-        reader.read_to_end(&mut actual).await.unwrap();
-        assert_eq!(actual, super::frame::frame(framing, bytes));
+    // No framing: the message as it is, line breaks included.
+    assert_eq!(
+        written(Framing::None, b"one\ntwo\r\n").await,
+        b"one\ntwo\r\n"
+    );
+    // Newline-delimited: the message and one `\n`; an empty message is a blank line.
+    assert_eq!(
+        written(Framing::Ndjson, b"{\"id\":1}").await,
+        b"{\"id\":1}\n"
+    );
+    assert_eq!(written(Framing::Ndjson, b"").await, b"\n");
+    // SSE: each `\n` starts another `data:` line, a blank line ends the event, and it reads back whole.
+    let sse = written(Framing::Sse, b"one\ntwo").await;
+    assert_eq!(sse, b"data: one\ndata: two\n\n");
+    let mut back = super::frame::Framer::new(
+        Framing::Sse,
+        ChannelBudget::new().instance().unit().storage(),
+    )
+    .unwrap();
+    let messages = back.push(&sse).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].as_ref(), b"one\ntwo");
+}
+
+/// Messages a newline-delimited reader would take for more than one line: a line feed in the middle (the old
+/// stdio plugin's `two\nlines`), a trailing line feed, a carriage return in the middle (a reader that ends a line
+/// on a lone `\r`), and a trailing carriage return (the old plugin's `a return\r`).
+const NOT_ONE_LINE: [&[u8]; 4] = [b"two\nlines", b"a line\n", b"a\rreturn", b"a return\r"];
+
+#[test]
+fn an_ordinary_send_holding_a_line_break_is_refused_before_it_is_charged() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    for message in NOT_ONE_LINE {
+        for ask in [false, true] {
+            assert!(
+                GuardedWrite::new(&unit, &budget, Framing::Ndjson, message, ask).is_err(),
+                "{message:?} (ask {ask}) is not one line"
+            );
+            assert_eq!(
+                process.used(),
+                Claim::default(),
+                "{message:?} charged nothing"
+            );
+        }
     }
+}
+
+#[test]
+fn a_fallback_holding_a_line_break_is_refused_before_it_is_charged() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let budget = instance.link();
+    for message in NOT_ONE_LINE {
+        assert!(
+            GuardedWrite::fallback(&instance, &budget, Framing::Ndjson, message).is_err(),
+            "{message:?} is not one line"
+        );
+        assert_eq!(
+            process.used(),
+            Claim::default(),
+            "{message:?} charged nothing"
+        );
+    }
+}
+
+#[test]
+fn a_protected_reply_holding_a_line_break_is_refused_before_it_is_charged() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    for message in NOT_ONE_LINE {
+        let mut storage = ReplyStorage::new(&unit).unwrap();
+        let end = 24 + message.len();
+        storage.output_mut()[24..end].copy_from_slice(message);
+        assert!(
+            storage.into_write(24..end, &budget).is_err(),
+            "{message:?} is not one line"
+        );
+        assert_eq!(
+            process.used(),
+            Claim::default(),
+            "{message:?} charged nothing"
+        );
+    }
+}
+
+#[test]
+fn an_sse_message_holding_a_carriage_return_is_refused() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let budget = instance.link();
+    for message in [b"a\rreturn".as_slice(), b"a return\r", b"\r\n"] {
+        assert!(
+            GuardedWrite::new(&unit, &budget, Framing::Sse, message, false).is_err(),
+            "{message:?} would end an SSE field"
+        );
+        assert!(
+            GuardedWrite::fallback(&instance, &budget, Framing::Sse, message).is_err(),
+            "{message:?} would end an SSE field"
+        );
+        assert_eq!(process.used(), Claim::default());
+    }
+    // A line feed is not refused under SSE: the writer makes it its own `data:` line.
+    assert!(GuardedWrite::new(&unit, &budget, Framing::Sse, b"one\ntwo", false).is_ok());
+}
+
+#[tokio::test]
+async fn a_plane_send_holding_a_line_break_is_invalid_and_the_next_message_goes_out_alone() {
+    let process = ChannelBudget::new();
+    let instance = process.instance();
+    let unit = instance.unit();
+    let (link, mut queue) = Link::new(true, Framing::Ndjson, instance.link());
+    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+    let mut attachment =
+        super::Attachment::linked(link, unit, 1, 1, false, Default::default(), rx).unwrap();
+    for message in NOT_ONE_LINE {
+        assert_eq!(
+            attachment.send(message, true).await,
+            Err(crate::plugin_records::RecordsDenied::Invalid),
+            "{message:?} is refused as invalid, not as a channel that is gone"
+        );
+        assert!(queue.try_recv().is_err(), "{message:?} queued nothing");
+    }
+    attachment.send(b"{\"id\":1}", true).await.unwrap();
+    let next = queue.recv().await.unwrap();
+    assert_eq!(next.as_bytes(), b"{\"id\":1}");
+    assert!(queue.try_recv().is_err());
 }
 
 #[tokio::test]
