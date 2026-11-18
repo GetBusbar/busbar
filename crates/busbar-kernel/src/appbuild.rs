@@ -315,6 +315,9 @@ pub struct RawDocuments<'a> {
     config_text: busbar_contract::secure::SecureString,
     /// Whether `config_text` carries a durable document patch (its parse refusal says so).
     patched: bool,
+    /// The keys that patch itself names (DocumentPatch::submitted_keys): the only names its parse
+    /// refusal may quote.
+    patch_keys: Vec<busbar_contract::secure::SecureString>,
     /// Whether that patch edits `identity-providers`: then config.yaml's operator definitions
     /// (the file-policy reference) are read from `source_text`, not the patched document.
     operator_patched: bool,
@@ -400,6 +403,7 @@ impl RawDocuments<'_> {
             source_text,
             config_text,
             patched,
+            patch_keys,
             operator_patched,
             mut unset_env_vars,
         } = self;
@@ -409,7 +413,7 @@ impl RawDocuments<'_> {
         let mut deploy =
             config::deploy_from_yaml_str(config_text.as_ref(), grammar).map_err(|e| {
                 grammar.with_report(if patched {
-                    "patched configuration failed boot parsing".to_owned()
+                    patched_parse_refusal(&e.to_string(), &patch_keys)
                 } else {
                     format!(
                         "config.yaml: invalid YAML: {}",
@@ -527,9 +531,11 @@ pub fn read_config_documents<'a>(
     // The operator credential's reference is config.yaml as read, before any patch (§000.1). Only a
     // patch that edits `identity-providers` can make the composed document's differ.
     let mut operator_patched = false;
+    let mut patch_keys = Vec::new();
     let (config_text, patched) = match patch.filter(|_| !ignore_overlay) {
         Some(patch) => {
             *patch = patch.compacted_against_yaml(&interpolated_config)?;
+            patch_keys = patch.submitted_keys();
             operator_patched = config::operator_file::touches_identity_providers(patch);
             let text = patch.patched_text(&interpolated_config, |keys| {
                 rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
@@ -554,9 +560,32 @@ pub fn read_config_documents<'a>(
         source_text: busbar_contract::secure::SecureString::from(interpolated_config),
         config_text,
         patched,
+        patch_keys,
         operator_patched,
         unset_env_vars,
     })
+}
+
+/// The refusal of a patched document's boot parse. Every boot-parse error stays redacted (b381eadf2e),
+/// except one: an unknown field whose name is a key the caller's own patch names. That name is the
+/// caller's input, not configuration it cannot see, so it is quoted; no value ever is (PM ruling
+/// D-REDACT, 2026-11-17).
+fn patched_parse_refusal(
+    error: &str,
+    patch_keys: &[busbar_contract::secure::SecureString],
+) -> String {
+    const REDACTED: &str = "patched configuration failed boot parsing";
+    let Some(rest) = error.split_once("unknown field `").map(|(_, rest)| rest) else {
+        return REDACTED.to_owned();
+    };
+    let Some((name, _)) = rest.split_once('`') else {
+        return REDACTED.to_owned();
+    };
+    if patch_keys.iter().any(|key| key.as_str() == name) {
+        format!("{REDACTED}: unknown field `{name}`")
+    } else {
+        REDACTED.to_owned()
+    }
 }
 
 /// The providers half of a typed read: the catalog file `deploy` names (or the override), read,

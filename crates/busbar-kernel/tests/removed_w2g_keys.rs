@@ -120,3 +120,32 @@ fn the_settings_door_refuses_a_patch_that_sets_a_removed_key() {
         );
     }
 }
+
+/// PM ruling D-REDACT (2026-11-17): the settings door names an unknown field only when that name is
+/// a key the caller's own patch names, and never a value; every other boot-parse error of the
+/// patched document stays redacted as b381eadf2e made it.
+#[test]
+fn the_settings_door_names_only_the_callers_own_key_and_never_a_value() {
+    const REDACTED: &str = "patched configuration failed boot parsing";
+    // Named by the patch's own path: quoted, and the value it set is not.
+    let err = composed(
+        "redact-named",
+        serde_json::json!({"set": {"/hooks/h/child_dispatch": "CANARY-VALUE-1"}}),
+    )
+    .expect_err("the removed key is refused");
+    assert!(
+        err.contains(&format!("{REDACTED}: unknown field `child_dispatch`")),
+        "{err}"
+    );
+    assert!(!err.contains("CANARY-VALUE-1"), "a value was quoted: {err}");
+    // A key inside the submitted value is value, not a path the patch names: redacted whole.
+    let err = composed(
+        "redact-value",
+        serde_json::json!({"set": {"/hooks/h": {"module": "acme", "canary_inner_key": "CANARY-VALUE-2"}}}),
+    )
+    .expect_err("the unknown inner key is refused");
+    assert!(err.contains(REDACTED), "{err}");
+    assert!(!err.contains("unknown field"), "{err}");
+    assert!(!err.contains("canary_inner_key"), "{err}");
+    assert!(!err.contains("CANARY-VALUE-2"), "{err}");
+}
