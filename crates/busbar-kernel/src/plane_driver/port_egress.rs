@@ -761,12 +761,23 @@ fn route_of(
 
 /// One walked member of a [`SeatPool`]: the destination it is in the walk, the configured upstream it is, and the
 /// need its connections open on (the member's index, declared by the root on the connection table).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SeatMember {
     pub destination: DestinationId,
     pub upstream: Box<str>,
     pub need: NeedId,
     pub url: Box<str>,
+}
+
+/// The member's URL is not printed: a configured URL may carry credentials (printable-url).
+impl std::fmt::Debug for SeatMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeatMember")
+            .field("destination", &self.destination)
+            .field("upstream", &self.upstream)
+            .field("need", &self.need)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One admitted probe row. Destination alone cannot choose a pool's target or credential policy.

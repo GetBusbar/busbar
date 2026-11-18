@@ -657,7 +657,7 @@ fn keyfile_guard(
         &marked,
         &|pointer| {
             (pointer == "/credential")
-                .then(|| original.map(str::to_owned))
+                .then(|| original.map(busbar_contract::secure::SecureString::from))
                 .flatten()
         },
         &|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file()),

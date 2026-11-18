@@ -2472,7 +2472,10 @@ async fn guard_legacy_marks(
                 busbar_contract::secret::SecretResolve::resolve_string(&*resolver, &reference)
                     .ok()?;
             let seal = busbar_kernel::seal::lend();
-            Some(held.expose(&seal).trim_end_matches(['\r', '\n']).to_owned())
+            // The resolved credential stays in wiping custody (credential typecheck: expose-copy).
+            Some(busbar_contract::secure::SecureString::from(
+                held.expose(&seal).trim_end_matches(['\r', '\n']),
+            ))
         })
         .await
         .ok()

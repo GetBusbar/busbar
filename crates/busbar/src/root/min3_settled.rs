@@ -195,7 +195,7 @@ pub(super) fn guard_marked(
     settled: &json::Value,
     secret_patterns: &[&str],
     marked: &[String],
-    original: &dyn Fn(&str) -> Option<String>,
+    original: &dyn Fn(&str) -> Option<busbar_contract::secure::SecureString>,
     regular_file: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
     let mut slots = std::collections::BTreeSet::new();
@@ -214,7 +214,10 @@ pub(super) fn guard_marked(
         let converted = is_marked
             && after.and_then(file_target).is_some_and(|file| {
                 key_file_name(file)
-                    && original(pointer).as_deref() == Some(file)
+                    && original(pointer)
+                        .as_ref()
+                        .map(busbar_contract::secure::SecureString::as_str)
+                        == Some(file)
                     && regular_file(file)
             });
         if converted {

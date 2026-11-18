@@ -151,9 +151,10 @@ pub(crate) struct KitFixture<O> {
     next: AtomicU64,
 }
 
-/// One case's dataset: its token and its first handle, kept open for the case.
+/// One case's dataset: its name (`kit-<n>`, substituted for the fixture's tokens) and its first
+/// handle, kept open for the case.
 pub(crate) struct Dataset {
-    token: String,
+    name: String,
     first: Arc<dyn PersistenceBackend>,
 }
 
@@ -185,15 +186,15 @@ impl<O: Opener> Fixture for KitFixture<O> {
     type Dataset = Dataset;
 
     async fn fresh(&self) -> Dataset {
-        let token = format!("kit-{}", self.next());
-        let first = self.instance(&token).await;
-        Dataset { token, first }
+        let name = format!("kit-{}", self.next());
+        let first = self.instance(&name).await;
+        Dataset { name, first }
     }
 
     async fn open(&self, dataset: &Dataset) -> Arc<dyn PersistenceBackend> {
         match self.template.scope {
             Scope::Instance => Arc::clone(&dataset.first),
-            Scope::Shared => self.instance(&dataset.token).await,
+            Scope::Shared => self.instance(&dataset.name).await,
         }
     }
 }
