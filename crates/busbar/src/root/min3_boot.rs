@@ -1040,6 +1040,7 @@ impl Steps<'_> {
             secrets: Arc::new(SpawnCustody(prefix)),
             kernel: Arc::clone(&self.seat.kernel),
             table: self.seat.table.clone(),
+            section_pools: self.seat.section_pools.clone(),
         };
         let wiring = compose_seat(
             &seat,
@@ -1376,6 +1377,8 @@ pub(crate) struct ServingReady {
     prefix: Arc<BootSecrets>,
     converting: bool,
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
+    /// Each plane section's `pools:`, walked natively (#108, route-classes K2 amendment).
+    section_pools: super::plane_seats::SectionPoolsByInstance,
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
@@ -1822,6 +1825,7 @@ fn prepare_serving_owned(
         public_url: cfg.public_url.clone(),
         converting,
         normalization_source,
+        section_pools: super::plane_seats::section_pools(&cfg.instance_sections())?,
         _bootstrap_registry: Arc::clone(&sources.registry),
     })
 }
@@ -1943,6 +1947,7 @@ pub(super) async fn finish_with_store(
         prefix,
         converting,
         normalization_source,
+        section_pools,
     } = ready;
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
@@ -1987,6 +1992,7 @@ pub(super) async fn finish_with_store(
         secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
         kernel: Arc::new(Kernel::new()),
         table: ConnTable::installed(),
+        section_pools,
     };
     let mut steps = Steps {
         images: &images,

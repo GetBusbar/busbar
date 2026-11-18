@@ -58,7 +58,7 @@ use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
-use busbar_kernel::plane_driver::request_admission::RequestRoutes;
+use busbar_kernel::plane_driver::request_admission::{RequestRoutes, SectionPool};
 use busbar_kernel::plane_driver::route_input::HealthModeInput;
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_kernel::probe::{run_probers, ProbeCfg, ProbeMember, ProbeSchedule};
@@ -129,6 +129,8 @@ pub(crate) struct SeatShared {
     /// `None` = no connection table: no seat walks or holds an HTTP request (a CHANNEL to a stdio upstream still
     /// opens).
     pub(crate) table: Option<ConnTable>,
+    /// Each instance's section `pools:` (members, fallback, `member_granted`), walked natively (#108).
+    pub(crate) section_pools: SectionPoolsByInstance,
 }
 
 /// What one seat runs over.
@@ -518,6 +520,143 @@ impl Drop for HeldBody {
 
 /// Join only the exact sealed associations to the candidate's configured pool policies.
 /// Registration membership remains in its own default pool and CHANNEL table.
+/// Each plane instance's section pools, by instance name.
+pub(crate) type SectionPoolsByInstance = BTreeMap<String, Arc<BTreeMap<String, SectionPool>>>;
+
+/// Read each plane section's `pools:` exactly as the 1.5.5 door did (`DoorPools::of`): members,
+/// `on_exhausted.fallback_pool` and `member_granted`. These become native walks (#108).
+///
+/// # Errors
+/// A section's pool is malformed (the door's own refusal).
+pub(crate) fn section_pools(
+    sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
+) -> Result<SectionPoolsByInstance, String> {
+    sections
+        .iter()
+        .map(|(instance, section)| {
+            let door = super::door_steps::DoorPools::of(section, instance)
+                .map_err(|why| format!("{instance}: {why}"))?;
+            let pools = door
+                .pools
+                .iter()
+                .map(|(name, members)| {
+                    let pool = SectionPool {
+                        members: members.clone(),
+                        fallback: door.fallbacks.get(name).cloned(),
+                        member_granted: door.member_granted.contains(name),
+                    };
+                    (name.clone(), pool)
+                })
+                .collect();
+            Ok(((*instance).to_owned(), Arc::new(pools)))
+        })
+        .collect()
+}
+
+/// The section pools this seat walks: each pool keeps only its members that are walked URL
+/// registrations (a command is never walked; it is reached by registration selection). A pool
+/// left with no walked member is no walk. Each kept pool joins egress beside the registration pool.
+///
+/// # Errors
+/// A section pool name collides with a pool this seat already walks.
+fn extend_sections(
+    instance: &str,
+    seat: &mut SeatPool,
+    sections: &BTreeMap<String, SectionPool>,
+) -> Result<BTreeMap<String, SectionPool>, String> {
+    let walked: BTreeMap<String, SectionPool> = sections
+        .iter()
+        .filter_map(|(name, pool)| {
+            let members: Vec<String> = pool
+                .members
+                .iter()
+                .filter(|member| seat.members.iter().any(|m| &*m.upstream == member.as_str()))
+                .cloned()
+                .collect();
+            (!members.is_empty()).then(|| {
+                let pool = SectionPool {
+                    members,
+                    ..pool.clone()
+                };
+                (name.clone(), pool)
+            })
+        })
+        .collect();
+    for (name, configured) in &walked {
+        if seat.pools.contains_key(name) {
+            return Err(format!(
+                "section pool `{name}` collides with a pool this plane already walks"
+            ));
+        }
+        let members = configured
+            .members
+            .iter()
+            .filter_map(|member| {
+                let walked = seat
+                    .members
+                    .iter()
+                    .find(|m| &*m.upstream == member.as_str())?;
+                let lane = format!(
+                    "{instance}{}{member}",
+                    busbar_kernel::governance::PLANE_LANE_SEP
+                );
+                Some(busbar_kernel_egress::Member::new(
+                    walked.destination,
+                    lane,
+                    1,
+                ))
+            })
+            .collect();
+        let mut pool = busbar_kernel_egress::Pool::new(name, members);
+        pool.on_exhausted = match configured
+            .fallback
+            .as_ref()
+            .filter(|fallback| walked.contains_key(fallback.as_str()))
+        {
+            Some(fallback) => busbar_kernel_egress::OnExhausted::FallbackPool(fallback.clone()),
+            None => busbar_kernel_egress::OnExhausted::Status503,
+        };
+        seat.pools.insert(name.clone(), pool);
+    }
+    // A fallback that is not itself walked is dropped from the routing record as from egress.
+    Ok(walked
+        .iter()
+        .map(|(name, pool)| {
+            let pool = SectionPool {
+                fallback: pool
+                    .fallback
+                    .clone()
+                    .filter(|fallback| walked.contains_key(fallback)),
+                ..pool.clone()
+            };
+            (name.clone(), pool)
+        })
+        .collect())
+}
+
+/// A section pool's listed member reads as the same registration target as on the seat's own
+/// registration walk. An unlisted pair is left to `registrations` (which refuses it).
+fn section_targets(
+    instance: &str,
+    registrations: Targets,
+    sections: Arc<BTreeMap<String, SectionPool>>,
+) -> Targets {
+    let instance = instance.to_owned();
+    let prefix = format!("{instance}{}", busbar_kernel::governance::PLANE_LANE_SEP);
+    Arc::new(move |pool, member| {
+        let listed = sections.get(pool).is_some_and(|section| {
+            member
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|name| section.members.iter().any(|listed| listed == name))
+        });
+        if listed {
+            registrations(&instance, member)
+        } else {
+            registrations(pool, member)
+        }
+    })
+}
+
 fn extend_catalog(
     instance: &str,
     seat: &mut SeatPool,
@@ -812,8 +951,22 @@ pub(crate) fn compose(
     })?;
     let registration = Arc::new(SeatPool::of(instance, upstreams)?);
     let catalog = shared.catalogs.get(instance);
-    // No kind is inferred from instance/image vocabulary. Member-granted descriptors remain
-    // refused by candidate preparation until their explicit descriptor producer is connected.
+    let mut pool = SeatPool {
+        pool: registration.pool.clone(),
+        pools: registration.pools.clone(),
+        routes: registration.routes.clone(),
+        members: registration.members.clone(),
+    };
+    // The section's own pools walk natively over these registrations (#108).
+    let sections = Arc::new(extend_sections(
+        instance,
+        &mut pool,
+        shared
+            .section_pools
+            .get(instance)
+            .map_or(&BTreeMap::new(), |pools| pools.as_ref()),
+    )?);
+    // No kind is inferred from instance/image vocabulary.
     let request_routes = Arc::new(
         RequestRoutes::new(
             instance,
@@ -822,14 +975,9 @@ pub(crate) fn compose(
             Some(Arc::clone(&registration)),
         )
         .and_then(|routes| routes.with_registrations(Arc::clone(upstreams)))
+        .and_then(|routes| routes.with_section_pools(sections.as_ref().clone()))
         .map_err(|_| format!("plane {instance}: inconsistent request routing inventory"))?,
     );
-    let mut pool = SeatPool {
-        pool: registration.pool.clone(),
-        pools: registration.pools.clone(),
-        routes: registration.routes.clone(),
-        members: registration.members.clone(),
-    };
     // Held HTTP channels receive only the registration domain, before model destinations join egress.
     let registration_needs = pool
         .members
@@ -842,7 +990,11 @@ pub(crate) fn compose(
     audit_acceptance(instance, accept, &pool);
     let owner = seat_owner(who.instance);
     let table_upstreams: Arc<dyn Upstreams> = Arc::clone(upstreams) as Arc<dyn Upstreams>;
-    let registrations = upstream_targets(instance, Arc::clone(&table_upstreams));
+    let registrations = section_targets(
+        instance,
+        upstream_targets(instance, Arc::clone(&table_upstreams)),
+        Arc::clone(&sections),
+    );
     let targets: Targets = match catalog {
         Some(catalog) => {
             let catalog = Arc::clone(catalog);
