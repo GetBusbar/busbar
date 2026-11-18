@@ -1757,7 +1757,7 @@ fn a_client_offer_is_accepted_on_the_requests_route_and_the_local_answer_comes_b
         vec![(FROM_CORE, P_RENDEZVOUS, b"local-answer".to_vec())]
     );
     assert!(
-        task.held_exchanges().contains(&4),
+        task.held.contains_key(&4),
         "the session holds the bridge under its exchange: dropping it closes the media session"
     );
 }
@@ -1784,7 +1784,7 @@ fn an_offer_that_cannot_be_accepted_is_p_rv_failed_with_a_refusal_on_that_exchan
     let (status, code, text) = refusal_of_piece(&got[0].2);
     assert_eq!((status, code), (502, F_UNAVAILABLE));
     assert!(!text.is_empty(), "core's own fixed text");
-    assert!(task.held_exchanges().is_empty());
+    assert!(task.held.is_empty());
 }
 
 #[test]

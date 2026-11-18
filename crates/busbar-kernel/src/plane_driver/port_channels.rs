@@ -77,7 +77,7 @@ pub struct Attached {
     pub generation: u64,
     pub slot: u64,
     pub greet: bool,
-    pub ready_tail: Vec<u8>,
+    pub ready_tail: bytes::Bytes,
     pub held: Box<dyn Held>,
 }
 
@@ -87,14 +87,6 @@ pub trait ChannelHost {
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
-    /// The exchanges this session holds a channel or a media bridge on.
-    #[must_use]
-    pub fn held_exchanges(&self) -> Vec<u32> {
-        let mut held: Vec<u32> = self.held.keys().copied().collect();
-        held.sort();
-        held
-    }
-
     /// Writes `message` to the channel held on `exchange`. `Ok(false)` = no channel is held there.
     pub fn send_channel(
         &mut self,
@@ -228,7 +220,7 @@ impl ChannelHost for UpstreamHost {
             generation: attachment.generation,
             slot: attachment.slot,
             greet: attachment.greet,
-            ready_tail: attachment.ready_tail.to_vec(),
+            ready_tail: attachment.ready_tail.clone(),
             held: Box::new(Link {
                 attachment,
                 rt: self.rt.clone(),

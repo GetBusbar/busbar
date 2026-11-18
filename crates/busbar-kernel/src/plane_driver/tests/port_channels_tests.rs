@@ -219,7 +219,7 @@ impl ChannelHost for Channels {
             generation: 3,
             slot: 11,
             greet: true,
-            ready_tail: b"tail".to_vec(),
+            ready_tail: bytes::Bytes::from_static(b"tail"),
             held: Box::new(Wire(Arc::clone(&self.wire))),
         })
     }
