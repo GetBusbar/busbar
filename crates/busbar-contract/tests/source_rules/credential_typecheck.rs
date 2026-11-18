@@ -484,7 +484,7 @@ const SECRET_DIGEST: &str = "SecretDigest";
 /// Debug does not read the value), compared only in constant time (no derived equality or hash; a
 /// manual `eq` calls `constant_time_eq`), and built only where it is defined (no public field).
 fn digest_rules(src: &Source, out: &mut Vec<Finding>) {
-    let items: Vec<&syn::Item> = walk::items(&src.file.items).collect();
+    let items: Vec<&syn::Item> = walk::items(&src.file.items);
     for item in &items {
         let syn::Item::Struct(s) = item else { continue };
         if s.ident != SECRET_DIGEST || walk::is_cfg_test(&s.attrs) {
