@@ -321,44 +321,6 @@ impl ClaimDoor {
         *lock(&self.expiring) = expired;
     }
 
-    #[cfg(test)]
-    fn emit(
-        &self,
-        id: u64,
-        stream: u64,
-        bytes: &[u8],
-        end: bool,
-        text: bool,
-        now: Instant,
-    ) -> bool {
-        let (ok, answered) = self
-            .assocs
-            .emit(id, stream, bytes, end, text, now, &|to, d| self.send(to, d));
-        if !answered.is_empty() {
-            self.joined.notify_one();
-        }
-        self.answer(answered, now);
-        ok
-    }
-
-    #[cfg(test)]
-    async fn emit_ready(&self, id: u64, stream: u64, bytes: &[u8], text: bool) -> bool {
-        self.assocs
-            .emit_ready(
-                id,
-                stream,
-                bytes,
-                true,
-                text,
-                &|to, d| self.send(to, d),
-                &|answered| {
-                    self.joined.notify_one();
-                    self.answer(answered, instant_of(now_ns()));
-                },
-            )
-            .await
-    }
-
     fn leave(&self, id: u64) {
         let gone = lock(&self.legs).remove(&id);
         self.assocs.remove(id);
@@ -484,13 +446,6 @@ impl CallerLeg {
 
     fn bind(&self, id: u64) {
         *lock(&self.id) = Some(id);
-    }
-
-    #[cfg(test)]
-    fn yielded(self: &Arc<Self>, pieces: Vec<Got>, now: Instant) {
-        let mut yielded = busbar_core_connector::framer::Yielded::default();
-        yielded.pieces = pieces;
-        self.yielded_batch(yielded, now);
     }
 
     fn yielded_batch(
@@ -1107,11 +1062,3 @@ impl Joining {
 #[cfg(test)]
 #[path = "tests/serve_datagram.rs"]
 mod tests;
-
-#[cfg(test)]
-pub(crate) use tests::peer;
-
-#[cfg(test)]
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-#[cfg(test)]
-owner_test_sources!(datagram_lifecycle);
