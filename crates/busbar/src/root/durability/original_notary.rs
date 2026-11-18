@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::super::audit::NativeStagedAudit;
+use crate::root::plane_node::RetainedBook;
 
 #[cfg(test)]
 #[path = "../tests/durability_original_notary.rs"]
@@ -43,21 +44,6 @@ impl OriginalPageCursor {
     }
 }
 
-/// One callback into the existing charged Node table. No subscriber or retry queue is added.
-pub(crate) trait OriginalPageReceiver: Send + Sync {
-    fn fund_original_page(
-        &self,
-        target: &OriginalPageTarget,
-        bytes: usize,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageFunding;
-    fn deliver_original_page(
-        &self,
-        page: &OriginalPageReceipt,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageDelivery;
-}
-
 pub(crate) enum PageFunding {
     Pending(OriginalPageCursor),
     Reserved(StorageCredit, u64),
@@ -76,7 +62,7 @@ struct Binding {
     key: AuditVerifyingKey,
     baseline: u64,
     tail: Head,
-    receiver: Option<Weak<dyn OriginalPageReceiver>>,
+    receiver: Option<Weak<RetainedBook>>,
     exited: Option<Arc<AtomicBool>>,
     retention_bytes: Option<usize>,
 }
@@ -215,10 +201,7 @@ impl OriginalChain {
         Ok(())
     }
 
-    pub(super) fn register(
-        &self,
-        receiver: Weak<dyn OriginalPageReceiver>,
-    ) -> Result<(), &'static str> {
+    pub(super) fn register(&self, receiver: Weak<RetainedBook>) -> Result<(), &'static str> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let binding = state
             .binding
@@ -371,7 +354,7 @@ impl OriginalChain {
         })
     }
 
-    pub(super) fn receiver(&self) -> Option<Arc<dyn OriginalPageReceiver>> {
+    pub(super) fn receiver(&self) -> Option<Arc<RetainedBook>> {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.invalid {
             return None;

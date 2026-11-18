@@ -136,8 +136,12 @@ pub(crate) fn pushed_key(client_id: &str, request_uri: &str) -> String {
 
 /// A request key bound to the one-time T it was answered with: the stake is spent only by a
 /// request that presents the same T.
-pub(crate) fn handled_key(key: &str, handle: &str) -> String {
-    format!("{key}\u{1f}\u{1c}{handle}")
+/// `key` is extended in place (the request key is made for this and not used again): no second
+/// copy of it.
+pub(crate) fn handled_key(mut key: String, handle: &str) -> String {
+    key.push_str("\u{1f}\u{1c}");
+    key.push_str(handle);
+    key
 }
 
 fn staked_key(request: &ApprovalRequest<'_>) -> String {
@@ -295,10 +299,7 @@ pub(crate) fn approval_resolver(
             return redirect(&login_url, request, &session);
         }
         if let Some(handle) = handle {
-            match sessions.spend(
-                &session,
-                &handled_key(&staked_key(request), handle.as_str()),
-            ) {
+            match sessions.spend(&session, &handled_key(staked_key(request), handle.as_str())) {
                 Some(true) => return ApprovalDecision::Approve,
                 Some(false) => return ApprovalDecision::Deny,
                 None => {}
@@ -374,8 +375,9 @@ fn no_browser() -> oauth_as::http::Response {
         .expect("a response built entirely from `'static` bytes must be representable")
 }
 
-fn percent_encode(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, busbar_contract::net::UNRESERVED_KEPT).to_string()
+/// `s` percent-encoded, as written where it is formatted (no text of its own).
+fn percent_encode(s: &str) -> percent_encoding::PercentEncode<'_> {
+    percent_encoding::utf8_percent_encode(s, busbar_contract::net::UNRESERVED_KEPT)
 }
 
 #[cfg(test)]

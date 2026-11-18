@@ -18,7 +18,7 @@ use busbar_plugin_abi::plane::{
 };
 use tokio::runtime::Runtime;
 
-use super::{request_of, route_of, EgressWalk, MemberTarget, WalkMembers, WalkSend};
+use super::{is_request_of, request_of, route_of, EgressWalk, MemberTarget, WalkMembers, WalkSend};
 use crate::plane_driver::far_end::{dial_admitted, UnitRoute};
 use crate::plane_driver::port_session::UpExchange;
 use crate::plane_driver::port_upstream::{
@@ -375,7 +375,7 @@ fn an_exchange_is_sent_as_the_far_end_s_request_and_its_reply_is_read_piece_by_p
         pieces.push_back(Some(body_piece(b"b", true)));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), &exchange()).unwrap();
+        let mut open = send.open(&candidate(), exchange()).unwrap();
         assert_eq!(open.status, 200);
         assert_eq!(
             open.headers,
@@ -389,7 +389,7 @@ fn an_exchange_is_sent_as_the_far_end_s_request_and_its_reply_is_read_piece_by_p
 
 #[test]
 fn the_request_carries_the_exchange_the_member_and_the_pool() {
-    let request = request_of("lane:a", "pool", 3, &exchange()).unwrap();
+    let request = request_of("lane:a", "pool", 3, exchange()).unwrap();
     assert_eq!(request.member, "lane:a");
     assert_eq!(request.pool, "pool");
     assert_eq!(request.attempt_no, 3);
@@ -407,7 +407,7 @@ fn outbound_none_waives_the_member_credential_and_a_scope_rides_as_its_field() {
         scope: Some("tenant-1".into()),
         ..exchange()
     };
-    let request = request_of("a", "p", 1, &none).unwrap();
+    let request = request_of("a", "p", 1, none.clone()).unwrap();
     assert!(request
         .fields
         .iter()
@@ -419,22 +419,82 @@ fn outbound_none_waives_the_member_credential_and_a_scope_rides_as_its_field() {
 }
 
 #[test]
+fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
+    for outbound in [OUTBOUND_NONE, 0] {
+        let rich = UpExchange {
+            outbound,
+            scope: Some("tenant-1".into()),
+            ..exchange()
+        };
+        let built = request_of("lane:a", "pool", 3, rich.clone()).unwrap();
+        // The old form: build a whole request from the parts and compare it.
+        let agrees = |request: &OutboundRequest| {
+            is_request_of(request, "lane:a", "pool", &rich)
+                == (request_of("lane:a", "pool", request.attempt_no, rich.clone()).as_ref()
+                    == Some(request))
+        };
+        assert!(is_request_of(&built, "lane:a", "pool", &rich));
+        assert!(agrees(&built));
+        // One difference in each of the other eight fields.
+        let mut differs: Vec<OutboundRequest> = Vec::new();
+        for edit in [
+            (|r: &mut OutboundRequest| r.member.push('x')) as fn(&mut OutboundRequest),
+            |r| r.pool.push('x'),
+            |r| r.verb.push(b'x'),
+            |r| r.target.push(b'x'),
+            |r| r.fields.push((b"x".to_vec(), b"y".to_vec())),
+            |r| {
+                r.fields.pop();
+            },
+            |r| r.fields[0].1.push(b'x'),
+            |r| r.body.push(b'x'),
+            |r| r.need = 1,
+            |r| r.text = true,
+        ] {
+            let mut other = built.clone();
+            edit(&mut other);
+            differs.push(other);
+        }
+        // The attempt number is taken from the request itself, so it always matches.
+        let mut later = built.clone();
+        later.attempt_no += 1;
+        assert!(is_request_of(&later, "lane:a", "pool", &rich));
+        assert!(agrees(&later));
+        for other in &differs {
+            assert!(!is_request_of(other, "lane:a", "pool", &rich), "{other:?}");
+            assert!(agrees(other));
+        }
+        // Carrier and missing parts: nothing is built, nothing matches.
+        let grpc = UpExchange {
+            carrier: CARRIER_GRPC,
+            ..rich.clone()
+        };
+        assert!(!is_request_of(&built, "lane:a", "pool", &grpc));
+        let no_path = UpExchange {
+            path: None,
+            ..rich.clone()
+        };
+        assert!(!is_request_of(&built, "lane:a", "pool", &no_path));
+    }
+}
+
+#[test]
 fn an_exchange_this_carrier_does_not_send_is_not_a_request() {
     let grpc = UpExchange {
         carrier: CARRIER_GRPC,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, &grpc).is_none());
+    assert!(request_of("a", "p", 1, grpc.clone()).is_none());
     let no_path = UpExchange {
         path: None,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, &no_path).is_none());
+    assert!(request_of("a", "p", 1, no_path.clone()).is_none());
     let http = UpExchange {
         carrier: CARRIER_HTTP,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, &http).is_some());
+    assert!(request_of("a", "p", 1, http).is_some());
 }
 
 #[test]
@@ -445,7 +505,7 @@ fn a_send_the_far_end_refuses_is_a_failed_send() {
     };
     with_walk(fake, |_, mut send| {
         assert!(matches!(
-            send.open(&candidate(), &exchange()),
+            send.open(&candidate(), exchange()),
             Err(SendFailed)
         ));
     });
@@ -461,7 +521,7 @@ fn a_reply_the_walk_s_own_table_failed_over_is_a_failed_send_before_the_plane_se
     }));
     with_walk(fake, |_, mut send| {
         assert!(matches!(
-            send.open(&candidate(), &exchange()),
+            send.open(&candidate(), exchange()),
             Err(SendFailed)
         ));
     });
@@ -480,7 +540,7 @@ fn a_reply_cut_after_its_head_is_an_error_on_the_next_read() {
         }));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), &exchange()).unwrap();
+        let mut open = send.open(&candidate(), exchange()).unwrap();
         assert!(open.rest.next().is_err());
     });
 }
@@ -499,7 +559,7 @@ fn trailing_fields_are_their_own_chunk() {
         }));
     }
     with_walk(fake, |_, mut send| {
-        let mut open = send.open(&candidate(), &exchange()).unwrap();
+        let mut open = send.open(&candidate(), exchange()).unwrap();
         assert_eq!(
             open.rest.next().unwrap(),
             Some(Chunk::Trailers(b"grpc-status: 0\r\n".to_vec()))
@@ -518,7 +578,7 @@ fn a_whole_send_joins_the_body_and_drops_the_trailers() {
         pieces.push_back(Some(body_piece(b"y", true)));
     }
     with_walk(fake, |_, mut send| {
-        let reply = send.send(&candidate(), &exchange()).unwrap();
+        let reply = send.send(&candidate(), exchange()).unwrap();
         assert_eq!(reply.status, 201);
         assert_eq!(reply.body, b"xy".to_vec());
     });
@@ -649,4 +709,44 @@ fn an_exhausted_walk_keeps_the_wait_it_stated_for_the_client() {
     );
     assert!(members.next(&Wants::default()).is_none());
     assert_eq!(members.retry_after(), Some(30));
+}
+
+/// B-REQUEST-OF: what turning one exchange (12 header fields, 4 KiB body) into the far end's request
+/// costs, copied (the exchange cloned first, as the selected path does) against moved, in time and in bytes allocated on this thread. Prints the
+/// numbers (run with `--no-capture`); asserts the moved request equals the held one.
+#[test]
+fn b_request_of_held_against_moved() {
+    const CYCLES: usize = 2_000;
+    let rich = || UpExchange {
+        method: Some("POST".into()),
+        path: Some("/v1/chat/completions".into()),
+        headers: (0..12)
+            .map(|n| (format!("x-field-{n}").into_bytes(), vec![b'v'; 24]))
+            .collect(),
+        body: vec![b'b'; 4096],
+        ..UpExchange::default()
+    };
+    let spare: Vec<UpExchange> = (0..CYCLES).map(|_| rich()).collect();
+    crate::ThreadAllocated::reset();
+    let start = std::time::Instant::now();
+    let mut kept = Vec::with_capacity(CYCLES);
+    for exchange in &spare {
+        kept.push(request_of("lane:a", "pool", 1, exchange.clone()));
+    }
+    let held_ns = start.elapsed().as_nanos() as usize / CYCLES;
+    let held_bytes = crate::ThreadAllocated::bytes() as usize / CYCLES;
+    drop(kept);
+    let moved_input: Vec<UpExchange> = (0..CYCLES).map(|_| rich()).collect();
+    crate::ThreadAllocated::reset();
+    let start = std::time::Instant::now();
+    let mut out = Vec::with_capacity(CYCLES);
+    for exchange in moved_input {
+        out.push(request_of("lane:a", "pool", 1, exchange));
+    }
+    let moved_ns = start.elapsed().as_nanos() as usize / CYCLES;
+    let moved_bytes = crate::ThreadAllocated::bytes() as usize / CYCLES;
+    println!(
+        "B-REQUEST-OF held: {held_ns} ns, {held_bytes} bytes; moved: {moved_ns} ns, {moved_bytes} bytes"
+    );
+    assert_eq!(out[0], request_of("lane:a", "pool", 1, spare[0].clone()));
 }

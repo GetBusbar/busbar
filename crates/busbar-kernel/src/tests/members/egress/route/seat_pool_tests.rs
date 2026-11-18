@@ -181,7 +181,9 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
             };
             let member = members.next(&wants).expect("the pinned upstream is picked");
             picked = Some(member.upstream.to_string());
-            let reply = send.send(&member, &exchange).expect("the upstream answers");
+            let reply = send
+                .send(&member, exchange.clone())
+                .expect("the upstream answers");
             status = Some(reply.status);
             members.served(&member);
         },

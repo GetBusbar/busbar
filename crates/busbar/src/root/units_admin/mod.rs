@@ -21,6 +21,9 @@ pub(crate) struct AdminRequest {
     binding: Option<Arc<busbar_kernel::inbound::native::RequestBinding>>,
     physical: Option<Arc<busbar_kernel::inbound::native::PhysicalAdminExecution>>,
     refusal_carrier: Option<busbar_kernel::inbound::native::AdminPhysicalRequest>,
+    /// One-shot hand-off of the physical request's own header map: filled when the request is built, lent to
+    /// the admin door, then moved whole into the router request by the first dispatch. Clones of the
+    /// request share the one cell.
     projection: Arc<Mutex<Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>>>>,
     pub unit: u64,
 }
@@ -44,15 +47,22 @@ impl AdminRequest {
     }
     pub(crate) fn from_binding(
         binding: Arc<busbar_kernel::inbound::native::RequestBinding>,
-    ) -> Result<Self, busbar_kernel::inbound::request_snapshot::SnapshotError> {
-        let snapshot = binding.snapshot()?;
+        projection: Option<busbar_kernel::inbound::http_projection::HttpProjection>,
+    ) -> Result<Self, AdminHeadersInvalid> {
+        let snapshot = binding.snapshot().map_err(|_| AdminHeadersInvalid)?;
+        if projection
+            .as_ref()
+            .is_some_and(|projection| !Arc::ptr_eq(projection.snapshot(), &snapshot))
+        {
+            return Err(AdminHeadersInvalid);
+        }
         Ok(Self {
             snapshot,
             unit: binding.invocation().request_id().get(),
             binding: Some(binding),
             physical: None,
             refusal_carrier: None,
-            projection: Arc::new(Mutex::new(None)),
+            projection: Arc::new(Mutex::new(projection.map(Arc::new))),
         })
     }
     pub(crate) fn attach_physical(
@@ -129,21 +139,6 @@ impl AdminRequest {
         &self,
     ) -> Option<Arc<busbar_kernel::inbound::http_projection::HttpProjection>> {
         self.projection.lock().ok()?.as_ref().cloned()
-    }
-
-    pub(crate) fn attach_projection(
-        &self,
-        projection: busbar_kernel::inbound::http_projection::HttpProjection,
-    ) -> Result<(), AdminHeadersInvalid> {
-        if !Arc::ptr_eq(projection.snapshot(), &self.snapshot) {
-            return Err(AdminHeadersInvalid);
-        }
-        let mut slot = self.projection.lock().map_err(|_| AdminHeadersInvalid)?;
-        if slot.is_some() {
-            return Err(AdminHeadersInvalid);
-        }
-        *slot = Some(Arc::new(projection));
-        Ok(())
     }
 }
 

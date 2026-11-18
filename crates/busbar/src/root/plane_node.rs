@@ -32,9 +32,21 @@ use busbar_kernel_audit::{
     UsageLine as RecordLine, What, ATTEMPT_SLOTS,
 };
 use terminal_book::TerminalBook;
+
+/// The charged terminal table. The Node owns it; the original notary observes it weakly.
+pub(crate) struct RetainedBook(Mutex<Option<TerminalBook>>);
+
+impl RetainedBook {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<TerminalBook>>> {
+        self.0.lock()
+    }
+}
+
 #[path = "plane_node/native.rs"]
 mod native;
-pub(crate) use native::NativeNodeHandle;
+#[cfg(test)]
+pub(crate) use native::retained_fixture;
+pub(crate) use native::{deliver_original_page, fund_original_page, NativeNodeHandle};
 
 #[cfg(test)]
 use crate::root::linked::node::Handed;
@@ -137,7 +149,7 @@ pub(crate) struct Node {
 
     marked: AtomicU64,
 
-    lost: Mutex<Option<TerminalBook>>,
+    lost: Arc<RetainedBook>,
 
     mono: AtomicU64,
 
@@ -199,7 +211,7 @@ impl Node {
             })),
             next_key: Arc::default(),
             marked: AtomicU64::new(0),
-            lost: Mutex::new(Self::fixture_terminal_book()),
+            lost: Arc::new(RetainedBook(Mutex::new(Self::fixture_terminal_book()))),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
 
@@ -1633,6 +1645,13 @@ enum RetainedState {
     Reserved,
     Abandoned(Lost),
     Native(native::NativeUnit),
+    /// Test fixture only: an original's notary-facing custody without its live request owners.
+    #[cfg(test)]
+    Original {
+        staged: Option<crate::root::durability::NativeStagedAudit>,
+        receipt: Option<crate::root::durability::notary::original::OriginalLineReceipt>,
+        credit: Option<busbar_contract::storage::StorageCredit>,
+    },
 }
 struct TerminalReservation<'n> {
     node: &'n Node,

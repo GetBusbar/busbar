@@ -75,7 +75,7 @@ pub(crate) async fn authorize(
     };
     if minted {
         let cookie = super::consent::start_cookie(plane.identity(), &start);
-        let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
+        let Ok(cookie) = axum::http::HeaderValue::try_from(cookie) else {
             return not_representable();
         };
         response
@@ -166,7 +166,7 @@ async fn pushed_request_gate(
             plane
                 .is_staked(
                     &browser.session,
-                    &super::consent::handled_key(&key, handle.as_str()),
+                    &super::consent::handled_key(key, handle.as_str()),
                 )
                 .await
         }
@@ -220,7 +220,7 @@ pub(super) fn query_value<'t>(target: &'t str, name: &str) -> Option<Cow<'t, str
 pub(super) struct Pending<'t> {
     pub(super) client_id: Cow<'t, str>,
 
-    pub(super) scope: String,
+    pub(super) scope: crate::plane::Granted<'t>,
     pub(super) redirect_host: String,
 
     pub(super) revisit: bool,
@@ -248,9 +248,7 @@ pub(super) async fn pending_request<'t>(
         None => (scope, redirect_host, false),
     };
     Ok(Pending {
-        scope: plane
-            .granted_scope(&client_id, requested.as_deref())
-            .await?,
+        scope: plane.granted_scope(&client_id, requested).await?,
         client_id,
         redirect_host,
         revisit,

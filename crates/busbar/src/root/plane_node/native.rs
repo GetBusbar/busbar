@@ -243,119 +243,142 @@ impl Node {
 }
 
 use crate::root::durability::notary::original::{
-    OriginalLineReceipt, OriginalPageCursor, OriginalPageReceipt, OriginalPageReceiver,
-    OriginalPageTarget, PageDelivery, PageFunding,
+    OriginalLineReceipt, OriginalPageCursor, OriginalPageReceipt, OriginalPageTarget, PageDelivery,
+    PageFunding,
 };
 
 impl Node {
     pub(crate) fn bind_native_notary(self: &Arc<Self>) -> Result<(), &'static str> {
-        let receiver: Arc<dyn OriginalPageReceiver> = self.clone();
         self.book
             .get()
             .ok_or("native notary requires original book")?
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .head
-            .register_original_receiver(Arc::downgrade(&receiver))
+            .register_original_receiver(Arc::downgrade(&self.lost))
     }
 }
 
-impl OriginalPageReceiver for Node {
-    fn fund_original_page(
-        &self,
-        target: &OriginalPageTarget,
-        bytes: usize,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageFunding {
-        let mut guard = self
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(book) = guard.as_mut() else {
-            return PageFunding::Refused(cursor);
-        };
-        let mut position = cursor.unwrap_or_else(|| OriginalPageCursor {
-            last: None,
-            upper: book.max_key(),
-        });
-        // This newly adopted bound counts every examined entry, including legacy/nonmembers.
-        for _ in 0..64 {
-            let Some((class, key)) = book.next(position.last, position.upper) else {
-                return PageFunding::Empty(position.upper);
-            };
-            position.last = Some(key.get());
-            let Some(entry) = book.get_mut(class, key) else {
-                return PageFunding::Refused(Some(position));
-            };
-            let RetainedState::Native(native) = &mut entry.state else {
-                continue;
-            };
-            let Some(staged) = &native.staged else {
-                continue;
-            };
-            if !target.covers(staged) {
-                continue;
-            }
-            let Some(credit) = native.receipt_credit.as_ref() else {
-                continue;
-            };
-            if credit.len() < bytes {
-                return PageFunding::Refused(Some(position));
-            }
-            return PageFunding::Reserved(
-                native
-                    .receipt_credit
-                    .take()
-                    .expect("validated retained credit"),
-                position.upper,
-            );
-        }
-        PageFunding::Pending(position)
-    }
+/// What the original notary reads and writes of one retained entry.
+struct OriginalFields<'a> {
+    staged: &'a Option<crate::root::durability::NativeStagedAudit>,
+    receipt: &'a mut Option<OriginalLineReceipt>,
+    credit: &'a mut Option<StorageCredit>,
+}
 
-    fn deliver_original_page(
-        &self,
-        page: &OriginalPageReceipt,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageDelivery {
-        let mut guard = self
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(book) = guard.as_mut() else {
-            return PageDelivery::Refused;
-        };
-        // The producer supplies its original captured horizon, even on first delivery.
-        let Some(mut position) = cursor else {
-            return PageDelivery::Refused;
-        };
-        for _ in 0..64 {
-            let Some((class, key)) = book.next(position.last, position.upper) else {
-                return PageDelivery::Complete;
-            };
-            position.last = Some(key.get());
-            let Some(entry) = book.get_mut(class, key) else {
-                return PageDelivery::Refused;
-            };
-            let RetainedState::Native(native) = &mut entry.state else {
-                continue;
-            };
-            let Some(staged) = &native.staged else {
-                continue;
-            };
-            if let Some(receipt) = page.bind(staged) {
-                if native
-                    .original_receipt
-                    .as_ref()
-                    .is_some_and(|held| !held.confirms(staged))
-                {
-                    return PageDelivery::Refused;
-                }
-                native.original_receipt = Some(receipt);
-            }
-        }
-        PageDelivery::Pending(position)
+fn original_fields(state: &mut RetainedState) -> Option<OriginalFields<'_>> {
+    match state {
+        RetainedState::Native(native) => Some(OriginalFields {
+            staged: &native.staged,
+            receipt: &mut native.original_receipt,
+            credit: &mut native.receipt_credit,
+        }),
+        #[cfg(test)]
+        RetainedState::Original {
+            staged,
+            receipt,
+            credit,
+        } => Some(OriginalFields {
+            staged: &*staged,
+            receipt,
+            credit,
+        }),
+        _ => None,
     }
+}
+
+/// One funding slice of the charged table for the original notary. No subscriber or retry
+/// queue is added.
+pub(crate) fn fund_original_page(
+    retained: &super::RetainedBook,
+    target: &OriginalPageTarget,
+    bytes: usize,
+    cursor: Option<OriginalPageCursor>,
+) -> PageFunding {
+    let mut guard = retained
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(book) = guard.as_mut() else {
+        return PageFunding::Refused(cursor);
+    };
+    let mut position = cursor.unwrap_or_else(|| OriginalPageCursor {
+        last: None,
+        upper: book.max_key(),
+    });
+    // This newly adopted bound counts every examined entry, including legacy/nonmembers.
+    for _ in 0..64 {
+        let Some((class, key)) = book.next(position.last, position.upper) else {
+            return PageFunding::Empty(position.upper);
+        };
+        position.last = Some(key.get());
+        let Some(entry) = book.get_mut(class, key) else {
+            return PageFunding::Refused(Some(position));
+        };
+        let Some(fields) = original_fields(&mut entry.state) else {
+            continue;
+        };
+        let Some(staged) = fields.staged else {
+            continue;
+        };
+        if !target.covers(staged) {
+            continue;
+        }
+        let Some(held) = fields.credit.as_ref() else {
+            continue;
+        };
+        if held.len() < bytes {
+            return PageFunding::Refused(Some(position));
+        }
+        return PageFunding::Reserved(
+            fields.credit.take().expect("validated retained credit"),
+            position.upper,
+        );
+    }
+    PageFunding::Pending(position)
+}
+
+/// One delivery slice of the charged table for the original notary.
+pub(crate) fn deliver_original_page(
+    retained: &super::RetainedBook,
+    page: &OriginalPageReceipt,
+    cursor: Option<OriginalPageCursor>,
+) -> PageDelivery {
+    let mut guard = retained
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(book) = guard.as_mut() else {
+        return PageDelivery::Refused;
+    };
+    // The producer supplies its original captured horizon, even on first delivery.
+    let Some(mut position) = cursor else {
+        return PageDelivery::Refused;
+    };
+    for _ in 0..64 {
+        let Some((class, key)) = book.next(position.last, position.upper) else {
+            return PageDelivery::Complete;
+        };
+        position.last = Some(key.get());
+        let Some(entry) = book.get_mut(class, key) else {
+            return PageDelivery::Refused;
+        };
+        let Some(fields) = original_fields(&mut entry.state) else {
+            continue;
+        };
+        let Some(staged) = fields.staged else {
+            continue;
+        };
+        if let Some(receipt) = page.bind(staged) {
+            if fields
+                .receipt
+                .as_ref()
+                .is_some_and(|held| !held.confirms(staged))
+            {
+                return PageDelivery::Refused;
+            }
+            *fields.receipt = Some(receipt);
+        }
+    }
+    PageDelivery::Pending(position)
 }
 
 /// HELD (adopted ordinary receipt r2): the original per-fee Applied producer is unresolved and
@@ -725,5 +748,98 @@ impl Node {
     pub(crate) fn bind_fee_debt(self: &Arc<Self>, billing: &PortBilling) {
         let owner: Arc<dyn FeeDebtAssociate> = self.clone();
         let _ = billing.bind_fee_debt_owner(Arc::downgrade(&owner));
+    }
+}
+
+/// A real retained table for the original notary's tests: reserved entries and originals.
+#[cfg(test)]
+pub(crate) mod retained_fixture {
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::storage::{StorageCredit, StorageSource};
+    use busbar_contract::UnitKey;
+    use busbar_kernel::limits::process_admission::AdmissionClass;
+
+    use super::super::terminal_book::TerminalBook;
+    use super::super::{RetainedBook, RetainedState, RetainedUnit};
+    use crate::root::durability::notary::original::OriginalLineReceipt;
+    use crate::root::durability::NativeStagedAudit;
+
+    pub(crate) struct Retained {
+        pub(crate) book: Arc<RetainedBook>,
+        kernel: busbar_kernel::teller::Kernel,
+    }
+
+    impl Retained {
+        /// An empty table whose backing is charged to `source`.
+        pub(crate) fn new(source: StorageSource) -> Self {
+            Self {
+                book: Arc::new(RetainedBook(Mutex::new(Some(TerminalBook::new(
+                    source.clone(),
+                    source,
+                ))))),
+                kernel: crate::root::kernel::new_kernel(),
+            }
+        }
+
+        fn insert(&self, key: u64, state: RetainedState) {
+            let unit = RetainedUnit {
+                call: self.kernel.next_call(),
+                state,
+            };
+            let inserted = self.book.lock().unwrap().as_mut().unwrap().insert(
+                AdmissionClass::Data,
+                UnitKey::new(key),
+                unit,
+            );
+            assert!(inserted.is_ok(), "the fixture table refused key {key}");
+        }
+
+        /// A reserved entry: a candidate the scans count and skip.
+        pub(crate) fn reserve(&self, key: u64) {
+            self.insert(key, RetainedState::Reserved);
+        }
+
+        /// An original as `install_native` and staging leave it: staged, funded, no receipt.
+        pub(crate) fn original(&self, key: u64, staged: NativeStagedAudit, credit: StorageCredit) {
+            self.insert(
+                key,
+                RetainedState::Original {
+                    staged: Some(staged),
+                    receipt: None,
+                    credit: Some(credit),
+                },
+            );
+        }
+
+        /// The receipt the notary delivered to the original at `key`.
+        pub(crate) fn receipt(&self, key: u64) -> Option<OriginalLineReceipt> {
+            let guard = self.book.lock().unwrap();
+            match &guard
+                .as_ref()?
+                .get(AdmissionClass::Data, UnitKey::new(key))?
+                .state
+            {
+                RetainedState::Original { receipt, .. } => receipt.clone(),
+                _ => None,
+            }
+        }
+
+        /// Whether the original at `key` still holds its retention credit.
+        pub(crate) fn holds_credit(&self, key: u64) -> bool {
+            let guard = self.book.lock().unwrap();
+            guard
+                .as_ref()
+                .and_then(|book| book.get(AdmissionClass::Data, UnitKey::new(key)))
+                .is_some_and(|unit| {
+                    matches!(
+                        &unit.state,
+                        RetainedState::Original {
+                            credit: Some(_),
+                            ..
+                        }
+                    )
+                })
+        }
     }
 }

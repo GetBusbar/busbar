@@ -372,7 +372,7 @@ pub(crate) async fn consent_submit(
         if let Err(error) = plane
             .stake(
                 reference,
-                crate::consent::handled_key(&key, &handle),
+                crate::consent::handled_key(key, &handle),
                 approve,
             )
             .await
@@ -514,10 +514,12 @@ fn device_confirm_page(grant: &oauth_as::DeviceGrant, csrf: &str) -> String {
 }
 
 fn consent_page(return_to: &str, reference: &str, csrf: &str, pending: &Pending) -> String {
-    let scope = if pending.scope.is_empty() {
+    // The page's own text (built once for the page, as the page itself is).
+    let shown = pending.scope.to_string();
+    let scope = if shown.is_empty() {
         "no scopes"
     } else {
-        &pending.scope
+        &shown
     };
     let redirect_host = if pending.redirect_host.is_empty() {
         "(unnamed)"

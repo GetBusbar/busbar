@@ -204,3 +204,30 @@ async fn prior_logical_cell_boundary_remains_writable_and_scannable() {
         .unwrap()
         .is_none());
 }
+
+/// A stake row's nonce rides on the stack-built spend token: one this store writes (32 hex
+/// digits) is spent; a stored one longer than the token holds (65 bytes) is refused with an error,
+/// never spent.
+#[tokio::test]
+async fn a_stake_spends_with_a_written_nonce_and_refuses_an_overlong_one() {
+    let shared = shared(crate::testkit::memory_store().await);
+    let until = now_secs() + 60;
+    for (session, nonce) in [("s-ok", "a".repeat(32)), ("s-long", "b".repeat(65))] {
+        let id = StakeId::of(session, "key");
+        let row = StakeRow {
+            approve: true,
+            until,
+            id: id.as_str().to_owned(),
+            nonce,
+        };
+        shared.put("stake", id.as_str(), &row).await.unwrap();
+    }
+    assert_eq!(shared.spend("s-ok", "key").await.unwrap(), Some(true));
+    let refused = shared.spend("s-long", "key").await.unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("nonce is longer than any this store writes"),
+        "{refused}"
+    );
+}

@@ -132,17 +132,14 @@ impl SelectedHandoff {
     }
 
     pub(crate) fn accepts_request(&self, request: &super::super::route::OutboundRequest) -> bool {
-        self.exchange()
-            .and_then(|exchange| {
-                super::request_of(
-                    &self.target.qualified_member,
-                    &self.target.pool,
-                    request.attempt_no,
-                    exchange,
-                )
-            })
-            .as_ref()
-            == Some(request)
+        self.exchange().is_some_and(|exchange| {
+            super::is_request_of(
+                request,
+                &self.target.qualified_member,
+                &self.target.pool,
+                exchange,
+            )
+        })
     }
 
     pub(crate) fn accepts(&self, pool: &str, member: &str, unit: busbar_contract::UnitKey) -> bool {

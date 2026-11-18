@@ -5,11 +5,11 @@
 //! request path (the plane's sweeper calls it once per tick), a sibling of the marked `shared`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use busbar_contract::host_records::conditional::{Decision, Expected, Predicate};
+use busbar_contract::host_records::conditional::Decision;
 use busbar_kernel::persistence::scoped;
+use busbar_kernel::persistence::scoped::Predicate;
 use oauth_as::store::StorageError;
 use serde::de::DeserializeOwned;
 
@@ -245,10 +245,10 @@ impl Shared {
                         }
                         let mut request =
                             Self::candidate(&atomic_schema(&name), &row.key, raw, tombstone()?);
-                        Arc::make_mut(&mut request).predicates.push(Predicate {
+                        request.predicates.push(Predicate {
                             schema: atomic_schema("bucket"),
                             key: bucket_id.into_bytes(),
-                            expected: bucket.map_or(Expected::Absent, Expected::Bytes),
+                            expected: super::shared::guard(bucket),
                         });
                         self.submit(request).await.map(drop)
                     }
@@ -355,7 +355,7 @@ impl Shared {
                 guards.push(Predicate {
                     schema: atomic_schema("bucket"),
                     key: bucket_id.into_bytes(),
-                    expected: snapshot.map_or(Expected::Absent, Expected::Bytes),
+                    expected: super::shared::guard(snapshot),
                 });
             }
             let retired =
@@ -375,7 +375,7 @@ impl Shared {
                 encode(SUBJECT_INDEX, &cell)?
             };
             let mut request = Self::candidate(&atomic_schema(SUBJECT_INDEX), id, raw, value);
-            Arc::make_mut(&mut request).predicates.extend(guards);
+            request.predicates.extend(guards);
             match self.submit(request).await? {
                 Decision::Applied => return Ok(()),
                 Decision::ConditionConflict => {

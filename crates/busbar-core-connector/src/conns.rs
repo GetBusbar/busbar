@@ -4559,7 +4559,7 @@ impl Connector {
                 .ok_or(ConnError::Refused)?;
 
             drop(declared);
-            let lease = member.lease(&desc.body, expected)?;
+            let lease = member.lease(desc.body.clone(), expected)?;
             let mut held = Held::over(None, None, None).bounded(started, desc.timeout_ms);
             held.lease = Some((member, lease));
 

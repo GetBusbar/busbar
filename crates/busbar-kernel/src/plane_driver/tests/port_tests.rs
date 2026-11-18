@@ -205,7 +205,7 @@ async fn a_line_on_a_principal_route_carries_the_carrier_principal_as_its_identi
         .await
         .unwrap();
     assert_eq!(a.auth, AUTH_PRINCIPAL);
-    let mut recs = Records::new(&a.identity);
+    let mut recs = Records::new(a.identity_records());
     let first = recs.next().unwrap().unwrap();
     assert_eq!((first.tag, first.text().unwrap()), (g::ID_SUBJECT, "ada"));
 }
@@ -224,15 +224,15 @@ async fn a_public_line_route_has_no_identity_and_an_optional_one_follows_the_car
     let public = admit_line(3, AUTH_PUBLIC, &carrier(true), &refusals)
         .await
         .unwrap();
-    assert!(public.identity.is_empty());
+    assert!(public.identity_records().is_empty());
     let optional = admit_line(3, AUTH_OPTIONAL, &carrier(true), &refusals)
         .await
         .unwrap();
-    assert!(!optional.identity.is_empty());
+    assert!(!optional.identity_records().is_empty());
     let optional = admit_line(3, AUTH_OPTIONAL, &carrier(false), &refusals)
         .await
         .unwrap();
-    assert!(optional.identity.is_empty());
+    assert!(optional.identity_records().is_empty());
 }
 
 #[tokio::test]

@@ -31,6 +31,7 @@ use super::signer::{Es256Key, Es256Verifier, Ps256Verifier};
     )
 )]
 mod serve;
+pub(crate) use serve::Granted;
 
 pub(crate) use serve::seam_verify_dpop;
 

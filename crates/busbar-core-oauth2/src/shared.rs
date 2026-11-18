@@ -5,12 +5,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use busbar_contract::host_records::conditional::{
-    Decision, Expected, Mutation, Predicate, Request,
-};
+use busbar_contract::host_records::conditional::Decision;
 use busbar_contract::Secret;
 use busbar_kernel::persistence::facade::PendingId;
-use busbar_kernel::persistence::scoped::{self, ScopedStore};
+use busbar_kernel::persistence::scoped::{self, Expected, Mutation, Predicate, ScopedStore};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientId};
 use oauth_as::consent::ConsentRecord;
@@ -37,8 +35,40 @@ pub(crate) const SWAP_ATTEMPTS: u32 = 64;
 // port. This is a domain budget, independent of plane and generic Store bounds.
 const MAX_LOGICAL_CELL_BYTES: usize = 16 * 1024 * 1024;
 
+/// A conditional request as this adapter builds it: the store's own predicate and mutation
+/// records, made where they are written and moved whole into the store's request at submit (no
+/// second list, no conversion).
+pub(crate) struct Candidate {
+    pub(crate) predicates: Vec<Predicate>,
+    pub(crate) mutations: Vec<Mutation>,
+}
+
+/// The guard a predicate states over the raw cell it read: absent, or exactly those bytes (held
+/// as the store's secret value).
+pub(crate) fn guard(raw: Option<Vec<u8>>) -> Expected {
+    raw.map_or(Expected::Absent, |bytes| {
+        Expected::Exact(Secret::new(bytes))
+    })
+}
+
 pub(crate) fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
+}
+
+/// The stored name of index `ix` (`tok`, `rt`, `code`, `par`, `dev`, `cons`, `fam`): `ix.` and
+/// its name, from the fixed set the plane registers (plane.rs), so no text is made per call.
+fn ix_name(ix: &str) -> &'static str {
+    match ix {
+        "tok" => "ix.tok",
+        "rt" => "ix.rt",
+        "code" => "ix.code",
+        "par" => "ix.par",
+        "dev" => "ix.dev",
+        "cons" => "ix.cons",
+        "fam" => "ix.fam",
+        // Every caller names one of the above; an unregistered index has no store name.
+        _ => "ix.",
+    }
 }
 
 fn atomic_kind(name: &str) -> bool {
@@ -237,7 +267,8 @@ struct PendingState {
     decision: Option<Decision>,
 }
 
-type ClaimAddress = (String, String);
+/// A claim's (kind, token), made once per claim and shared by the gate map and its lease.
+type ClaimAddress = Arc<(String, String)>;
 struct ClaimState {
     expires_at: u64,
     pending: Option<scoped::PendingClaim>,
@@ -290,20 +321,27 @@ impl Shared {
         }
     }
 
-    pub(crate) async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
-        let oversized = request.mutations.iter().any(|mutation| matches!(mutation,
-            Mutation::Put {schema,value,..} if schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
-        )) || request.predicates.iter().any(|predicate| matches!(&predicate.expected,
-            Expected::Bytes(value) if predicate.schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
-        ));
+    pub(crate) async fn submit(&self, candidate: Candidate) -> Result<Decision, StorageError> {
+        let oversized = {
+            let seal = busbar_kernel::seal::lend();
+            let over = |schema: &str, value: &Secret<Vec<u8>>| {
+                schema.ends_with(".atomic.v1") && value.expose(&seal).len() > MAX_LOGICAL_CELL_BYTES
+            };
+            candidate.mutations.iter().any(|mutation| {
+                matches!(mutation,
+                    Mutation::Put {schema,value,..} if over(schema, value)
+                )
+            }) || candidate.predicates.iter().any(|predicate| {
+                matches!(&predicate.expected,
+                    Expected::Exact(value) if over(&predicate.schema, value)
+                )
+            })
+        };
         if oversized {
             return Err(StorageError::new(
                 "oauth_as store: logical cell exceeds byte budget",
             ));
         }
-        // The candidate is this call's own: its parts move into the store's request, uncopied.
-        let mut request = request;
-        let owned: &mut Request = Arc::make_mut(&mut request);
         // The receipt identity is a held class-M op minted here (DES-264): the pending entry
         // keeps it with the request until the definitive decision drops both.
         let op = self
@@ -311,43 +349,12 @@ impl Shared {
             .record_op()
             .await
             .map_err(|e| failed("conditional record identity", e))?;
-        let request = scoped::Request {
+        // The candidate is this call's own: its lists move into the store's request whole.
+        let request = Arc::new(scoped::Request {
             op,
-            predicates: owned
-                .predicates
-                .drain(..)
-                .map(|p| scoped::Predicate {
-                    schema: p.schema,
-                    key: p.key,
-                    expected: match p.expected {
-                        Expected::Absent => scoped::Expected::Absent,
-                        Expected::Bytes(bytes) => scoped::Expected::Exact(Secret::new(bytes)),
-                    },
-                })
-                .collect(),
-            mutations: owned
-                .mutations
-                .drain(..)
-                .map(|m| match m {
-                    Mutation::Put { schema, key, value } => scoped::Mutation::Put {
-                        schema,
-                        key,
-                        value: Secret::new(value),
-                    },
-                    Mutation::Delete { schema, key } => scoped::Mutation::Delete { schema, key },
-                    Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    } => scoped::Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    },
-                })
-                .collect(),
-        };
-        let request = Arc::new(request);
+            predicates: candidate.predicates,
+            mutations: candidate.mutations,
+        });
         let mut addresses: Vec<_> = request
             .predicates
             .iter()
@@ -424,41 +431,40 @@ impl Shared {
         id: &str,
         expected: Option<Vec<u8>>,
         value: Vec<u8>,
-    ) -> Arc<Request> {
-        Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+    ) -> Candidate {
+        Candidate {
             predicates: vec![Predicate {
                 schema: schema.to_string(),
                 key: id.as_bytes().to_vec(),
-                expected: expected.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(expected),
             }],
             mutations: vec![Mutation::Put {
                 schema: schema.to_string(),
                 key: id.as_bytes().to_vec(),
-                value,
+                value: Secret::new(value),
             }],
-        })
+        }
     }
 
     async fn bucket_indexes(
         &self,
-        request: &mut Request,
+        request: &mut Candidate,
         bucket: &Bucket,
         now: u64,
     ) -> Result<(), StorageError> {
         let mut indexes = BTreeMap::new();
-        for (ix, keys) in [
-            ("tok", bucket.tokens.keys().collect::<Vec<_>>()),
-            ("rt", bucket.refresh.keys().collect()),
-            ("code", bucket.codes.keys().collect()),
-            ("par", bucket.pushed.keys().collect()),
-            ("dev", bucket.devices.keys().collect()),
-            ("cons", bucket.consents.keys().collect()),
-        ] {
-            for key in keys {
-                indexes.insert((ix, digest(key)), ());
-            }
+        // Each map's keys read in place, in the same order as before.
+        let keyed = bucket
+            .tokens
+            .keys()
+            .map(|k| ("tok", k))
+            .chain(bucket.refresh.keys().map(|k| ("rt", k)))
+            .chain(bucket.codes.keys().map(|k| ("code", k)))
+            .chain(bucket.pushed.keys().map(|k| ("par", k)))
+            .chain(bucket.devices.keys().map(|k| ("dev", k)))
+            .chain(bucket.consents.keys().map(|k| ("cons", k)));
+        for (ix, key) in keyed {
+            indexes.insert((ix, digest(key)), ());
         }
         for family in bucket
             .tokens
@@ -478,7 +484,7 @@ impl Shared {
             request.mutations.push(Mutation::Put {
                 schema: atomic_schema(&format!("ix.{ix}")),
                 key: id.into_bytes(),
-                value,
+                value: Secret::new(value),
             });
         }
         let mut subjects = BTreeMap::new();
@@ -520,12 +526,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: encode(SUBJECT_INDEX, &cell)?,
+                value: Secret::new(encode(SUBJECT_INDEX, &cell)?),
             });
         }
         let mut codes = BTreeMap::new();
@@ -538,7 +544,7 @@ impl Shared {
             .iter()
             .find(|p| p.schema == atomic_schema("bucket"))
             .and_then(|p| match &p.expected {
-                Expected::Bytes(body) => Some(body.as_slice()),
+                Expected::Exact(body) => Some(body.expose(&busbar_kernel::seal::lend()).as_slice()),
                 Expected::Absent => None,
             })
             .map(authority_body)
@@ -586,12 +592,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value,
+                value: Secret::new(value),
             });
         }
         for (id, owner) in codes {
@@ -625,12 +631,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: encode("uc", &cell)?,
+                value: Secret::new(encode("uc", &cell)?),
             });
         }
         Ok(())
@@ -701,16 +707,14 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+        self.submit(Candidate {
             predicates: vec![],
             mutations: vec![Mutation::Put {
                 schema,
                 key: id.as_bytes().to_vec(),
-                value: body,
+                value: Secret::new(body),
             }],
-        }))
+        })
         .await
         .map(drop)
     }
@@ -761,29 +765,27 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+        self.submit(Candidate {
             predicates: vec![],
             mutations: vec![Mutation::Delete {
                 schema,
                 key: id.as_bytes().to_vec(),
             }],
-        }))
+        })
         .await
         .map(drop)
     }
 
     async fn claim(&self, name: &str, token: &str, expires_at: u64) -> Result<bool, StorageError> {
-        let kind = kind(name);
+        let address: ClaimAddress = Arc::new((kind(name), token.to_string()));
+        let kind = address.0.as_str();
         self.store
-            .register_claims(&kind)
+            .register_claims(kind)
             .map_err(|error| failed("register claim cleanup", error))?;
-        let address = (kind.clone(), token.to_string());
         let state = {
             let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
             claims
-                .entry(address.clone())
+                .entry(Arc::clone(&address))
                 .or_insert_with(|| {
                     Arc::new(tokio::sync::Mutex::new(ClaimState {
                         expires_at,
@@ -795,7 +797,7 @@ impl Shared {
         };
         let lease = ClaimLease {
             entries: &self.claims,
-            address,
+            address: Arc::clone(&address),
             state,
         };
         // One delivery owner resolves this address at a time. A competing caller
@@ -812,8 +814,8 @@ impl Shared {
             ));
         }
         let outcome = match claim.pending {
-            Some(claim) => self.store.retry_claim(&kind, claim).await,
-            None => self.store.redeem(&kind, token, expires_at).await,
+            Some(claim) => self.store.retry_claim(kind, claim).await,
+            None => self.store.redeem(kind, token, expires_at).await,
         }
         .map_err(|e| failed("redeem", e))?;
         match outcome {
@@ -888,7 +890,7 @@ impl Shared {
                 Some(Predicate {
                     schema: atomic_schema("family"),
                     key: family_id.into_bytes(),
-                    expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                    expected: guard(raw),
                 })
             } else {
                 None
@@ -936,7 +938,7 @@ impl Shared {
                 encode(kind_name, &cell)?
             };
             let mut candidate = Self::candidate(&schema, id, raw, body);
-            let request = Arc::make_mut(&mut candidate);
+            let request = &mut candidate;
             if let Some(guard) = family_guard {
                 request.predicates.push(guard);
             }
@@ -1014,10 +1016,10 @@ impl Shared {
             key: id.as_str(),
             at: now,
         };
-        let name = format!("ix.{ix}");
+        let name = ix_name(ix);
         for _ in 0..SWAP_ATTEMPTS {
-            let raw = self.authority(&name, &id).await?;
-            let candidate = Self::candidate(&atomic_schema(&name), &id, raw, encode(&name, &row)?);
+            let raw = self.authority(name, &id).await?;
+            let candidate = Self::candidate(&atomic_schema(name), &id, raw, encode(name, &row)?);
             if self.submit(candidate).await? == Decision::Applied {
                 return Ok(());
             }
@@ -1028,7 +1030,7 @@ impl Shared {
     }
 
     async fn client_of(&self, ix: &str, key: &str) -> Result<Option<String>, StorageError> {
-        let Some(body) = self.get_body(&format!("ix.{ix}"), &digest(key)).await? else {
+        let Some(body) = self.get_body(ix_name(ix), &digest(key)).await? else {
             return Ok(None);
         };
         decode::<IndexRow>(ix, &body).map(|row| Some(row.client))
@@ -1126,7 +1128,7 @@ impl Shared {
             Times::merge(&mut cell.b.times, window);
             let mut request =
                 Self::candidate(&atomic_schema("family"), &id, raw, encode("family", &cell)?);
-            let request_body = Arc::make_mut(&mut request);
+            let request_body = &mut request;
 
             let index = self.authority("ix.fam", &id).await?;
             let owner: Option<IndexRow> = index
@@ -1139,7 +1141,7 @@ impl Shared {
             request_body.predicates.push(Predicate {
                 schema: atomic_schema("ix.fam"),
                 key: id.as_bytes().to_vec(),
-                expected: index.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(index),
             });
             let mut removed = 0;
             if let Some(owner) = owner {
@@ -1164,7 +1166,7 @@ impl Shared {
                     request_body.predicates.push(Predicate {
                         schema: atomic_schema("bucket"),
                         key: bucket_id.as_bytes().to_vec(),
-                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                        expected: guard(bucket_raw),
                     });
                     if removed != 0 {
                         bucket.v = bucket.v.checked_add(1).ok_or_else(|| {
@@ -1175,7 +1177,7 @@ impl Shared {
                         request_body.mutations.push(Mutation::Put {
                             schema: atomic_schema("bucket"),
                             key: bucket_id.into_bytes(),
-                            value: encode("bucket", &bucket)?,
+                            value: Secret::new(encode("bucket", &bucket)?),
                         });
                         self.bucket_indexes(request_body, &bucket.b, now).await?;
                     }
@@ -1183,7 +1185,7 @@ impl Shared {
                     request_body.predicates.push(Predicate {
                         schema: atomic_schema("bucket"),
                         key: bucket_id.into_bytes(),
-                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                        expected: guard(bucket_raw),
                     });
                 }
             }
@@ -1232,12 +1234,13 @@ impl Shared {
         subject: &str,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        let row = SessionRow {
-            subject: subject.to_string(),
+        let key = digest(id);
+        let row = SessionRowOut {
+            subject,
             until: now_secs() + ttl.as_secs(),
-            id: digest(id),
+            id: &key,
         };
-        self.put("session", &digest(id), &row).await
+        self.put("session", &key, &row).await
     }
 
     pub(crate) async fn session_subject(&self, id: &str) -> Result<Option<String>, StorageError> {
@@ -1263,19 +1266,20 @@ impl Shared {
         if self.session_subject_at(id, now).await?.is_none() {
             return Ok(());
         }
-        let row_id = format!("{}:{}", digest(id), digest(key));
-        let row = StakeRow {
+        let row_id = StakeId::of(id, key);
+        let nonce = nonce()?;
+        let row = StakeRowOut {
             approve,
             until: now + ttl.as_secs(),
-            id: row_id,
-            nonce: nonce()?,
+            id: row_id.as_str(),
+            nonce: &nonce,
         };
-        self.put("stake", &row.id, &row).await
+        self.put("stake", row.id, &row).await
     }
 
     async fn stake_row(&self, id: &str, key: &str) -> Result<Option<StakeRow>, StorageError> {
         Ok(self
-            .get::<StakeRow>("stake", &format!("{}:{}", digest(id), digest(key)))
+            .get::<StakeRow>("stake", StakeId::of(id, key).as_str())
             .await?
             .filter(|row| row.until > now_secs()))
     }
@@ -1288,12 +1292,14 @@ impl Shared {
         let Some(row) = self.stake_row(id, key).await? else {
             return Ok(None);
         };
-        let mut token = format!("{}:{}", digest(id), digest(key));
-        if !row.nonce.is_empty() {
-            token = format!("{token}:{}", row.nonce);
+        let mut token = StakeId::of(id, key);
+        if !row.nonce.is_empty() && !token.push(&row.nonce) {
+            return Err(StorageError::new(
+                "oauth_as store: a stake row's nonce is longer than any this store writes",
+            ));
         }
         Ok(self
-            .claim("spent", &token, row.until)
+            .claim("spent", token.as_str(), row.until)
             .await?
             .then_some(row.approve))
     }
@@ -1360,6 +1366,15 @@ impl Shared {
     }
 }
 
+/// A [`SessionRow`] as it is written: the same fields in the same order (the same stored bytes),
+/// borrowed from the caller, since the row is only encoded here.
+#[derive(Serialize)]
+struct SessionRowOut<'a> {
+    subject: &'a str,
+    until: u64,
+    id: &'a str,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionRow {
     pub(crate) subject: String,
@@ -1367,6 +1382,61 @@ pub(crate) struct SessionRow {
     /// The row's own id, so the sweep can delete it.
     #[serde(default)]
     pub(crate) id: String,
+}
+
+/// A stake row's id, `digest(id):digest(key)` (64 + 1 + 64 hex digits), and a spend token's
+/// `:nonce` after it, written on the stack.
+struct StakeId {
+    buf: [u8; STAKE_ID + 1 + STAKE_NONCE_MAX],
+    len: usize,
+}
+
+/// The length of `digest(id):digest(key)`.
+const STAKE_ID: usize = 64 + 1 + 64;
+/// The longest nonce a spend token carries: twice what [`nonce`] writes (32 hex digits).
+const STAKE_NONCE_MAX: usize = 64;
+
+impl StakeId {
+    fn of(id: &str, key: &str) -> Self {
+        let mut buf = [0u8; STAKE_ID + 1 + STAKE_NONCE_MAX];
+        // Lowercase hex, as `digest` writes it; each half is exactly 64 digits.
+        let _ = hex::encode_to_slice(
+            busbar_contract::crypto::sha256(id.as_bytes()),
+            &mut buf[..64],
+        );
+        buf[64] = b':';
+        let _ = hex::encode_to_slice(
+            busbar_contract::crypto::sha256(key.as_bytes()),
+            &mut buf[65..STAKE_ID],
+        );
+        Self { buf, len: STAKE_ID }
+    }
+
+    /// Append `:nonce`; `false`, and nothing appended, when it does not fit.
+    fn push(&mut self, nonce: &str) -> bool {
+        let end = self.len + 1 + nonce.len();
+        let Some(room) = self.buf.get_mut(self.len..end) else {
+            return false;
+        };
+        room[0] = b':';
+        room[1..].copy_from_slice(nonce.as_bytes());
+        self.len = end;
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
+    }
+}
+
+/// A [`StakeRow`] as it is written: the same fields in the same order (the same stored bytes),
+/// borrowed, since the row is only encoded here.
+#[derive(Serialize)]
+struct StakeRowOut<'a> {
+    approve: bool,
+    until: u64,
+    id: &'a str,
+    nonce: &'a str,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1385,6 +1455,13 @@ pub(crate) const LOST_ROW: &str = "oauth_as: a lapsed row was not reclaimed this
 pub(crate) const LOST_REPLAY: &str = "oauth_as: a lapsed replay row was not reclaimed this tick";
 
 /// One claimed replay id, kept beside its claim so the sweep can count what it reclaims.
+/// A [`ReplayRow`] as it is written: the same fields in the same order, borrowing the id.
+#[derive(Serialize)]
+struct ReplayRowOut<'a> {
+    id: &'a str,
+    until: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ReplayRow {
     pub(crate) id: String,
@@ -2009,8 +2086,8 @@ impl Storage for SharedStorage {
         let key = digest(id);
         let won = s.claim("replay", &key, secs_of(expires_at)).await?;
         if won {
-            let row = ReplayRow {
-                id: key.clone(),
+            let row = ReplayRowOut {
+                id: &key,
                 until: secs_of(expires_at),
             };
             s.put("replay", &key, &row).await?;

@@ -35,8 +35,8 @@ use super::signer::{Live, SignFailure, SignerHandle, SIGN_DEADLINE};
 pub(crate) mod original;
 use busbar_contract::storage::StorageCredit;
 use original::{
-    OriginalNotaryReady, OriginalPageCursor, OriginalPageReceipt, OriginalPageReceiver,
-    OriginalPageTarget, PageDelivery, PageFunding,
+    OriginalNotaryReady, OriginalPageCursor, OriginalPageReceipt, OriginalPageTarget, PageDelivery,
+    PageFunding,
 };
 
 /// The longest backoff after a refused store or a failing signer.
@@ -136,7 +136,7 @@ impl HeadFeed {
 
     pub(crate) fn register_original_receiver(
         &self,
-        receiver: std::sync::Weak<dyn OriginalPageReceiver>,
+        receiver: std::sync::Weak<crate::root::plane_node::RetainedBook>,
     ) -> Result<(), &'static str> {
         self.original.register(receiver)
     }
@@ -895,7 +895,7 @@ impl Notary {
             self.halt("original page receiver is unavailable".into());
             return false;
         };
-        match receiver.deliver_original_page(receipt, inflight.cursor) {
+        match crate::root::plane_node::deliver_original_page(&receiver, receipt, inflight.cursor) {
             PageDelivery::Complete => true,
             PageDelivery::Pending(next) if next.advances(inflight.cursor, inflight.page.upper) => {
                 inflight.cursor = Some(next);
@@ -965,7 +965,12 @@ impl Notary {
                 self.halt("original page retention bound is unavailable".into());
                 return;
             };
-            match receiver.fund_original_page(target, bytes, funding.cursor) {
+            match crate::root::plane_node::fund_original_page(
+                &receiver,
+                target,
+                bytes,
+                funding.cursor,
+            ) {
                 PageFunding::Reserved(credit, upper)
                     if credit.len() >= bytes
                         && funding.page.upper.is_none_or(|held| held == upper) =>

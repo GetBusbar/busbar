@@ -8,6 +8,8 @@
 //! - `ByGroup`: one insert and one remove by key, and one `take_group` of a whole group, at group
 //!   sizes 1 and 16, beside 1 and 1,024 rows of other groups.
 //! - `Bits<4>::keep_only`.
+//! - P0b: the ordered forms (binary search over names, case-blind names, numbers; `partition_point`
+//!   over ranges), each beside a scan of the first and of the last row, at 1, 3, 16 and 256 rows.
 //!
 //! Each operation is timed in batches of `B_LOOKUP_BATCH` (default 256), so the clock's own cost is
 //! spread over the batch; a sample is one batch's time divided by its size. It prints, for each of
@@ -141,13 +143,123 @@ fn bits(plan: &Plan) {
     });
 }
 
+/// P0b (GROUP-lookups R1.5): the ordered forms that could replace a scan over a frozen list, each
+/// beside a scan that hits the first row and one that hits the last, at 1, 3, 16 and 256 rows.
+fn ordered_forms(plan: &Plan) {
+    for rows in [1usize, 3, 16, 256] {
+        // (2) Twelve-byte names in key order: binary search against a scan.
+        let names: Vec<(Box<str>, u32)> = (0..rows)
+            .map(|i| (format!("provider-{:03}", i).into_boxed_str(), i as u32))
+            .collect();
+        let first = names[0].0.clone();
+        let last = names[rows - 1].0.clone();
+        for (label, probe) in [("first", &first), ("last", &last)] {
+            measure(
+                plan,
+                &format!("names binary_search_by {label} rows={rows}"),
+                || {
+                    let key: &str = black_box(probe);
+                    black_box(names.binary_search_by(|(name, _)| (**name).cmp(key)).ok());
+                },
+            );
+            measure(plan, &format!("names scan {label} rows={rows}"), || {
+                let key: &str = black_box(probe);
+                black_box(names.iter().find(|(name, _)| **name == *key));
+            });
+            // (3) The same, compared case-blind (the probe is upper-cased).
+            let shouting = probe.to_ascii_uppercase();
+            measure(
+                plan,
+                &format!("names case-blind binary_search_by {label} rows={rows}"),
+                || {
+                    let key: &str = black_box(&shouting);
+                    black_box(
+                        names
+                            .binary_search_by(|(name, _)| {
+                                name.bytes()
+                                    .map(|b| b.to_ascii_lowercase())
+                                    .cmp(key.bytes().map(|b| b.to_ascii_lowercase()))
+                            })
+                            .ok(),
+                    );
+                },
+            );
+            measure(
+                plan,
+                &format!("names case-blind scan {label} rows={rows}"),
+                || {
+                    let key: &str = black_box(&shouting);
+                    black_box(
+                        names
+                            .iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(key)),
+                    );
+                },
+            );
+        }
+        // (4) Numbers in key order.
+        let ids: Vec<(u64, u32)> = (0..rows)
+            .map(|i| {
+                (
+                    (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 8,
+                    i as u32,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut sorted = ids.clone();
+        sorted.sort_by_key(|(id, _)| *id);
+        for (label, want) in [("first", ids[0].0), ("last", ids[rows - 1].0)] {
+            measure(
+                plan,
+                &format!("ids binary_search_by_key {label} rows={rows}"),
+                || {
+                    let key = black_box(want);
+                    black_box(sorted.binary_search_by_key(&key, |(id, _)| *id).ok());
+                },
+            );
+            measure(plan, &format!("ids scan {label} rows={rows}"), || {
+                let key = black_box(want);
+                black_box(ids.iter().find(|(id, _)| *id == key));
+            });
+        }
+        // (5) Disjoint ranges (first address, last address) in order: partition_point against a
+        // scan with a two-compare test.
+        let ranges: Vec<(u32, u32)> = (0..rows as u32).map(|i| (i * 100, i * 100 + 50)).collect();
+        for (label, addr) in [("first", 10u32), ("last", (rows as u32 - 1) * 100 + 10)] {
+            measure(
+                plan,
+                &format!("ranges partition_point {label} rows={rows}"),
+                || {
+                    let a = black_box(addr);
+                    let at = ranges.partition_point(|(from, _)| *from <= a);
+                    black_box(
+                        at.checked_sub(1)
+                            .and_then(|at| ranges.get(at))
+                            .is_some_and(|(_, to)| a <= *to),
+                    );
+                },
+            );
+            measure(plan, &format!("ranges scan {label} rows={rows}"), || {
+                let a = black_box(addr);
+                black_box(ranges.iter().any(|(from, to)| *from <= a && a <= *to));
+            });
+        }
+    }
+}
+
 fn main() {
     let plan = Plan {
         runs: env_or("B_LOOKUP_RUNS", 5),
         samples: env_or("B_LOOKUP_SAMPLES", 2_000),
         batch: env_or("B_LOOKUP_BATCH", 256),
     };
+    if std::env::var_os("B_LOOKUP_ONLY_P0B").is_some() {
+        keyed_rows(&plan);
+        ordered_forms(&plan);
+        return;
+    }
     keyed_rows(&plan);
     grouped_rows(&plan);
     bits(&plan);
+    ordered_forms(&plan);
 }

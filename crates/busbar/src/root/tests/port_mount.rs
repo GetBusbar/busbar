@@ -189,7 +189,12 @@ mod optional_principal {
     fn a_credential_the_chain_identifies_is_the_verified_principal() {
         assert_eq!(
             seen_of(Ok((principal("alice"), GovCtx::default()))),
-            Seen::Verified("alice".into())
+            Seen::Verified(Principal {
+                id: "alice".into(),
+                name: None,
+                roles: Vec::new(),
+                ttl_secs: None,
+            })
         );
     }
 

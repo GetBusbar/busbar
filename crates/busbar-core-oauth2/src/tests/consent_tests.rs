@@ -166,18 +166,18 @@ fn a_stake_is_spent_only_with_the_handle_it_was_answered_with() {
     let sessions = Sessions::default();
     sessions.open("busbar-operator", "session-1".to_string());
     let key = super::request_key("client", "/authorize?client_id=client");
-    sessions.stake("session-1", super::handled_key(&key, "t-1"), true);
+    sessions.stake("session-1", super::handled_key(key.clone(), "t-1"), true);
     assert_eq!(sessions.spend("session-1", &key), None);
     assert_eq!(
-        sessions.spend("session-1", &super::handled_key(&key, "t-2")),
+        sessions.spend("session-1", &super::handled_key(key.clone(), "t-2")),
         None
     );
     assert_eq!(
-        sessions.spend("session-1", &super::handled_key(&key, "t-1")),
+        sessions.spend("session-1", &super::handled_key(key.clone(), "t-1")),
         Some(true)
     );
     assert_eq!(
-        sessions.spend("session-1", &super::handled_key(&key, "t-1")),
+        sessions.spend("session-1", &super::handled_key(key.clone(), "t-1")),
         None
     );
 }
@@ -187,8 +187,8 @@ fn a_stake_is_spent_only_with_the_handle_it_was_answered_with() {
 #[test]
 fn the_consent_encoder_escapes_all_but_the_unreserved_bytes() {
     assert_eq!(
-        super::percent_encode("a b/c?d=e&f%g+h~i-j.k_l\u{e9}"),
+        super::percent_encode("a b/c?d=e&f%g+h~i-j.k_l\u{e9}").to_string(),
         "a%20b%2Fc%3Fd%3De%26f%25g%2Bh~i-j.k_l%C3%A9"
     );
-    assert_eq!(super::percent_encode(""), "");
+    assert_eq!(super::percent_encode("").to_string(), "");
 }

@@ -195,15 +195,17 @@ impl AsPlane {
         crate::consent::as_browser(browser, self.handle(request)).await
     }
 
-    pub(crate) async fn granted_scope(
+    pub(crate) async fn granted_scope<'r>(
         &self,
         client_id: &str,
-        requested: Option<&str>,
-    ) -> Result<String, oauth_as::store::StorageError> {
+        requested: Option<std::borrow::Cow<'r, str>>,
+    ) -> Result<Granted<'r>, oauth_as::store::StorageError> {
         use oauth_as::store::Storage as _;
         if let Some(raw) = requested {
-            return Ok(oauth_as::scope::ScopeSet::parse(raw)
-                .map_or_else(|_| raw.to_string(), |set| set.to_string()));
+            return Ok(match oauth_as::scope::ScopeSet::parse(&raw) {
+                Ok(set) => Granted::Parsed(set),
+                Err(_) => Granted::Raw(raw),
+            });
         }
         let client = self
             .server
@@ -213,7 +215,7 @@ impl AsPlane {
             .ok_or_else(|| {
                 oauth_as::store::StorageError::new("the client could not be resolved")
             })?;
-        Ok(granted_default(&client).to_string())
+        Ok(Granted::Parsed(granted_default(&client)))
     }
 
     pub(crate) async fn pushed(&self, request_uri: &str) -> Option<crate::cimd::Pushed> {
@@ -347,7 +349,7 @@ impl AsPlane {
         ) else {
             return;
         };
-        let key = crate::consent::handled_key(&key, handle);
+        let key = crate::consent::handled_key(key, handle);
         match store.spend(id, &key).await {
             Ok(Some(approve)) => self.sessions.plant(id, key, approve),
             Ok(None) => {}
@@ -385,6 +387,25 @@ fn staked_key<B>(request: &http::Request<B>) -> Option<String> {
             request.uri().path_and_query().map_or("", |p| p.as_str()),
         ),
     })
+}
+
+/// The scope a consent names: the requested scope as its canonical set, as the request wrote it
+/// when it does not parse, or the client's default grant. Shown through `Display` (the canonical
+/// text) where the page is written, so no text is made for it beforehand.
+pub(crate) enum Granted<'r> {
+    /// A parsed set (requested, or the client's default grant).
+    Parsed(oauth_as::scope::ScopeSet),
+    /// The requested scope as written, which does not parse as a set.
+    Raw(std::borrow::Cow<'r, str>),
+}
+
+impl std::fmt::Display for Granted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parsed(set) => set.fmt(f),
+            Self::Raw(raw) => f.write_str(raw),
+        }
+    }
 }
 
 fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeSet {

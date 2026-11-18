@@ -407,7 +407,7 @@ fn selected_sender_has_no_borrowed_legacy_fallback() {
     };
     struct Legacy;
     impl UpSend for Legacy {
-        fn send(&mut self, _: &Candidate, _: &super::UpExchange) -> Result<UpReply, SendFailed> {
+        fn send(&mut self, _: &Candidate, _: super::UpExchange) -> Result<UpReply, SendFailed> {
             panic!("an owned selected preparation must never fall back to legacy send")
         }
     }

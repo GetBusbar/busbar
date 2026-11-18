@@ -163,15 +163,116 @@ fn abandoning_one_stream_wipes_only_its_pending_credential() {
     seals
         .seal_names(3, &mut second, &second_names, true, true)
         .unwrap();
-    let value = &seals.0[0].value;
-    let pointer = value.as_ptr();
-    let len = value.len();
-    let (_, wiped, _) = crate::support::observe_wipe(pointer, len, || seals.clear_on(1));
-    assert_eq!(wiped, Some(true));
+    // The abandoned seal's slot is kept for the connection's next seal (GROUP-records K7, row
+    // 57f), so its credential is wiped in place, not at a free: every byte of the slot's storage
+    // is zero once the stream is cleared, and the storage is still the slot's.
+    let pointer = seals.held[0].value.allocation().as_ptr();
+    assert!(seals.held[0]
+        .value
+        .allocation()
+        .windows(b"first-pending-credential".len())
+        .any(|w| w == b"first-pending-credential"));
+    seals.clear_on(1);
+    let slot = seals
+        .held
+        .iter()
+        .find(|s| s.value.allocation().as_ptr() == pointer)
+        .expect("the abandoned seal's storage stays with its slot");
+    assert!(slot.value.is_empty() && slot.filler.is_empty());
+    assert!(
+        slot.value.allocation().iter().all(|b| *b == 0),
+        "the credential is wiped in place"
+    );
     assert!(!seals.pending_on(1));
     assert!(seals.pending_on(3));
     let mut wire = second.unwrap().0[0].1.clone();
     seals.splice(&mut wire).unwrap();
     assert_eq!(wire, b"second-pending-credential");
+    assert!(!seals.pending());
+}
+
+/// One round on a warm connection: seal an opening, splice it, and clear a second stream's seal.
+fn round(seals: &mut Seals, secret: &[u8]) {
+    let mut o = opening(secret);
+    seals.seal(&mut o, true, true).unwrap();
+    let (fields, _) = o.unwrap();
+    let mut wire = [b"authorization: ".as_slice(), &fields[0].1, b"\r\n"].concat();
+    seals.splice(&mut wire).unwrap();
+    assert_eq!(
+        wire,
+        [b"authorization: ".as_slice(), secret, b"\r\n"].concat()
+    );
+    let mut other = opening(secret);
+    let names = take_sealed_names(&mut other.as_mut().unwrap().0);
+    seals.seal_names(7, &mut other, &names, true, true).unwrap();
+    assert!(seals.pending_on(7));
+    seals.clear_on(7);
+    assert!(!seals.pending() && !seals.pending_on(7));
+}
+
+#[test]
+fn a_warm_connection_reuses_its_seal_slots_and_wipes_what_left() {
+    // GROUP-records K7 (row 57f): a spliced or cleared seal is emptied in place, its value wiped,
+    // and the connection's next seal is written into the same storage.
+    let secret = b"Bearer s3cr3t-value-with-length";
+    let mut seals = Seals::default();
+    for _ in 0..3 {
+        round(&mut seals, secret);
+    }
+    let slots = seals.held.len();
+    let filler_at = seals.held[0].filler.as_ptr();
+    let value_cap = seals.held[0].value.capacity();
+    for _ in 0..8 {
+        round(&mut seals, secret);
+    }
+    assert_eq!(
+        seals.held.len(),
+        slots,
+        "no slot is made once the connection is warm"
+    );
+    assert_eq!(
+        seals.held[0].filler.as_ptr(),
+        filler_at,
+        "the filler is refilled in place"
+    );
+    assert_eq!(
+        seals.held[0].value.capacity(),
+        value_cap,
+        "the value keeps its storage"
+    );
+    assert!(
+        seals
+            .held
+            .iter()
+            .all(|s| s.value.is_empty() && s.filler.is_empty()),
+        "every slot that left was emptied: no credential byte stays live in a free slot"
+    );
+}
+
+#[test]
+fn splicing_keeps_the_unspliced_seals_in_their_order() {
+    let mut seals = Seals::default();
+    let mut o = opening(b"first-credential");
+    let fields = &mut o.as_mut().unwrap().0;
+    fields.push(("x-key".into(), b"second-credential".to_vec()));
+    fields.push(("x-third".into(), b"third-credential".to_vec()));
+    fields.push((SEALED_FIELDS_FIELD.into(), b"x-key, x-third".to_vec()));
+    seals.seal(&mut o, true, true).unwrap();
+    let fields = &o.as_ref().unwrap().0;
+    let first = fields[0].1.clone();
+    let second = fields.iter().find(|(n, _)| n == "x-key").unwrap().1.clone();
+    let third = fields
+        .iter()
+        .find(|(n, _)| n == "x-third")
+        .unwrap()
+        .1
+        .clone();
+    // Only the middle seal's filler is on the wire: it alone is spliced.
+    let mut wire = second.clone();
+    seals.splice(&mut wire).unwrap();
+    assert_eq!(wire, b"second-credential");
+    let mut wire = [first.as_slice(), b" ", &third].concat();
+    seals.splice(&mut wire).unwrap();
+    assert_eq!(wire, b"first-credential third-credential");
     assert!(!seals.pending());
 }

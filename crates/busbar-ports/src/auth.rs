@@ -9,7 +9,9 @@ use std::sync::Arc;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::auth::{self as abi, tag as t};
 use busbar_plugin_abi::host_side::caller::BoxFut;
-use busbar_plugin_abi::records::{tag, FactRec, Full, Rec, RecErr, Records, Reply, U64Rec, Writer};
+use busbar_plugin_abi::records::{
+    record_size, tag, FactRec, Fixed, Full, PairRec, Rec, RecErr, Records, Reply, U64Rec, Writer,
+};
 use busbar_plugin_abi::types::Pair;
 
 use crate::{CallCx, PortError};
@@ -105,18 +107,40 @@ impl Identity {
         self.replay.as_ref().map(|(key, ttl_s)| (&key[..], *ttl_s))
     }
 
-    /// Built by core for a verified ticket (§12.11): ID_SUBJECT = the ticket subject, ID_CLAIM `scope`.
+    /// Built by core for a verified ticket (§12.11): ID_SUBJECT = the ticket subject, ID_CLAIM `scope`. The two
+    /// records are written once, into the buffer they live in, sized exactly.
     pub fn from_ticket(subject: &str, scope: &str) -> Identity {
-        let mut w = Reply::with_capacity(32 + subject.len() + scope.len());
-        // A Reply refuses only past its 16 MiB cap; a ticket subject and scope are bounded far below it (§12.11).
-        let written = w
-            .put_text(tag::ID_SUBJECT, subject)
-            .and_then(|()| w.put_pair(tag::ID_CLAIM, "scope", scope.as_bytes()));
-        debug_assert!(written.is_ok(), "a ticket identity fits a Reply");
-        let id_len = u32::try_from(w.len()).unwrap_or(0);
+        let room = record_size(subject.len())
+            .zip(record_size(
+                size_of::<PairRec>() + "scope".len() + scope.len(),
+            ))
+            .and_then(|(a, b)| a.checked_add(b))
+            .unwrap_or(0);
+        Self::written(room, |w| {
+            w.put_text(tag::ID_SUBJECT, subject)
+                .and_then(|()| w.put_pair(tag::ID_CLAIM, "scope", scope.as_bytes()))
+        })
+    }
+
+    /// Built by core for a principal it verified outside the auth chain (a key, the chain's principal, a carrier's,
+    /// recovery work): one ID_SUBJECT record, written once into the buffer it lives in. Called once per request
+    /// that is served as that principal; shared by count from there.
+    pub fn of_subject(subject: &str) -> Identity {
+        Self::written(16 + subject.len(), |w| w.put_text(tag::ID_SUBJECT, subject))
+    }
+
+    /// An identity whose records `write` puts into `room` zeroed bytes (the image interface's `Fixed` writer:
+    /// nothing grows, nothing is copied); the unwritten rest is wiped and dropped.
+    fn written(room: usize, write: impl FnOnce(&mut Fixed<'_>) -> Result<(), Full>) -> Identity {
+        let mut recs = SecureVec::zeroed(room);
+        let mut w = Fixed::new(&mut recs[..]);
+        let fits = write(&mut w);
+        debug_assert!(fits.is_ok(), "an identity fits its room");
+        let len = w.len();
+        recs.truncate(len);
         Identity {
-            recs: Arc::new(SecureVec::from(w.as_bytes())),
-            id_len,
+            recs: Arc::new(recs),
+            id_len: u32::try_from(len).unwrap_or(0),
             cache_s: None,
             expires_at_s: None,
             replay: None,
@@ -609,5 +633,43 @@ mod tests {
         let mut w = Reply::new();
         w.put_text(t::ISSUED_WANTED, "id").unwrap();
         assert!(decode_login_identity(Records::new(w.as_bytes())).is_err());
+    }
+
+    /// What the base commit built for a ticket and for a subject: a growing `Reply`, then its bytes.
+    fn replied(subject: &str, scope: Option<&str>) -> Vec<u8> {
+        let mut w = Reply::with_capacity(32 + subject.len());
+        w.put_text(tag::ID_SUBJECT, subject).unwrap();
+        if let Some(scope) = scope {
+            w.put_pair(tag::ID_CLAIM, "scope", scope.as_bytes())
+                .unwrap();
+        }
+        w.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn an_identity_written_in_place_has_the_bytes_the_reply_built() {
+        let long = "s".repeat(300);
+        for subject in ["", "alice", long.as_str()] {
+            assert_eq!(
+                Identity::of_subject(subject).identity_records(),
+                replied(subject, None).as_slice(),
+                "subject of {} bytes",
+                subject.len()
+            );
+            assert_eq!(Identity::of_subject(subject).subject(), subject);
+        }
+        for (subject, scope) in [
+            ("svc-browser", "realtime"),
+            ("s", ""),
+            (long.as_str(), "a-longer-scope-1"),
+        ] {
+            let id = Identity::from_ticket(subject, scope);
+            assert_eq!(
+                id.identity_records(),
+                replied(subject, Some(scope)).as_slice(),
+                "ticket {} bytes, scope {scope:?}",
+                subject.len()
+            );
+        }
     }
 }

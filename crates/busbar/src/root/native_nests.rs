@@ -12,7 +12,7 @@ use busbar_kernel::guest::{Claimant, GuestList, Matched};
 use busbar_kernel::host_services::{InvocationContext, KernelServices, Nest, NestReply};
 use busbar_kernel::host_units::UnitRecord;
 use busbar_kernel::plane_driver::port::{HttpHead, HttpIn, ServeIn, Served};
-use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
+use busbar_kernel::plane_driver::port_auth::{Credentials, Principal, Subject};
 use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::HeadFields;
@@ -154,7 +154,6 @@ impl NativeNests {
             Ok(invocation) => invocation,
             Err(why) => return NestReply::Unserved(why),
         };
-        let identity = subject_identity(&key.id);
         let (path, query) = nest
             .ask
             .target
@@ -186,13 +185,12 @@ impl NativeNests {
                 ),
                 creds: Credentials {
                     bearer: None,
-                    principal: Principal::Verified(&identity),
+                    principal: Principal::Verified(Subject::Key(Arc::clone(key))),
                     operator: false,
                     signed: None,
                 },
                 audience: seat.audience.as_deref().unwrap_or_default(),
                 now_s: busbar_kernel::store::now(),
-                principal: Some(Arc::from(key.id.as_str())),
                 unit: Some(unit),
                 upstream: seat.upstream.clone(),
                 client: Some(Arc::clone(&reply) as Arc<dyn ClientSink>),
