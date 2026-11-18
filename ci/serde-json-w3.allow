@@ -101,10 +101,8 @@ crates/busbar-core-admin/src/v1/json/config_forms/store_secret_tests.rs         
 crates/busbar-core-admin/src/v1/json/config_forms/tables_tests.rs                          # D
 crates/busbar-core-admin/src/v1/json/config_forms/tables.rs                                # D
 crates/busbar-core-admin/src/v1/json/config_forms/tests.rs                                 # D
-crates/busbar-core-admin/src/v1/json/cursor.rs                                             # D
 crates/busbar-core-admin/src/v1/json/envelope.rs                                           # D
 crates/busbar-core-admin/src/v1/json/evolution.rs                                          # D
-crates/busbar-core-admin/src/v1/json/generation.rs                                         # D
 crates/busbar-core-admin/src/v1/json/handlers.rs                                           # D
 crates/busbar-core-admin/src/v1/json/hook_attachments.rs                                   # D
 crates/busbar-core-admin/src/v1/json/instance_settings.rs                                  # D
@@ -136,7 +134,6 @@ crates/busbar-core-oauth2/src/config_schema.rs                                  
 crates/busbar-core-oauth2/src/config.rs                                                    # D
 crates/busbar-core-oauth2/src/tests/config_tests.rs                                        # D
 crates/busbar-kernel/Cargo.toml                                                            # D
-crates/busbar-kernel/src/admin/gate.rs                                                     # D
 crates/busbar-kernel/src/auth/tests/instances_tests.rs                                     # D
 crates/busbar-kernel/src/auth/tests/login_tests.rs                                         # D
 crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs                                  # D
@@ -166,7 +163,6 @@ crates/busbar-kernel/src/config/tests/named_map_tests.rs                        
 crates/busbar-kernel/src/config/tests/overlay_bytes_tests.rs                               # D
 crates/busbar-kernel/src/config/tests/overlay_native_tests.rs                              # D
 crates/busbar-kernel/src/config/tests/overlay_tests.rs                                     # D
-crates/busbar-kernel/src/config/tests/patch_tests.rs                                       # D
 crates/busbar-kernel/src/config/tests/plane_boot_validation_tests.rs                       # D
 crates/busbar-kernel/src/config/tests/provider_debug_redaction_tests.rs                    # D
 crates/busbar-kernel/src/config/tests/provider_grammar_tests.rs                            # D
@@ -184,8 +180,6 @@ crates/busbar-kernel/src/host_record_bootstrap.rs                               
 crates/busbar-kernel/src/oauth_as/seam.rs                                                  # D
 crates/busbar-kernel/src/observe.rs                                                        # D
 crates/busbar-kernel/src/off_path/export.rs                                                # D
-crates/busbar-kernel/src/off_path/governance/persistence/prices.rs                         # D
-crates/busbar-kernel/src/off_path/governance/persistence/recovery_tests.rs                 # D
 crates/busbar-kernel/src/off_path/governance/principal_transition.rs                       # D
 crates/busbar-kernel/src/off_path/plane_registry.rs                                        # D
 crates/busbar-kernel/src/persistence/observations.rs                                       # D
@@ -199,10 +193,8 @@ crates/busbar-kernel/src/tests/host_disk_export_tests.rs                        
 crates/busbar-kernel/src/tests/observe_tests.rs                                            # D
 crates/busbar-kernel/src/tests/opened_secrets_tests.rs                                     # D
 crates/busbar-kernel/tests/authoring.rs                                                    # D
-crates/busbar-kernel/tests/declared_styles_install.rs                                      # D
 crates/busbar-kernel/tests/grammar_generation.rs                                           # D
 crates/busbar-kernel/tests/hook_message_cap_1_5_5.rs                                       # D
-crates/busbar-kernel/tests/native_provider_catalog.rs                                      # D
 crates/busbar-kernel/tests/operator_patch_reference.rs                                     # D
 crates/busbar-kernel/tests/removed_w2g_keys.rs                                             # D
 crates/busbar-kernel/tests/resource_ownership.rs                                           # D

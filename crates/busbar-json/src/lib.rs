@@ -109,6 +109,19 @@ impl Error {
     pub fn is_eof(&self) -> bool {
         self.0.is_eof()
     }
+
+    /// The refusal in its own words: the [`Display`](fmt::Display) text without its
+    /// ` at line L column C` suffix (and so without any input). The position stays readable
+    /// through [`Error::line`] and [`Error::column`].
+    pub fn message(&self) -> String {
+        let text = self.0.to_string();
+        let shown = shown(&text, self.0.line(), self.0.column());
+        let marker = format!(" at line {} column {}", self.0.line(), self.0.column());
+        shown
+            .strip_suffix(marker.as_str())
+            .unwrap_or(shown)
+            .to_owned()
+    }
 }
 
 impl From<sonic_rs::Error> for Error {

@@ -202,6 +202,25 @@ fn json_error_never_echoes_input() {
     }
 }
 
+/// The refusal's own words: `message()` is the Display text without its position suffix.
+#[test]
+fn json_error_message_drops_the_position() {
+    let error = json::parse::<BTreeMap<String, u64>>(br#"{"n":"hunter2"}"#)
+        .expect_err("a string is no u64");
+    let end = format!(" at line 1 column {}", error.column());
+    let message = error.message();
+    assert!(!message.is_empty());
+    assert!(!message.contains(" at line "), "{message:?}");
+    assert_eq!(format!("{message}{end}"), error.to_string());
+
+    let refused = json::from_value::<bool>(&json::json!("x")).expect_err("a string is no bool");
+    assert!(
+        !refused.message().contains(" at line "),
+        "{:?}",
+        refused.message()
+    );
+}
+
 /// What a deserializer handed a test-local (foreign) type.
 #[derive(Debug, PartialEq)]
 enum Seen {

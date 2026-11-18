@@ -166,7 +166,7 @@ fn refusal(status: u16, code: &str, reason: &str, message: &str) -> Response {
         code,
         Some(reason),
         message,
-        &serde_json::Value::Object(serde_json::Map::new()),
+        &busbar_contract::json::json!({}),
     )
 }
 

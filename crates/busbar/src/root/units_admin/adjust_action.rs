@@ -153,7 +153,7 @@ pub(crate) async fn adjust_request(
         }
         // The claim may have crashed before persisting its binding. No effect may be retried.
         let mut response = super::super::json_answer(serde_json::to_vec(&serde_json::json!({
-            "error": busbar_kernel::admin::gate::error_object("action_in_flight", None, "The action is in flight or requires recovery", &serde_json::json!({}), &busbar_kernel::admin::gate::current_request_id()),
+            "error": busbar_kernel::admin::gate::error_object("action_in_flight", None, "The action is in flight or requires recovery", &busbar_contract::json::json!({}), &busbar_kernel::admin::gate::current_request_id()),
             "operation_id": operation_id, "effect": "unknown", "recovery": "reconcile_ledger_recovery"
         })).map_err(|_| GovernanceError::Store)?);
         response.status = 409;

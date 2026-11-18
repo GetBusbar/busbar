@@ -131,13 +131,14 @@ impl StoredEntry {
     }
 
     pub fn from_value(key: EntryKey, value: &[u8]) -> std::result::Result<Self, String> {
-        let json: EntryJson<serde_json::Value> = serde_json::from_slice(value)
+        let json: EntryJson<busbar_contract::json::Value> = busbar_contract::json::parse(value)
             .map_err(|e| format!("card entry {key}: not an entry: {e}"))?;
         if json.v != 1 {
             return Err(format!("card entry {key}: version {} is not known", json.v));
         }
         let card = CardFields::from_bytes(
-            &serde_json::to_vec(&json.card).map_err(|e| format!("card entry {key}: {e}"))?,
+            &busbar_contract::json::to_vec(&json.card)
+                .map_err(|e| format!("card entry {key}: {e}"))?,
         )?;
         let base = match json.base {
             Some(hex) => Some(
