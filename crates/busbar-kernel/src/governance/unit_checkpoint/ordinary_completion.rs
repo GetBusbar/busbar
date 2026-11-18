@@ -15,10 +15,7 @@ struct Accepted {
     revision: u64,
 }
 
-struct Applied {
-    revision: u64,
-    events: Vec<RecoveryEvent>,
-}
+struct Applied;
 
 struct State {
     accepted: Option<Accepted>,
@@ -187,10 +184,8 @@ impl OrdinarySignal {
         {
             return Err(error("ordinary terminal receipt backing not funded"));
         }
-        state.applied = Some(Applied {
-            revision: snapshot.revision,
-            events: snapshot.terminal.take().expect("validated original events"),
-        });
+        drop(snapshot.terminal.take().expect("validated original events"));
+        state.applied = Some(Applied);
         drop(state);
         self.changed.notify_one();
         Ok(())
