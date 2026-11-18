@@ -122,12 +122,6 @@ pub(crate) fn lossy_owned(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// `plane_driver`: a rendered refusal's body as the frame its encode answers with.
-#[cold]
-pub(crate) fn refusal_frame(body: &[u8]) -> std::sync::Arc<[u8]> {
-    std::sync::Arc::from(body)
-}
-
 // --- plane_driver::port_hooks ---
 
 /// `plane_driver::port_hooks`: a route-policy rejection counter's `status` label, spelled once per

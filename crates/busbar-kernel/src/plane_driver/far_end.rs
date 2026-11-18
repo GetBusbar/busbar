@@ -55,10 +55,10 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
-use busbar_contract::kept::Text;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -1301,13 +1301,10 @@ impl EgressFarEnd<'_> {
     /// The unit's pool by its shared name: the configured pool's own, or (a pool the generation
     /// does not hold) the route's name made shared once.
     fn route_pool(&self) -> Text {
-        self.egress
-            .pools
-            .get(&self.route.pool)
-            .map_or_else(
-                || Text::from(Arc::<str>::from(self.route.pool.as_str())),
-                |pool| pool.name.clone(),
-            )
+        self.egress.pools.get(&self.route.pool).map_or_else(
+            || Text::from(Arc::<str>::from(self.route.pool.as_str())),
+            |pool| pool.name.clone(),
+        )
     }
 
     fn metric_pool<'m>(pool: &'m Text, member: &'m Member) -> &'m Text {
@@ -1562,19 +1559,22 @@ impl EgressFarEnd<'_> {
         now: Dialing,
     ) -> Result<crate::auth_bindings::native::NativeCredential, busbar_ports::PortError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
-        fn pairs(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<Pair<'_>> {
-            rows.iter()
-                .filter_map(|(name, value)| {
-                    std::str::from_utf8(name).ok().map(|name| Pair {
-                        name: Str::new(name),
-                        value: Bytes::new(value),
-                    })
+        fn pairs(rows: &[(Vec<u8>, Vec<u8>)]) -> impl Iterator<Item = Pair<'_>> {
+            rows.iter().filter_map(|(name, value)| {
+                std::str::from_utf8(name).ok().map(|name| Pair {
+                    name: Str::new(name),
+                    value: Bytes::new(value),
                 })
-                .collect::<Vec<_>>()
+            })
         }
-        let plane = pairs(&request.fields);
-        let transport = pairs(defaults);
-        let headers = crate::auth::upstream_binding::upstream_head(&plane, &transport);
+        // The one list the binding is lent: the request's lines and the transport's defaults are
+        // read in place, and the list is released when the credential call returns.
+        let mut headers = Vec::with_capacity(request.fields.len() + defaults.len());
+        crate::auth::upstream_binding::upstream_head(
+            &mut headers,
+            pairs(&request.fields),
+            pairs(defaults),
+        );
         let invalid = || busbar_ports::PortError::Refused {
             code: busbar_plugin_abi::fail::refused::R_POLICY,
             text: "native outbound input is invalid".into(),

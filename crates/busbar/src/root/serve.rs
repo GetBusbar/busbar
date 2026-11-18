@@ -1619,16 +1619,16 @@ impl DataRoutes {
             .uri
             .path_and_query()
             .map_or_else(|| req.uri.path(), |t| t.as_str());
-        let head: Vec<(Vec<u8>, Vec<u8>)> = req
+        // The plane is lent the request's own head for this call: no field is copied.
+        let head = req
             .headers
             .iter()
             .filter(|(n, _)| keep_arrival_field(n.as_str().as_bytes()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+            .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()));
         let rendered = self.served.planes[plane].driver.catalog_unitless(
             req.method.as_str().as_bytes(),
             target.as_bytes(),
-            &head,
+            head,
             &names,
         );
         match rendered {
@@ -3646,9 +3646,11 @@ pub(crate) fn stated((status, fields): Head, body: Body) -> Response {
     *response.status_mut() = status;
     let headers = response.headers_mut();
     for (name, value) in fields {
+        // The value's own allocation becomes the header value (checked as `from_bytes` checks
+        // it): the head's values are handed to the response, not copied into it.
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(&name),
-            HeaderValue::from_bytes(&value),
+            HeaderValue::from_maybe_shared(Bytes::from(value)),
         ) {
             headers.append(name, value);
         }

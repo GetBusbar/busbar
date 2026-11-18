@@ -25,6 +25,13 @@ fn lines<'a>(head: &[Pair<'a>]) -> Vec<(&'a str, &'a [u8])> {
     head.iter().map(|p| (p.name.get(), p.value.get())).collect()
 }
 
+/// The head `upstream_head` writes for `plane` and `defaults`.
+fn merged<'a>(plane: &[Pair<'a>], defaults: &[Pair<'a>]) -> Vec<Pair<'a>> {
+    let mut head = Vec::new();
+    upstream_head(&mut head, plane.iter().copied(), defaults.iter().copied());
+    head
+}
+
 #[test]
 fn client_defaults_and_head_order() {
     let grpc = [
@@ -33,7 +40,7 @@ fn client_defaults_and_head_order() {
     ];
     let plane = [pair("x-request-id", "r1")];
     assert_eq!(
-        lines(&upstream_head(&plane, &grpc)),
+        lines(&merged(&plane, &grpc)),
         vec![
             ("x-request-id", &b"r1"[..]),
             ("content-type", &b"application/grpc"[..]),
@@ -43,7 +50,7 @@ fn client_defaults_and_head_order() {
     );
     let own = [pair("Content-Type", "application/grpc+proto")];
     assert_eq!(
-        lines(&upstream_head(&own, &grpc)),
+        lines(&merged(&own, &grpc)),
         vec![
             ("Content-Type", &b"application/grpc+proto"[..]),
             ("te", &b"trailers"[..])
@@ -62,7 +69,7 @@ fn the_four_handshake_names_never_reach_outbound() {
     ];
     let defaults = [pair("sec-websocket-version", "13"), pair("accept", "*/*")];
     assert_eq!(
-        lines(&upstream_head(&plane, &defaults)),
+        lines(&merged(&plane, &defaults)),
         vec![
             ("sec-websocket-protocol", &b"realtime"[..]),
             ("accept", &b"*/*"[..])

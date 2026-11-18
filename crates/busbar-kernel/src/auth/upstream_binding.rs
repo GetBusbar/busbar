@@ -37,13 +37,20 @@ pub fn scope_for<'a>(binding: &UpstreamAuth, up_scope: Option<&'a str>) -> Optio
 /// line of the carrying transport's `defaults(ROLE_CLIENT)` whose name the plane's head lacks (ASCII
 /// case-insensitive), with every `FRAMER_OWNED` name dropped from both. A plane line that states its own value
 /// keeps it (the default is not added).
-#[must_use]
-pub fn upstream_head<'a>(plane: &[Pair<'a>], defaults: &[Pair<'a>]) -> Vec<Pair<'a>> {
-    let mut head: Vec<Pair<'a>> = plane
-        .iter()
-        .filter(|p| !framer_owned(p.name.get()))
-        .copied()
-        .collect();
+///
+/// The head is written into the caller's list (cleared first): the plane's lines and the defaults
+/// are read where they already live, so the one list the binding is lent is the only one made.
+pub fn upstream_head<'a>(
+    head: &mut Vec<Pair<'a>>,
+    plane: impl IntoIterator<Item = Pair<'a>>,
+    defaults: impl IntoIterator<Item = Pair<'a>>,
+) {
+    head.clear();
+    for line in plane {
+        if !framer_owned(line.name.get()) {
+            head.push(line);
+        }
+    }
     let stated = head.len();
     for line in defaults {
         let name = line.name.get();
@@ -54,9 +61,8 @@ pub fn upstream_head<'a>(plane: &[Pair<'a>], defaults: &[Pair<'a>]) -> Vec<Pair<
         {
             continue;
         }
-        head.push(*line);
+        head.push(line);
     }
-    head
 }
 
 /// The authority core adds to the upstream head: host, then `:port` only when the URL states a port other than
