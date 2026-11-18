@@ -15,7 +15,6 @@ pub use owner::{
     GrantEpoch, MintPermit,
 };
 
-pub const GRANT_SCHEMA: &str = "grant-v1";
 const HEADER: usize = 37;
 const MAGIC: &[u8; 4] = b"BGR1";
 
