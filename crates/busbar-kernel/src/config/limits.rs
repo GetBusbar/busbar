@@ -431,7 +431,6 @@ impl LimitsResolved {
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
         }
     }
-
 }
 
 static INSTALLED: std::sync::RwLock<Option<LimitsResolved>> = std::sync::RwLock::new(None);

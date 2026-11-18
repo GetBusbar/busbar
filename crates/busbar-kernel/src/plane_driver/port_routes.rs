@@ -20,8 +20,8 @@
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::plane::{
-    ADMIN_CATALOG, ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG,
-    ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RQ_RECOVERY,
+    ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE,
+    ROUTE_RECOVERY, ROUTE_UPGRADE, RQ_RECOVERY,
 };
 use busbar_ports::plane::{PlaneIn, PlanePort, RouteInfo};
 use busbar_ports::{CallCx, PortError};
@@ -230,15 +230,6 @@ fn admin_cx() -> CallCx {
         request_id: 0,
         stack: Default::default(),
     }
-}
-
-/// `admin(ADMIN_CATALOG)`: the plane refreshes its catalog data into instance state. The answer goes to core as it
-/// is.
-///
-/// # Errors
-/// The plane refused, failed or faulted.
-pub async fn admin_catalog(port: &dyn PlanePort) -> Result<Vec<u8>, PortError> {
-    port.admin(admin_cx(), ADMIN_CATALOG, &[]).await
 }
 
 /// `admin(ADMIN_HYDRATE)`: `stored` = the records the plane asked core to keep, handed back at start.

@@ -111,7 +111,6 @@ impl Inbound {
         drop(tables);
         drop(retired);
     }
-
 }
 
 /// A listener's line ids, indexed once when it is installed.

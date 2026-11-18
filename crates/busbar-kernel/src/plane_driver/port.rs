@@ -32,9 +32,7 @@ use super::port_charge::charge;
 use super::port_egress::{PortUpstream, SessionFacts};
 use super::port_intents::{IntentHost, Namespace, Resolver};
 use super::port_money::PortMoney;
-use super::port_routes::{
-    admin_catalog, admin_hydrate, recovery_request, recovery_route, Mounted, PortRoutes,
-};
+use super::port_routes::{admin_hydrate, recovery_request, recovery_route, Mounted, PortRoutes};
 use super::port_serve::{run_session, AuditOnly, Books, Drive, Ran, UnitBooks};
 use super::port_session::{ClientSink, Effects, SessionError, ToClient};
 use super::port_upstream::{Members, UpSend};
@@ -287,14 +285,6 @@ impl PortDriver {
     #[must_use]
     pub fn port(&self) -> Arc<dyn PlanePort> {
         Arc::clone(&self.port)
-    }
-
-    /// `admin(ADMIN_CATALOG)`: the plane refreshes its catalog data.
-    ///
-    /// # Errors
-    /// The plane refused, failed or faulted.
-    pub async fn refresh_catalog(&self) -> Result<Vec<u8>, PortError> {
-        admin_catalog(&*self.port).await
     }
 
     /// `admin(ADMIN_HYDRATE)`: hands the plane the records it asked core to keep.
