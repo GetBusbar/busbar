@@ -833,7 +833,7 @@ fn replay_store(
     gov: &busbar_kernel::governance::GovState,
 ) -> busbar_kernel::governance::RecordStoreResult<busbar_kernel::persistence::scoped::ScopedStore> {
     durable::scoped_store(gov.core_store_handle()?).map_err(|error| {
-        busbar_kernel::governance::RecordStoreError(format!("admin replay scope: {error:?}"))
+        busbar_kernel::governance::RecordStoreError::from(format!("admin replay scope: {error:?}"))
     })
 }
 
@@ -1317,9 +1317,8 @@ async fn create_key_owned(
 
 
                     let Some((kind, shape)) = issued else {
-                        return Err(busbar_kernel::governance::RecordStoreError(
-                            "no linked auth plugin states the shape of the credential to issue"
-                                .to_string(),
+                        return Err(busbar_kernel::governance::RecordStoreError::fixed(
+                            "no linked auth plugin states the shape of the credential to issue",
                         ).into());
                     };
                     gov.mint_signed_with_credential_claimed_async(spec, exp, now, kind, shape, &identity_guard).await

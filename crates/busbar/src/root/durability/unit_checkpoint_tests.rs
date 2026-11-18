@@ -189,7 +189,7 @@ fn stop(_book: &TestBook) { /* All persistence crossings are awaited; no backgro
 }
 
 fn error(message: impl ToString) -> RecordStoreError {
-    RecordStoreError(message.to_string())
+    RecordStoreError::from(message.to_string())
 }
 
 fn unit() -> UnitCheckpoint {

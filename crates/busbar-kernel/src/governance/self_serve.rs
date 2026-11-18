@@ -228,7 +228,7 @@ impl GovState {
             };
         }
         Err(rendered_error(
-            RecordStoreError,
+            RecordStoreError::from,
             format_args!(
                 "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on existing \
                  rows; refusing to write over a key id already in use"

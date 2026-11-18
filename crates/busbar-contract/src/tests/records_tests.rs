@@ -507,7 +507,7 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
 
 #[test]
 fn store_error_display_wraps_the_inner_message() {
-    let e = RecordStoreError("disk full".to_string());
+    let e = RecordStoreError::from("disk full".to_string());
     assert_eq!(e.to_string(), "store error: disk full");
 }
 

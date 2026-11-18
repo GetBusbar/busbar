@@ -48,7 +48,7 @@ pub(crate) struct SelectedAuditIdentity {
 }
 
 fn error(message: impl ToString) -> RecordStoreError {
-    RecordStoreError(message.to_string())
+    RecordStoreError::from(message.to_string())
 }
 
 fn selected_billing(

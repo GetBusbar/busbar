@@ -84,7 +84,9 @@ impl From<KeyMutationError> for RecordStoreError {
     fn from(error: KeyMutationError) -> Self {
         match error {
             KeyMutationError::Store(error) => error,
-            revoked @ KeyMutationError::Revoked { .. } => rendered_error(Self, revoked),
+            revoked @ KeyMutationError::Revoked { .. } => {
+                rendered_error(<Self as From<String>>::from, revoked)
+            }
             KeyMutationError::Applied {
                 key_id,
                 operation,
@@ -96,7 +98,7 @@ impl From<KeyMutationError> for RecordStoreError {
                     REVOCATION_DURABLE_MARKER
                 };
                 rendered_error(
-                    Self,
+                    <Self as From<String>>::from,
                     format_args!(
                         "{marker}: {operation} applied to key '{key_id}'; cache reconciliation incomplete ({reconcile})"
                     ),
@@ -148,7 +150,7 @@ impl From<MintError> for RecordStoreError {
     fn from(error: MintError) -> Self {
         match error {
             MintError::Store(error) => error,
-            applied => rendered_error(Self, applied),
+            applied => rendered_error(<Self as From<String>>::from, applied),
         }
     }
 }
@@ -156,7 +158,12 @@ impl From<MintError> for RecordStoreError {
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     let drawn = busbar_contract::crypto::fill(&mut raw);
-    drawn.map_err(|e| rendered_error(RecordStoreError, format_args!("CSPRNG unavailable: {e}")))?;
+    drawn.map_err(|e| {
+        rendered_error(
+            RecordStoreError::from,
+            format_args!("CSPRNG unavailable: {e}"),
+        )
+    })?;
     let id = crate::off_path::governance::state::state_vk_id(VK_ID_PREFIX, &raw);
     let generation = generate_binding_generation().store()?;
     let generation_hash = binding_marker(&id, &generation);
@@ -427,12 +434,16 @@ impl GovState {
         })
     }
 
-    pub fn sign_in_domain(&self, domain: &str, input: &[u8]) -> Option<(String, [u8; 64])> {
+    /// Signs `input` with the subkey of `domain`: appends the signature, then the signing key's
+    /// id, to `out` (the caller's own buffer) and answers the signature's length. `None` = no
+    /// key, and `out` is left as it was. The key id is written from the key itself, never copied
+    /// into a value of its own.
+    pub fn sign_in_domain(&self, domain: &str, input: &[u8], out: &mut Vec<u8>) -> Option<usize> {
         let m = self.signing_material()?;
-        Some((
-            m.signer.kid().to_string(),
-            m.signer.sign_with_subkey(domain, input),
-        ))
+        let signature = m.signer.sign_with_subkey(domain, input);
+        out.extend_from_slice(&signature);
+        out.extend_from_slice(m.signer.kid().as_bytes());
+        Some(signature.len())
     }
 
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
@@ -2245,7 +2256,7 @@ fn take_one(counts: &mut BTreeMap<String, Count>, unit: &str) {
 
 fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) -> RecordStoreError {
     rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("the spend of bucket `{bucket_id}` cannot be priced: {e}"),
     )
 }
