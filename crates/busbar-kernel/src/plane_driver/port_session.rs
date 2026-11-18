@@ -1255,7 +1255,8 @@ pub struct Task<'k, K: Calls + ?Sized> {
     pending: Option<Arc<super::port_admission::Pending>>,
     data: Option<Arc<crate::auth::native_data::NativeDataPending>>,
     declaration: Arc<FrozenUsage>,
-    session_classes: std::collections::BTreeSet<String>,
+    /// A session class that the declaration refuses (an attempt class) has been named by an earlier answer.
+    session_class_refused: bool,
     admitted: Option<(
         super::request_admission::AdmittedRequest,
         Arc<super::request_admission::RequestRoutes>,
@@ -1333,7 +1334,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             pending: effects.admission_owner().cloned(),
             data,
             declaration,
-            session_classes: std::collections::BTreeSet::new(),
+            session_class_refused: false,
             admitted: None,
             invocation,
             calls,
@@ -1371,7 +1372,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             pending: None,
             data: None,
             declaration,
-            session_classes: std::collections::BTreeSet::new(),
+            session_class_refused: false,
             admitted: None,
             invocation,
             calls,
@@ -1707,29 +1708,29 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             self.session = None;
             return Err(SessionError::Violation(v));
         }
-        let mut session_classes = self.session_classes.clone();
-        session_classes.extend(answer.usage.iter().map(|usage| usage.class.to_string()));
+        let validate = |class: &str| {
+            self.declaration
+                .declaration()
+                .validate_session_class(class)
+                .is_err()
+        };
+        let mut session_class_refused =
+            self.session_class_refused || answer.usage.iter().any(|usage| validate(&usage.class));
         for intent in &answer.intents {
             match intent {
-                Intent::Observe { counts, .. } => session_classes.extend(
-                    super::port_intents::observed_counts(&answer.lent, *counts)
-                        .map(|(class, _, _)| class.to_owned()),
-                ),
-                Intent::ObsScope { require, .. } => session_classes.extend(
-                    super::port_intents::required_classes(&answer.lent, *require)
-                        .map(str::to_owned),
-                ),
+                Intent::Observe { counts, .. } => {
+                    session_class_refused |=
+                        super::port_intents::observed_counts(&answer.lent, *counts)
+                            .any(|(class, _, _)| validate(class));
+                }
+                Intent::ObsScope { require, .. } => {
+                    session_class_refused |=
+                        super::port_intents::required_classes(&answer.lent, *require).any(validate);
+                }
                 _ => {}
             }
         }
-        if self.once.forwarded
-            && session_classes.iter().any(|class| {
-                self.declaration
-                    .declaration()
-                    .validate_session_class(class)
-                    .is_err()
-            })
-        {
+        if self.once.forwarded && session_class_refused {
             self.session = None;
             return Err(SessionError::Violation(Violation::BadRecords));
         }
@@ -1830,7 +1831,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             }
         }
         self.usage = usage;
-        self.session_classes = session_classes;
+        self.session_class_refused = session_class_refused;
         Ok(answer.seal())
     }
 
