@@ -14,8 +14,6 @@ use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
 use crate::plane_driver::port_fetch::{PlaneFetch, PlaneFetchRequest};
 use crate::retry::PortError;
 
-use super::PushSink;
-
 /// A queue sink that delegates network, deadline and destination authority to the root's connector bridge.
 pub struct ConnectorPushSink {
     fetch: Arc<dyn PlaneFetch>,
@@ -32,8 +30,10 @@ fn invalid() -> PortError {
         error: None,
     }
 }
-impl PushSink for ConnectorPushSink {
-    fn deliver<'a>(
+impl ConnectorPushSink {
+    /// One delivery attempt: the connector's fetch under the live instance's Caller and the connector's
+    /// guard (arch lints section 3.1: the one sink is this concrete type).
+    pub fn deliver<'a>(
         &'a self,
         who: &'a Caller<'_>,
         recs: &'a [u8],

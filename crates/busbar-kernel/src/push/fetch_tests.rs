@@ -12,7 +12,7 @@ use busbar_plugin_abi::records::{tag, Reply, Writer};
 use crate::plane_driver::port_fetch::{PlaneFetch, PlaneFetchReply, PlaneFetchRequest};
 use crate::retry::PortError;
 
-use super::{ConnectorPushSink, PushSink};
+use super::ConnectorPushSink;
 
 struct Fetch {
     status: u16,

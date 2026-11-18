@@ -9,7 +9,7 @@
 //! PUSH tail as the plane wrote it (nested H_METHOD, PUSH_URL, PAIR*, BODY), copied and owned by core.
 //!
 //! Delivery. [`StorePushQueue::deliver_due`] runs from the owner's tick with the live instance of that name as
-//! Caller and hands each due row to a [`PushSink`]: the connector's fetch, whose guard judges every new
+//! Caller and hands each due row to the [`ConnectorPushSink`]: the connector's fetch, whose guard judges every new
 //! connection (§12.1), so a URL accepted at set time that later resolves internal is refused at delivery.
 //! A failed attempt asks `RetryPolicy(PlanePush)`; Stop or a passed `ttl_s` drops the row and names it for the
 //! audit. [`StorePushQueue::forget`] drops every row of an instance name no longer configured.
@@ -24,7 +24,7 @@ use crate::persistence::facade::CoreStore;
 use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
 use crate::plugin_records::store::{denied, expiry, label, live, operation, InDoubt};
 use crate::plugin_records::RecordsDenied;
-use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
+use crate::retry::{Retry, RetryPolicy, RetrySite};
 
 mod fetch;
 pub use fetch::ConnectorPushSink;
@@ -40,15 +40,6 @@ pub(crate) const MAX_PUSH_TTL_S: u64 = crate::plugin_records::MAX_TTL_S;
 
 /// The most rows one [`StorePushQueue::deliver_due`] round attempts.
 pub const ROUND: usize = 64;
-
-/// One delivery attempt: the connector's fetch under the live instance's Caller and the connector's guard.
-pub trait PushSink: Send + Sync {
-    fn deliver<'a>(
-        &'a self,
-        who: &'a Caller<'_>,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), PortError>>;
-}
 
 /// Why a row left the queue undelivered (the caller audits `plane_push_dropped` with it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +93,7 @@ impl StorePushQueue {
     pub async fn deliver_due(
         &self,
         who: &Caller<'_>,
-        sink: &dyn PushSink,
+        sink: &ConnectorPushSink,
     ) -> Result<Round, RecordsDenied> {
         self.deliver_round(who, sink).await
     }
@@ -255,7 +246,7 @@ impl StorePushQueue {
     async fn deliver_round(
         &self,
         who: &Caller<'_>,
-        sink: &dyn PushSink,
+        sink: &ConnectorPushSink,
     ) -> Result<Round, RecordsDenied> {
         let records = self.scoped(who)?;
         self.in_doubt.settle_one().await;
