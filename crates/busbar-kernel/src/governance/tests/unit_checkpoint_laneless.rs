@@ -480,6 +480,7 @@ async fn a_flush_pass_holds_the_journal_lane_nine_times() {
     ))
     .await
     .unwrap();
+    assert_eq!(journal.lane_fallbacks(), 0, "nothing has confirmed yet");
     let evidence = Arc::new(
         crate::governance::unit_checkpoint_store::UnitCheckpointEvidence::new(
             journal.clone(),
@@ -497,6 +498,13 @@ async fn a_flush_pass_holds_the_journal_lane_nine_times() {
     .await
     .unwrap();
     assert!(gov.unit_checkpoints_enabled());
+    // The replay confirm at attach runs on a journal nobody has claimed yet: 6426a6a085 decides
+    // it under the driver, on purpose, exactly once.
+    let attached = journal.lane_fallbacks();
+    assert_eq!(
+        attached, 1,
+        "one lane fallback at attach, for the unclaimed journal"
+    );
     for id in 0x71..=0x74u8 {
         let grant = gov.try_admit(&cm, &key, "", now).expect("admitted");
         let mut unit = laneless_unit(&cm, &key, now, id);
@@ -513,5 +521,9 @@ async fn a_flush_pass_holds_the_journal_lane_nine_times() {
         9,
         "one pass: P 2, T 2, K1 2, K2 2, R 1"
     );
-    assert_eq!(journal.lane_fallbacks(), 0, "no confirmation took the lane");
+    assert_eq!(
+        journal.lane_fallbacks() - attached,
+        0,
+        "no confirmation in the pass took the lane"
+    );
 }
