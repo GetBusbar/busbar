@@ -228,9 +228,10 @@ impl CompleteHeld {
     fn new(
         req: &Arc<LoginCallback>,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        pool: &super::BufferPool,
         buf_cap: usize,
         groups_cap: u32,
-    ) -> Arc<Self> {
+    ) -> Option<Arc<Self>> {
         let named = req
             .login
             .submitted
@@ -242,11 +243,11 @@ impl CompleteHeld {
                 })
             })
             .collect();
-        Arc::new(Self {
+        Some(Arc::new(Self {
             request: Arc::clone(req),
             named,
-            id: Held::new(VerifyInput::empty(), buf_cap, groups_cap, 0),
-        })
+            id: Held::sized(VerifyInput::empty(), pool, buf_cap, groups_cap, 0)?,
+        }))
     }
 
     fn input(&self) -> CompleteLoginIn {
@@ -330,7 +331,15 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     }
     let request = Arc::new(request);
-    let held = CompleteHeld::new(&request, seal, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
+    let Some(held) = CompleteHeld::new(
+        &request,
+        seal,
+        &shared.buffers,
+        IDENTITY_BUF_BYTES,
+        IDENTITY_GROUPS,
+    ) else {
+        return Box::new(LoginSettled(Some(unavailable())));
+    };
     submit_complete(shared, &mut call, &held);
     Box::new(Pending::new(
         call,
@@ -382,7 +391,12 @@ impl Answering<CompleteLoginIn, IdentifyOut> for Complete {
             self.recalled = true;
             if let Some((cap, groups, _)) = out.as_ref().and_then(|o| grown(o, &self.held.id)) {
                 let seal = self.shared.dispatcher.seal();
-                self.held = CompleteHeld::new(&self.request, seal, cap, groups);
+                let Some(bigger) =
+                    CompleteHeld::new(&self.request, seal, &self.shared.buffers, cap, groups)
+                else {
+                    return Some(LoginOutcome::Reject);
+                };
+                self.held = bigger;
                 submit_complete(&self.shared, call, &self.held);
                 return None;
             }
