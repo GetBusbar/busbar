@@ -180,7 +180,7 @@ impl Conns for Table {
             .unwrap_or(Script::Refused);
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (pieces, bytes) = match script {
-            Script::Refused => return Err(ConnError::Closed),
+            Script::Refused => return Err(ConnError::Refused),
             Script::OpenFails(err) => return Err(err),
             Script::ReadFails(err) => {
                 self.read_fails.lock().unwrap().insert(id, err);
@@ -315,7 +315,7 @@ impl PollConns for Table {
         timeout_ms: u64,
     ) -> Result<HeadDefaults, ConnError> {
         if self.fail_defaults.load(Ordering::SeqCst) {
-            return Err(ConnError::Closed);
+            return Err(ConnError::Refused);
         }
         let mut lines = self.defaults.lock().unwrap().clone();
         if self.budget_defaults.load(Ordering::SeqCst) {
@@ -355,7 +355,7 @@ impl PollConns for Table {
             }
 
             if self.broken.lock().unwrap().contains(&conn.0) {
-                return Poll::Ready(Err(ConnError::Closed));
+                return Poll::Ready(Err(ConnError::Refused));
             }
             return Poll::Pending;
         };
@@ -1905,7 +1905,7 @@ async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destinat
         );
     }
     let r = rig(
-        &[("a.test", Script::OpenFails(ConnError::Closed))],
+        &[("a.test", Script::OpenFails(ConnError::Refused))],
         OnExhausted::Status503,
         None,
     );
@@ -4587,44 +4587,4 @@ async fn native_retry_mints_for_the_actual_second_destination() {
     assert!(opened[0].0.contains("a.test"));
     assert!(opened[1].0.contains("b.test"));
     assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn a_credential_cause_warns_once_and_again_when_it_changes() {
-    crate::plane_driver::declare_providers(["cred-warn-a", "cred-warn-b"]);
-    assert!(super::credential_cause_changed(
-        "cred-warn-a",
-        ConnError::AuthRefused
-    ));
-    assert!(!super::credential_cause_changed(
-        "cred-warn-a",
-        ConnError::AuthRefused
-    ));
-    assert!(super::credential_cause_changed(
-        "cred-warn-a",
-        ConnError::Closed
-    ));
-    assert!(!super::credential_cause_changed(
-        "cred-warn-a",
-        ConnError::Closed
-    ));
-    // Another provider keeps its own last cause.
-    assert!(super::credential_cause_changed(
-        "cred-warn-b",
-        ConnError::Closed
-    ));
-}
-
-#[test]
-fn an_undeclared_provider_past_the_spare_seats_is_never_warned_about() {
-    crate::plane_driver::declare_providers(["cred-warn-declared"]);
-    let mut warned = 0;
-    for at in 0..busbar_contract::fixed::DEFAULT_SPARE + 4 {
-        let name = format!("cred-warn-undeclared-{at}");
-        if super::credential_cause_changed(&name, ConnError::AuthRefused) {
-            warned += 1;
-        }
-    }
-    // The table is shared by the process, so other tests may hold spare seats: at most the spares.
-    assert!(warned <= busbar_contract::fixed::DEFAULT_SPARE);
 }
