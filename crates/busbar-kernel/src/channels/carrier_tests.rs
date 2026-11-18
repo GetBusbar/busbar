@@ -586,6 +586,44 @@ async fn command_signals_cannot_cross_an_admission_or_reach_legacy_wildcards() {
     assert!(b_rx.try_recv().is_err());
 }
 
+/// Cost of one command-channel signal: 1,000 sessions registered under one admission and one key,
+/// 100,000 `signal_command` calls, each timed alone. Prints the median and the p99 per call.
+#[tokio::test]
+#[ignore = "cost measurement: run explicitly on the build machine, before and after a signal-table change"]
+async fn command_signal_cost() {
+    use super::signals::SignalRegistry;
+    const SESSIONS: usize = 1_000;
+    const CALLS: usize = 100_000;
+    let up = Arc::new(upstream(300));
+    let admission = crate::plane_driver::request_admission::CommandAdmissionFixture::new(up).await;
+    let authority = super::authority::ChannelAuthority::new(admission.request.clone()).unwrap();
+    let registry = SignalRegistry::new();
+    let mut held = Vec::with_capacity(SESSIONS);
+    for _ in 0..SESSIONS {
+        let (tx, rx) = mpsc::channel(1);
+        let member = registry
+            .register_command(INSTANCE, &authority, b"cost", tx)
+            .unwrap();
+        held.push((member, rx));
+    }
+    let mut each = Vec::with_capacity(CALLS);
+    let mut reached = 0u64;
+    for _ in 0..CALLS {
+        let start = Instant::now();
+        let n = registry.signal_command(INSTANCE, &authority, b"cost", P_SIGNAL, b"tick");
+        each.push(start.elapsed());
+        reached += u64::from(n);
+    }
+    each.sort_unstable();
+    eprintln!(
+        "command_signal_cost: {SESSIONS} sessions, {CALLS} calls: median {:?}, p99 {:?}, accepted {reached}, dropped {}",
+        each[CALLS / 2],
+        each[CALLS * 99 / 100],
+        registry.dropped()
+    );
+    assert_eq!(reached, SESSIONS as u64);
+}
+
 #[tokio::test]
 async fn a_resight_flag_asks_for_a_sighting_of_the_upstream() {
     let up = Arc::new(upstream(300));
